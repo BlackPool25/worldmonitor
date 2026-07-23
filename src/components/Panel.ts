@@ -946,6 +946,31 @@ export class Panel {
         desc: t('premium.upgradeDesc'),
         cta: t('premium.upgradeToPro'),
       },
+      // #4771 billing-aware states: the user has (or had) paid evidence, so
+      // the CTA must never read as a fresh upsell (duplicate-checkout risk).
+      // Keys live under components.billingState (NOT premium.*): premium. is
+      // a first-paint shell namespace and these CTAs only render after the
+      // Convex entitlement round-trip, well past full-locale load.
+      [PanelGateReason.PAYMENT_ON_HOLD]: {
+        icon: lockSvg,
+        desc: t('components.billingState.onHoldDesc'),
+        cta: t('components.billingState.updatePayment'),
+      },
+      [PanelGateReason.RENEWAL_PENDING]: {
+        icon: lockSvg,
+        desc: t('components.billingState.renewalPendingDesc'),
+        cta: t('components.billingState.refreshStatus'),
+      },
+      [PanelGateReason.RENEWAL_FAILED]: {
+        icon: lockSvg,
+        desc: t('components.billingState.renewalFailedDesc'),
+        cta: t('components.billingState.manageBilling'),
+      },
+      [PanelGateReason.LAPSED]: {
+        icon: upgradeSvg,
+        desc: t('components.billingState.lapsedDesc'),
+        cta: t('components.billingState.resubscribe'),
+      },
     };
 
     const entry = config[reason];
