@@ -30,10 +30,21 @@ jobs:
           # the un-projected JSON to python3 via the RUNS_JSON env var overflowed
           # Linux's 128KB-per-arg/env limit (MAX_ARG_STRLEN) once it crossed
           # ~131KB, failing the gate with "Argument list too long" (exit 126).
-          runs=$(gh api "repos/$REPO/commits/$SHA/check-runs?per_page=100" \
-            --jq ".check_runs | map(select(.name as \$name | $required | index(\$name)) | {name, conclusion, completed_at})")
+          #
+          # #5479: the check-runs API can lag ~1 minute behind a job's completion,
+          # and workflow_run fires a bounded number of times per SHA — when the
+          # LAST event's single poll got a stale read, the posted "pending"
+          # status was never refreshed and the PR stayed stuck until a manual
+          # re-run (PRs #5476/#5475). When jobs still read as pending, re-poll a
+          # few times before concluding pending. The all-complete case breaks on
+          # the first pass, so the happy path costs nothing extra.
+          # NOTE: the python3 -c body must stay at column 0 of the block scalar —
+          # indenting it with the loop would be a Python IndentationError.
+          for attempt in 1 2 3 4 5; do
+            runs=$(gh api "repos/$REPO/commits/$SHA/check-runs?per_page=100" \
+              --jq ".check_runs | map(select(.name as \$name | $required | index(\$name)) | {name, conclusion, completed_at})")
 
-          status=$(RUNS_JSON="$runs" REQUIRED_JOBS="$required" python3 -c "
+            status=$(RUNS_JSON="$runs" REQUIRED_JOBS="$required" python3 -c "
           import json
           import os
 
@@ -54,9 +65,17 @@ jobs:
           print('failed=' + ','.join(name for name in required if latest[name] not in ('success', 'skipped')))
           ")
 
-          echo "$status"
-          pending=$(echo "$status" | awk -F= '/^pending=/ { print $2 }')
-          failed=$(echo "$status" | awk -F= '/^failed=/ { print $2 }')
+            echo "attempt $attempt: $status"
+            pending=$(echo "$status" | awk -F= '/^pending=/ { print $2 }')
+            failed=$(echo "$status" | awk -F= '/^failed=/ { print $2 }')
+
+            if [ -z "$pending" ]; then
+              break
+            fi
+            if [ "$attempt" -lt 5 ]; then
+              sleep 30
+            fi
+          done
 
           if [ -n "$pending" ]; then
             gh api "repos/$REPO/statuses/$SHA" --method POST \
