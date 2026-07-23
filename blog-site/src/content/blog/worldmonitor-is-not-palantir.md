@@ -1,6 +1,6 @@
 ---
 title: "WorldMonitor Is Not an Open-Source Palantir"
-description: "One command shows the difference: Palantir organizes your institution's private data behind closed deployments. WorldMonitor publishes intelligence on the world's public data — live, free, forkable."
+description: "Palantir organizes private institutional data. WorldMonitor publishes live intelligence from public data in an open-source platform anyone can inspect and fork."
 metaTitle: "WorldMonitor Is Not an Open-Source Palantir | World Monitor"
 keywords: "WorldMonitor vs Palantir, Palantir alternative open source, open intelligence platform, economic intelligence dashboard, global financial data platform, build on intelligence API"
 audience: "Press, analysts, developers, investors, anyone who has seen the Palantir comparison"
