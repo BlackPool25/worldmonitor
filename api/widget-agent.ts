@@ -22,7 +22,7 @@ import { getCorsHeaders, isDisallowedOrigin } from './_cors.js';
 // @ts-expect-error — JS module, no declaration file
 import { timingSafeEqualSecret, timingSafeIncludes } from './_crypto.js';
 import { validateBearerToken } from '../server/auth-session';
-import { getEntitlements } from '../server/_shared/entitlement-check';
+import { getBillingVerificationDenial, getEntitlements } from '../server/_shared/entitlement-check';
 
 const RELAY_BASE = 'https://proxy.worldmonitor.app';
 const WIDGET_AGENT_KEY = process.env.WIDGET_AGENT_KEY ?? '';
@@ -127,13 +127,23 @@ export default async function handler(req: Request): Promise<Response> {
       let allowed = session.role === 'pro';
       let entitlementChecked = false;
       let entitlementTier: number | null = null;
+      let ent: Awaited<ReturnType<typeof getEntitlements>> = null;
       if (!allowed && session.userId) {
-        const ent = await getEntitlements(session.userId);
+        ent = await getEntitlements(session.userId);
         entitlementChecked = true;
         entitlementTier = ent ? ent.features.tier : null;
         allowed = !!ent && ent.features.tier >= 1;
       }
       if (!allowed) {
+        // #4771: a paying user whose local renewal state is stale gets the
+        // structured billing-verification denial (403/503 + stable `code` +
+        // X-Billing-Verification header) instead of a misleading generic
+        // "Pro subscription required" 403 — same wire contract as the
+        // gateway and MCP surfaces (#5447/#5483). This also converts the
+        // transient verificationUnavailable marker into a retryable 503
+        // rather than a hard denial during Convex outages.
+        const billingDenial = getBillingVerificationDenial(ent, corsHeaders, 1);
+        if (billingDenial) return billingDenial;
         // Structured log so on-call can distinguish two distinct 403 causes
         // sharing one user-facing message:
         //   reason=not_entitled      — Convex returned a row, tier < 1 (real free user)

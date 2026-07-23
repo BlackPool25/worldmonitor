@@ -59,6 +59,21 @@ describe('panel-layout billing-state wiring (#4771)', () => {
   });
 });
 
+describe('widget-agent structured billing denial (#4771)', () => {
+  it('returns the structured billing-verification denial before the generic 403', async () => {
+    const src = await read('api/widget-agent.ts');
+    assert.match(src, /getBillingVerificationDenial/, 'widget-agent must import/use the shared denial helper');
+    const denialIdx = src.indexOf('getBillingVerificationDenial(ent');
+    const genericIdx = src.indexOf("json({ error: 'Pro subscription required' }, 403");
+    assert.ok(denialIdx > 0, 'billing denial must be evaluated with the fetched entitlements');
+    assert.ok(genericIdx > 0, 'generic 403 fallback should remain for true free users');
+    assert.ok(
+      denialIdx < genericIdx,
+      'billing-verification denial must run BEFORE the generic Pro-subscription-required 403',
+    );
+  });
+});
+
 describe('Panel CTA copy coverage (#4771)', () => {
   it('has a showGatedCta config entry for every billing gate reason', async () => {
     const src = await read('src/components/Panel.ts');
