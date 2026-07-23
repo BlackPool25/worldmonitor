@@ -59,7 +59,7 @@ UCDP conflict events, IMF PortWatch ship transits, EIA petroleum stocks, OFAC de
 - **Compare countries and exposures.** Use country briefs, instability and resilience indicators, travel advisories, sanctions, displacement, and macroeconomic data to understand relative pressure and capacity.
 - **Monitor what matters to you.** Follow countries, markets, airports, airlines, commodities, routes, and other watchlist items; Pro workflows add richer analysis and scheduled digests.
 - **Explore possible consequences.** Route Explorer and the Scenario Engine model how conflict, weather, sanctions, and tariff shocks could move through chokepoints, sectors, and countries; WM Analyst lets you question the live intelligence stack with citations.
-- **Build on the intelligence layer.** Authenticated API and MCP access can feed structured intelligence into software and agents; the CLI and official SDKs shorten the integration path; the embeddable map and AGPL source let you publish, fork, or self-host a version of your own.
+- **Build on the intelligence layer.** Public REST routes expose health, discovery, and dashboard-support data without a key; authenticated API and MCP access can feed the broader structured intelligence layer into software and agents. The CLI and official SDKs shorten the integration path; the embeddable map and AGPL source let you publish, fork, or self-host a version of your own.
 
 The core dashboards, map layers, feeds, briefs, and watchlists remain free and require no account. Compute-heavy analysis and programmatic data access support the paid tiers. The source remains inspectable, adaptable, and self-hostable under AGPL-3.0.
 
