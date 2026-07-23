@@ -4066,6 +4066,60 @@ describe("payments billing missed renewal reconciliation", () => {
       errorSpy.mockRestore();
     });
 
+    test("on-demand Dodo failure does not inflate the cron's reconcile backoff", async () => {
+      const t = convexTest(schema, modules);
+      const subId = await seedStaleActiveForReconcile(t, { suffix: "on_demand_no_backoff" });
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const result = await t.action(
+        internal.payments.billing.verifyRecentlyStaleSubscriptionOnDemand,
+        {
+          userId: TEST_USER_ID,
+          now: NOW,
+          remoteSubscriptionsForTest: [],
+          errorInjectionForTest: { sub_on_demand_no_backoff: "server_error" },
+        },
+      );
+
+      expect(result).toMatchObject({ status: "renewal_verification_failed" });
+      // The request path owns its own cooldown (renewalVerificationState); the
+      // cron's backoff pair must stay untouched, or a customer retrying through
+      // a Dodo blip (one attempt per 60s cooldown) defers the nightly safety
+      // net toward the 30-day backoff cap.
+      const row = await t.run((ctx) => ctx.db.get(subId));
+      expect(row?.reconcileFailureCount).toBeUndefined();
+      expect(row?.lastReconcileAttemptAt).toBeUndefined();
+      expect(row?.renewalVerificationState).toBe("failed");
+      errorSpy.mockRestore();
+    });
+
+    test("on-demand definitive 404 advances the terminal not-found streak without backoff", async () => {
+      const t = convexTest(schema, modules);
+      const subId = await seedStaleActiveForReconcile(t, { suffix: "on_demand_streak" });
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const result = await t.action(
+        internal.payments.billing.verifyRecentlyStaleSubscriptionOnDemand,
+        {
+          userId: TEST_USER_ID,
+          now: NOW,
+          remoteSubscriptionsForTest: [],
+          errorInjectionForTest: { sub_on_demand_streak: "not_found" },
+        },
+      );
+
+      expect(result).toMatchObject({ status: "renewal_verification_failed" });
+      // A definitive 404 is provider evidence regardless of which path saw it:
+      // it must advance reconcileNotFoundCount (the consecutive-404 streak
+      // gating the terminal "deleted in Dodo" downgrade) while leaving the
+      // cron-only backoff pair alone.
+      const row = await t.run((ctx) => ctx.db.get(subId));
+      expect(row?.reconcileNotFoundCount).toBe(1);
+      expect(row?.reconcileFailureCount).toBeUndefined();
+      expect(row?.lastReconcileAttemptAt).toBeUndefined();
+      errorSpy.mockRestore();
+    });
+
     test.each(["failed", "lapsed"] as const)(
       "progresses past a stronger subscription in the %s cooldown",
       async (verificationState) => {

@@ -599,9 +599,12 @@ export default defineSchema({
     // form a durable lease/cooldown shared by every Convex action instance, so
     // concurrent premium requests cannot fan out into duplicate Dodo lookups.
     // Kept separate from the daily reconciler's backoff fields above so a cron
-    // failure does not suppress the bounded customer-facing rescue attempt.
-    // Provider outcomes still update the shared reconciliation bookkeeping;
-    // only request coalescing/cooldown ownership lives in these fields.
+    // failure does not suppress the bounded customer-facing rescue attempt —
+    // and vice versa: on-demand attempts advance/reset only the shared
+    // consecutive-404 streak (reconcileNotFoundCount — provider evidence
+    // counts from either path); the backoff pair (reconcileFailureCount /
+    // lastReconcileAttemptAt) is cron-only, so request-path failures cannot
+    // defer the nightly safety net (see markDodoReconcileAttempt `source`).
     renewalVerificationState: v.optional(v.union(
       v.literal("pending"),
       v.literal("failed"),

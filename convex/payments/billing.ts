@@ -992,13 +992,24 @@ export const markDodoReconcileAttempt = internalMutation({
     // consecutive-not-found counter that gates the terminal downgrade; a
     // non-404 attempt resets that streak (a 404 must REPEAT consecutively).
     notFound: v.boolean(),
+    // "on_demand" attempts (#4770 request-path verification) participate in
+    // the 404 streak — provider evidence counts regardless of which path saw
+    // it — but must NOT touch the cron's backoff fields: a customer retrying
+    // through a Dodo blip (one attempt per 60s failure cooldown) would
+    // otherwise push reconcileFailureCount to the 30-day backoff cap and
+    // silence the nightly safety net for that row. Default: "cron".
+    source: v.optional(v.union(v.literal("cron"), v.literal("on_demand"))),
   },
   handler: async (ctx, args) => {
     const existing = await ctx.db.get(args.subscriptionId);
     if (!existing || existing.status !== "active") return;
     await ctx.db.patch(args.subscriptionId, {
-      lastReconcileAttemptAt: args.observedAt,
-      reconcileFailureCount: (existing.reconcileFailureCount ?? 0) + 1,
+      ...(args.source === "on_demand"
+        ? {}
+        : {
+            lastReconcileAttemptAt: args.observedAt,
+            reconcileFailureCount: (existing.reconcileFailureCount ?? 0) + 1,
+          }),
       reconcileNotFoundCount: args.notFound
         ? (existing.reconcileNotFoundCount ?? 0) + 1
         : 0,
@@ -1011,6 +1022,9 @@ export const applyDodoSubscriptionReconciliation = internalMutation({
     subscriptionId: v.id("subscriptions"),
     dodoSubscriptionId: v.string(),
     observedAt: v.number(),
+    // See markDodoReconcileAttempt: "on_demand" keeps the 404-streak semantics
+    // but never bumps the cron backoff fields. Default: "cron".
+    source: v.optional(v.union(v.literal("cron"), v.literal("on_demand"))),
     remote: v.object({
       dodoSubscriptionId: v.string(),
       productId: v.string(),
@@ -1051,10 +1065,14 @@ export const applyDodoSubscriptionReconciliation = internalMutation({
     // touches `updatedAt` (that carries webhook ordering semantics).
     const recordAttempt = async (): Promise<void> => {
       await ctx.db.patch(existing._id, {
-        lastReconcileAttemptAt: args.observedAt,
-        reconcileFailureCount: (existing.reconcileFailureCount ?? 0) + 1,
+        ...(args.source === "on_demand"
+          ? {}
+          : {
+              lastReconcileAttemptAt: args.observedAt,
+              reconcileFailureCount: (existing.reconcileFailureCount ?? 0) + 1,
+            }),
         // These skips prove the sub still EXISTS in Dodo, so any prior 404
-        // streak is broken.
+        // streak is broken (both sources — provider evidence either way).
         reconcileNotFoundCount: 0,
       });
     };
@@ -1111,8 +1129,12 @@ export const applyDodoSubscriptionReconciliation = internalMutation({
       // broken (reset to 0 while still stale, cleared once it leaves the set).
       ...(stillStaleAfterPatch
         ? {
-            lastReconcileAttemptAt: args.observedAt,
-            reconcileFailureCount: (existing.reconcileFailureCount ?? 0) + 1,
+            ...(args.source === "on_demand"
+              ? {}
+              : {
+                  lastReconcileAttemptAt: args.observedAt,
+                  reconcileFailureCount: (existing.reconcileFailureCount ?? 0) + 1,
+                }),
             reconcileNotFoundCount: 0,
           }
         : {
@@ -1217,12 +1239,14 @@ export async function safeMarkReconcileAttempt(
   subscriptionId: Id<"subscriptions">,
   observedAt: number,
   notFound: boolean,
+  source: "cron" | "on_demand" = "cron",
 ): Promise<void> {
   try {
     await ctx.runMutation(internal.payments.billing.markDodoReconcileAttempt, {
       subscriptionId,
       observedAt,
       notFound,
+      source,
     });
   } catch (markErr) {
     // sentry-coverage-ok: structured console.error is forwarded by Convex
@@ -1248,9 +1272,12 @@ async function reconcileOneStaleRow(
     remoteById: Map<string, DodoReconciliationRemoteSubscription>;
     errorInjection: Map<string, "not_found" | "server_error">;
     client: DodoPayments | null;
+    // "on_demand" (#4770 request path) advances/resets the 404 streak like any
+    // provider attempt but never bumps the cron backoff fields. Default "cron".
+    source?: "cron" | "on_demand";
   },
 ): Promise<StaleRowOutcome> {
-  const { now, useTestRemotes, remoteById, errorInjection, client } = opts;
+  const { now, useTestRemotes, remoteById, errorInjection, client, source = "cron" } = opts;
   try {
     let remote: DodoSubscription | DodoReconciliationRemoteSubscription | undefined;
     if (useTestRemotes) {
@@ -1279,7 +1306,7 @@ async function reconcileOneStaleRow(
         `[billing/reconcile] Skipping subscription ${normalized.dodoSubscriptionId}: ${normalized.reason} Dodo status "${normalized.status}"`,
       );
       // Row is still stale-active — back it off (not a 404, resets the streak).
-      await safeMarkReconcileAttempt(ctx, sub._id, now, false);
+      await safeMarkReconcileAttempt(ctx, sub._id, now, false, source);
       return { kind: "skipped", reason: "remote_status_unusable" };
     }
 
@@ -1290,6 +1317,7 @@ async function reconcileOneStaleRow(
         dodoSubscriptionId: sub.dodoSubscriptionId,
         observedAt: now,
         remote: normalized.value,
+        source,
       },
     )) as ReconciliationMutationResult;
     // `apply` records its own backoff for the still-stale skip reasons.
@@ -1324,7 +1352,7 @@ async function reconcileOneStaleRow(
     console.error(
       `[billing/reconcile] Failed to reconcile dodoSubscriptionId=${sub.dodoSubscriptionId} userId=${sub.userId}: ${message}`,
     );
-    await safeMarkReconcileAttempt(ctx, sub._id, now, notFound);
+    await safeMarkReconcileAttempt(ctx, sub._id, now, notFound, source);
     return { kind: "failed", error: message };
   }
 }
@@ -1466,6 +1494,7 @@ export const verifyRecentlyStaleSubscriptionOnDemand = internalAction({
         remoteById,
         errorInjection,
         client,
+        source: "on_demand",
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
