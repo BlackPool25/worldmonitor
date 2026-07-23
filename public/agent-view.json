@@ -31,6 +31,14 @@
       "install": "npm install -g worldmonitor",
       "url": "https://www.npmjs.com/package/worldmonitor"
     },
+    "sdks": {
+      "javascript": { "install": "npm install worldmonitor", "url": "https://www.npmjs.com/package/worldmonitor" },
+      "python": { "install": "pip install worldmonitor-sdk", "url": "https://pypi.org/project/worldmonitor-sdk/" },
+      "ruby": { "install": "gem install worldmonitor", "url": "https://rubygems.org/gems/worldmonitor" },
+      "go": { "install": "go get github.com/koala73/worldmonitor/sdk/go", "url": "https://pkg.go.dev/github.com/koala73/worldmonitor/sdk/go" },
+      "guide": "https://www.worldmonitor.app/docs/sdks",
+      "note": "Official zero-dependency SDK packages; every registry entry sets its homepage to worldmonitor.app for provenance."
+    },
     "docsMcp": {
       "url": "https://www.worldmonitor.app/docs/mcp",
       "transport": "streamable-http",

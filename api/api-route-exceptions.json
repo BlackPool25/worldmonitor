@@ -59,6 +59,13 @@
       "removal_issue": null
     },
     {
+      "path": "api/mcp/billing-denial.ts",
+      "category": "internal-helper",
+      "reason": "Typed billing-denial propagation for MCP tool _execute fetches (#4770): BillingDenialError + header-detection helpers so a gateway 403/503 billing denial survives dispatch's catch-all instead of flattening into a generic -32603. Pure helper module for the external-protocol MCP handler family above — exports no route.",
+      "owner": "@SebastienMelki",
+      "removal_issue": null
+    },
+    {
       "path": "api/mcp/usage.ts",
       "category": "external-protocol",
       "reason": "MCP wm_api_usage emission (#4866) — phase-to-reason mapper + ctx.waitUntil RequestEvent emitter for the /mcp funnel. Ops/observability plumbing for the same external-protocol handler, not a JSON data API; reuses server/_shared/usage.ts builders.",
