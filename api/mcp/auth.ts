@@ -397,6 +397,11 @@ async function checkMcpEntitlementGate(
   const tier = ent?.features?.tier ?? 0;
   const mcpAccess = ent?.features?.mcpAccess === true;
   const validUntil = ent?.validUntil ?? 0;
+  // Renewal uncertainty on a stronger subscription must not revoke MCP when
+  // a separate, current fallback subscription still authorizes MCP access.
+  if (ent && tier >= 1 && mcpAccess && validUntil >= Date.now()) {
+    return null;
+  }
   const billingDenial = getMcpBillingVerificationDenial(ent, corsHeaders);
   if (billingDenial) return billingDenial;
   if (!ent || tier < 1 || !mcpAccess || validUntil < Date.now()) {

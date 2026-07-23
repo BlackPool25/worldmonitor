@@ -97,7 +97,9 @@ describe("/api/internal-entitlements HTTP action", () => {
     expect(body).not.toHaveProperty("billingStatus");
     expect(body).not.toHaveProperty("retryAfterSeconds");
     expect(body).not.toHaveProperty("renewalVerificationFreshness");
-    expect(runQuery).toHaveBeenCalledTimes(2);
+    // The third query resolves any current lower-plan fallback and checks
+    // whether the still-stale plan could expand coverage.
+    expect(runQuery).toHaveBeenCalledTimes(3);
     expect(runAction).toHaveBeenCalledTimes(1);
   });
 
@@ -141,6 +143,70 @@ describe("/api/internal-entitlements HTTP action", () => {
       retryAfterSeconds: 3,
     });
   });
+
+  test.each([
+    ["pending", "renewal_verification_pending", 3],
+    ["failed", "renewal_verification_failed", 60],
+  ] as const)(
+    "preserves current Pro fallback while stronger Enterprise verification is %s",
+    async (verificationState, billingStatus, retryAfterSeconds) => {
+      const t = convexTest(schema, modules);
+      await t.run(async (ctx) => {
+        await ctx.db.insert("subscriptions", {
+          userId: USER_A,
+          dodoSubscriptionId: `sub_http_enterprise_${verificationState}`,
+          dodoProductId: PRODUCT_CATALOG.enterprise.dodoProductId!,
+          planKey: "enterprise",
+          status: "active",
+          currentPeriodStart: NOW - 31 * DAY_MS,
+          currentPeriodEnd: NOW - DAY_MS,
+          renewalVerificationState: verificationState,
+          renewalVerificationAttemptAt: NOW,
+          rawPayload: {},
+          updatedAt: NOW - DAY_MS,
+        });
+        await ctx.db.insert("subscriptions", {
+          userId: USER_A,
+          dodoSubscriptionId: `sub_http_pro_${verificationState}`,
+          dodoProductId: PRODUCT_CATALOG.pro_monthly.dodoProductId!,
+          planKey: "pro_monthly",
+          status: "active",
+          currentPeriodStart: NOW - DAY_MS,
+          currentPeriodEnd: NOW + 30 * DAY_MS,
+          rawPayload: {},
+          updatedAt: NOW,
+        });
+        // Reproduce the pre-fix stored state: the one-row materialization still
+        // points at the stronger subscription whose paid period has elapsed.
+        await ctx.db.insert("entitlements", {
+          userId: USER_A,
+          planKey: "enterprise",
+          features: getFeaturesForPlan("enterprise"),
+          validUntil: NOW - DAY_MS,
+          updatedAt: NOW - DAY_MS,
+        });
+      });
+
+      const res = await t.fetch("/api/internal-entitlements", {
+        method: "POST",
+        headers: validHeaders(),
+        body: JSON.stringify({ userId: USER_A }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        planKey: "pro_monthly",
+        features: {
+          tier: 1,
+          mcpAccess: true,
+          apiAccess: false,
+        },
+        validUntil: NOW + 30 * DAY_MS,
+        billingStatus,
+        retryAfterSeconds,
+      });
+    },
+  );
 
   test("billing history without a verification candidate surfaces subscription_lapsed", async () => {
     const t = convexTest(schema, modules);

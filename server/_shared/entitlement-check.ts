@@ -441,14 +441,20 @@ export async function checkEntitlementDetailed(
     };
   }
 
+  // A stronger recently-stale subscription can be under verification while a
+  // lower plan still provides current, known-good coverage. Let that fallback
+  // authorize requests within its tier; the billing marker remains relevant
+  // only to capabilities above the fallback.
+  if (
+    ent.features.tier >= requiredTier &&
+    ent.validUntil >= Date.now()
+  ) {
+    return { response: null, entitlements: ent };
+  }
+
   const billingDenial = getBillingVerificationDenial(ent, corsHeaders, requiredTier);
   if (billingDenial) {
     return { response: billingDenial, entitlements: ent };
-  }
-
-  if (ent.features.tier >= requiredTier) {
-    // User has sufficient tier -- allow
-    return { response: null, entitlements: ent };
   }
 
   // User lacks required tier -- return 403

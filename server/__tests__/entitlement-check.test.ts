@@ -146,6 +146,29 @@ describe("gateway entitlement check", () => {
     expect(await result?.json()).toMatchObject({ error, code: billingStatus });
   });
 
+  test.each([
+    "renewal_verification_pending",
+    "renewal_verification_failed",
+  ] as const)(
+    "current Pro fallback authorizes tier-1 REST while stronger verification is %s",
+    async (billingStatus) => {
+      const result = await withConvexEntitlementResponse(
+        {
+          ...makeEntitlements(1, "pro_monthly"),
+          billingStatus,
+          retryAfterSeconds: 17,
+        },
+        () => checkEntitlement(
+          "test-user",
+          "/api/market/v1/analyze-stock",
+          {},
+        ),
+      );
+
+      expect(result).toBeNull();
+    },
+  );
+
   test("subscription_lapsed returns a distinct hard-denial code", async () => {
     const result = await withConvexEntitlementResponse(
       {

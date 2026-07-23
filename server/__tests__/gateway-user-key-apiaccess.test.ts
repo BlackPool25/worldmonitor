@@ -251,6 +251,29 @@ describe("#4611 — expired wm_ key rejected on all route classes", () => {
     expect(await res.json()).toMatchObject({ code: "renewal_verification_pending" });
   });
 
+  test("current Pro fallback still returns retryable 503 for API-key access", async () => {
+    entitlement = {
+      planKey: "pro_monthly",
+      features: {
+        tier: 1,
+        apiAccess: false,
+        apiRateLimit: 0,
+        mcpAccess: true,
+      },
+      validUntil: Date.now() + 86_400_000,
+      billingStatus: "renewal_verification_pending",
+      retryAfterSeconds: 13,
+    };
+
+    const res = await makeGateway()(keyReq(REGULAR_PATH), ctx);
+
+    expect(res.status).toBe(503);
+    expect(res.headers.get("Retry-After")).toBe("13");
+    expect(await res.json()).toMatchObject({
+      code: "renewal_verification_pending",
+    });
+  });
+
   test("confirmed lapse on a wm_ key returns subscription_lapsed", async () => {
     entitlement = {
       planKey: "free",

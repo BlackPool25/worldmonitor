@@ -736,7 +736,9 @@ export function createDomainGateway(
     function denyForBillingVerification(
       ent: CachedEntitlements | null | undefined,
       cors: Record<string, string>,
+      capabilityCovered = false,
     ): Response | null {
+      if (capabilityCovered) return null;
       const billingDenial = getBillingVerificationDenial(ent, cors);
       if (!billingDenial) return null;
       emitRequest(
@@ -1037,7 +1039,15 @@ export function createDomainGateway(
       // re-check via the fallback path. Mirror the per-handler runProPreChecks
       // and authorize-pro entitlement guards.
       const ent = await getEntitlements(verified.userId);
-      const billingDenial = denyForBillingVerification(ent, corsHeaders);
+      const mcpCovered = !!ent &&
+        ent.features.tier >= 1 &&
+        (ent.features as { mcpAccess?: boolean }).mcpAccess === true &&
+        ent.validUntil >= Date.now();
+      const billingDenial = denyForBillingVerification(
+        ent,
+        corsHeaders,
+        mcpCovered,
+      );
       if (billingDenial) return billingDenial;
       if (
         !ent ||
@@ -1219,7 +1229,14 @@ export function createDomainGateway(
     if (isUserApiKey && sessionUserId) {
       userKeyEntitlement = await getEntitlements(sessionUserId);
       recordUsageEntitlement(userKeyEntitlement);
-      const billingDenial = denyForBillingVerification(userKeyEntitlement, corsHeaders);
+      const apiAccessCovered = !!userKeyEntitlement &&
+        userKeyEntitlement.features.apiAccess &&
+        userKeyEntitlement.validUntil >= Date.now();
+      const billingDenial = denyForBillingVerification(
+        userKeyEntitlement,
+        corsHeaders,
+        apiAccessCovered,
+      );
       if (billingDenial) return billingDenial;
       // A validated wm_ key proves key ownership, not current paid access.
       // getEntitlements() returns null for a missing row and for bounded
@@ -1303,7 +1320,14 @@ export function createDomainGateway(
           if (!allowed && session.userId) {
             const ent = await getEntitlements(session.userId);
             recordUsageEntitlement(ent);
-            const billingDenial = denyForBillingVerification(ent, corsHeaders);
+            const proCovered = !!ent &&
+              ent.features.tier >= 1 &&
+              ent.validUntil >= Date.now();
+            const billingDenial = denyForBillingVerification(
+              ent,
+              corsHeaders,
+              proCovered,
+            );
             if (billingDenial) return billingDenial;
             allowed = !!ent && ent.features.tier >= 1 && ent.validUntil >= Date.now();
           }

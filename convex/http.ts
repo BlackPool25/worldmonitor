@@ -192,7 +192,34 @@ export async function internalEntitlementsHttpHandler(
           internal.entitlements.getEntitlementsByUserId,
           { userId: body.userId },
         );
-        if (result.features.tier === 0 && verification.status !== "active") {
+        // A stale materialized entitlement can point at the stronger row under
+        // verification even while another lower-plan subscription is still
+        // current. Preserve that known-good coverage in this response; the
+        // billing marker remains attached so callers deny only capabilities
+        // the fallback plan does not authorize.
+        const fallbackState = await ctx.runQuery(
+          internal.payments.billing.getOnDemandRenewalFallbackState,
+          { userId: body.userId, now: Date.now() },
+        );
+        if (
+          result.features.tier === 0 &&
+          fallbackState?.currentEntitlement
+        ) {
+          result = fallbackState.currentEntitlement;
+        }
+        const staleFeatures = fallbackState?.strongestRecentlyStaleFeatures;
+        const verificationCouldExpandCoverage = !!staleFeatures && (
+          staleFeatures.tier > result.features.tier ||
+          (staleFeatures.apiAccess && !result.features.apiAccess) ||
+          (staleFeatures.mcpAccess && !result.features.mcpAccess)
+        );
+        if (
+          verification.status !== "active" &&
+          (
+            result.features.tier === 0 ||
+            verificationCouldExpandCoverage
+          )
+        ) {
           billingStatus = verification.status;
           if ("retryAfterSeconds" in verification) {
             retryAfterSeconds = verification.retryAfterSeconds;

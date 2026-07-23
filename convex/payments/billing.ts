@@ -707,6 +707,72 @@ function queryRecentlyStaleActiveSubscriptions(
 }
 
 /**
+ * Returns the known-good current fallback plus the strongest recently-stale
+ * plan that may still be restored by on-demand verification.
+ *
+ * The materialized entitlement row can temporarily point at that stale,
+ * stronger subscription while another lower plan is still current. Keeping
+ * both sides of the comparison lets the request path preserve known coverage
+ * without retaining a billing marker after an equal-or-stronger concurrent
+ * entitlement refresh.
+ */
+export const getOnDemandRenewalFallbackState = internalQuery({
+  args: {
+    userId: v.string(),
+    now: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const subscriptions = await ctx.db
+      .query("subscriptions")
+      .withIndex("by_userId", (q) => q.eq("userId", args.userId))
+      .collect();
+
+    const currentSubscription = subscriptions
+      .filter((subscription) =>
+        subscription.currentPeriodEnd >= args.now &&
+        (
+          subscription.status === "active" ||
+          subscription.status === "on_hold" ||
+          subscription.status === "cancelled"
+        ),
+      )
+      .sort((a, b) =>
+        compareEntitlementPlans(
+          { planKey: b.planKey, validUntil: b.currentPeriodEnd },
+          { planKey: a.planKey, validUntil: a.currentPeriodEnd },
+        ),
+      )[0];
+
+    const recentCutoff = args.now - ON_DEMAND_RENEWAL_RECENT_WINDOW_MS;
+    const strongestRecentlyStaleSubscription = subscriptions
+      .filter((subscription) =>
+        subscription.status === "active" &&
+        subscription.currentPeriodEnd >= recentCutoff &&
+        subscription.currentPeriodEnd < args.now,
+      )
+      .sort((a, b) =>
+        compareEntitlementPlans(
+          { planKey: b.planKey, validUntil: b.currentPeriodEnd },
+          { planKey: a.planKey, validUntil: a.currentPeriodEnd },
+        ),
+      )[0];
+
+    return {
+      currentEntitlement: currentSubscription
+        ? {
+            planKey: currentSubscription.planKey,
+            features: getFeaturesForPlan(currentSubscription.planKey),
+            validUntil: currentSubscription.currentPeriodEnd,
+          }
+        : null,
+      strongestRecentlyStaleFeatures: strongestRecentlyStaleSubscription
+        ? getFeaturesForPlan(strongestRecentlyStaleSubscription.planKey)
+        : null,
+    };
+  },
+});
+
+/**
  * Classifies all recently-stale rows for one user without starting provider
  * work. A live pending lease is user-scoped: claiming a different row while
  * it is in flight would fan concurrent requests out to Dodo. Failed and

@@ -2849,6 +2849,32 @@ describe('api/mcp.ts — U7 Pro-path', () => {
     assert.equal(res.status, 401);
   });
 
+  it('current Pro fallback remains usable while stronger renewal verification is pending', async () => {
+    const { deps, pipe } = makeProDeps({
+      getEntitlements: async () => ({
+        planKey: 'pro_monthly',
+        features: { tier: 1, mcpAccess: true },
+        validUntil: Date.now() + 86_400_000,
+        billingStatus: 'renewal_verification_pending',
+        retryAfterSeconds: 19,
+      }),
+    });
+    process.env.UPSTASH_REDIS_REST_URL = 'https://stub.upstash';
+    process.env.UPSTASH_REDIS_REST_TOKEN = 'stub';
+    globalThis.fetch = async () => new Response(
+      JSON.stringify({ result: JSON.stringify({ ok: 1 }) }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+
+    const res = await mcpHandler(
+      proReq('POST', callBody('get_market_data')),
+      deps,
+    );
+
+    assert.equal(res.status, 200);
+    assert.equal(pipe.count, 1);
+  });
+
   for (const billingStatus of ['renewal_verification_pending', 'renewal_verification_failed']) {
     it(`error: ${billingStatus} → JSON-RPC retryable no-store 503`, async () => {
       const { deps, pipe } = makeProDeps({

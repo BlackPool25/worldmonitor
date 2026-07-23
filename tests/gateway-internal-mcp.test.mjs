@@ -1040,6 +1040,27 @@ describe('gateway internal-MCP — billing renewal verification', () => {
     });
   }
 
+  it('current Pro fallback remains usable while stronger renewal verification is pending', async () => {
+    installFetchStub({
+      entitlement: () => ({
+        planKey: 'pro_monthly',
+        features: {
+          tier: 1, apiAccess: false, apiRateLimit: 0, maxDashboards: 10,
+          prioritySupport: false, exportFormats: ['csv'], mcpAccess: true,
+        },
+        validUntil: Date.now() + 86_400_000,
+        billingStatus: 'renewal_verification_pending',
+        retryAfterSeconds: 17,
+      }),
+    });
+    const handler = makeGateway();
+    const req = await buildSignedRequest();
+    const res = await handler(req);
+
+    assert.equal(res.status, 200);
+    assert.notEqual(lastHandlerRequest, null, 'covered MCP request must reach the handler');
+  });
+
   it('subscription_lapsed → distinct hard denial', async () => {
     installFetchStub({
       entitlement: () => ({
