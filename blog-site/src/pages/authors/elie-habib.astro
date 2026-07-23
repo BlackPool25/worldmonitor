@@ -2,9 +2,10 @@
 import { getCollection } from 'astro:content';
 import Base from '../../layouts/Base.astro';
 
-const posts = (await getCollection('blog')).sort(
-  (a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf(),
-);
+const DEFAULT_AUTHOR = 'Elie Habib';
+const posts = (await getCollection('blog'))
+  .filter((post) => (post.data.author || DEFAULT_AUTHOR) === DEFAULT_AUTHOR)
+  .sort((a, b) => b.data.pubDate.valueOf() - a.data.pubDate.valueOf());
 
 const profileUrl = 'https://www.worldmonitor.app/blog/authors/elie-habib/';
 const personId = `${profileUrl}#person`;

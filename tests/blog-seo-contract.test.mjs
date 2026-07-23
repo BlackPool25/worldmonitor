@@ -93,4 +93,28 @@ describe('blog SEO and GEO corpus contract', () => {
     assert.match(post, /"citation": citations/);
     assert.match(post, /\/blog\/authors\/elie-habib\//);
   });
+
+  it('keeps author archives and blog JSON-LD attribution accurate', () => {
+    const authorPage = readFileSync(resolve(root, 'blog-site/src/pages/authors/elie-habib.astro'), 'utf8');
+    const blogIndex = readFileSync(resolve(root, 'blog-site/src/pages/index.astro'), 'utf8');
+
+    assert.ok(
+      authorPage.includes('.filter((post) => (post.data.author || DEFAULT_AUTHOR) === DEFAULT_AUTHOR)'),
+      'Elie author archive must exclude posts that resolve to a custom author',
+    );
+    assert.ok(
+      blogIndex.includes('const authorName = post.data.author || DEFAULT_AUTHOR;'),
+      'blog JSON-LD must resolve the default author per post',
+    );
+    assert.ok(
+      blogIndex.includes(
+        'const authorUrl = post.data.authorUrl || (authorName === DEFAULT_AUTHOR ? DEFAULT_AUTHOR_URL : undefined);',
+      ),
+      'blog JSON-LD must honor a custom authorUrl without assigning Elie’s URL to custom authors',
+    );
+    assert.ok(
+      blogIndex.includes('...(authorName === DEFAULT_AUTHOR ? { "@id": DEFAULT_AUTHOR_ID } : {})'),
+      'blog JSON-LD must assign Elie’s stable Person ID only to the default author',
+    );
+  });
 });
