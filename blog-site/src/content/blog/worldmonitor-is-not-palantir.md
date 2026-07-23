@@ -76,7 +76,7 @@ Here's the sanctions layer, queried live while writing this (July 22, 2026): **2
 - **The interfaces are open**: a versioned REST API built on 35 typed proto services, an [MCP server with 40+ tools](/blog/posts/worldmonitor-mcp-server-ai-agents-real-time-intelligence/) whose catalog is publicly discoverable while data calls authenticate through OAuth or an API key, an [embeddable live map](/blog/posts/embed-live-global-map-worldmonitor/), 25 UI languages.
 - **The pricing is open**: [published on the site](/blog/posts/free-vs-paid-real-time-intelligence-dashboards/), $0 to flat monthly tiers, no "contact sales."
 
-And, in fairness, what WorldMonitor is **not**: it is not fully free at every layer — WM Analyst, the Scenario Engine, Route Explorer, scheduled AI digests, custom widgets, MCP data calls, and the REST API are paid, and they fund the free rest. It has no classified feeds and no private ontology for your internal data — if you need *your* data integrated, that's genuinely Palantir's job, not ours. And public data has gaps; where sensors don't exist, WorldMonitor shows the gap rather than interpolating confidence.
+And, in fairness, what WorldMonitor is **not**: it is not fully free at every layer — WM Analyst, the Scenario Engine, Route Explorer, scheduled AI digests, custom widgets, authenticated MCP data calls, and full REST API access are paid, and they fund the free rest. Public REST routes still expose health, discovery, and the data needed by the free dashboards without an API key. WorldMonitor has no classified feeds and no private ontology for your internal data — if you need *your* data integrated, that's genuinely Palantir's job, not ours. And public data has gaps; where sensors don't exist, WorldMonitor shows the gap rather than interpolating confidence.
 
 That last habit may be the deepest difference. In a private deployment, source health is visible inside the customer's environment. WorldMonitor exposes its own publicly, on the health endpoint you curled above.
 
@@ -105,7 +105,7 @@ No. Conflict monitoring is one layer among dozens spanning markets, trade, energ
 
 **Is everything really free?**
 
-The core dashboards, map layers, feeds, briefs, breaking alerts, and watchlists are free with no login. WM Analyst, the Scenario Engine, Route Explorer, scheduled digests, custom widgets, MCP data calls, and REST API access are paid and fund the rest. Anyone can inspect the MCP catalog and public health metadata anonymously, but data-bearing tool calls require Pro or API authentication. The source is AGPL-3.0 — self-hosters get everything their own keys can feed.
+The core dashboards, map layers, feeds, briefs, breaking alerts, and watchlists are free with no login. Public REST routes cover health, discovery, and dashboard support. WM Analyst, the Scenario Engine, Route Explorer, scheduled digests, custom widgets, authenticated MCP data calls, and full REST API access are paid and fund the rest. Anyone can inspect the MCP catalog and public health metadata anonymously, but data-bearing MCP tool calls require Pro or API authentication. The source is AGPL-3.0 — self-hosters get everything their own keys can feed.
 
 ---
 
