@@ -136,6 +136,29 @@ describe('deriveBillingUxState', () => {
     assert.equal(deriveBillingUxState(sub({ status: 'cancelled' }), ent(), NOW), 'active');
   });
 
+  it('cancelled in-period with a late/missing entitlement snapshot = active (cancelled-but-paid-through, never over-gate)', () => {
+    assert.equal(deriveBillingUxState(sub({ status: 'cancelled' }), null, NOW), 'active');
+  });
+
+  it('cancelled in-period with an expired entitlement snapshot = active (coverage runs to period end)', () => {
+    assert.equal(
+      deriveBillingUxState(sub({ status: 'cancelled' }), ent({ validUntil: NOW - 1 }), NOW),
+      'active',
+    );
+  });
+
+  it('expired subscription never covers, even with a future period end (mirrors isCoveringAt)', () => {
+    assert.equal(
+      deriveBillingUxState(sub({ status: 'expired', currentPeriodEnd: NOW + DAY }), null, NOW),
+      'lapsed',
+    );
+  });
+
+  it('unknown runtime status strings stay locked-side (lapsed), never unlock', () => {
+    const bogus = sub({ status: 'totally_unknown' as unknown as 'active' });
+    assert.equal(deriveBillingUxState(bogus, null, NOW), 'lapsed');
+  });
+
   it('cancelled subscription past the paid period = lapsed', () => {
     assert.equal(
       deriveBillingUxState(
@@ -230,5 +253,27 @@ describe('getBillingGateOverride', () => {
     assert.equal(getBillingGateOverride('renewal_verification_pending'), 'renewal_pending');
     assert.equal(getBillingGateOverride('renewal_verification_failed'), 'renewal_failed');
     assert.equal(getBillingGateOverride('lapsed'), 'lapsed');
+  });
+
+  it('no state maps to an unlocking override — billing refinement is copy-only', () => {
+    // The override either substitutes a LOCKED billing-specific reason for
+    // FREE_TIER or returns null (keep the locked generic CTA). There is no
+    // value a state could map to that unlocks a panel client-side.
+    const allStates = [
+      'free',
+      'active',
+      'on_hold',
+      'renewal_verification_pending',
+      'renewal_verification_failed',
+      'lapsed',
+    ] as const;
+    const lockedOverrides = new Set(['payment_on_hold', 'renewal_pending', 'renewal_failed', 'lapsed']);
+    for (const state of allStates) {
+      const override = getBillingGateOverride(state);
+      assert.ok(
+        override === null || lockedOverrides.has(override),
+        `${state} produced unexpected override ${String(override)}`,
+      );
+    }
   });
 });

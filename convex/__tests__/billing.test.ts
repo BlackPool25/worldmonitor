@@ -4514,4 +4514,32 @@ describe("getSubscriptionForUser renewal verification exposure (#4771)", () => {
     expect(result).not.toBeNull();
     expect(result!.renewalVerificationState).toBeNull();
   });
+
+  test("multi-row: returns the priority-selected row's verdict, not another row's", async () => {
+    const t = convexTest(schema, modules);
+    // Older cancelled row carrying a stale verification verdict...
+    await seedSubscription(t, {
+      planKey: "pro_monthly",
+      dodoProductId: PRODUCT_CATALOG.pro_monthly.dodoProductId!,
+      status: "cancelled",
+      currentPeriodEnd: NOW - 30 * DAY_MS,
+      suffix: "multi_row_cancelled",
+      renewalVerificationState: "failed",
+    });
+    // ...must not leak onto the newer active row the priority sort selects.
+    await seedSubscription(t, {
+      planKey: "pro_monthly",
+      dodoProductId: PRODUCT_CATALOG.pro_monthly.dodoProductId!,
+      status: "active",
+      currentPeriodEnd: NOW + 30 * DAY_MS,
+      suffix: "multi_row_active",
+    });
+
+    const result = await t
+      .withIdentity(IDENTITY)
+      .query(api.payments.billing.getSubscriptionForUser, {});
+    expect(result).not.toBeNull();
+    expect(result!.status).toBe("active");
+    expect(result!.renewalVerificationState).toBeNull();
+  });
 });

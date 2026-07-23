@@ -51,8 +51,12 @@ export type BillingUxState =
  *    in-period row stays `active` (entitlement snapshot late/skipped), and a
  *    past-period row is `renewal_verification_pending` — reconciliation is
  *    queued (#4794) or in flight (#4770) even when no verdict is recorded yet.
- * 5. `cancelled`/`expired` past their paid window: provider-confirmed end of
- *    coverage — `lapsed`, not `free`, so copy can say "resubscribe".
+ * 5. `cancelled` still inside its paid window keeps coverage (`active`) even
+ *    when the entitlement snapshot is late — mirrors `isCoveringAt` in
+ *    convex/payments/subscriptionHelpers.ts ("cancelled-but-paid-through").
+ *    `cancelled` past the window and `expired` (never covering, same helper):
+ *    provider-confirmed end of coverage — `lapsed`, not `free`, so copy can
+ *    say "resubscribe".
  */
 export function deriveBillingUxState(
   sub: BillingSubscriptionSnapshot | null,
@@ -69,6 +73,7 @@ export function deriveBillingUxState(
     if (sub.currentPeriodEnd >= now) return 'active';
     return 'renewal_verification_pending';
   }
+  if (sub.status === 'cancelled' && sub.currentPeriodEnd >= now) return 'active';
   return 'lapsed';
 }
 

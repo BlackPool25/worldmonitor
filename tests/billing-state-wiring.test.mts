@@ -43,6 +43,18 @@ describe('payment-failure-banner billing-state wiring (#4771)', () => {
     assert.match(src, /t\(variant\.actionLabelKey\)/);
   });
 
+  it('tears down a stale banner on variant switch and short-circuits same-variant re-renders', async () => {
+    const src = await read('src/components/payment-failure-banner.ts');
+    // A pending→failed transition must remove the old element and rebuild;
+    // a same-variant event must not stack a duplicate. Dropping either half
+    // ships stacked/stale banners invisibly (no jsdom in this suite).
+    assert.match(
+      src,
+      /if \(existing\) \{\s*\n\s*if \(existingVariant === variant\.dismissKey\) return;\s*\n\s*existing\.remove\(\);\s*\n\s*\}/,
+    );
+    assert.match(src, /banner\.dataset\.variant = variant\.dismissKey;/);
+  });
+
   it('every banner variant key resolves in en.json, and on_hold copy is byte-identical to the pre-#4771 banner', async () => {
     // Dynamic t(variant.messageKey) calls are invisible to the static i18n
     // key-existence gate, so lock key validity here instead.

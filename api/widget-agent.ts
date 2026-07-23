@@ -143,15 +143,29 @@ export default async function handler(req: Request): Promise<Response> {
         // transient verificationUnavailable marker into a retryable 503
         // rather than a hard denial during Convex outages.
         const billingDenial = getBillingVerificationDenial(ent, corsHeaders, 1);
-        if (billingDenial) return billingDenial;
+        if (billingDenial) {
+          // Keep the on-call grep contract alive on this path too — the
+          // early return would otherwise silence the denial entirely
+          // (gateway pairs its denial with emitRequest the same way).
+          console.warn('[widget-agent] billing-verification denial', JSON.stringify({
+            status: billingDenial.status,
+            code: billingDenial.headers.get('X-Billing-Verification'),
+            userId: session.userId ?? null,
+            clerkRole: session.role ?? null,
+            entitlementTier,
+          }));
+          return billingDenial;
+        }
         // Structured log so on-call can distinguish two distinct 403 causes
         // sharing one user-facing message:
         //   reason=not_entitled      — Convex returned a row, tier < 1 (real free user)
-        //   reason=service_unavailable — entitlement lookup returned null
-        //                                (Convex unreachable / Redis trouble / cache miss + Convex down).
-        //                                The latter blocks paying users during outages —
-        //                                grep these in Vercel logs to trigger an incident
-        //                                instead of waiting for refund tickets.
+        //   reason=service_unavailable — entitlement lookup returned null.
+        //                                Post-#5483 a Convex-unreachable/5xx
+        //                                lookup returns the verificationUnavailable
+        //                                marker (tier 0) and exits via the 503
+        //                                above, so null here means the fail-closed
+        //                                4xx path — rare, but still worth a
+        //                                distinct grep handle.
         const reason = entitlementChecked && entitlementTier === null
           ? 'service_unavailable'
           : 'not_entitled';
