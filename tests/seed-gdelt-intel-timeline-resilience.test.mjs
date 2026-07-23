@@ -63,7 +63,7 @@ test('TIMELINE_TTL is brownout-scale (7 days), not one-missed-tick-scale', () =>
     '12h TTL dies on the first >12h GDELT outage; the per-run EXPIRE-extend keeps last-good alive up to the TTL, so the TTL must cover a realistic brownout');
 });
 
-test('afterPublish writes fresh timelines with the brownout-scale TTL', async () => {
+test('afterPublish writes fresh timelines with the brownout-scale TTL and the RUN-level fetchedAt', async () => {
   globalThis.fetch = async (url, opts = {}) => {
     const body = opts?.body ? JSON.parse(opts.body) : null;
     calls.push({ u: String(url), body });
@@ -71,14 +71,20 @@ test('afterPublish writes fresh timelines with the brownout-scale TTL', async ()
     return jsonResponse({ result: 'OK' });
   };
 
+  // topic.fetchedAt is COASTED (articles 429'd and were backfilled from the
+  // previous snapshot) but the timeline succeeded THIS run — the write must
+  // carry the run-level fetchedAt, or the cross-source 48h signal-grade guard
+  // would suppress a genuinely fresh series.
   await afterPublish({
     fetchedAt: '2026-07-23T08:00:00.000Z',
-    topics: [{ id: 'military', _tone: [{ date: '20260723', value: -2.1 }], _vol: [] }],
+    topics: [{ id: 'military', fetchedAt: '2026-07-01T00:00:00.000Z', _tone: [{ date: '20260723', value: -2.1 }], _vol: [] }],
   });
 
   const toneSet = calls.find((c) => Array.isArray(c.body) && c.body[0] === 'SET' && c.body[1] === 'gdelt:intel:tone:military');
   assert.ok(toneSet, 'fresh tone timeline must be written');
   assert.equal(toneSet.body[4], 604800, 'timeline SET must carry the brownout-scale TTL');
+  assert.equal(JSON.parse(toneSet.body[2]).fetchedAt, '2026-07-23T08:00:00.000Z',
+    'a timeline fetched this run must be stamped with the run-level fetchedAt, not the coasted article time');
   const expire = calls.find((c) => Array.isArray(c.body) && Array.isArray(c.body[0]));
   assert.ok(expire, 'empty vol timeline must fall back to EXPIRE-extend');
   assert.deepEqual(expire.body[0], ['EXPIRE', 'gdelt:intel:vol:military', 604800],
@@ -137,8 +143,27 @@ test('contentMeta reports newest/oldest per-topic fetch times', () => {
 
 test('contentMeta returns null when no topic carries a usable fetch time', () => {
   assert.equal(contentMeta({ topics: [] }), null);
-  assert.equal(contentMeta({ topics: [{ id: 'military', fetchedAt: 'garbage' }] }), null);
+  assert.equal(contentMeta({ topics: [{ id: 'military', fetchedAt: 'garbage', articles: [{}] }] }), null);
   assert.equal(contentMeta(null), null);
+});
+
+test('contentMeta ignores articleless topics so a total outage cannot mask STALE_CONTENT', () => {
+  // Total-death scenario: brownout + expired canonical → no backfill possible,
+  // every topic is empty but carries fetchedAt=now. Counting those would hold
+  // newestItemAt fresh exactly when the alarm matters most.
+  const meta = contentMeta({
+    topics: [
+      { id: 'military', fetchedAt: '2026-07-23T08:00:00.000Z', articles: [] },
+      { id: 'nuclear', fetchedAt: '2026-07-01T00:00:00.000Z', articles: [{}] },
+    ],
+  });
+  assert.equal(meta.newestItemAt, Date.parse('2026-07-01T00:00:00.000Z'),
+    'only topics that actually carry articles count toward content age');
+  assert.equal(
+    contentMeta({ topics: [{ id: 'military', fetchedAt: '2026-07-23T08:00:00.000Z', articles: [] }] }),
+    null,
+    'all-empty topics → null → health reads STALE_CONTENT',
+  );
 });
 
 test('runSeed opts wire in the content-age trio and the resilient afterPublish', () => {

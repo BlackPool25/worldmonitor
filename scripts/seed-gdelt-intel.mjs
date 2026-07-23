@@ -304,7 +304,12 @@ export async function afterPublish(data, _meta) {
     extendQueue.push(key);
   };
   for (const topic of data.topics ?? []) {
-    const fetchedAt = topic.fetchedAt ?? data.fetchedAt;
+    // A non-empty _tone/_vol was fetched THIS run, so stamp writes with the
+    // run-level fetchedAt: topic.fetchedAt may be coasted to the previous
+    // snapshot's time when the articles 429'd but the timeline succeeded, and
+    // a stale stamp would make cross-source-signals' 48h signal-grade guard
+    // suppress a genuinely fresh series.
+    const fetchedAt = data.fetchedAt ?? topic.fetchedAt;
     await writeOrQueueExtend(`gdelt:intel:tone:${topic.id}`, topic._tone, fetchedAt, toneKeysToExtend);
     await writeOrQueueExtend(`gdelt:intel:vol:${topic.id}`, topic._vol, fetchedAt, volKeysToExtend);
   }
@@ -333,7 +338,12 @@ export function declareRecords(data) {
 //                  GDELT success at all keeps this fresh);
 //   oldestItemAt = most starved topic, for operator visibility.
 export function contentMeta(data) {
+  // Only topics that actually carry articles count: an articleless topic keeps
+  // fetchedAt=now (the empty-topic placeholder), which would hold newestItemAt
+  // fresh precisely in the total-death scenario — brownout + expired canonical,
+  // nothing to backfill — where STALE_CONTENT matters most.
   const times = (data?.topics ?? [])
+    .filter((t) => Array.isArray(t?.articles) && t.articles.length > 0)
     .map((t) => Date.parse(t?.fetchedAt))
     .filter((ms) => Number.isFinite(ms) && ms > 0);
   if (times.length === 0) return null;
