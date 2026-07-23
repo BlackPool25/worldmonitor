@@ -180,15 +180,14 @@ describe('getBillingBannerVariant', () => {
     assert.equal(getBillingBannerVariant('lapsed'), null);
   });
 
-  it('on_hold keeps the existing red banner contract (copy, action, dismiss key)', () => {
+  it('on_hold keeps the existing red banner contract (copy key, action, dismiss key)', () => {
     const v = getBillingBannerVariant('on_hold');
     assert.ok(v);
     assert.equal(v.tone, 'error');
-    assert.equal(
-      v.message,
-      'Payment failed. Update your payment method to keep your subscription active.',
-    );
-    assert.equal(v.actionLabel, 'Update Payment');
+    // en.json's onHoldBannerMessage value is locked byte-identical to the
+    // pre-#4771 hardcoded copy in tests/billing-state-wiring.test.mts.
+    assert.equal(v.messageKey, 'components.billingState.onHoldBannerMessage');
+    assert.equal(v.actionLabelKey, 'components.billingState.updatePayment');
     assert.equal(v.action, 'billing-portal');
     // Pre-#4771 sessionStorage key must survive so existing dismissals keep working.
     assert.equal(v.dismissKey, 'pf-banner-dismissed');
@@ -198,8 +197,8 @@ describe('getBillingBannerVariant', () => {
     const v = getBillingBannerVariant('renewal_verification_pending');
     assert.ok(v);
     assert.equal(v.tone, 'warning');
-    assert.match(v.message, /verifying your subscription renewal/i);
-    assert.equal(v.actionLabel, null);
+    assert.equal(v.messageKey, 'components.billingState.renewalPendingDesc');
+    assert.equal(v.actionLabelKey, null);
     assert.equal(v.dismissKey, 'pf-banner-dismissed-renewal-pending');
   });
 
@@ -207,8 +206,8 @@ describe('getBillingBannerVariant', () => {
     const v = getBillingBannerVariant('renewal_verification_failed');
     assert.ok(v);
     assert.equal(v.tone, 'error');
-    assert.match(v.message, /couldn.t verify your subscription renewal/i);
-    assert.equal(v.actionLabel, 'Manage Billing');
+    assert.equal(v.messageKey, 'components.billingState.renewalFailedDesc');
+    assert.equal(v.actionLabelKey, 'components.billingState.manageBilling');
     assert.equal(v.action, 'billing-portal');
     assert.equal(v.dismissKey, 'pf-banner-dismissed-renewal-failed');
   });

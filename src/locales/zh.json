@@ -2172,6 +2172,7 @@
     },
     "billingState": {
       "onHoldDesc": "支付失败。请更新您的支付方式以恢复高级访问权限。",
+      "onHoldBannerMessage": "支付失败。请更新您的支付方式以保持订阅有效。",
       "updatePayment": "更新支付方式",
       "renewalPendingDesc": "我们正在核实您的订阅续订。确认后将自动恢复高级访问权限。",
       "refreshStatus": "刷新状态",

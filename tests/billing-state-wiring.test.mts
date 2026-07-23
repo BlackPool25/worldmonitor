@@ -36,12 +36,43 @@ describe('payment-failure-banner billing-state wiring (#4771)', () => {
     assert.match(src, /sessionStorage\.setItem\(variant\.dismissKey, '1'\)/);
     assert.match(src, /for \(const key of BILLING_BANNER_DISMISS_KEYS\) sessionStorage\.removeItem\(key\)/);
   });
+
+  it('resolves banner copy through i18n with the variant keys', async () => {
+    const src = await read('src/components/payment-failure-banner.ts');
+    assert.match(src, /t\(variant\.messageKey\)/);
+    assert.match(src, /t\(variant\.actionLabelKey\)/);
+  });
+
+  it('every banner variant key resolves in en.json, and on_hold copy is byte-identical to the pre-#4771 banner', async () => {
+    // Dynamic t(variant.messageKey) calls are invisible to the static i18n
+    // key-existence gate, so lock key validity here instead.
+    const en = JSON.parse(await read('src/locales/en.json')) as {
+      components: { billingState: Record<string, string> };
+    };
+    const billingState = en.components.billingState;
+    const { getBillingBannerVariant } = await import('../src/services/billing-state.ts');
+    for (const state of ['on_hold', 'renewal_verification_pending', 'renewal_verification_failed'] as const) {
+      const v = getBillingBannerVariant(state);
+      assert.ok(v);
+      for (const key of [v.messageKey, v.actionLabelKey]) {
+        if (key === null) continue;
+        const leaf = key.replace('components.billingState.', '');
+        assert.equal(typeof billingState[leaf], 'string', `${key} must exist in en.json`);
+      }
+    }
+    // Issue #4771 AC: the on_hold payment-failure banner remains intact.
+    assert.equal(
+      billingState.onHoldBannerMessage,
+      'Payment failed. Update your payment method to keep your subscription active.',
+    );
+  });
 });
 
 describe('panel-layout billing-state wiring (#4771)', () => {
-  it('refines the gate reason through resolveBillingAwareGateReason before rendering CTAs', async () => {
+  it('refines FREE_TIER through the billing-aware resolver, hoisted once per gating pass', async () => {
     const src = await read('src/app/panel-layout.ts');
-    assert.match(src, /reason = resolveBillingAwareGateReason\(reason\);/);
+    assert.match(src, /const billingAwareFreeTier = resolveBillingAwareGateReason\(PanelGateReason\.FREE_TIER\);/);
+    assert.match(src, /if \(reason === PanelGateReason\.FREE_TIER\) reason = billingAwareFreeTier;/);
   });
 
   it('re-runs panel gating when the subscription row changes (verification verdicts arrive there)', async () => {
@@ -75,13 +106,13 @@ describe('widget-agent structured billing denial (#4771)', () => {
 });
 
 describe('Panel CTA copy coverage (#4771)', () => {
-  it('has a showGatedCta config entry for every billing gate reason', async () => {
+  it('has a gated-CTA entry for every billing gate reason', async () => {
     const src = await read('src/components/Panel.ts');
     for (const reason of ['PAYMENT_ON_HOLD', 'RENEWAL_PENDING', 'RENEWAL_FAILED', 'LAPSED']) {
       assert.match(
         src,
-        new RegExp(`\\[PanelGateReason\\.${reason}\\]: \\{`),
-        `showGatedCta config must cover PanelGateReason.${reason} — a missing entry silently skips the lock`,
+        new RegExp(`case PanelGateReason\\.${reason}:`),
+        `gatedCtaEntry must cover PanelGateReason.${reason} — a missing entry silently skips the lock`,
       );
     }
   });

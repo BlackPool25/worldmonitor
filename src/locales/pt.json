@@ -1923,6 +1923,7 @@
     },
     "billingState": {
       "onHoldDesc": "O pagamento falhou. Atualize seu método de pagamento para restaurar o acesso premium.",
+      "onHoldBannerMessage": "O pagamento falhou. Atualize seu método de pagamento para manter sua assinatura ativa.",
       "updatePayment": "Atualizar pagamento",
       "renewalPendingDesc": "Estamos verificando a renovação da sua assinatura. O acesso premium será restaurado automaticamente assim que for confirmada.",
       "refreshStatus": "Atualizar status",

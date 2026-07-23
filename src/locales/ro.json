@@ -2181,6 +2181,7 @@
     },
     "billingState": {
       "onHoldDesc": "Plata a eșuat. Actualizează metoda de plată pentru a restabili accesul premium.",
+      "onHoldBannerMessage": "Plata a eșuat. Actualizează metoda de plată pentru a-ți menține abonamentul activ.",
       "updatePayment": "Actualizează plata",
       "renewalPendingDesc": "Verificăm reînnoirea abonamentului tău. Accesul premium va fi restabilit automat după confirmare.",
       "refreshStatus": "Actualizează starea",

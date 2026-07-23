@@ -26,6 +26,7 @@ import {
   getBillingBannerVariant,
 } from '@/services/billing-state';
 import { getEntitlementState, onEntitlementChange } from '@/services/entitlements';
+import { t } from '@/services/i18n';
 import { setTrustedHtml, trustedHtml } from '@/utils/dom-utils';
 
 
@@ -38,20 +39,18 @@ const BANNER_ID = 'payment-failure-banner';
  * destroyed.
  */
 export function initPaymentFailureBanner(): () => void {
-  // Which variant the current DOM banner belongs to (by dismiss key, which is
-  // unique per state). Lets a pending→failed transition rebuild in place.
-  let renderedDismissKey: string | null = null;
-
   const render = (): void => {
     const state = deriveBillingUxState(getSubscription(), getEntitlementState(), Date.now());
     const variant = getBillingBannerVariant(state);
     const existing = document.getElementById(BANNER_ID);
+    // Which variant the current DOM banner renders, tagged on the element
+    // itself (dismiss keys are unique per state) — no parallel state to sync.
+    const existingVariant = existing?.dataset.variant ?? null;
 
     // No banner for this state — remove and clear dismissal flags so the
     // next episode (e.g. a new payment failure months later) shows again.
     if (!variant) {
       if (existing) existing.remove();
-      renderedDismissKey = null;
       try {
         for (const key of BILLING_BANNER_DISMISS_KEYS) sessionStorage.removeItem(key);
       } catch { /* noop */ }
@@ -62,24 +61,23 @@ export function initPaymentFailureBanner(): () => void {
     // banner left over from a DIFFERENT state is stale — remove it.
     try {
       if (sessionStorage.getItem(variant.dismissKey) === '1') {
-        if (existing && renderedDismissKey !== variant.dismissKey) existing.remove();
-        if (renderedDismissKey !== variant.dismissKey) renderedDismissKey = null;
+        if (existing) existing.remove();
         return;
       }
     } catch { /* noop */ }
 
     // Don't duplicate; rebuild only when the state changed.
     if (existing) {
-      if (renderedDismissKey === variant.dismissKey) return;
+      if (existingVariant === variant.dismissKey) return;
       existing.remove();
     }
-    renderedDismissKey = variant.dismissKey;
 
     const accent = variant.tone === 'warning' ? '#b45309' : '#dc2626';
 
     // Create banner
     const banner = document.createElement('div');
     banner.id = BANNER_ID;
+    banner.dataset.variant = variant.dismissKey;
     Object.assign(banner.style, {
       position: 'fixed',
       top: '0',
@@ -98,10 +96,11 @@ export function initPaymentFailureBanner(): () => void {
       boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
     });
 
-    // variant.message/actionLabel are static literals from billing-state.ts,
-    // never user input — safe to interpolate into the trusted template.
-    const actionBtn = variant.actionLabel
-      ? `<button id="pf-update-btn" style="background:#fff;color:${accent};border:none;border-radius:4px;padding:4px 12px;font-weight:600;font-size:12px;cursor:pointer;white-space:nowrap;">${variant.actionLabel}</button>`
+    // Message/label resolve through i18n (same components.billingState.*
+    // keys as the panel CTA, so the two surfaces cannot drift). Our own
+    // locale strings, never user input — safe for the trusted template.
+    const actionBtn = variant.actionLabelKey
+      ? `<button id="pf-update-btn" style="background:#fff;color:${accent};border:none;border-radius:4px;padding:4px 12px;font-weight:600;font-size:12px;cursor:pointer;white-space:nowrap;">${t(variant.actionLabelKey)}</button>`
       : '';
     setTrustedHtml(banner, trustedHtml(`
       <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;">
@@ -109,7 +108,7 @@ export function initPaymentFailureBanner(): () => void {
         <line x1="12" y1="9" x2="12" y2="13"/>
         <line x1="12" y1="17" x2="12.01" y2="17"/>
       </svg>
-      <span>${variant.message}</span>
+      <span>${t(variant.messageKey)}</span>
       ${actionBtn}
       <button id="pf-dismiss-btn" style="background:transparent;color:#fff;border:none;cursor:pointer;font-size:18px;padding:0 4px;line-height:1;">&times;</button>
     `, "legacy direct innerHTML migration"));
@@ -130,7 +129,6 @@ export function initPaymentFailureBanner(): () => void {
     if (dismissBtn) {
       dismissBtn.addEventListener('click', () => {
         banner.remove();
-        renderedDismissKey = null;
         try { sessionStorage.setItem(variant.dismissKey, '1'); } catch { /* noop */ }
       });
     }

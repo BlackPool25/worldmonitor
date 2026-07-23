@@ -652,6 +652,11 @@ export class PanelLayoutManager implements AppModule {
 
   /** Reactively update premium panel gating based on auth state. */
   private updatePanelGating(state: AuthSession): void {
+    // #4771: resolve the billing-aware refinement of FREE_TIER once per pass
+    // — the inputs (subscription/entitlement snapshots, now) are invariant
+    // across the panel loop, and a single Date.now() keeps every panel on
+    // the same verdict at a period-end boundary.
+    const billingAwareFreeTier = resolveBillingAwareGateReason(PanelGateReason.FREE_TIER);
     for (const [key, panel] of Object.entries(this.ctx.panels)) {
       const isPremium = WEB_PREMIUM_PANELS.has(key);
       let reason = getPanelGateReason(state, isPremium);
@@ -686,7 +691,7 @@ export class PanelLayoutManager implements AppModule {
       // #4771: a FREE_TIER verdict for a customer with stale paid evidence
       // becomes a billing-state reason (verifying renewal / update payment /
       // resubscribe) so we never push a paying user toward duplicate checkout.
-      reason = resolveBillingAwareGateReason(reason);
+      if (reason === PanelGateReason.FREE_TIER) reason = billingAwareFreeTier;
 
       if (reason === PanelGateReason.NONE) {
         // User has access -- unlock if previously locked

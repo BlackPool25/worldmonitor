@@ -2418,6 +2418,7 @@
     },
     "billingState": {
       "onHoldDesc": "Plaćanje nije uspjelo. Ažurirajte način plaćanja kako biste vratili premium pristup.",
+      "onHoldBannerMessage": "Plaćanje nije uspjelo. Ažurirajte način plaćanja kako bi vaša pretplata ostala aktivna.",
       "updatePayment": "Ažuriraj plaćanje",
       "renewalPendingDesc": "Provjeravamo obnovu vaše pretplate. Premium pristup bit će automatski vraćen nakon potvrde.",
       "refreshStatus": "Osvježi status",

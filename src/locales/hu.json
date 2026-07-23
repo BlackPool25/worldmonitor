@@ -2241,6 +2241,7 @@
     },
     "billingState": {
       "onHoldDesc": "A fizetés sikertelen. Frissítse fizetési módját a prémium hozzáférés visszaállításához.",
+      "onHoldBannerMessage": "A fizetés sikertelen. Frissítse fizetési módját, hogy előfizetése aktív maradjon.",
       "updatePayment": "Fizetés frissítése",
       "renewalPendingDesc": "Ellenőrizzük előfizetése megújítását. A prémium hozzáférés a megerősítés után automatikusan helyreáll.",
       "refreshStatus": "Állapot frissítése",

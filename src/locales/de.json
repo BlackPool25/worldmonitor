@@ -2172,6 +2172,7 @@
     },
     "billingState": {
       "onHoldDesc": "Zahlung fehlgeschlagen. Aktualisieren Sie Ihre Zahlungsmethode, um den Premium-Zugriff wiederherzustellen.",
+      "onHoldBannerMessage": "Zahlung fehlgeschlagen. Aktualisieren Sie Ihre Zahlungsmethode, damit Ihr Abonnement aktiv bleibt.",
       "updatePayment": "Zahlungsmethode aktualisieren",
       "renewalPendingDesc": "Wir überprüfen die Verlängerung Ihres Abonnements. Der Premium-Zugriff wird nach Bestätigung automatisch wiederhergestellt.",
       "refreshStatus": "Status aktualisieren",

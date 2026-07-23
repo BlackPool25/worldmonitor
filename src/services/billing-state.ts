@@ -89,47 +89,49 @@ export const BILLING_BANNER_DISMISS_KEYS: readonly string[] = [
 
 export interface BillingBannerVariant {
   tone: 'error' | 'warning';
-  message: string;
-  /** Button label; null renders no action button (dismiss only). */
-  actionLabel: string | null;
-  /** What the action button does. Only present when actionLabel is set. */
+  /** i18n key (components.billingState.*) for the banner message. */
+  messageKey: string;
+  /** i18n key for the action button label; null renders no action button. */
+  actionLabelKey: string | null;
+  /** What the action button does. Only present when actionLabelKey is set. */
   action?: 'billing-portal';
   /** sessionStorage key scoping manual dismissal to this state. */
   dismissKey: string;
 }
 
 /**
- * Top-of-page banner content per state. `on_hold` must stay byte-compatible
- * with the pre-#4771 payment-failure banner (copy, action, dismiss key) —
- * issue #4771 explicitly requires that banner to remain intact. `lapsed`
- * intentionally renders no persistent banner: the panel CTA carries the
- * resubscribe message, and a permanent banner for long-lapsed users would
- * just be nagware.
+ * Top-of-page banner content per state, as i18n keys — the same
+ * components.billingState.* strings the panel CTA uses, so the two surfaces
+ * cannot drift and the banner localizes. `on_hold` must stay compatible with
+ * the pre-#4771 payment-failure banner (issue #4771 requires it intact):
+ * onHoldBannerMessage's English value is byte-identical to the previously
+ * hardcoded copy, and the dismiss key is unchanged. `lapsed` intentionally
+ * renders no persistent banner: the panel CTA carries the resubscribe
+ * message, and a permanent banner for long-lapsed users would just be
+ * nagware.
  */
 export function getBillingBannerVariant(state: BillingUxState): BillingBannerVariant | null {
   switch (state) {
     case 'on_hold':
       return {
         tone: 'error',
-        message: 'Payment failed. Update your payment method to keep your subscription active.',
-        actionLabel: 'Update Payment',
+        messageKey: 'components.billingState.onHoldBannerMessage',
+        actionLabelKey: 'components.billingState.updatePayment',
         action: 'billing-portal',
         dismissKey: ON_HOLD_DISMISS_KEY,
       };
     case 'renewal_verification_pending':
       return {
         tone: 'warning',
-        message:
-          "We're verifying your subscription renewal. Premium access will be restored automatically once confirmed.",
-        actionLabel: null,
+        messageKey: 'components.billingState.renewalPendingDesc',
+        actionLabelKey: null,
         dismissKey: RENEWAL_PENDING_DISMISS_KEY,
       };
     case 'renewal_verification_failed':
       return {
         tone: 'error',
-        message:
-          "We couldn't verify your subscription renewal. Manage billing or contact support if this persists.",
-        actionLabel: 'Manage Billing',
+        messageKey: 'components.billingState.renewalFailedDesc',
+        actionLabelKey: 'components.billingState.manageBilling',
         action: 'billing-portal',
         dismissKey: RENEWAL_FAILED_DISMISS_KEY,
       };

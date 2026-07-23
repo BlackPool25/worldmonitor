@@ -2181,6 +2181,7 @@
     },
     "billingState": {
       "onHoldDesc": "Le paiement a échoué. Mettez à jour votre moyen de paiement pour rétablir l'accès premium.",
+      "onHoldBannerMessage": "Le paiement a échoué. Mettez à jour votre moyen de paiement pour garder votre abonnement actif.",
       "updatePayment": "Mettre à jour le paiement",
       "renewalPendingDesc": "Nous vérifions le renouvellement de votre abonnement. L'accès premium sera rétabli automatiquement une fois confirmé.",
       "refreshStatus": "Actualiser le statut",

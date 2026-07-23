@@ -2181,6 +2181,7 @@
     },
     "billingState": {
       "onHoldDesc": "Pagamento non riuscito. Aggiorna il metodo di pagamento per ripristinare l'accesso premium.",
+      "onHoldBannerMessage": "Pagamento non riuscito. Aggiorna il metodo di pagamento per mantenere attivo il tuo abbonamento.",
       "updatePayment": "Aggiorna pagamento",
       "renewalPendingDesc": "Stiamo verificando il rinnovo del tuo abbonamento. L'accesso premium verrà ripristinato automaticamente una volta confermato.",
       "refreshStatus": "Aggiorna stato",

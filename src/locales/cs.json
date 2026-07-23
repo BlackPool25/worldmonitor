@@ -2190,6 +2190,7 @@
     },
     "billingState": {
       "onHoldDesc": "Platba se nezdařila. Aktualizujte svou platební metodu pro obnovení prémiového přístupu.",
+      "onHoldBannerMessage": "Platba se nezdařila. Aktualizujte svou platební metodu, aby vaše předplatné zůstalo aktivní.",
       "updatePayment": "Aktualizovat platbu",
       "renewalPendingDesc": "Ověřujeme obnovení vašeho předplatného. Prémiový přístup bude po potvrzení automaticky obnoven.",
       "refreshStatus": "Obnovit stav",
