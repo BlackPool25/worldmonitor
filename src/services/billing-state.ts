@@ -72,6 +72,21 @@ export function deriveBillingUxState(
   return 'lapsed';
 }
 
+// Per-state sessionStorage dismissal keys. Distinct keys so dismissing the
+// pending banner never suppresses a later failed banner. The bare
+// 'pf-banner-dismissed' value predates #4771 and must stay unchanged so
+// in-flight sessions keep their on_hold dismissal.
+const ON_HOLD_DISMISS_KEY = 'pf-banner-dismissed';
+const RENEWAL_PENDING_DISMISS_KEY = 'pf-banner-dismissed-renewal-pending';
+const RENEWAL_FAILED_DISMISS_KEY = 'pf-banner-dismissed-renewal-failed';
+
+/** Every dismissal key, for clearing when billing state recovers. */
+export const BILLING_BANNER_DISMISS_KEYS: readonly string[] = [
+  ON_HOLD_DISMISS_KEY,
+  RENEWAL_PENDING_DISMISS_KEY,
+  RENEWAL_FAILED_DISMISS_KEY,
+];
+
 export interface BillingBannerVariant {
   tone: 'error' | 'warning';
   message: string;
@@ -99,7 +114,7 @@ export function getBillingBannerVariant(state: BillingUxState): BillingBannerVar
         message: 'Payment failed. Update your payment method to keep your subscription active.',
         actionLabel: 'Update Payment',
         action: 'billing-portal',
-        dismissKey: 'pf-banner-dismissed',
+        dismissKey: ON_HOLD_DISMISS_KEY,
       };
     case 'renewal_verification_pending':
       return {
@@ -107,7 +122,7 @@ export function getBillingBannerVariant(state: BillingUxState): BillingBannerVar
         message:
           "We're verifying your subscription renewal. Premium access will be restored automatically once confirmed.",
         actionLabel: null,
-        dismissKey: 'pf-banner-dismissed-renewal-pending',
+        dismissKey: RENEWAL_PENDING_DISMISS_KEY,
       };
     case 'renewal_verification_failed':
       return {
@@ -116,7 +131,7 @@ export function getBillingBannerVariant(state: BillingUxState): BillingBannerVar
           "We couldn't verify your subscription renewal. Manage billing or contact support if this persists.",
         actionLabel: 'Manage Billing',
         action: 'billing-portal',
-        dismissKey: 'pf-banner-dismissed-renewal-failed',
+        dismissKey: RENEWAL_FAILED_DISMISS_KEY,
       };
     default:
       return null;
