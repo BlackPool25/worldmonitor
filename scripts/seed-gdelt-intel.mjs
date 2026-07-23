@@ -7,7 +7,13 @@ loadEnvFile(import.meta.url);
 
 const CANONICAL_KEY = 'intelligence:gdelt-intel:v1';
 const CACHE_TTL = 86400; // 24h — intentionally much longer than the 2h cron so verifySeedKey always has a prior snapshot to merge from when GDELT 429s all topics
-const TIMELINE_TTL = 43200; // 12h = 2× cron interval; tone/vol must survive until next 6h run
+// 7d — brownout-scale, NOT one-missed-tick-scale. The per-run EXPIRE-extend in
+// afterPublish keeps last-good timelines alive up to this TTL while GDELT is
+// unreachable; at the previous 12h (2× cron) the 2026-07 brownout expired all
+// 12 tone/vol keys, and once a key is gone EXPIRE is a no-op and nothing
+// re-seeds it until GDELT answers again (issue #5478). Consumers get the
+// stored fetchedAt alongside the data to judge staleness.
+export const TIMELINE_TTL = 604800;
 const GDELT_DOC_API = 'https://api.gdeltproject.org/api/v2/doc/doc';
 const INTER_TOPIC_DELAY_MS = 20_000; // 20s between topics on success
 const POST_EXHAUST_DELAY_MS = 120_000; // 2min extra cooldown after a topic exhausts all retries
@@ -277,24 +283,30 @@ function publishTransform(data) {
 // the existing Redis key silently expire mid-cycle, extend its TTL with
 // EXPIRE so downstream consumers (cross-source-signals, etc.) keep seeing
 // the last successful snapshot until the next cron cycle refreshes it.
-async function afterPublish(data, _meta) {
+//
+// Runs strictly AFTER the canonical publish succeeded, so no failure here may
+// escape as a throw — writeExtraKey exhausting its retries under the same
+// Redis contention that produced the #5478 FATALs would otherwise turn an
+// already-successful run into exit 1. A failed fresh write degrades to the
+// EXPIRE-extend path (preserve last-good), loudly.
+export async function afterPublish(data, _meta) {
   const toneKeysToExtend = [];
   const volKeysToExtend = [];
+  const writeOrQueueExtend = async (key, timeline, fetchedAt, extendQueue) => {
+    if (Array.isArray(timeline) && timeline.length > 0) {
+      try {
+        await writeExtraKey(key, { data: timeline, fetchedAt }, TIMELINE_TTL);
+        return;
+      } catch (err) {
+        console.warn(`  WARNING: timeline write for ${key} failed after retries (${err?.message || err}) — falling back to EXPIRE-extend of last-good`);
+      }
+    }
+    extendQueue.push(key);
+  };
   for (const topic of data.topics ?? []) {
     const fetchedAt = topic.fetchedAt ?? data.fetchedAt;
-    const toneKey = `gdelt:intel:tone:${topic.id}`;
-    const volKey = `gdelt:intel:vol:${topic.id}`;
-
-    if (Array.isArray(topic._tone) && topic._tone.length > 0) {
-      await writeExtraKey(toneKey, { data: topic._tone, fetchedAt }, TIMELINE_TTL);
-    } else {
-      toneKeysToExtend.push(toneKey);
-    }
-    if (Array.isArray(topic._vol) && topic._vol.length > 0) {
-      await writeExtraKey(volKey, { data: topic._vol, fetchedAt }, TIMELINE_TTL);
-    } else {
-      volKeysToExtend.push(volKey);
-    }
+    await writeOrQueueExtend(`gdelt:intel:tone:${topic.id}`, topic._tone, fetchedAt, toneKeysToExtend);
+    await writeOrQueueExtend(`gdelt:intel:vol:${topic.id}`, topic._vol, fetchedAt, volKeysToExtend);
   }
   if (toneKeysToExtend.length > 0) {
     console.log(`  Extending tone TTL for ${toneKeysToExtend.length} rate-limited topic(s): ${toneKeysToExtend.map((k) => k.split(':').pop()).join(', ')}`);
@@ -310,18 +322,43 @@ export function declareRecords(data) {
   return Array.isArray(data?.topics) ? data.topics.length : 0;
 }
 
+// Content-age trio (issue #5478 strand 3, carried over from #5437's "separate
+// concern"). The cache-merge fallback republishes weeks-old articles under a
+// fresh envelope fetchedAt, so seed-meta age NEVER trips during a GDELT
+// brownout — 4 of 6 topics coasted for 3 weeks with zero alarms. Per-topic
+// fetchedAt survives the merge unchanged (the backfill copies the previous
+// snapshot's value), making it the honest coasting signal:
+//   newestItemAt = most recently fetched topic — ages only when EVERY topic
+//                  is coasting (topic[0] is fetched first each run, so any
+//                  GDELT success at all keeps this fresh);
+//   oldestItemAt = most starved topic, for operator visibility.
+export function contentMeta(data) {
+  const times = (data?.topics ?? [])
+    .map((t) => Date.parse(t?.fetchedAt))
+    .filter((ms) => Number.isFinite(ms) && ms > 0);
+  if (times.length === 0) return null;
+  return { newestItemAt: Math.max(...times), oldestItemAt: Math.min(...times) };
+}
+
+// Exported so tests can pin the exact wiring the cron entry runs with.
+export const RUN_SEED_OPTS = {
+  validateFn: validate,
+  ttlSeconds: CACHE_TTL,
+  sourceVersion: 'gdelt-doc-v2',
+  publishTransform,
+  afterPublish,
+  declareRecords,
+  schemaVersion: 1,
+  maxStaleMin: 420,
+  contentMeta,
+  // 24h = 4× the 6h cadence. Normal runs refresh at least topic[0] every
+  // tick, so only a real brownout (every topic failing every run for a day)
+  // flips health to STALE_CONTENT (warn).
+  maxContentAgeMin: 1440,
+};
+
 if (process.argv[1]?.endsWith('seed-gdelt-intel.mjs')) {
-  runSeed('intelligence', 'gdelt-intel', CANONICAL_KEY, fetchAllTopics, {
-    validateFn: validate,
-    ttlSeconds: CACHE_TTL,
-    sourceVersion: 'gdelt-doc-v2',
-    publishTransform,
-    afterPublish,
-  
-    declareRecords,
-    schemaVersion: 1,
-    maxStaleMin: 420,
-  }).catch((err) => {
+  runSeed('intelligence', 'gdelt-intel', CANONICAL_KEY, fetchAllTopics, RUN_SEED_OPTS).catch((err) => {
     const _cause = err.cause ? ` (cause: ${err.cause.message || err.cause.code || err.cause})` : '';
     console.error('FATAL:', (err.message || err) + _cause);
     process.exit(1);
