@@ -18,12 +18,14 @@ const posts = (await getCollection('blog')).sort(
 const jsonLd = {
   "@context": "https://schema.org",
   "@type": "Blog",
+  "@id": "https://www.worldmonitor.app/blog/#blog",
   "name": "World Monitor Blog",
   "description": "Analysis, guides, and deep dives on real-time intelligence, OSINT, geopolitics, markets, and the open-source tools behind World Monitor.",
   "url": "https://www.worldmonitor.app/blog/",
   "inLanguage": "en-US",
   "publisher": {
     "@type": "Organization",
+    "@id": "https://www.worldmonitor.app/#organization",
     "name": "World Monitor",
     "url": "https://www.worldmonitor.app",
     "logo": {
@@ -33,10 +35,16 @@ const jsonLd = {
   },
   "blogPost": posts.map(post => ({
     "@type": "BlogPosting",
+    "@id": `https://www.worldmonitor.app/blog/posts/${post.id}/#article`,
     "headline": post.data.title,
     "description": post.data.description,
     "datePublished": post.data.pubDate.toISOString(),
     ...(post.data.modifiedDate ? { "dateModified": post.data.modifiedDate.toISOString() } : {}),
+    "author": {
+      "@type": "Person",
+      "@id": "https://www.worldmonitor.app/blog/authors/elie-habib/#person",
+      "name": post.data.author || "Elie Habib"
+    },
     "url": `https://www.worldmonitor.app/blog/posts/${post.id}/`,
     "image": post.data.heroImage ? `https://www.worldmonitor.app${post.data.heroImage}` : "https://www.worldmonitor.app/favico/og-image.png"
   }))
@@ -46,7 +54,7 @@ const jsonLd = {
 <Base
   title="World Monitor Blog"
   description="Insights on real-time global intelligence, OSINT, geopolitics, markets, and the open-source tools that power situational awareness."
-  metaTitle="World Monitor Blog | Real-Time Intelligence, OSINT, Geopolitics & Markets"
+  metaTitle="World Monitor Blog | Global Intelligence & OSINT"
   jsonLd={jsonLd}
 >
   <div class="blog-hero">
