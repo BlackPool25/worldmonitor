@@ -155,6 +155,40 @@ function makeProWidget(overrides: Partial<CustomWidgetSpec> = {}): CustomWidgetS
 }
 
 describe('widget-store PRO persistence', () => {
+  it('strict loads distinguish empty storage from malformed storage', async () => {
+    installLocalStorage();
+    const { loadWidgetsStrict } = await loadWidgetStore();
+    assert.deepEqual(loadWidgetsStrict(), []);
+
+    localStorage.setItem('wm-custom-widgets', '{not-json');
+    assert.throws(() => loadWidgetsStrict(), SyntaxError);
+  });
+
+  it('strict loads propagate storage access failures', async () => {
+    installLocalStorage();
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: {
+        getItem() {
+          throw new Error('storage denied');
+        },
+      },
+    });
+    const { loadWidgetsStrict } = await loadWidgetStore();
+    assert.throws(() => loadWidgetsStrict(), /storage denied/);
+  });
+
+  it('strict loads reject a Pro widget that the resilient loader would drop', async () => {
+    const spec = makeProWidget({ html: '' });
+    installLocalStorage({
+      'wm-custom-widgets': JSON.stringify([spec]),
+    });
+    const { loadWidgets, loadWidgetsStrict } = await loadWidgetStore();
+
+    assert.throws(() => loadWidgetsStrict(), /missing HTML/);
+    assert.deepEqual(loadWidgets(), []);
+  });
+
   it('saveWidget persists PRO generated HTML in the canonical widget entry', async () => {
     const storage = installLocalStorage();
     const { saveWidget } = await loadWidgetStore();
