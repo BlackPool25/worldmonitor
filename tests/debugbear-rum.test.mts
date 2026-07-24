@@ -91,6 +91,10 @@ function installDebugBearHarness(hostname: string, existingScript: FakeDebugBear
   };
   Object.defineProperty(globalThis, 'window', { configurable: true, value: win });
   Object.defineProperty(globalThis, 'document', { configurable: true, value: doc });
+  // Force the sample gate to pass deterministically so these tests verify behavior WHEN sampled,
+  // independent of DEBUGBEAR_RUM_SAMPLE_RATE (< 100 makes real Math.random probabilistic).
+  const savedRandom = Math.random;
+  Math.random = () => 0;
 
   return {
     appendedScripts,
@@ -101,6 +105,7 @@ function installDebugBearHarness(hostname: string, existingScript: FakeDebugBear
         if (desc) Object.defineProperty(globalThis, key, desc);
         else delete (globalThis as Record<string, unknown>)[key];
       }
+      Math.random = savedRandom;
       resetDebugBearRumForTesting();
       resetMarketingDebugBearRumForTesting();
     },
@@ -134,7 +139,7 @@ describe('DebugBear RUM loader', () => {
       h.listeners.get('error')!(errorEvent);
       h.listeners.get('unhandledrejection')!(rejectionEvent);
       assert.deepEqual(h.win.dbbRum, [
-        ['presampling', 100],
+        ['presampling', DEBUGBEAR_RUM_SAMPLE_RATE],
         ['error', errorEvent],
         ['unhandledrejection', rejectionEvent],
       ]);
