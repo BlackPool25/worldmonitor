@@ -337,10 +337,14 @@ const STANDALONE_KEYS = {
 };
 
 const SEED_META = {
-  // scripts/seed-conflict-intel.mjs cron runs every 30min; 720 (12h) is ~24x
-  // that interval — headroom for missed/lock-contended ticks while still
-  // catching a real outage same-day, not after weeks unmonitored (#5554).
-  humanitarianSummary: { key: 'seed-meta:conflict:humanitarian',  maxStaleMin: 720 },
+  // scripts/seed-conflict-intel.mjs cron runs every 30min. Bounded above by
+  // HAPI_TTL (360min / 6h) — the per-country data key's own Redis TTL — not
+  // by cron headroom alone: this MUST fire before a per-country key can expire,
+  // or users see empty data for up to 6h before health notices (#5554 review;
+  // an earlier 720min value left exactly that blind spot). 300 (5h) is ~10x
+  // the cron interval (headroom for missed/lock-contended ticks) while staying
+  // a full hour below the 6h data-expiry floor.
+  humanitarianSummary: { key: 'seed-meta:conflict:humanitarian',  maxStaleMin: 300 },
   chinaCoverage:   { key: 'seed-meta:health:china-coverage',   maxStaleMin: 180 },
   earthquakes:      { key: 'seed-meta:seismology:earthquakes',  maxStaleMin: 30 },
   wildfires:        { key: 'seed-meta:wildfire:fires',          maxStaleMin: 360 }, // FIRMS NRT resets at midnight UTC; new-day data takes 3-6h to accumulate

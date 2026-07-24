@@ -28,7 +28,15 @@ export async function getHumanitarianSummary(
 ): Promise<GetHumanitarianSummaryResponse> {
   if (!req.countryCode) return { summary: undefined };
   try {
-    const cached = (await getCachedJson(`${REDIS_CACHE_KEY}:${req.countryCode}`)) as
+    // Normalized to match the seeder's uppercase keys (scripts/seed-conflict-intel.mjs
+    // writes conflict:humanitarian:v1:<UPPERCASE>) and the batch handler's sibling
+    // convention. The proto's buf.validate pattern (^[A-Z]{2}$) already rejects
+    // non-uppercase input at the RPC layer in normal operation, so this is defense
+    // in depth rather than a live bug -- but the old fetch-on-miss fallback used to
+    // self-heal any mismatch by hitting HAPI directly; that fallback is gone now, so
+    // a mismatched key would otherwise permanently miss instead of just being slow.
+    const countryCode = req.countryCode.trim().toUpperCase();
+    const cached = (await getCachedJson(`${REDIS_CACHE_KEY}:${countryCode}`)) as
       | GetHumanitarianSummaryResponse
       | null;
     return cached ?? { summary: undefined };
