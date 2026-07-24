@@ -4843,6 +4843,45 @@ describe("getSubscriptionForUser activation onboarding eligibility", () => {
     expect(afterPresentation.status).toBe("already_presented");
   });
 
+  test("confirming an already-confirmed presentation is idempotent and preserves the original timestamp", async () => {
+    const t = convexTest(schema, modules);
+    const activationKey = await seedSubscription(t, {
+      planKey: "pro_monthly",
+      dodoProductId: PRODUCT_CATALOG.pro_monthly.dodoProductId!,
+      status: "active",
+      currentPeriodEnd: NOW + 30 * DAY_MS,
+      suffix: "activation_confirm_idempotent",
+    });
+
+    await t.withIdentity(IDENTITY).mutation(
+      api.payments.billing.claimProActivationPresentation,
+      { activationKey, claimNonce: "device-a" },
+    );
+
+    expect(await t.withIdentity(IDENTITY).mutation(
+      api.payments.billing.confirmProActivationPresentation,
+      { activationKey, claimNonce: "device-a" },
+    )).toBe(true);
+    const firstPresentedAt = (await t.run(async (ctx) => await ctx.db
+      .query("proActivationPresentations")
+      .withIndex("by_subscription", (q) => q.eq("subscriptionId", activationKey))
+      .unique()))!.presentedAt;
+    expect(firstPresentedAt).toBeDefined();
+
+    // A retried confirm call (e.g. a client that timed out but the server
+    // call actually succeeded) must still return true and must not clobber
+    // the original presentedAt timestamp.
+    expect(await t.withIdentity(IDENTITY).mutation(
+      api.payments.billing.confirmProActivationPresentation,
+      { activationKey, claimNonce: "device-a" },
+    )).toBe(true);
+    const secondPresentedAt = (await t.run(async (ctx) => await ctx.db
+      .query("proActivationPresentations")
+      .withIndex("by_subscription", (q) => q.eq("subscriptionId", activationKey))
+      .unique()))!.presentedAt;
+    expect(secondPresentedAt).toBe(firstPresentedAt);
+  });
+
   test("concurrent first claims serialize to one winner and one row", async () => {
     const t = convexTest(schema, modules);
     const activationKey = await seedSubscription(t, {

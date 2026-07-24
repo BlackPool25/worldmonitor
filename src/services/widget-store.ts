@@ -53,14 +53,18 @@ function materializeWidgets(raw: unknown, strict: boolean): CustomWidgetSpec[] {
     if (
       typeof candidate !== 'object' ||
       candidate === null ||
-      typeof (candidate as Partial<CustomWidgetSpec>).id !== 'string' ||
-      (
-        (candidate as Partial<CustomWidgetSpec>).tier !== 'basic' &&
-        (candidate as Partial<CustomWidgetSpec>).tier !== 'pro'
-      )
+      typeof (candidate as Partial<CustomWidgetSpec>).id !== 'string'
     ) {
       if (strict) throw new Error('Stored custom widget is malformed');
       continue;
+    }
+    const rawTier = (candidate as Partial<CustomWidgetSpec>).tier;
+    if (rawTier !== 'basic' && rawTier !== 'pro') {
+      // Legacy widgets predate the `tier` field (added after custom widgets
+      // shipped) and have no `tier` key at all. Strict callers treat that as
+      // malformed; the resilient loader normalizes to 'basic' below rather
+      // than silently dropping the widget from the dashboard.
+      if (strict) throw new Error('Stored custom widget is malformed');
     }
     const w = candidate as CustomWidgetSpec;
     const tier = w.tier === 'pro' ? 'pro' : 'basic';

@@ -34,6 +34,7 @@ const stateKeys = [
   '__activationSubscription',
   '__activationEntitlement',
   '__activationOpenedFor',
+  '__activationOpenResult',
 ] as const;
 const stateSnapshots = new Map(stateKeys.map((key) => [key, snapshotGlobal(key)]));
 
@@ -66,7 +67,7 @@ async function loadController(): Promise<typeof import('../src/app/pro-activatio
     ['interstitial-stub', `
       export async function openProActivationFlow(options) {
         globalThis.__activationOpenedFor.push(options.accountUserId);
-        return 'opened';
+        return globalThis.__activationOpenResult ?? 'opened';
       }
     `],
     ['chip-stub', 'export function maybeShowFinishSetupChip() {}'],
@@ -108,8 +109,15 @@ async function loadController(): Promise<typeof import('../src/app/pro-activatio
   return mod as typeof import('../src/app/pro-activation-controller.ts');
 }
 
-function installBrowserState(): void {
+function installBrowserState(options: { fastTimers?: boolean } = {}): void {
   const values = new Map<string, string>();
+  // The real backoff schedule (2s..30s) would make retry-exhaustion tests slow
+  // and flaky; fastTimers collapses every window.setTimeout delay to the next
+  // tick while preserving real clearTimeout semantics.
+  const timeoutFn = options.fastTimers
+    ? ((handler: (...args: unknown[]) => void, _delay?: number, ...args: unknown[]) =>
+        setTimeout(handler, 0, ...args)) as typeof setTimeout
+    : setTimeout;
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
     writable: true,
@@ -119,7 +127,7 @@ function installBrowserState(): void {
         setItem: (key: string, value: string) => values.set(key, String(value)),
         removeItem: (key: string) => values.delete(key),
       },
-      setTimeout,
+      setTimeout: timeoutFn,
       clearTimeout,
     },
   });
@@ -129,6 +137,27 @@ function installBrowserState(): void {
     __activationSubscription: null,
     __activationEntitlement: { planKey: 'free', validUntil: Date.now() + 60_000 },
     __activationOpenedFor: [] as string[],
+    __activationOpenResult: 'opened' as string,
+  });
+}
+
+/** A first-cycle Pro account eligible for the markerless cohort mount. */
+function installEligibleMarkerlessAccount(userId: string): void {
+  Object.assign(globalThis, {
+    __activationAuth: {
+      user: { id: userId, name: 'Markerless User', email: `${userId}@example.com`, role: 'pro' },
+      isPending: false,
+    },
+    __activationSubscription: {
+      activationKey: `opaque-${userId}-subscription`,
+      activationOnboardingEligible: true,
+      planKey: 'pro_monthly',
+      currentPeriodEnd: Date.now() + 30 * 24 * 60 * 60 * 1000,
+    },
+    __activationEntitlement: {
+      planKey: 'pro_monthly',
+      validUntil: Date.now() + 30 * 24 * 60 * 60 * 1000,
+    },
   });
 }
 
@@ -190,6 +219,86 @@ describe('ProActivationController auth lifecycle', () => {
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
       assert.deepEqual(openedFor, ['user-second-session']);
+    } finally {
+      controller.destroy();
+    }
+  });
+});
+
+describe('ProActivationController markerless mount() branching', () => {
+  it("openFlow returning 'not-eligible' resolves the tab and stops re-attempting", async () => {
+    installBrowserState();
+    installEligibleMarkerlessAccount('user-not-eligible');
+    (globalThis as unknown as { __activationOpenResult: string }).__activationOpenResult = 'not-eligible';
+    const { ProActivationController } = await loadController();
+    const ctx = {
+      isDestroyed: false,
+      isDesktopApp: false,
+      container: { dispatchEvent() {} },
+      unifiedSettings: null,
+    };
+    const controller = new ProActivationController(ctx as never, {
+      reloadPending: false,
+      openAiAnalyst() {},
+    });
+    try {
+      controller.init();
+      await (controller as unknown as { evaluate(): Promise<void> }).evaluate();
+
+      const openedFor = (
+        globalThis as unknown as { __activationOpenedFor: string[] }
+      ).__activationOpenedFor;
+      for (let attempt = 0; attempt < 40 && openedFor.length === 0; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      assert.deepEqual(openedFor, ['user-not-eligible']);
+      assert.equal((controller as unknown as { resolved: boolean }).resolved, true);
+      assert.equal((controller as unknown as { mounting: boolean }).mounting, false);
+
+      // Resolved tabs must not re-attempt on a later evaluate() call.
+      await (controller as unknown as { evaluate(): Promise<void> }).evaluate();
+      assert.deepEqual(openedFor, ['user-not-eligible']);
+    } finally {
+      controller.destroy();
+    }
+  });
+
+  it("openFlow returning 'retry' backs off through the bounded schedule and then gives up", async () => {
+    installBrowserState({ fastTimers: true });
+    installEligibleMarkerlessAccount('user-retry-forever');
+    (globalThis as unknown as { __activationOpenResult: string }).__activationOpenResult = 'retry';
+    const { ProActivationController } = await loadController();
+    const ctx = {
+      isDestroyed: false,
+      isDesktopApp: false,
+      container: { dispatchEvent() {} },
+      unifiedSettings: null,
+    };
+    const controller = new ProActivationController(ctx as never, {
+      reloadPending: false,
+      openAiAnalyst() {},
+    });
+    try {
+      controller.init();
+      await (controller as unknown as { evaluate(): Promise<void> }).evaluate();
+
+      // With fast timers, the whole 5-attempt backoff schedule collapses to a
+      // handful of ticks instead of the real ~60s cumulative delay.
+      for (
+        let attempt = 0;
+        attempt < 200 && (controller as unknown as { resolved: boolean }).resolved === false;
+        attempt += 1
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.equal((controller as unknown as { resolved: boolean }).resolved, true);
+
+      const openedFor = (
+        globalThis as unknown as { __activationOpenedFor: string[] }
+      ).__activationOpenedFor;
+      // One initial attempt plus every entry in ACTIVATION_FLOW_RETRY_DELAYS_MS.
+      assert.equal(openedFor.length, 6);
+      assert.ok(openedFor.every((id) => id === 'user-retry-forever'));
     } finally {
       controller.destroy();
     }

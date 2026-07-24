@@ -225,6 +225,36 @@ describe('decideActivationMount — happy path & mount gate', () => {
     assert.equal(d.action, 'none');
   });
 
+  it('no marker + desktop platform = none (R12 applies to the markerless cohort too)', () => {
+    const d = decideActivationMount(
+      mountInput({
+        marker: null,
+        isDesktop: true,
+      }),
+    );
+    assert.equal(d.action, 'none');
+  });
+
+  it('no marker + entitlement not yet loaded keeps the markerless decision retryable', () => {
+    const d = decideActivationMount(
+      mountInput({
+        marker: null,
+        entitlement: null,
+      }),
+    );
+    assert.equal(d.action, 'keep');
+  });
+
+  it('no marker + live entitlement whose subscription snapshot has not loaded yet = keep', () => {
+    const d = decideActivationMount(
+      mountInput({
+        marker: null,
+        subscription: null,
+      }),
+    );
+    assert.equal(d.action, 'keep');
+  });
+
   it('desktop platform flag never mounts, even with a fully valid marker (R12)', () => {
     assert.equal(decideActivationMount(mountInput({ isDesktop: true })).action, 'clear');
   });

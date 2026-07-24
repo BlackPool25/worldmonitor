@@ -20,6 +20,7 @@ import { getFeaturesForPlan } from "../lib/entitlements";
 import { ANON_ID_V4_REGEX, verifyAnonClaimToken } from "../lib/identitySigning";
 import { PLAN_PRECEDENCE, PRODUCT_CATALOG, resolveProductToPlan } from "../config/productCatalog";
 import {
+  isCoveringAt,
   isNewerEvent,
   recomputeEntitlementFromAllSubs,
   resolvePlanKey,
@@ -500,25 +501,6 @@ function isFirstBillingCycle(
   );
 }
 
-/**
- * Mirrors subscriptionHelpers.isCoveringAt for the activation boundary.
- * Keep this local because the canonical helper is intentionally private to
- * entitlement reconciliation and billing.ts cannot import it.
- */
-function isProActivationCoveringAt(
-  subscription: {
-    status: "active" | "on_hold" | "cancelled" | "expired";
-    currentPeriodEnd: number;
-  },
-  at: number,
-): boolean {
-  return (
-    subscription.status === "active" ||
-    subscription.status === "on_hold" ||
-    (subscription.status === "cancelled" && subscription.currentPeriodEnd > at)
-  );
-}
-
 const PRO_ACTIVATION_CLAIM_TTL_MS = 30 * 1000;
 
 async function hasActivatedServerProFunctionality(
@@ -625,7 +607,7 @@ export const getSubscriptionForUser = query({
     const firstProBillingCycle =
       isProActivationPlan(subscription.planKey) &&
       isFirstBillingCycle(subscription) &&
-      isProActivationCoveringAt(subscription, Date.now());
+      isCoveringAt(subscription, Date.now());
     const activationOnboardingEligible =
       firstProBillingCycle &&
       !(await hasConfirmedActivationPresentation(ctx, subscription._id));
@@ -671,7 +653,7 @@ export const claimProActivationPresentation = mutation({
       subscription.userId !== userId ||
       !isProActivationPlan(subscription.planKey) ||
       !isFirstBillingCycle(subscription) ||
-      !isProActivationCoveringAt(subscription, now) ||
+      !isCoveringAt(subscription, now) ||
       await hasActivatedServerProFunctionality(ctx, userId)
     ) {
       return { status: "not_eligible" as const };
