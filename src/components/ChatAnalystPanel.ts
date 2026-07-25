@@ -7,7 +7,7 @@ import { yieldToMain } from '@/utils/after-paint';
 import { premiumFetch } from '@/services/premium-fetch';
 import { getAuthState } from '@/services/auth-state';
 import { readClientEntitlementBelief } from '@/services/panel-gating';
-import { classifyPremiumDenial, readDenialErrorCode } from '@/services/premium-denial';
+import { classifyDenialResponse } from '@/services/premium-denial';
 import { trackAnalystControlAction } from '@/services/analytics';
 import { h, replaceChildren, setTrustedHtml, trustedHtml, type TrustedHtml } from '@/utils/dom-utils';
 import {
@@ -69,12 +69,7 @@ type DashboardControlStatus = 'applied' | 'denied' | 'invalid' | 'skipped';
  * stream is never read.
  */
 async function describeDenial(res: Response): Promise<string> {
-  const isDenial = res.status === 401 || res.status === 403;
-  const verdict = classifyPremiumDenial({
-    status: res.status,
-    errorCode: isDenial ? await readDenialErrorCode(res) : null,
-    belief: readClientEntitlementBelief(getAuthState()),
-  });
+  const verdict = await classifyDenialResponse(res, readClientEntitlementBelief(getAuthState()));
   switch (verdict) {
     case 'sign_in_required':
       return 'Sign in to use the analyst.';
@@ -523,7 +518,8 @@ export class ChatAnalystPanel extends Panel {
     const { bubble, body: streamingBody } = this.appendStreamingBubble();
     let accumulatedText = '';
 
-    this.streamAbort = new AbortController();
+    const controller = new AbortController();
+    this.streamAbort = controller;
 
     try {
       const res = await premiumFetch(API_URL, {
@@ -536,7 +532,7 @@ export class ChatAnalystPanel extends Panel {
           // geoContext (ISO-2 country focus) is supported by the API but wired in Phase 2
           // when the panel can read the map's selected country. Agent callers can pass it directly.
         }),
-        signal: this.streamAbort.signal,
+        signal: controller.signal,
       });
 
       if (!res.ok) {
@@ -576,9 +572,17 @@ export class ChatAnalystPanel extends Panel {
         this.finalizeStreamingBubble(streamingBody, '⚠ Network error. Try again.', false);
       }
     } finally {
-      this.streamAbort = null;
-      this.isStreaming = false;
-      this.setSendDisabled(false);
+      // Only tear down the shared streaming state if we still OWN it. Every
+      // exit path here follows an await, and clear() resets isStreaming, so a
+      // user who clears mid-flight can start a second send before this block
+      // runs — unconditionally nulling streamAbort would then cancel-proof the
+      // NEW stream and leave the send button stuck. Keying on controller
+      // identity makes a superseded invocation clean up only its own bubble.
+      if (this.streamAbort === controller) {
+        this.streamAbort = null;
+        this.isStreaming = false;
+        this.setSendDisabled(false);
+      }
       bubble.classList.remove('chat-msg-streaming');
     }
   }
