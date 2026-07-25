@@ -95,11 +95,15 @@ function isValidUrl(link) {
   } catch { return false; }
 }
 
-function stripHtml(html) {
+export function stripHtml(html) {
   return html.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
-    .replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<')
+    .replace(/<[^>]+>/g, '').replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ').replace(/&#8217;/g, "'")
-    .replace(/&#8220;/g, '"').replace(/&#8221;/g, '"').replace(/\s+/g, ' ').trim();
+    .replace(/&#8220;/g, '"').replace(/&#8221;/g, '"')
+    // `&amp;` decoded last: amp-first let `&amp;lt;script&amp;gt;` survive the
+    // tag strip above and re-emerge as a live `<script>` (#5436).
+    .replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ').trim();
 }
 
 export function parseRssItems(xml) {

@@ -31,11 +31,16 @@ export function stableHash(str) {
   return Math.abs(h).toString(36);
 }
 
-function decodeHtmlEntities(text) {
+// Reject out-of-range/malformed numeric refs instead of letting
+// String.fromCodePoint throw RangeError mid-seed (#5436).
+function decodeNumericReference(codePoint) {
+  return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff
+    ? String.fromCodePoint(codePoint)
+    : '';
+}
+
+export function decodeHtmlEntities(text) {
   return text
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
-    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10)))
-    .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
@@ -45,7 +50,11 @@ function decodeHtmlEntities(text) {
     .replace(/&mdash;/g, '—')
     .replace(/&ndash;/g, '–')
     .replace(/&lsquo;|&rsquo;/g, "'")
-    .replace(/&ldquo;|&rdquo;/g, '"');
+    .replace(/&ldquo;|&rdquo;/g, '"')
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => decodeNumericReference(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, dec) => decodeNumericReference(parseInt(dec, 10)))
+    // `&amp;` decoded last so one pass decodes one level (#5436).
+    .replace(/&amp;/g, '&');
 }
 
 function extractTag(block, tagName) {

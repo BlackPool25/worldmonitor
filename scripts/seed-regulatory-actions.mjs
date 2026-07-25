@@ -42,19 +42,26 @@ const REGULATORY_FEEDS = [
   { agency: 'FINRA', url: 'http://feeds.finra.org/FINRANotices' },
 ];
 
+// Reject out-of-range/malformed numeric refs instead of letting
+// String.fromCodePoint throw RangeError mid-seed (#5436).
+function decodeNumericReference(codePoint) {
+  return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff
+    ? String.fromCodePoint(codePoint)
+    : '';
+}
+
 function decodeEntities(input) {
   if (!input) return '';
-  const named = input
-    .replace(/&amp;/gi, '&')
+  return input
     .replace(/&lt;/gi, '<')
     .replace(/&gt;/gi, '>')
     .replace(/&quot;/gi, '"')
     .replace(/&apos;/gi, "'")
-    .replace(/&nbsp;/gi, ' ');
-
-  return named
-    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(parseInt(code, 16)));
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&#(\d+);/g, (_, code) => decodeNumericReference(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => decodeNumericReference(parseInt(code, 16)))
+    // `&amp;` decoded last so one pass decodes one level (#5436).
+    .replace(/&amp;/gi, '&');
 }
 
 function stripHtml(input) {

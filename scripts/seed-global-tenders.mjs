@@ -200,16 +200,17 @@ export async function fetchCanadaBuys({ now = Date.now(), fetchTextFn = fetchTex
   return { records, status: sourceStatus('canada-buys', 'ok', records, '', now) };
 }
 
-function decodeHtml(value) {
+export function decodeHtml(value) {
   return String(value || '')
     .replace(/<br\s*\/?\s*>/gi, '\n')
     .replace(/<[^>]+>/g, '')
     .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
     .replace(/&lt;/gi, '<')
     .replace(/&gt;/gi, '>')
     .replace(/&quot;/gi, '"')
     .replace(/&#39;|&apos;/gi, "'")
+    // `&amp;` decoded last so one pass decodes one level (#5436).
+    .replace(/&amp;/gi, '&')
     .replace(/\s+/g, ' ')
     .trim();
 }

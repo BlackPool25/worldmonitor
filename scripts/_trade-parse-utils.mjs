@@ -18,9 +18,10 @@ export function htmlToPlainText(html) {
     .replace(/<!--[\s\S]*?-->/g, ' ')
     .replace(/<\/?[A-Za-z][A-Za-z0-9:-]*(?:\s[^<>]*?)?>/g, ' ')
     .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
     .replace(/&quot;/gi, '"')
     .replace(/&#39;/gi, '\'')
+    // `&amp;` decoded last so one pass decodes one level (#5436).
+    .replace(/&amp;/gi, '&')
     .replace(/\s+/g, ' ')
     .trim();
 }

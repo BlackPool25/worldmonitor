@@ -407,14 +407,15 @@ export function extractListedCountries(html, nameLookup) {
 // text (&#39; for apostrophe, &amp; for ampersand, &nbsp; for space).
 // Full-fledged decoders pull in 100KB of dependencies; this targeted
 // list covers what we actually see in the fixtures.
-function decodeHtmlEntities(s) {
+export function decodeHtmlEntities(s) {
   return String(s)
     .replace(/&#39;/g, "'")
     .replace(/&#34;/g, '"')
-    .replace(/&amp;/g, '&')
     .replace(/&nbsp;/g, ' ')
     .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>');
+    .replace(/&gt;/g, '>')
+    // `&amp;` decoded last so one pass decodes one level (#5436).
+    .replace(/&amp;/g, '&');
 }
 
 // Try to extract the publication date from the URL slug or the page

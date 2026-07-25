@@ -34,10 +34,11 @@ function decodeHtmlEntities(text) {
   return text
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, ' ');
+    .replace(/&nbsp;/g, ' ')
+    // `&amp;` decoded last so one pass decodes one level (#5436).
+    .replace(/&amp;/g, '&');
 }
 
 function extractTag(block, tagName) {

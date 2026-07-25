@@ -5932,8 +5932,9 @@ function _redditEpochSeconds(v) {
 // Reddit emits to keep panel titles identical across paths.
 function _decodeRedditEntities(s) {
   if (typeof s !== 'string') return s;
-  return s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+  // `&amp;` decoded last so one pass decodes one level (#5436).
+  return s.replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
 }
 
 // Normalize a ScrapeCreators post so its shape matches the OAuth/public paths

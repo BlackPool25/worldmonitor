@@ -339,8 +339,10 @@ function stripHtmlInline(value) {
   return String(value || '')
     .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/g, ' ')
+    // Catch-all must skip `&amp;` so the amp decode below stays one-level:
+    // amp-first turned `&amp;nbsp;` into a decodable second pass (#5436).
+    .replace(/&(?!amp;)[#\w]+;/g, ' ')
     .replace(/&amp;/g, '&')
-    .replace(/&[#\w]+;/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }

@@ -181,7 +181,6 @@ async function fetchPbiCharts() {
 function decodeHtmlEntities(s) {
   return s
     .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&#039;/g, "'")
@@ -193,7 +192,9 @@ function decodeHtmlEntities(s) {
     .replace(/&ndash;/g, '\u2013')
     .replace(/&#8217;/g, '\u2019')
     .replace(/&#8220;/g, '\u201c')
-    .replace(/&#8221;/g, '\u201d');
+    .replace(/&#8221;/g, '\u201d')
+    // `&amp;` decoded last so one pass decodes one level (#5436).
+    .replace(/&amp;/g, '&');
 }
 
 function stripTags(s) {
