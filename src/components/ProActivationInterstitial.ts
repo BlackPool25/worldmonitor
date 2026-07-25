@@ -31,6 +31,7 @@ import {
   confirmProActivationPresentation,
 } from '@/services/billing';
 import { escapeHtml } from '@/utils/sanitize';
+import { withTimeout } from '@/utils/with-timeout';
 import { getFocusableElements, setTrustedHtml, trustedHtml, type TrustedHtml } from '@/utils/dom-utils';
 import { SITE_VARIANT } from '@/config/variant';
 import {
@@ -840,24 +841,15 @@ export function activationContextFromChannelsData(
 
 async function readActivationContextStrict(expectedUserId: string): Promise<ActivationContext> {
   const controller = new AbortController();
-  let timeoutHandle: number | null = null;
-  try {
-    const timeout = new Promise<never>((_, reject) => {
-      timeoutHandle = window.setTimeout(() => {
-        controller.abort();
-        reject(new Error('Activation context read timed out'));
-      }, ACTIVATION_CONTEXT_TIMEOUT_MS);
-    });
-    const data = await Promise.race([
-      getChannelsData(expectedUserId, controller.signal),
-      timeout,
-    ]);
-    const context = activationContextFromChannelsData(data, readActivationCapabilities());
-    context.config.hasUsedPowerFeature = hasUsedPowerFeatureStrict();
-    return context;
-  } finally {
-    if (timeoutHandle !== null) window.clearTimeout(timeoutHandle);
-  }
+  const data = await withTimeout(
+    getChannelsData(expectedUserId, controller.signal),
+    ACTIVATION_CONTEXT_TIMEOUT_MS,
+    'activation-context-read',
+    () => controller.abort(),
+  );
+  const context = activationContextFromChannelsData(data, readActivationCapabilities());
+  context.config.hasUsedPowerFeature = hasUsedPowerFeatureStrict();
+  return context;
 }
 
 export async function readActivationContext(expectedUserId?: string): Promise<ActivationContext> {
@@ -1145,12 +1137,13 @@ async function confirmPresentationWithRetry(
   for (let attempt = 0; attempt <= PRESENTATION_CONFIRM_RETRY_DELAYS_MS.length; attempt += 1) {
     if (!isFlowAccountCurrent(options)) return false;
     try {
-      return await withActivationMutationDeadline(
+      return await withTimeout(
         dependencies.confirmPresentation(
           options.expectedActivationKey,
           options.activationClaimNonce,
         ),
-        dependencies.operationTimeoutMs,
+        dependencies.operationTimeoutMs ?? ACTIVATION_MUTATION_TIMEOUT_MS,
+        'activation-confirm-presentation',
       );
     } catch (error) {
       const delay = PRESENTATION_CONFIRM_RETRY_DELAYS_MS[attempt];
@@ -1162,26 +1155,6 @@ async function confirmPresentationWithRetry(
     }
   }
   return false;
-}
-
-async function withActivationMutationDeadline<T>(
-  operation: Promise<T>,
-  timeoutMs = ACTIVATION_MUTATION_TIMEOUT_MS,
-): Promise<T> {
-  let timeoutHandle: number | null = null;
-  try {
-    return await Promise.race([
-      operation,
-      new Promise<never>((_, reject) => {
-        timeoutHandle = window.setTimeout(
-          () => reject(new Error('Activation mutation timed out')),
-          timeoutMs,
-        );
-      }),
-    ]);
-  } finally {
-    if (timeoutHandle !== null) window.clearTimeout(timeoutHandle);
-  }
 }
 
 /**
@@ -1228,12 +1201,13 @@ export async function openProActivationFlow(
     }
     let claimStatus;
     try {
-      claimStatus = await withActivationMutationDeadline(
+      claimStatus = await withTimeout(
         dependencies.claimPresentation(
           options.expectedActivationKey,
           options.activationClaimNonce,
         ),
-        dependencies.operationTimeoutMs,
+        dependencies.operationTimeoutMs ?? ACTIVATION_MUTATION_TIMEOUT_MS,
+        'activation-claim-presentation',
       );
     } catch {
       return 'retry';

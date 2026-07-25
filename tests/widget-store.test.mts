@@ -211,9 +211,12 @@ describe('widget-store PRO persistence', () => {
     assert.equal(loaded[0]!.tier, 'basic');
     assert.equal(loaded[0]!.id, 'cw-legacy-no-tier');
 
-    // The strict activation-eligibility loader treats the same row as
-    // malformed rather than silently normalizing it.
-    assert.throws(() => loadWidgetsStrict(), /malformed/);
+    // The strict activation-eligibility loader normalizes the same row to
+    // 'basic' as well — a legacy pre-tier widget is not malformed.
+    const strictLoaded = loadWidgetsStrict();
+    assert.equal(strictLoaded.length, 1);
+    assert.equal(strictLoaded[0]!.tier, 'basic');
+    assert.equal(strictLoaded[0]!.id, 'cw-legacy-no-tier');
   });
 
   it('saveWidget persists PRO generated HTML in the canonical widget entry', async () => {

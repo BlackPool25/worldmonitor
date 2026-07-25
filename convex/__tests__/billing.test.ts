@@ -5031,4 +5031,75 @@ describe("getSubscriptionForUser activation onboarding eligibility", () => {
       .collect());
     expect(rows).toEqual([]);
   });
+
+  test("a disabled alert rule with a verified channel stays onboarding-eligible", async () => {
+    const t = convexTest(schema, modules);
+    const activationKey = await seedSubscription(t, {
+      planKey: "pro_monthly",
+      dodoProductId: PRODUCT_CATALOG.pro_monthly.dodoProductId!,
+      status: "active",
+      currentPeriodEnd: NOW + 30 * DAY_MS,
+      suffix: "activation_disabled_rule",
+    });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("notificationChannels", {
+        userId: TEST_USER_ID,
+        channelType: "email",
+        email: "disabled-rule@example.com",
+        verified: true,
+        linkedAt: NOW,
+      });
+      await ctx.db.insert("alertRules", {
+        userId: TEST_USER_ID,
+        variant: "full",
+        enabled: false,
+        eventTypes: [],
+        sensitivity: "critical",
+        channels: ["email"],
+        updatedAt: NOW,
+      });
+    });
+
+    const result = await t
+      .withIdentity(IDENTITY)
+      .query(api.payments.billing.getSubscriptionForUser, {});
+
+    expect(result?.activationOnboardingEligible).toBe(true);
+    const claim = await t.withIdentity(IDENTITY).mutation(
+      api.payments.billing.claimProActivationPresentation,
+      { activationKey, claimNonce: "disabled-rule-device" },
+    );
+    expect(claim.status).toBe("claimed");
+  });
+
+  test("a repeated claim with the same nonce within the TTL re-claims without a second row", async () => {
+    const t = convexTest(schema, modules);
+    const activationKey = await seedSubscription(t, {
+      planKey: "pro_monthly",
+      dodoProductId: PRODUCT_CATALOG.pro_monthly.dodoProductId!,
+      status: "active",
+      currentPeriodEnd: NOW + 30 * DAY_MS,
+      suffix: "activation_claim_same_nonce",
+    });
+
+    const first = await t.withIdentity(IDENTITY).mutation(
+      api.payments.billing.claimProActivationPresentation,
+      { activationKey, claimNonce: "same-tab-nonce" },
+    );
+    expect(first.status).toBe("claimed");
+
+    // The client retries a stalled claim with the same per-tab nonce; within
+    // PRO_ACTIVATION_CLAIM_TTL_MS the retry must succeed and stay a single row.
+    const second = await t.withIdentity(IDENTITY).mutation(
+      api.payments.billing.claimProActivationPresentation,
+      { activationKey, claimNonce: "same-tab-nonce" },
+    );
+    expect(second.status).toBe("claimed");
+
+    const rows = await t.run(async (ctx) => await ctx.db
+      .query("proActivationPresentations")
+      .withIndex("by_subscription", (q) => q.eq("subscriptionId", activationKey))
+      .collect());
+    expect(rows).toHaveLength(1);
+  });
 });

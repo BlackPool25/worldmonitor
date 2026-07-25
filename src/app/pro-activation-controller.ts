@@ -439,11 +439,27 @@ export class ProActivationController implements AppModule {
   private armRetry(): void {
     if (this.retryArmed || this.resolved) return;
     this.retryArmed = true;
+    // Both listener services replay their current snapshot SYNCHRONOUSLY on
+    // subscribe when state is already loaded. armRetry is only called right
+    // after an evaluate() consumed that exact snapshot, so the replay is
+    // always redundant — swallow the first invocation per registration or the
+    // exhaustion fallback in scheduleFlowRetry() would instantly re-trigger
+    // evaluate() and recreate the retry loop it was meant to stop.
+    const skipSyncReplay = (cb: () => void): (() => void) => {
+      let first = true;
+      return () => {
+        if (first) {
+          first = false;
+          return;
+        }
+        cb();
+      };
+    };
     const reEvaluate = (): void => {
       queueMicrotask(() => void this.evaluate());
     };
-    this.retryUnsubscribers.push(onEntitlementChange(reEvaluate));
-    this.retryUnsubscribers.push(onSubscriptionChange(reEvaluate));
+    this.retryUnsubscribers.push(onEntitlementChange(skipSyncReplay(reEvaluate)));
+    this.retryUnsubscribers.push(onSubscriptionChange(skipSyncReplay(reEvaluate)));
   }
 
   private teardownRetry(): void {

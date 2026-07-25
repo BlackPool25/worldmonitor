@@ -64,6 +64,11 @@ async function loadController(): Promise<typeof import('../src/app/pro-activatio
       export function getSubscription() { return globalThis.__activationSubscription; }
       export function onSubscriptionChange(callback) {
         globalThis.__activationSubscriptionListeners.add(callback);
+        // Mirror production (src/services/billing.ts): a late subscriber gets
+        // the current snapshot SYNCHRONOUSLY when it is already loaded.
+        if (globalThis.__activationSubscription !== null) {
+          callback(globalThis.__activationSubscription);
+        }
         return () => globalThis.__activationSubscriptionListeners.delete(callback);
       }
     `],
@@ -71,6 +76,11 @@ async function loadController(): Promise<typeof import('../src/app/pro-activatio
       export function getEntitlementState() { return globalThis.__activationEntitlement; }
       export function onEntitlementChange(callback) {
         globalThis.__activationEntitlementListeners.add(callback);
+        // Mirror production (src/services/entitlements.ts): a late subscriber
+        // gets the current snapshot SYNCHRONOUSLY when it is already loaded.
+        if (globalThis.__activationEntitlement !== null) {
+          callback(globalThis.__activationEntitlement);
+        }
         return () => globalThis.__activationEntitlementListeners.delete(callback);
       }
     `],
@@ -322,6 +332,9 @@ describe('ProActivationController markerless mount() branching', () => {
       // The tab must stay unresolved and retryable, not permanently give up.
       assert.equal((controller as unknown as { resolved: boolean }).resolved, false);
       // No 7th attempt fires on its own -- the timer-based schedule is done.
+      // The exhaustion fallback re-arms the passive listeners, whose stubs
+      // replay the current snapshot SYNCHRONOUSLY on subscribe (mirroring
+      // production); that replay must be swallowed, not retrigger evaluate().
       await new Promise((resolve) => setTimeout(resolve, 200));
       assert.equal(openedFor.length, 6);
 
@@ -349,6 +362,68 @@ describe('ProActivationController markerless mount() branching', () => {
         true,
         'the retriggered attempt succeeds and resolves the tab',
       );
+    } finally {
+      ctx.isDestroyed = true;
+      controller.destroy();
+    }
+  });
+
+  it("swallows the synchronous subscribe replay at exhaustion, but a genuine emission starts a full fresh schedule", async () => {
+    installBrowserState({ fastTimers: true });
+    installEligibleMarkerlessAccount('user-replay-not-an-emission');
+    (globalThis as unknown as { __activationOpenResult: string }).__activationOpenResult = 'retry';
+    const { ProActivationController } = await loadController();
+    const ctx = {
+      isDestroyed: false,
+      isDesktopApp: false,
+      container: { dispatchEvent() {} },
+      unifiedSettings: null,
+    };
+    const controller = new ProActivationController(ctx as never, {
+      reloadPending: false,
+      openAiAnalyst() {},
+    });
+    try {
+      controller.init();
+      await (controller as unknown as { evaluate(): Promise<void> }).evaluate();
+
+      const openedFor = (
+        globalThis as unknown as { __activationOpenedFor: string[] }
+      ).__activationOpenedFor;
+      for (
+        let attempt = 0;
+        attempt < 200 && openedFor.length < 6;
+        attempt += 1
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.equal(openedFor.length, 6, 'initial attempt plus the bounded backoff schedule');
+
+      // Exhaustion re-arms the passive listeners; the stubs replay the loaded
+      // snapshot synchronously on subscribe (mirroring production). Without the
+      // replay swallow that replay would immediately retrigger evaluate() and
+      // recreate the very retry loop the fallback was meant to stop.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      assert.equal(openedFor.length, 6, 'the subscribe replay must not self-trigger a re-arm loop');
+
+      // A genuine listener emission (the outage clearing) re-triggers a fresh
+      // attempt -- and, with the flow still failing, a full fresh backoff
+      // schedule (another 6 attempts) rather than an immediate re-give-up.
+      for (const listener of (
+        globalThis as unknown as { __activationEntitlementListeners: Set<() => void> }
+      ).__activationEntitlementListeners) {
+        listener();
+      }
+      for (
+        let attempt = 0;
+        attempt < 200 && openedFor.length < 12;
+        attempt += 1
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.equal(openedFor.length, 12, 'the fresh trigger gets its own full backoff schedule');
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      assert.equal(openedFor.length, 12, 'the second exhaustion must not self-trigger either');
     } finally {
       ctx.isDestroyed = true;
       controller.destroy();
