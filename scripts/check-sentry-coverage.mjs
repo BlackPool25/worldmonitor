@@ -2,16 +2,23 @@
 /**
  * Sentry-coverage lint guard.
  *
- * Flags catch blocks in api/ and convex/ that log via console.error /
- * console.warn but don't surface to Sentry — i.e., the silent-swallow
- * pattern that hid the canary OCC bug (Sentry issue WORLDMONITOR-PA)
- * for hours and made the post-mortem impossible.
+ * Flags catch blocks in api/, convex/ and server/ that swallow the error —
+ * the pattern that hid the canary OCC bug (Sentry issue WORLDMONITOR-PA)
+ * for hours and made the post-mortem impossible. `server/` counts because
+ * its code is bundled INTO the edge functions at deploy time, so a swallow
+ * there is invisible in exactly the same way.
  *
- * Heuristic: for each file under api/ or convex/, find catch blocks
- * (`} catch (...) { ... }`). If a block contains console.error/warn
- * but no `captureSilentError`, `captureEdgeException`, `Sentry.`, `throw`,
- * or `status: 5xx` (after stripping comments and string literals to avoid
- * matching those tokens inside text) — fail.
+ * Two heuristics run per catch block (`} catch (...) { ... }`), against a
+ * source with comments and string literals stripped so tokens inside text
+ * never count as code:
+ *
+ *   1. Logged but not reported — the body has console.error/warn but none
+ *      of `captureSilentError`, `captureEdgeException`, `Sentry.`, `throw`,
+ *      or `status: 5xx`.
+ *   2. Bare `catch {}` — no statements and no comment. Nothing reaches
+ *      Sentry, the console, or the next reader. Deliberate best-effort
+ *      swallows document themselves with a `/* why *\/` note (or the
+ *      override marker below), so this only fires on accidental ones.
  *
  * Mode:
  *   - `--diff` (default in pre-push): only flags catch blocks that
@@ -26,16 +33,16 @@
  *   node scripts/check-sentry-coverage.mjs            # diff mode
  *   node scripts/check-sentry-coverage.mjs --all      # full scan
  */
-
+ 
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-
+ 
 const args = process.argv.slice(2);
 const SCAN_ALL = args.includes('--all');
-
-const TARGET_DIRS = ['api', 'convex'];
-
+ 
+const TARGET_DIRS = ['api', 'convex', 'server'];
+ 
 // A catch block is "OK" if it contains at least one of these markers.
 // `throw` covers re-throws (auto-Sentry catches the propagated throw).
 // `captureSilentError` is our helper. `captureEdgeException` is the
@@ -56,7 +63,7 @@ const SAFE_PATTERNS = [
   /\bthrow\b/,
   /\bstatus:\s*5\d\d\b/,
 ];
-
+ 
 // Inline override marker — when a catch body needs to swallow on the
 // HTTP path but surfaces to Sentry through a non-obvious channel (e.g.,
 // `ctx.scheduler.runAfter(...)` to a Convex mutation that throws). The
@@ -64,9 +71,9 @@ const SAFE_PATTERNS = [
 // removal — we check the raw catch body for it before falling through
 // to the safety patterns.
 const OVERRIDE_MARKER = /\/\/\s*sentry-coverage-ok\b/;
-
+ 
 const LOG_PATTERN = /\bconsole\.(error|warn)\b/;
-
+ 
 // Skip the helper files themselves — their `console.warn` on Sentry
 // delivery failure is the right behaviour (a Sentry capture inside the
 // Sentry helper would loop forever).
@@ -75,7 +82,7 @@ const SKIP_FILE_PATTERNS = [
   /\/api\/_sentry-node\.(js|mjs|ts)$/,
   /\/api\/_sentry-common\.(js|mjs|ts)$/,
 ];
-
+ 
 /**
  * Replace JavaScript comments and string literals with spaces of equal
  * length, preserving line numbers and overall indexing. We don't need to
@@ -101,19 +108,19 @@ const SKIP_FILE_PATTERNS = [
 function stripCommentsAndStrings(src) {
   const out = new Array(src.length);
   for (let i = 0; i < src.length; i++) out[i] = src[i];
-
+ 
   function blank(start, end) {
     for (let k = start; k < end; k++) {
       // Preserve newlines so line numbers stay correct.
       if (out[k] !== '\n') out[k] = ' ';
     }
   }
-
+ 
   let i = 0;
   while (i < src.length) {
     const c = src[i];
     const next = src[i + 1];
-
+ 
     // Line comment
     if (c === '/' && next === '/') {
       let j = i + 2;
@@ -197,10 +204,10 @@ function stripCommentsAndStrings(src) {
     }
     i++;
   }
-
+ 
   return out.join('');
 }
-
+ 
 // Helper — skip past a string starting at `i`, return index after closing.
 function stripStringFrom(src, i) {
   const c = src[i];
@@ -218,7 +225,7 @@ function stripStringFrom(src, i) {
   }
   return j;
 }
-
+ 
 function listChangedFiles() {
   try {
     const out = execSync('git diff --name-only origin/main...HEAD', {
@@ -233,7 +240,7 @@ function listChangedFiles() {
     return [];
   }
 }
-
+ 
 /**
  * For a given file in diff mode, parse `git diff --unified=0` to extract
  * the set of line ranges that were added/modified vs origin/main. Used
@@ -260,14 +267,14 @@ function changedLineRanges(filePath) {
     return [];
   }
 }
-
+ 
 function rangesOverlap(catchStart, catchEnd, ranges) {
   for (const [s, e] of ranges) {
     if (catchEnd >= s && catchStart <= e) return true;
   }
   return false;
 }
-
+ 
 function listAllFiles() {
   const out = execSync(
     `find ${TARGET_DIRS.join(' ')} -type f \\( -name '*.ts' -o -name '*.tsx' -o -name '*.mjs' -o -name '*.js' \\) -not -path '*/node_modules/*' -not -path '*/_generated/*'`,
@@ -275,12 +282,12 @@ function listAllFiles() {
   );
   return out.split('\n').filter(Boolean);
 }
-
+ 
 function findUnsafeCatches(filePath, restrictToRanges) {
   const rawSrc = readFileSync(filePath, 'utf8');
   const src = stripCommentsAndStrings(rawSrc);
   const offenders = [];
-
+ 
   // Scan for catch blocks. We balance braces manually to handle nesting
   // (regex alone misses nested `{ }` inside the catch body). Operating on
   // the comment/string-stripped source means brace counts inside string
@@ -292,7 +299,7 @@ function findUnsafeCatches(filePath, restrictToRanges) {
     const startInRest = m.index;
     const absStart = i + startInRest;
     const bodyOpenAbs = absStart + m[0].length - 1; // index of the opening `{`
-
+ 
     // Walk forward to find the matching closing brace.
     let depth = 1;
     let j = bodyOpenAbs + 1;
@@ -304,39 +311,45 @@ function findUnsafeCatches(filePath, restrictToRanges) {
     }
     const bodyEnd = j; // exclusive
     const body = src.slice(bodyOpenAbs + 1, bodyEnd - 1);
-
+ 
     const rawBody = rawSrc.slice(bodyOpenAbs + 1, bodyEnd - 1);
     const hasOverride = OVERRIDE_MARKER.test(rawBody);
-
-    if (
-      !hasOverride &&
-      LOG_PATTERN.test(body) &&
-      !SAFE_PATTERNS.some((p) => p.test(body))
-    ) {
+ 
+    const logsWithoutReporting =
+      LOG_PATTERN.test(body) && !SAFE_PATTERNS.some((p) => p.test(body));
+    // A bare `} catch {}` — no statements AND no comment explaining why the
+    // error is dropped. Deliberate best-effort swallows in this codebase
+    // carry a `/* why */` note, so requiring one keeps the intentional
+    // cases passing while flagging the accidental ones, where nothing
+    // reaches Sentry, the console, or the next reader.
+    const isSilent = body.trim() === '' && rawBody.trim() === '';
+ 
+    if (!hasOverride && (logsWithoutReporting || isSilent)) {
       const startLine = src.slice(0, absStart).split('\n').length;
       const endLine = src.slice(0, bodyEnd).split('\n').length;
       if (!restrictToRanges || rangesOverlap(startLine, endLine, restrictToRanges)) {
         offenders.push({
           filePath,
           lineNo: startLine,
+          reason: isSilent ? 'empty catch' : 'logged, not reported',
           snippet: rawBody.split('\n').find((l) => l.trim())?.trim().slice(0, 100) ?? '',
         });
       }
     }
-
+ 
     i = bodyEnd;
   }
-
+ 
   return offenders;
 }
-
+ 
 function main() {
   const files = SCAN_ALL ? listAllFiles() : listChangedFiles();
   if (files.length === 0) {
     if (!SCAN_ALL) console.log('  Sentry coverage: no api/ or convex/ files changed.');
     return 0;
   }
-
+ 
   const allOffenders = [];
   for (const f of files) {
     const abs = resolve(f);
@@ -350,22 +363,23 @@ function main() {
       if (err && err.code !== 'ENOENT') throw err;
     }
   }
-
+ 
   if (allOffenders.length === 0) {
     console.log(`  Sentry coverage: clean (${files.length} file${files.length === 1 ? '' : 's'} checked).`);
     return 0;
   }
-
+ 
   console.error('');
   console.error('============================================================');
   console.error('Sentry coverage check FAILED');
   console.error('');
   console.error(
-    `Found ${allOffenders.length} catch block(s) that log via console.error/warn`,
+    `Found ${allOffenders.length} catch block(s) that swallow the error`,
   );
-  console.error('but do not surface to Sentry. Either:');
+  console.error('(logged without reporting, or an empty catch body). Either:');
   console.error('  - call `captureSilentError(err, { tags: { ... } })` next to the log, OR');
-  console.error('  - re-throw the error (Convex auto-Sentry will capture it).');
+  console.error('  - re-throw the error (Convex auto-Sentry will capture it), OR');
+  console.error('  - if the swallow is intentional, add `// sentry-coverage-ok <reason>`.');
   console.error('');
   console.error('Helpers:');
   console.error('  api/ edge:  import { captureSilentError } from \'./_sentry-edge.js\';');
@@ -373,10 +387,10 @@ function main() {
   console.error('');
   console.error('Offenders:');
   for (const o of allOffenders) {
-    console.error(`  ${o.filePath}:${o.lineNo}  ${o.snippet}`);
+    console.error(`  ${o.filePath}:${o.lineNo}  [${o.reason}]  ${o.snippet}`);
   }
   console.error('============================================================');
   return 1;
 }
-
+ 
 process.exit(main());
