@@ -687,6 +687,7 @@ function validateClaim(
       'CLAIM_STATUS_VIOLATES_DECLARATION',
       `${claim.status as string} is not allowed by ${policy}`,
     );
+    return;
   }
 
   if (claim.status === 'known') {
