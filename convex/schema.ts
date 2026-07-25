@@ -55,6 +55,12 @@ const apiPlanLimitCtaKind = v.union(
   v.literal("none"),
 );
 
+const proActivationStepId = v.union(
+  v.literal("brief"),
+  v.literal("alerts"),
+  v.literal("power"),
+);
+
 export default defineSchema({
   userPreferences: defineTable({
     userId: v.string(),
@@ -634,12 +640,23 @@ export default defineSchema({
   // Cross-device single-presentation lease for markerless Pro activation.
   // A short pending claim closes concurrent mount races without permanently
   // suppressing onboarding when a browser crashes before rendering the flow.
+  //
+  // The outcome buckets mirror ActivationStepOutcome
+  // (pro-activation-state.ts). They are updated as the subscriber acts so a
+  // tab close cannot erase engagement, then frozen when `exitedAt` is set.
+  // `outcomeRevision` rejects late/out-of-order best-effort writes.
   proActivationPresentations: defineTable({
     userId: v.string(),
     subscriptionId: v.id("subscriptions"),
     claimNonce: v.string(),
     claimedAt: v.number(),
     presentedAt: v.optional(v.number()),
+    confirmedSteps: v.optional(v.array(proActivationStepId)),
+    skippedSteps: v.optional(v.array(proActivationStepId)),
+    failedSteps: v.optional(v.array(proActivationStepId)),
+    outcomeRevision: v.optional(v.number()),
+    outcomeUpdatedAt: v.optional(v.number()),
+    exitedAt: v.optional(v.number()),
   })
     .index("by_subscription", ["subscriptionId"]),
 

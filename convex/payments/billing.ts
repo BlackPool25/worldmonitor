@@ -718,6 +718,79 @@ export const confirmProActivationPresentation = mutation({
   },
 });
 
+const proActivationStepIdValidator = v.union(
+  v.literal("brief"),
+  v.literal("alerts"),
+  v.literal("power"),
+);
+const MAX_PRO_ACTIVATION_OUTCOME_REVISION = 4;
+
+/**
+ * Persist a monotonic snapshot of the wizard outcome (#5582). Progress writes
+ * happen as steps resolve so a lost exit cannot censor disengaged sessions;
+ * the final write sets `exitedAt` and freezes the record. Invalid,
+ * overlapping, stale, and replayed classifications are rejected.
+ */
+export const recordProActivationOutcome = mutation({
+  args: {
+    activationKey: v.id("subscriptions"),
+    claimNonce: v.string(),
+    confirmedSteps: v.array(proActivationStepIdValidator),
+    skippedSteps: v.array(proActivationStepIdValidator),
+    failedSteps: v.array(proActivationStepIdValidator),
+    revision: v.number(),
+    finalized: v.boolean(),
+  },
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+    const presentation = await ctx.db
+      .query("proActivationPresentations")
+      .withIndex("by_subscription", (q) => q.eq("subscriptionId", args.activationKey))
+      .first();
+    if (
+      presentation === null ||
+      presentation.userId !== userId ||
+      presentation.claimNonce !== args.claimNonce ||
+      presentation.exitedAt !== undefined
+    ) {
+      return false;
+    }
+
+    if (
+      !Number.isSafeInteger(args.revision) ||
+      args.revision < 1 ||
+      args.revision > MAX_PRO_ACTIVATION_OUTCOME_REVISION
+    ) {
+      throw new ConvexError(
+        `activation outcome revision must be an integer from 1 to ${MAX_PRO_ACTIVATION_OUTCOME_REVISION}`,
+      );
+    }
+    const allSteps = [
+      ...args.confirmedSteps,
+      ...args.skippedSteps,
+      ...args.failedSteps,
+    ];
+    if (allSteps.length > 3 || new Set(allSteps).size !== allSteps.length) {
+      throw new ConvexError("activation outcome buckets must be disjoint and contain at most three steps");
+    }
+    if (args.revision <= (presentation.outcomeRevision ?? 0)) {
+      return false;
+    }
+
+    const now = Date.now();
+    await ctx.db.patch(presentation._id, {
+      confirmedSteps: args.confirmedSteps,
+      skippedSteps: args.skippedSteps,
+      failedSteps: args.failedSteps,
+      outcomeRevision: args.revision,
+      outcomeUpdatedAt: now,
+      ...(presentation.presentedAt === undefined ? { presentedAt: now } : {}),
+      ...(args.finalized ? { exitedAt: now } : {}),
+    });
+    return true;
+  },
+});
+
 /**
  * Internal query to retrieve a customer record by userId.
  *

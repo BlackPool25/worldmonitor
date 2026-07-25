@@ -60,6 +60,18 @@ interface CapturedProEvent {
   };
 }
 
+interface CapturedOutcomeCall {
+  activationKey: string;
+  claimNonce: string;
+  outcome: {
+    confirmedSteps: string[];
+    skippedSteps: string[];
+    failedSteps: string[];
+    revision: number;
+    finalized: boolean;
+  };
+}
+
 async function gotoHarness(page: Page): Promise<void> {
   await page.goto('/tests/runtime-harness.html');
 }
@@ -123,6 +135,12 @@ async function readCapturedEvents(page: Page): Promise<CapturedProEvent[]> {
   return page.evaluate(() => (window as unknown as { __proEvents: CapturedProEvent[] }).__proEvents);
 }
 
+async function readCapturedOutcomes(page: Page): Promise<CapturedOutcomeCall[]> {
+  return page.evaluate(
+    () => (window as unknown as { __proOutcomeCalls: CapturedOutcomeCall[] }).__proOutcomeCalls,
+  );
+}
+
 type ClaimStatus = 'claimed' | 'not_eligible' | 'already_presented' | 'already_claimed';
 
 async function runMarkerlessFlowHarness(
@@ -141,6 +159,8 @@ async function runMarkerlessFlowHarness(
     const { initI18n } = await import('/src/services/i18n.ts');
     await initI18n();
     const mod = await import('/src/components/ProActivationInterstitial.ts');
+    const w = window as unknown as { __proOutcomeCalls: CapturedOutcomeCall[] };
+    w.__proOutcomeCalls = [];
     let ownerChecks = 0;
     let claimCalls = 0;
     let confirmCalls = 0;
@@ -188,6 +208,10 @@ async function runMarkerlessFlowHarness(
           }
           return scenario.confirmResult !== false;
         },
+        recordOutcome: async (activationKey, claimNonce, outcome) => {
+          w.__proOutcomeCalls.push({ activationKey, claimNonce, outcome });
+          return true;
+        },
         operationTimeoutMs: 20,
       },
     );
@@ -207,6 +231,7 @@ test.describe('Pro activation flow — markerless first-cycle handoff', () => {
     });
     expect(result).toEqual({ result: 'retry', claimCalls: 0, confirmCalls: 0 });
     await expect(page.locator(OVERLAY)).toHaveCount(0);
+    expect(await readCapturedOutcomes(page)).toEqual([]);
   });
 
   test('a stalled claim reaches the controller retry path within its deadline', async ({ page }) => {
@@ -246,6 +271,41 @@ test.describe('Pro activation flow — markerless first-cycle handoff', () => {
     await expect(page.locator(OVERLAY)).toBeVisible();
   });
 
+  test('markerless progress and final exit persist exact lease-bound outcome snapshots', async ({ page }) => {
+    const result = await runMarkerlessFlowHarness(page, { claimStatus: 'claimed' });
+    expect(result).toEqual({ result: 'opened', claimCalls: 1, confirmCalls: 1 });
+
+    await page.locator('.pro-activation-close').click();
+    await expect(page.locator(SUMMARY)).toBeVisible();
+    await page.locator(FINISH_BTN).click();
+
+    await expect.poll(async () => (await readCapturedOutcomes(page)).length).toBe(2);
+    expect(await readCapturedOutcomes(page)).toEqual([
+      {
+        activationKey: 'opaque-subscription',
+        claimNonce: 'tab-nonce',
+        outcome: {
+          confirmedSteps: [],
+          skippedSteps: ['brief', 'power'],
+          failedSteps: [],
+          revision: 1,
+          finalized: false,
+        },
+      },
+      {
+        activationKey: 'opaque-subscription',
+        claimNonce: 'tab-nonce',
+        outcome: {
+          confirmedSteps: [],
+          skippedSteps: ['brief', 'power'],
+          failedSteps: [],
+          revision: 2,
+          finalized: true,
+        },
+      },
+    ]);
+  });
+
   test('lost confirmation ownership closes the flow and remains retryable', async ({ page }) => {
     const result = await runMarkerlessFlowHarness(page, {
       claimStatus: 'claimed',
@@ -283,6 +343,7 @@ test.describe('Pro activation flow — markerless first-cycle handoff', () => {
     });
     expect(result).toEqual({ result: 'retry', claimCalls: 1, confirmCalls: 0 });
     await expect(page.locator(OVERLAY)).toHaveCount(0);
+    expect(await readCapturedOutcomes(page)).toEqual([]);
   });
 });
 
