@@ -80,6 +80,27 @@ describe('Edge Function shared helpers resolve', () => {
     assert.ok(domains.length > 200, `Expected 200+ domains, got ${domains.length}`);
     assert.ok(domains.includes('feeds.bbci.co.uk'), 'Expected BBC feed domain in list');
   });
+
+  // The api/ copy is the list the internet-facing Edge SSRF guard actually enforces,
+  // and it was the only mirror with no parity assertion: the sync block above covers
+  // shared/ vs scripts/shared/, and the two .cjs files are `require()` re-exports that
+  // cannot drift. A host added to (or dropped from) the api/ mirror alone therefore
+  // passed PR CI silently — scripts/validate-rss-feeds.mjs --ci is the only other
+  // reader and feed-validation.yml deliberately excludes pull_request (SSRF guard).
+  // Ordered deep-equal, because the api/ file is JS source (Vercel esbuild cannot do
+  // `import ... with { type: 'json' }`), so a byte-compare against the JSON is not possible.
+  it('_rss-allowed-domains.js stays an exact ordered copy of the shared JSON', async () => {
+    const mod = await import(pathToFileURL(join(apiDir, '_rss-allowed-domains.js')).href);
+    const shared = JSON.parse(
+      readFileSync(join(sharedDir, 'rss-allowed-domains.json'), 'utf8'),
+    );
+    assert.deepStrictEqual(
+      mod.default,
+      shared,
+      'api/_rss-allowed-domains.js drifted from shared/rss-allowed-domains.json — ' +
+        'the Edge SSRF allowlist must match its stated source of truth exactly (order included)',
+    );
+  });
 });
 
 describe('Edge Function no node: built-ins', () => {
