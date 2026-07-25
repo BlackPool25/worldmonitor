@@ -454,6 +454,23 @@ function filterEvents(
 
 // ---------- Handler ----------
 
+/**
+ * The cold-start fallback must cache the WIDEST payload under the shared,
+ * request-independent `research:tech-events:v1` key: the Railway relay seeds
+ * the full list there, and `filterEvents()` re-narrows per caller. Forwarding
+ * the live request's `type`/`mappable`/`limit`/`days` into the fetcher pinned
+ * one caller's narrowed view for every client for the full 6h TTL (#5427).
+ * `limit`/`days` mirror `resolveTechEventsPaging`'s clamp maxima, so this
+ * request cannot resolve narrower than the documented widest bounds.
+ * Exported for the regression test.
+ */
+export const WIDEST_TECH_EVENTS_REQUEST: ListTechEventsRequest = {
+  type: 'all',
+  mappable: false,
+  limit: 200,
+  days: 365,
+};
+
 export async function listTechEvents(
   ctx: ServerContext,
   req: ListTechEventsRequest,
@@ -463,8 +480,10 @@ export async function listTechEvents(
 
     // Primary: read from seed-populated Redis key (Railway relay seeds this every 6h)
     const result = await cachedFetchJson<ListTechEventsResponse>(REDIS_CACHE_KEY, REDIS_CACHE_TTL, async () => {
-      // Fallback fetcher: only runs on cold start when seed hasn't populated yet
-      const fetched = await fetchTechEvents(req, pagingPresence);
+      // Fallback fetcher: only runs on cold start when seed hasn't populated
+      // yet. MUST fetch the widest set — per-request narrowing happens in
+      // filterEvents() below, never in what gets cached under the shared key.
+      const fetched = await fetchTechEvents(WIDEST_TECH_EVENTS_REQUEST, { hasLimit: true, hasDays: true });
       return fetched.events.length > 0 ? fetched : null;
     });
 
