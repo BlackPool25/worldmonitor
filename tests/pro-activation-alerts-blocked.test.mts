@@ -442,15 +442,17 @@ describe('activation interstitial blocked transition (#5609)', () => {
     // so without this signal a browser refusal reads as user disinterest.
     assert.deepEqual(blocks, ['alerts'], 'the blocked transition must be observable');
 
-    // Continuing resolves the step exactly like one blocked at mount: skipped,
-    // never 'failed' (which the summary would report as "we couldn't set up").
+    // Continuing resolves the step exactly like one blocked at mount — and,
+    // since #5617, as its own 'blocked' outcome rather than 'skipped', so the
+    // durable record can still separate a browser refusal from a real skip. It
+    // is never 'failed' (which the summary reports as "we couldn't set up").
     assert.equal(clickPrimary(dom), 'advance-skip');
     assert.deepEqual(skips, ['alerts']);
     assert.equal(clickPrimary(dom), 'finish', 'continuing lands on the exit summary');
-    assert.deepEqual(exits, [[{ id: 'alerts', outcome: 'skipped' }]]);
+    assert.deepEqual(exits, [[{ id: 'alerts', outcome: 'blocked' }]]);
   });
 
-  it('records a blocked step as skipped when the user escapes instead of continuing', async () => {
+  it('records a blocked step as blocked when the user escapes instead of continuing', async () => {
     installPushState('denied', true);
     activeDom = installDom();
     const mod = await loadInterstitial();
@@ -461,16 +463,37 @@ describe('activation interstitial blocked transition (#5609)', () => {
     assert.match(renderedHtml(dom), /status-blocked/);
 
     // finalizeAndShowSummary preserves a 'failed' transient but nothing else.
-    // A blocked step must land in skippedSteps, not the failedSteps bucket the
+    // A blocked step must land in blockedSteps, not the failedSteps bucket the
     // summary renders as "we couldn't set this up" — the browser refused, we
-    // did not fail.
+    // did not fail. Abandoning the flow is the SAME refusal as continuing past
+    // it, so both paths must record it identically or the durable bucket
+    // becomes a sample of "denied users who clicked Continue" (#5617).
     dom.document.dispatchEvent(Object.assign(new Event('keydown'), { key: 'Escape' }));
     assert.match(renderedHtml(dom), /pro-activation-summary/, 'Escape rolls into the summary');
     assert.doesNotMatch(renderedHtml(dom), /summary-line status-failed/);
+    assert.match(
+      renderedHtml(dom),
+      /summary-line status-pending/,
+      'a blocked step still reads as pending to the user',
+    );
     assert.deepEqual(skips, ['alerts']);
 
     assert.equal(clickPrimary(dom), 'finish');
-    assert.deepEqual(exits, [[{ id: 'alerts', outcome: 'skipped' }]]);
+    assert.deepEqual(exits, [[{ id: 'alerts', outcome: 'blocked' }]]);
+  });
+
+  // A step denied BEFORE the wizard opened is the larger half of the same
+  // cohort — permission was already 'denied' when the steps were built, so the
+  // user was never even offered the action. It must record identically (#5617).
+  it('records a step blocked at mount as blocked, not skipped', async () => {
+    installPushState('denied', true);
+    activeDom = installDom();
+    const mod = await loadInterstitial();
+    const { dom, exits } = openAlertsStep(mod, async () => 'blocked', 'blocked');
+
+    assert.equal(clickPrimary(dom), 'advance-skip', 'mount-blocked advances with Continue');
+    assert.equal(clickPrimary(dom), 'finish');
+    assert.deepEqual(exits, [[{ id: 'alerts', outcome: 'blocked' }]]);
   });
 
   it('keeps the pre-denied copy for a step already blocked at mount', async () => {
@@ -499,5 +522,107 @@ describe('activation interstitial blocked transition (#5609)', () => {
     assert.match(html, /status\.retry/, 'retry must survive for recoverable failures');
     assert.match(html, /data-action="confirm"/);
     assert.doesNotMatch(html, /status-blocked/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3. Durable record — the blocked outcome must reach Convex in its own bucket
+// ---------------------------------------------------------------------------
+
+/**
+ * #5617. The event stream can already separate a browser denial from a
+ * voluntary skip; the persisted per-account record could not. This covers the
+ * handoff the leaf's bucket test cannot see: the flow must actually SEND
+ * `blockedSteps` on the outcome snapshot. A dropped field here leaves every
+ * unit test green while the durable record stays collapsed.
+ */
+describe('durable activation outcome carries the blocked bucket (#5617)', () => {
+  type Snapshot = {
+    confirmedSteps: string[];
+    skippedSteps: string[];
+    blockedSteps: string[];
+    failedSteps: string[];
+    revision: number;
+    finalized: boolean;
+  };
+
+  async function captureOutcomeWrites(): Promise<{
+    interstitial: Parameters<InterstitialModule['openProActivationInterstitial']>[0];
+    writes: Snapshot[];
+  }> {
+    installPushState('denied', true);
+    const mod = await loadInterstitial();
+    const writes: Snapshot[] = [];
+    let captured: Parameters<InterstitialModule['openProActivationInterstitial']>[0] | null = null;
+    const opened = await mod.openProActivationFlow(
+      {
+        accountUserId: 'user_alerts',
+        accountEmail: 'pro@worldmonitor.test',
+        isAccountCurrent: () => true,
+        // The durable snapshot is written only for the markerless cohort, which
+        // is the one holding a server-side presentation row to write it onto.
+        onlyIfUnactivated: true,
+        expectedActivationKey: 'sub_activation_key',
+        activationClaimNonce: 'device-a',
+      },
+      {
+        readContext: async () => activationContext(),
+        recordOutcome: async (_key, _nonce, snapshot) => {
+          writes.push(snapshot as Snapshot);
+          return true;
+        },
+        openInterstitial: (interstitialOptions) => {
+          captured = interstitialOptions;
+        },
+      },
+    );
+    assert.equal(opened, 'opened');
+    assert.ok(captured, 'flow must open the interstitial');
+    return { interstitial: captured!, writes };
+  }
+
+  /** The write is fire-and-forget; let its microtask chain settle. */
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 5; i += 1) await new Promise<void>((r) => setImmediate(r));
+  };
+
+  it('persists a blocked step in blockedSteps, leaving skippedSteps for real skips', async () => {
+    const { interstitial, writes } = await captureOutcomeWrites();
+
+    interstitial.onExit([
+      { id: 'brief', outcome: 'confirmed' },
+      { id: 'alerts', outcome: 'blocked' },
+      { id: 'power', outcome: 'skipped' },
+    ]);
+    await settle();
+
+    assert.equal(writes.length, 1, 'exit must persist exactly one finalized snapshot');
+    const snapshot = writes[0]!;
+    assert.deepEqual(snapshot.blockedSteps, ['alerts']);
+    assert.deepEqual(
+      snapshot.skippedSteps,
+      ['power'],
+      'a browser refusal must not be counted as a voluntary skip',
+    );
+    assert.deepEqual(
+      snapshot.failedSteps,
+      [],
+      'we never attempted the write, so nothing failed',
+    );
+    assert.deepEqual(snapshot.confirmedSteps, ['brief']);
+    assert.equal(snapshot.finalized, true);
+  });
+
+  it('sends an explicit empty blockedSteps when nothing was blocked', async () => {
+    const { interstitial, writes } = await captureOutcomeWrites();
+
+    interstitial.onProgress?.([{ id: 'brief', outcome: 'confirmed' }]);
+    await settle();
+
+    assert.equal(writes.length, 1);
+    // Present-and-empty, never omitted: a progress snapshot is a full
+    // replacement, so a missing bucket would leave a stale one behind.
+    assert.deepEqual(writes[0]!.blockedSteps, []);
+    assert.equal(writes[0]!.finalized, false);
   });
 });

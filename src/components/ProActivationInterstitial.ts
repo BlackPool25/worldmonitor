@@ -30,6 +30,7 @@ import {
   claimProActivationPresentation,
   confirmProActivationPresentation,
   recordProActivationOutcome,
+  type ProActivationOutcomeSnapshot,
 } from '@/services/billing';
 import { escapeHtml } from '@/utils/sanitize';
 import { withTimeout } from '@/utils/with-timeout';
@@ -57,6 +58,7 @@ import {
   buildCriticalAlertsPayload,
   buildExitSummary,
   buildActivationOutcomeBuckets,
+  selectAdvanceOutcome,
   summarizeActivationExit,
   DEFAULT_DIGEST_HOUR,
   type ActivationEventName,
@@ -319,9 +321,15 @@ export function openProActivationInterstitial(options: ProActivationInterstitial
   const effectiveState = (step: ActivationStep): ActivationStepState =>
     blockedByConfirm.has(step.id) ? 'blocked' : step.state;
 
-  /** Default disposition for a step never explicitly acted on. */
+  /**
+   * Default disposition for a step never explicitly acted on (dismiss/Escape).
+   * Shares `selectAdvanceOutcome` with the Continue button so a browser-refused
+   * step is recorded as `blocked` no matter which way the user leaves it —
+   * recording it only on the button would make `blockedSteps` a sample of
+   * "denied users who clicked Continue" rather than the denial cohort (#5617).
+   */
   const defaultOutcome = (step: ActivationStep): ActivationStepOutcome =>
-    effectiveState(step) === 'already-done' ? 'done' : 'skipped';
+    selectAdvanceOutcome(effectiveState(step));
 
   const buildResults = (): ActivationStepResult[] =>
     steps.map((step) => ({ id: step.id, outcome: outcomes.get(step.id) ?? defaultOutcome(step) }));
@@ -532,17 +540,22 @@ export function openProActivationInterstitial(options: ProActivationInterstitial
     for (let i = currentIndex; i < steps.length; i += 1) {
       const step = steps[i]!;
       if (outcomes.has(step.id)) continue;
-      if (effectiveState(step) === 'already-done') {
+      const state = effectiveState(step);
+      if (state === 'already-done') {
         outcomes.set(step.id, 'done');
         continue;
       }
       // Preserve a genuine failure signal on the step the user is abandoning.
+      // Unreachable for a blocked step: resolving a confirm `blocked` clears
+      // the transient, so the two signals can never contend for one step.
       if (i === currentIndex && transient === 'failed') {
         outcomes.set(step.id, 'failed');
         continue;
       }
       options.onSkipStep(step.id);
-      outcomes.set(step.id, 'skipped');
+      // Abandoning the flow on a browser-refused step is still a refusal, not
+      // a skip — same seam as the Continue button so the two cannot drift.
+      outcomes.set(step.id, selectAdvanceOutcome(state));
     }
     transient = 'idle';
     currentIndex = steps.length;
@@ -655,7 +668,11 @@ export function openProActivationInterstitial(options: ProActivationInterstitial
             break;
           case 'advance-skip':
             options.onSkipStep(step.id);
-            outcomes.set(step.id, 'skipped');
+            // `blocked` (mount-time or mid-flow) records as its own outcome so
+            // the durable record can still tell a browser refusal from a
+            // voluntary skip; the summary and the funnel event both keep
+            // reading it as pending, exactly as before (#5617).
+            outcomes.set(step.id, selectAdvanceOutcome(effectiveState(step)));
             recordProgress();
             advance();
             break;
@@ -793,16 +810,15 @@ export interface ProActivationFlowDependencies {
     claimNonce: string,
   ) => Promise<'claimed' | 'not_eligible' | 'already_presented' | 'already_claimed'>;
   confirmPresentation: (activationKey: string, claimNonce: string) => Promise<boolean>;
+  /**
+   * Typed against the service's own snapshot rather than a hand-copied shape:
+   * the duplicate drifted the moment a bucket was added (#5617), and a stale
+   * structural copy would have let the new field be dropped here silently.
+   */
   recordOutcome: (
     activationKey: string,
     claimNonce: string,
-    outcome: {
-      confirmedSteps: ActivationStepId[];
-      skippedSteps: ActivationStepId[];
-      failedSteps: ActivationStepId[];
-      revision: number;
-      finalized: boolean;
-    },
+    outcome: ProActivationOutcomeSnapshot,
   ) => Promise<boolean>;
   openInterstitial: typeof openProActivationInterstitial;
   /** Per-operation deadline; injectable only to keep timeout regressions fast. */
@@ -1243,6 +1259,7 @@ function persistActivationOutcomeWithRetry(
             {
               confirmedSteps: [...buckets.confirmedSteps],
               skippedSteps: [...buckets.skippedSteps],
+              blockedSteps: [...buckets.blockedSteps],
               failedSteps: [...buckets.failedSteps],
               revision,
               finalized,

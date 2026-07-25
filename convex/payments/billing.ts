@@ -753,6 +753,10 @@ export const recordProActivationOutcome = mutation({
     claimNonce: v.string(),
     confirmedSteps: v.array(proActivationStepIdValidator),
     skippedSteps: v.array(proActivationStepIdValidator),
+    // Optional for mixed deploys (#5617): a client from before the blocked
+    // bucket existed sends only the original three, and genuinely has no
+    // blocked steps to report — it classified them as skips.
+    blockedSteps: v.optional(v.array(proActivationStepIdValidator)),
     failedSteps: v.array(proActivationStepIdValidator),
     revision: v.number(),
     finalized: v.boolean(),
@@ -781,9 +785,11 @@ export const recordProActivationOutcome = mutation({
         `activation outcome revision must be an integer from 1 to ${MAX_PRO_ACTIVATION_OUTCOME_REVISION}`,
       );
     }
+    const blockedSteps = args.blockedSteps ?? [];
     const allSteps = [
       ...args.confirmedSteps,
       ...args.skippedSteps,
+      ...blockedSteps,
       ...args.failedSteps,
     ];
     if (
@@ -802,6 +808,10 @@ export const recordProActivationOutcome = mutation({
     await ctx.db.patch(presentation._id, {
       confirmedSteps: args.confirmedSteps,
       skippedSteps: args.skippedSteps,
+      // Every snapshot is a full replacement, so this is written even when
+      // empty — omitting it would strand a previous revision's blocked bucket
+      // beside newer confirmed/skipped ones.
+      blockedSteps,
       failedSteps: args.failedSteps,
       outcomeRevision: args.revision,
       outcomeUpdatedAt: now,

@@ -657,6 +657,10 @@ export default defineSchema({
     outcomeTrackingVersion: v.optional(v.literal(1)),
     confirmedSteps: v.optional(v.array(proActivationStepIdValidator)),
     skippedSteps: v.optional(v.array(proActivationStepIdValidator)),
+    // Browser-refused steps (#5617). A separate bucket rather than a marker on
+    // `skippedSteps` so rows written before it existed stay valid and every
+    // existing consumer of the original three keeps its exact meaning.
+    blockedSteps: v.optional(v.array(proActivationStepIdValidator)),
     failedSteps: v.optional(v.array(proActivationStepIdValidator)),
     outcomeRevision: v.optional(v.number()),
     outcomeUpdatedAt: v.optional(v.number()),
