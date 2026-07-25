@@ -2,9 +2,11 @@
  * Pure decision core for Pro Activation Onboarding.
  *
  * A day-0 post-checkout activation interstitial for new Pro subscribers. It
- * opens right after the existing entitlement-unlock reload, driven off a
- * durable localStorage marker written at checkout return. This module owns
- * ALL of the decision logic: the mount flowchart, the record shapes and TTLs,
+ * opens right after the existing entitlement-unlock reload, reached by one of
+ * two mount paths: the durable localStorage marker written at checkout return,
+ * or the markerless first-cycle backfill (`decideActivationMount` mounts
+ * markerless for a live first-cycle Pro subscription). This module owns ALL of
+ * the decision logic: the mount flowchart, the record shapes and TTLs,
  * fire-once keying, the step model, the exit summary, the finish-setup chip,
  * and telemetry event selection.
  *
@@ -13,8 +15,10 @@
  * dashboard code statically imports it — importing the product catalog here
  * would drag that checkout-only module into the main entry chunk and break the
  * eager-chunk budget. It COMPUTES records and decisions from explicit snapshot
- * inputs — callers perform every storage read/write (localStorage lives in the
- * panel-layout/UI units, never here).
+ * inputs. The fire-once record is the deliberate exception to pure input/output:
+ * `readScopedFireOnceRecord`/`writeScopedFireOnceRecord` persist it here against
+ * an INJECTED storage handle (so tests stay jsdom-free); every other storage
+ * read/write still lives in the panel-layout/UI units.
  *
  * Plan identity is an allowlist against the two Pro product ids. The literals
  * are mirrored from config/products.generated.ts (DODO_PRODUCTS.PRO_MONTHLY /

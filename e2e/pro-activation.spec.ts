@@ -133,6 +133,7 @@ async function runMarkerlessFlowHarness(
     throwRead?: boolean;
     switchAfterClaim?: boolean;
     confirmResult?: boolean;
+    confirmFailures?: number;
     neverResolveClaim?: boolean;
   },
 ): Promise<{ result: string; claimCalls: number; confirmCalls: number }> {
@@ -182,6 +183,9 @@ async function runMarkerlessFlowHarness(
         },
         confirmPresentation: async () => {
           confirmCalls += 1;
+          if (confirmCalls <= (scenario.confirmFailures ?? 0)) {
+            throw new Error('confirm transport failed');
+          }
           return scenario.confirmResult !== false;
         },
         // Stubbed so these tests never depend on a real Convex client; the
@@ -252,6 +256,27 @@ test.describe('Pro activation flow — markerless first-cycle handoff', () => {
       confirmResult: false,
     });
     expect(result).toEqual({ result: 'retry', claimCalls: 1, confirmCalls: 1 });
+    await expect(page.locator(OVERLAY)).toHaveCount(0);
+  });
+
+  test('transient confirm failures still open after the retry delays', async ({ page }) => {
+    const result = await runMarkerlessFlowHarness(page, {
+      claimStatus: 'claimed',
+      confirmFailures: 2,
+    });
+    expect(result).toEqual({ result: 'opened', claimCalls: 1, confirmCalls: 3 });
+    await expect(page.locator(OVERLAY)).toBeVisible();
+  });
+
+  test('confirm failures beyond the retry schedule close the flow and remain retryable', async ({ page }) => {
+    // One initial call plus every entry of PRESENTATION_CONFIRM_RETRY_DELAYS_MS
+    // (250/750/1500ms real delays) fails → the flow gives up retrying.
+    test.setTimeout(60_000);
+    const result = await runMarkerlessFlowHarness(page, {
+      claimStatus: 'claimed',
+      confirmFailures: 4,
+    });
+    expect(result).toEqual({ result: 'retry', claimCalls: 1, confirmCalls: 4 });
     await expect(page.locator(OVERLAY)).toHaveCount(0);
   });
 

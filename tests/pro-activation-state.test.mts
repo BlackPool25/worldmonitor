@@ -105,6 +105,20 @@ function fireOnce(overrides: Partial<FireOnceRecord> = {}): FireOnceRecord {
   return { subscriptionKey: 'sub_live_1', shownAt: NOW, ...overrides };
 }
 
+function createMemoryStorage(
+  values: Map<string, string>,
+): Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> {
+  return {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      values.set(key, value);
+    },
+    removeItem: (key: string) => {
+      values.delete(key);
+    },
+  };
+}
+
 function mountInput(overrides: Partial<ActivationMountInput> = {}): ActivationMountInput {
   return {
     marker: marker(),
@@ -556,15 +570,7 @@ describe('fire-once record + TTL (KTD4)', () => {
     const values = new Map<string, string>([
       [FIRE_ONCE_KEY, JSON.stringify(fireOnce({ subscriptionKey: 'sub-a' }))],
     ]);
-    const storage = {
-      getItem: (key: string) => values.get(key) ?? null,
-      setItem: (key: string, value: string) => {
-        values.set(key, value);
-      },
-      removeItem: (key: string) => {
-        values.delete(key);
-      },
-    };
+    const storage = createMemoryStorage(values);
 
     assert.equal(
       readScopedFireOnceRecord(storage, ACCOUNT_A, 'sub-a', NOW)?.subscriptionKey,
@@ -589,15 +595,7 @@ describe('fire-once record + TTL (KTD4)', () => {
     const values = new Map<string, string>([
       [FIRE_ONCE_KEY, JSON.stringify(fireOnce({ subscriptionKey: 'sub-a' }))],
     ]);
-    const storage = {
-      getItem: (key: string) => values.get(key) ?? null,
-      setItem: (key: string, value: string) => {
-        values.set(key, value);
-      },
-      removeItem: (key: string) => {
-        values.delete(key);
-      },
-    };
+    const storage = createMemoryStorage(values);
 
     assert.equal(readScopedFireOnceRecord(storage, ACCOUNT_B, 'sub-b', NOW), null);
     assert.equal(values.has(FIRE_ONCE_KEY), true);
@@ -618,15 +616,7 @@ describe('fire-once record + TTL (KTD4)', () => {
       ],
       [fireOnceStorageKey(ACCOUNT_B), JSON.stringify(fireOnce({ subscriptionKey: 'sub-b' }))],
     ]);
-    const storage = {
-      getItem: (key: string) => values.get(key) ?? null,
-      setItem: (key: string, value: string) => {
-        values.set(key, value);
-      },
-      removeItem: (key: string) => {
-        values.delete(key);
-      },
-    };
+    const storage = createMemoryStorage(values);
     assert.equal(readScopedFireOnceRecord(storage, ACCOUNT_A, 'sub-a', NOW), null);
     assert.equal(values.has(fireOnceStorageKey(ACCOUNT_A)), false);
     assert.equal(values.has(fireOnceStorageKey(ACCOUNT_B)), true);
