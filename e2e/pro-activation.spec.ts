@@ -141,6 +141,12 @@ async function readCapturedOutcomes(page: Page): Promise<CapturedOutcomeCall[]> 
   );
 }
 
+async function readOutcomeAttempts(page: Page): Promise<number> {
+  return page.evaluate(
+    () => (window as unknown as { __proOutcomeAttempts: number }).__proOutcomeAttempts,
+  );
+}
+
 type ClaimStatus = 'claimed' | 'not_eligible' | 'already_presented' | 'already_claimed';
 
 async function runMarkerlessFlowHarness(
@@ -153,14 +159,19 @@ async function runMarkerlessFlowHarness(
     confirmResult?: boolean;
     confirmFailures?: number;
     neverResolveClaim?: boolean;
+    outcomeAlwaysFails?: boolean;
   },
 ): Promise<{ result: string; claimCalls: number; confirmCalls: number }> {
   return await page.evaluate(async (scenario) => {
     const { initI18n } = await import('/src/services/i18n.ts');
     await initI18n();
     const mod = await import('/src/components/ProActivationInterstitial.ts');
-    const w = window as unknown as { __proOutcomeCalls: CapturedOutcomeCall[] };
+    const w = window as unknown as {
+      __proOutcomeCalls: CapturedOutcomeCall[];
+      __proOutcomeAttempts: number;
+    };
     w.__proOutcomeCalls = [];
+    w.__proOutcomeAttempts = 0;
     let ownerChecks = 0;
     let claimCalls = 0;
     let confirmCalls = 0;
@@ -209,6 +220,10 @@ async function runMarkerlessFlowHarness(
           return scenario.confirmResult !== false;
         },
         recordOutcome: async (activationKey, claimNonce, outcome) => {
+          w.__proOutcomeAttempts += 1;
+          if (scenario.outcomeAlwaysFails) {
+            throw new Error('record outcome transport failed');
+          }
           w.__proOutcomeCalls.push({ activationKey, claimNonce, outcome });
           return true;
         },
@@ -304,6 +319,39 @@ test.describe('Pro activation flow — markerless first-cycle handoff', () => {
         },
       },
     ]);
+  });
+
+  test('outcome-write retries exhaust and give up without blocking the flow', async ({ page }) => {
+    // persistActivationOutcomeWithRetry doesn't distinguish transport errors
+    // from permanent rejections -- every failure gets the same bounded
+    // retry-then-give-up treatment (OUTCOME_WRITE_RETRY_DELAYS_MS = [250, 750]).
+    // This locks in that give-up behavior: no test previously exercised a
+    // recordOutcome call that fails every attempt.
+    const opened = await runMarkerlessFlowHarness(page, {
+      claimStatus: 'claimed',
+      outcomeAlwaysFails: true,
+    });
+    expect(opened.result).toBe('opened');
+
+    // finalizeAndShowSummary fires exactly one recordProgress() call
+    // (revision 1, finalized: false).
+    await page.locator('.pro-activation-close').click();
+    await expect(page.locator(SUMMARY)).toBeVisible();
+
+    // 1 initial attempt + 2 scheduled retries = 3 attempts, then the
+    // fire-and-forget loop gives up (console.warn) instead of retrying
+    // forever or throwing an unhandled rejection.
+    await expect.poll(() => readOutcomeAttempts(page), { timeout: 5_000 }).toBe(3);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(await readOutcomeAttempts(page)).toBe(3);
+
+    // Every attempt failed, so nothing was ever durably captured.
+    expect(await readCapturedOutcomes(page)).toEqual([]);
+
+    // The best-effort write failing never blocks the UI: the summary is
+    // still interactive and finishing closes normally.
+    await page.locator(FINISH_BTN).click();
+    await expect(page.locator(OVERLAY)).toHaveCount(0);
   });
 
   test('lost confirmation ownership closes the flow and remains retryable', async ({ page }) => {

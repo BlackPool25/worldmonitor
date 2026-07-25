@@ -160,6 +160,48 @@ test("analysis uses only mature presentations and table-specific adoption timest
   assert.equal(analysis.lift, 1);
 });
 
+test("analysis reports no-mature-outcomes when every presentation is still within its observation window", () => {
+  const presentations = [
+    {
+      userId: "too-recent-1",
+      // One ms short of maturing: observationStartedAt + windowMs > reportNow.
+      presentedAt: NOW - WINDOW_MS + 1,
+      outcomeTrackingVersion: 1,
+      confirmedSteps: ["brief"],
+    },
+    {
+      userId: "too-recent-2",
+      presentedAt: NOW,
+      outcomeTrackingVersion: 1,
+      confirmedSteps: [],
+    },
+  ];
+
+  const analysis = analyzeActivationLift({
+    presentations,
+    featureRowsByTable: emptyFeatureRows(),
+    reportNow: NOW,
+    windowMs: WINDOW_MS,
+  });
+
+  assert.equal(analysis.verdict, "no-mature-outcomes");
+  assert.equal(analysis.mature, 0);
+  assert.equal(analysis.immature, 2);
+  const emptyGroup = {
+    n: 0,
+    anyCount: 0,
+    rate: 0,
+    perTable: { notificationChannels: 0, alertRules: 0, userApiKeys: 0, mcpProTokens: 0 },
+  };
+  assert.deepEqual(analysis.engaged, emptyGroup);
+  assert.deepEqual(analysis.presentedOnly, emptyGroup);
+
+  assert.match(
+    formatActivationLiftReport(analysis, { windowDays: 14, limit: 20_000 }),
+    /No presentations have completed the full 14-day observation window yet\./,
+  );
+});
+
 test("analysis refuses capped exports before rates and enforces the mature sample floor", () => {
   const presentations = Array.from({ length: 59 }, (_, index) => ({
     userId: `user-${index}`,
