@@ -14,6 +14,7 @@ import {
 } from '../../../../src/config/airports';
 import { CHROME_UA } from '../../../_shared/constants';
 import { cachedFetchJson, getCachedJson } from '../../../_shared/redis';
+// @ts-expect-error — JS module, no declaration file
 import { captureSilentError } from '../../../../api/_sentry-edge.js';
 export { parseStringArray } from '../../../_shared/parse-string-array';
  

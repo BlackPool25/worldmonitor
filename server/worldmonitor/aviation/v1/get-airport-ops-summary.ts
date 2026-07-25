@@ -8,6 +8,7 @@ import type {
 } from '../../../../src/generated/server/worldmonitor/aviation/v1/service_server';
 import { MONITORED_AIRPORTS } from '../../../../src/config/airports';
 import { getCachedJson } from '../../../_shared/redis';
+// @ts-expect-error — JS module, no declaration file
 import { captureSilentError } from '../../../../api/_sentry-edge.js';
 import {
     determineSeverity,

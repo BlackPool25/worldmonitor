@@ -19,6 +19,7 @@ import {
   mergeNotamWithExistingAlert,
 } from './_shared';
 import { getCachedJson, setCachedJson } from '../../../_shared/redis';
+// @ts-expect-error — JS module, no declaration file
 import { captureSilentError } from '../../../../api/_sentry-edge.js';
  
 const FAA_CACHE_KEY = 'aviation:delays:faa:v1';
