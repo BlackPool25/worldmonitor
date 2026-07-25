@@ -204,5 +204,89 @@
       }
     ],
     "expectedCodes": ["INVALID_VALUE"]
+  },
+  {
+    "id": "unsupported-contract-version",
+    "baseFixtureId": "official-numeric-revised",
+    "mutations": [
+      {
+        "operation": "set",
+        "path": "contractVersion",
+        "value": "decision-signal-provenance/v2"
+      }
+    ],
+    "expectedCodes": ["UNSUPPORTED_CONTRACT_VERSION"]
+  },
+  {
+    "id": "unknown-family-id",
+    "baseFixtureId": "official-numeric-revised",
+    "mutations": [
+      {
+        "operation": "set",
+        "path": "familyId",
+        "value": "unregistered_family"
+      }
+    ],
+    "expectedCodes": ["UNKNOWN_FAMILY"]
+  },
+  {
+    "id": "known-claim-missing-value",
+    "baseFixtureId": "official-numeric-revised",
+    "mutations": [
+      {
+        "operation": "set",
+        "path": "claims.publisher",
+        "value": { "status": "known" }
+      }
+    ],
+    "expectedCodes": ["MISSING_CLAIM_VALUE"]
+  },
+  {
+    "id": "not-applicable-claim-carries-value",
+    "baseFixtureId": "official-numeric-revised",
+    "mutations": [
+      {
+        "operation": "set",
+        "path": "claims.translation.value",
+        "value": "en"
+      }
+    ],
+    "expectedCodes": ["INVALID_CLAIM"]
+  },
+  {
+    "id": "insecure-source-url",
+    "baseFixtureId": "official-numeric-revised",
+    "mutations": [
+      {
+        "operation": "set",
+        "path": "claims.source_url.value",
+        "value": "http://www.miit.gov.cn/example/industrial-output-2026-06"
+      }
+    ],
+    "expectedCodes": ["INVALID_VALUE"]
+  },
+  {
+    "id": "source-url-embeds-credentials",
+    "baseFixtureId": "official-numeric-revised",
+    "mutations": [
+      {
+        "operation": "set",
+        "path": "claims.source_url.value",
+        "value": "https://user:pass@www.miit.gov.cn/example/industrial-output-2026-06"
+      }
+    ],
+    "expectedCodes": ["INVALID_VALUE"]
+  },
+  {
+    "id": "malformed-content-hash",
+    "baseFixtureId": "official-numeric-revised",
+    "mutations": [
+      {
+        "operation": "set",
+        "path": "claims.original_reference.value.contentHash",
+        "value": "sha1:deadbeef"
+      }
+    ],
+    "expectedCodes": ["INVALID_VALUE"]
   }
 ]

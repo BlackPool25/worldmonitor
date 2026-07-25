@@ -29,7 +29,8 @@
           "status": "known",
           "value": {
             "kind": "observation",
-            "id": "miit:industrial-output:2026-06:v2"
+            "id": "miit:industrial-output:2026-06:v2",
+            "contentHash": "sha256:62d42e59ae40a23dd63c594c613471cea77d04a938c435a0521476131db95588"
           }
         },
         "original_language": {

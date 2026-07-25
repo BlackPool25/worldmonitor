@@ -191,7 +191,7 @@ describe('decision-signal provenance contract (#5581)', () => {
   });
 
   it('rejects omissions, invalid vocabulary, stale source references, and semantic substitutions', () => {
-    assert.ok(negativeFixtures.length >= 7);
+    assert.equal(negativeFixtures.length, 23);
     for (const fixture of negativeFixtures) {
       const result = validateDecisionSignalProvenance(invalidFixtureProvenance(fixture));
       assert.equal(result.ok, false, `${fixture.id} should fail validation`);
@@ -310,6 +310,17 @@ describe('decision-signal provenance contract (#5581)', () => {
       (error: unknown) => {
         assert.ok(error instanceof DecisionSignalProvenanceValidationError);
         assert.ok(error.errors.length > 0);
+        return true;
+      },
+    );
+  });
+
+  it('fails closed on malformed JSON before it ever reaches shape validation', () => {
+    assert.throws(
+      () => parseDecisionSignalProvenance('{not valid json'),
+      (error: unknown) => {
+        assert.ok(error instanceof DecisionSignalProvenanceValidationError);
+        assert.deepEqual(error.errors.map((issue) => issue.code), ['INVALID_JSON']);
         return true;
       },
     );
