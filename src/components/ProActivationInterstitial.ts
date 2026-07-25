@@ -1289,6 +1289,30 @@ export async function openProActivationFlow(
   }
   const steps = buildActivationSteps(ctx.capabilities, ctx.config);
 
+  options.onEvent?.(ACTIVATION_EVENTS.entered);
+
+  // Confirmed BEFORE the interstitial opens -- and therefore before its
+  // onProgress/onExit handlers exist to fire a recordProActivationOutcome
+  // write -- so a lost claim can never leave a presentedAt side effect from a
+  // step the user was never actually given a chance to interact with. This
+  // used to run after openInterstitial below; if a step got confirmed/skipped
+  // in the window before this awaited call resolved and it then failed here,
+  // recordProActivationOutcome's own presentedAt backfill had already fired,
+  // permanently blocking a legitimate re-claim via
+  // claimProActivationPresentation's already_presented check (review finding,
+  // #5584/#5590).
+  if (
+    options.onlyIfUnactivated &&
+    options.expectedActivationKey &&
+    options.activationClaimNonce
+  ) {
+    if (!(await confirmPresentationWithRetry(options, dependencies))) {
+      // A false result means this browser no longer owns the server claim;
+      // repeated transport errors remain retryable under the short lease.
+      return 'retry';
+    }
+  }
+
   // Holds the brief step's delivery-hour pick across the shell's re-renders.
   const selectedHourRef: DigestHourRef = { hour: null };
 
@@ -1312,8 +1336,6 @@ export async function openProActivationFlow(
       finalized,
     );
   };
-
-  options.onEvent?.(ACTIVATION_EVENTS.entered);
 
   dependencies.openInterstitial({
     steps,
@@ -1362,17 +1384,5 @@ export async function openProActivationFlow(
       if (!isFlowAccountCurrent(options)) closeProActivationInterstitial();
     });
   });
-  if (
-    options.onlyIfUnactivated &&
-    options.expectedActivationKey &&
-    options.activationClaimNonce
-  ) {
-    if (!(await confirmPresentationWithRetry(options, dependencies))) {
-      // A false result means this browser no longer owns the server claim;
-      // repeated transport errors remain retryable under the short lease.
-      closeProActivationInterstitial();
-      return 'retry';
-    }
-  }
   return 'opened';
 }

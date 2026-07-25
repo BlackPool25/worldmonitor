@@ -336,6 +336,97 @@ test.describe('Pro activation flow — markerless first-cycle handoff', () => {
     await expect(page.locator(OVERLAY)).toHaveCount(0);
   });
 
+  test('interstitial stays unmounted while confirmation is pending, so a lost claim cannot leave a stray outcome write', async ({ page }) => {
+    // Regression test for a presentedAt race (review of #5584/#5590):
+    // openProActivationFlow used to open the interstitial (wiring
+    // onProgress/onExit to recordProActivationOutcome) BEFORE awaiting
+    // confirmPresentationWithRetry. If a step got interacted with in that
+    // window and confirm then failed, recordProActivationOutcome's own
+    // presentedAt backfill had already fired, permanently blocking a
+    // legitimate re-claim via claimProActivationPresentation's
+    // already_presented check -- even though the server never acknowledged
+    // this presentation. The interstitial must not exist (and therefore
+    // cannot record an outcome) until confirm actually succeeds.
+    await page.evaluate(async () => {
+      const { initI18n } = await import('/src/services/i18n.ts');
+      await initI18n();
+      const mod = await import('/src/components/ProActivationInterstitial.ts');
+      const w = window as unknown as {
+        __resolveProConfirm?: (ok: boolean) => void;
+        __flowResult?: Promise<string>;
+        __proOutcomeCalls: CapturedOutcomeCall[];
+      };
+      w.__proOutcomeCalls = [];
+      const context = {
+        config: {
+          hasVerifiedEmailChannel: false,
+          hasEmailDelivery: false,
+          hasEnabledDigestRule: false,
+          hasTunedDigestHour: false,
+          hasWebPushChannel: false,
+          hasWebPushDelivery: false,
+          hasUsedPowerFeature: false,
+        },
+        capabilities: { webPushSupported: false },
+        channels: [],
+        channelsKnown: true,
+        hasEnabledRule: false,
+      };
+      // Deliberately never resolves on its own -- held open so the test can
+      // assert on interstitial state while confirm is genuinely in flight,
+      // then resolve it explicitly to drive the failure path.
+      w.__flowResult = mod.openProActivationFlow(
+        {
+          accountUserId: 'markerless-user',
+          accountEmail: 'markerless@worldmonitor.app',
+          onlyIfUnactivated: true,
+          expectedActivationKey: 'opaque-subscription',
+          activationClaimNonce: 'tab-nonce',
+          isAccountCurrent: () => true,
+        },
+        {
+          readContext: async () => context,
+          claimPresentation: async () => 'claimed',
+          confirmPresentation: () =>
+            new Promise<boolean>((resolve) => {
+              w.__resolveProConfirm = resolve;
+            }),
+          recordOutcome: async (activationKey, claimNonce, outcome) => {
+            w.__proOutcomeCalls.push({ activationKey, claimNonce, outcome });
+            return true;
+          },
+          // Large enough that withTimeout never races the manual resolve below.
+          operationTimeoutMs: 20_000,
+        },
+      );
+    });
+
+    // Confirm is still pending: the interstitial must not be mounted, so
+    // there is no onProgress/onConfirmStep handler a (simulated) click could
+    // reach, and no way for a recordOutcome write to fire yet.
+    await page.waitForTimeout(100);
+    await expect(page.locator(OVERLAY)).toHaveCount(0);
+
+    // Server rejects the claim (lost ownership) -- the real failure mode this
+    // guards against.
+    await page.evaluate(() => {
+      (
+        window as unknown as { __resolveProConfirm?: (ok: boolean) => void }
+      ).__resolveProConfirm?.(false);
+    });
+
+    const result = await page.evaluate(
+      () => (window as unknown as { __flowResult: Promise<string> }).__flowResult,
+    );
+    expect(result).toBe('retry');
+    await expect(page.locator(OVERLAY)).toHaveCount(0);
+
+    const outcomeCalls = await page.evaluate(
+      () => (window as unknown as { __proOutcomeCalls: CapturedOutcomeCall[] }).__proOutcomeCalls,
+    );
+    expect(outcomeCalls).toEqual([]);
+  });
+
   test('account switch after claim retries without opening or confirming', async ({ page }) => {
     const result = await runMarkerlessFlowHarness(page, {
       claimStatus: 'claimed',
