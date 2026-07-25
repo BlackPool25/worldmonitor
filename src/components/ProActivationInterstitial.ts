@@ -82,6 +82,8 @@ export interface ProActivationInterstitialOptions {
   onConfirmStep: (stepId: ActivationStepId) => Promise<'verified' | 'failed'>;
   /** Fire-and-forget skip signal (bookkeeping/telemetry wired by later units). */
   onSkipStep: (stepId: ActivationStepId) => void;
+  /** Called after each durable step-state transition with a full snapshot. */
+  onProgress?: (results: ActivationStepResult[]) => void;
   /** Called exactly once when the flow ends, with the ordered step results. */
   onExit: (results: ActivationStepResult[]) => void;
   /**
@@ -279,6 +281,8 @@ export function openProActivationInterstitial(options: ProActivationInterstitial
 
   const buildResults = (): ActivationStepResult[] =>
     steps.map((step) => ({ id: step.id, outcome: outcomes.get(step.id) ?? defaultOutcome(step) }));
+
+  const recordProgress = (): void => options.onProgress?.(buildResults());
 
   const currentStatus = (step: ActivationStep): StepStatus => {
     if (step.state === 'already-done') return 'verified';
@@ -506,6 +510,7 @@ export function openProActivationInterstitial(options: ProActivationInterstitial
     }
     transient = 'idle';
     currentIndex = steps.length;
+    recordProgress();
     renderModal();
   };
 
@@ -522,6 +527,7 @@ export function openProActivationInterstitial(options: ProActivationInterstitial
   const handleSkip = (step: ActivationStep): void => {
     options.onSkipStep(step.id);
     outcomes.set(step.id, transient === 'failed' ? 'failed' : 'skipped');
+    recordProgress();
     advance();
   };
 
@@ -539,6 +545,7 @@ export function openProActivationInterstitial(options: ProActivationInterstitial
     if (!overlay || generation !== gen) return;
     if (result === 'verified') {
       outcomes.set(step.id, 'confirmed');
+      recordProgress();
       advance();
     } else {
       transient = 'failed';
@@ -598,11 +605,13 @@ export function openProActivationInterstitial(options: ProActivationInterstitial
             break;
           case 'advance-done':
             outcomes.set(step.id, 'done');
+            recordProgress();
             advance();
             break;
           case 'advance-skip':
             options.onSkipStep(step.id);
             outcomes.set(step.id, 'skipped');
+            recordProgress();
             advance();
             break;
         }
@@ -619,6 +628,7 @@ export function openProActivationInterstitial(options: ProActivationInterstitial
           extra.onMount(extrasRoot, {
             confirmAndFinish: () => {
               outcomes.set(step.id, 'confirmed');
+              recordProgress();
               finishFlow();
             },
           });
@@ -736,8 +746,14 @@ export interface ProActivationFlowDependencies {
   recordOutcome: (
     activationKey: string,
     claimNonce: string,
-    outcome: { confirmedSteps: string[]; skippedSteps: string[]; failedSteps: string[] },
-  ) => Promise<void>;
+    outcome: {
+      confirmedSteps: ActivationStepId[];
+      skippedSteps: ActivationStepId[];
+      failedSteps: ActivationStepId[];
+      revision: number;
+      finalized: boolean;
+    },
+  ) => Promise<boolean>;
   openInterstitial: typeof openProActivationInterstitial;
   /** Per-operation deadline; injectable only to keep timeout regressions fast. */
   operationTimeoutMs?: number;
@@ -754,6 +770,7 @@ const BRIEF_PREVIEW_TIMEOUT_MS = 2500;
 const ACTIVATION_CONTEXT_TIMEOUT_MS = 5_000;
 const ACTIVATION_MUTATION_TIMEOUT_MS = 5_000;
 const PRESENTATION_CONFIRM_RETRY_DELAYS_MS = [250, 750, 1_500] as const;
+const OUTCOME_WRITE_RETRY_DELAYS_MS = [250, 750] as const;
 
 /**
  * The brief step's chosen delivery hour, held outside the re-rendered DOM. The
@@ -1164,6 +1181,48 @@ async function confirmPresentationWithRetry(
   return false;
 }
 
+function persistActivationOutcomeWithRetry(
+  options: ProActivationFlowOptions,
+  dependencies: ProActivationFlowDependencies,
+  results: readonly ActivationStepResult[],
+  revision: number,
+  finalized: boolean,
+): void {
+  if (!options.onlyIfUnactivated || !options.expectedActivationKey || !options.activationClaimNonce) {
+    return;
+  }
+  const buckets = buildActivationOutcomeBuckets(results);
+  void (async () => {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await withTimeout(
+          dependencies.recordOutcome(
+            options.expectedActivationKey!,
+            options.activationClaimNonce!,
+            {
+              confirmedSteps: [...buckets.confirmedSteps],
+              skippedSteps: [...buckets.skippedSteps],
+              failedSteps: [...buckets.failedSteps],
+              revision,
+              finalized,
+            },
+          ),
+          dependencies.operationTimeoutMs ?? ACTIVATION_MUTATION_TIMEOUT_MS,
+          'activation-record-outcome',
+        );
+        return;
+      } catch (error) {
+        const delay = OUTCOME_WRITE_RETRY_DELAYS_MS[attempt];
+        if (delay === undefined) {
+          console.warn('[pro-activation] failed to record activation outcome', error);
+          return;
+        }
+        await new Promise<void>((resolve) => window.setTimeout(resolve, delay));
+      }
+    }
+  })();
+}
+
 /**
  * Open the full Pro-activation flow: read the subscriber's config, build the
  * ordered steps, wire the real per-step handlers, and on exit decide the
@@ -1242,6 +1301,17 @@ export async function openProActivationFlow(
   // the confirm button while in-flight (guard the handler itself against a
   // double-fire, e.g. a stray second click before the first await settles).
   const inFlight = new Set<ActivationStepId>();
+  let outcomeRevision = 0;
+  const persistOutcome = (results: readonly ActivationStepResult[], finalized: boolean): void => {
+    outcomeRevision += 1;
+    persistActivationOutcomeWithRetry(
+      options,
+      dependencies,
+      results,
+      outcomeRevision,
+      finalized,
+    );
+  };
 
   options.onEvent?.(ACTIVATION_EVENTS.entered);
 
@@ -1269,24 +1339,13 @@ export async function openProActivationFlow(
       }
     },
     onSkipStep: (stepId) => options.onEvent?.(ACTIVATION_EVENTS.stepSkipped, stepId),
+    onProgress: (results) => persistOutcome(results, false),
     onExit: (results) => {
       options.onEvent?.(ACTIVATION_EVENTS.exit, undefined, summarizeActivationExit(results));
-      // Durable outcome record (#5582), independent of the Umami event above
-      // -- only for the markerless cohort, which is what has a presentation
-      // row to attach it to. Fire-and-forget: never blocks the subscriber's
-      // exit or the finish-setup chip below.
-      if (options.onlyIfUnactivated && options.expectedActivationKey && options.activationClaimNonce) {
-        const buckets = buildActivationOutcomeBuckets(results);
-        void dependencies.recordOutcome(
-          options.expectedActivationKey,
-          options.activationClaimNonce,
-          {
-            confirmedSteps: [...buckets.confirmedSteps],
-            skippedSteps: [...buckets.skippedSteps],
-            failedSteps: [...buckets.failedSteps],
-          },
-        );
-      }
+      // Freeze the latest durable snapshot. Progress was already recorded as
+      // steps resolved, so a tab close before this best-effort write cannot
+      // erase engagement from the cohort.
+      persistOutcome(results, true);
       // Chip decision + all localStorage live in the chip module (lazy-imported
       // to keep this component ↔ chip pair free of a static import cycle).
       void import('@/components/ProActivationChip')

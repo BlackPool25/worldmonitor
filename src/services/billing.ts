@@ -187,30 +187,34 @@ export async function confirmProActivationPresentation(
   ) as boolean;
 }
 
+export type ProActivationOutcomeStepId = 'brief' | 'alerts' | 'power';
+
+export interface ProActivationOutcomeSnapshot {
+  confirmedSteps: ProActivationOutcomeStepId[];
+  skippedSteps: ProActivationOutcomeStepId[];
+  failedSteps: ProActivationOutcomeStepId[];
+  revision: number;
+  finalized: boolean;
+}
+
 /**
- * Persist the wizard's actual outcome once the subscriber exits (#5582),
- * independent of the Umami funnel event, so activation-lift can be measured
- * even when Umami is unavailable or its events carry no userId to join
- * against Convex feature-usage tables. Best-effort: swallow errors so a
- * failed write never blocks the subscriber's exit or the finish-setup chip.
+ * Persist one monotonic activation-outcome snapshot. The flow keeps this
+ * best-effort and non-blocking, but errors propagate here so its bounded retry
+ * loop can distinguish a transport failure from a server-side rejection.
  */
 export async function recordProActivationOutcome(
   activationKey: string,
   claimNonce: string,
-  outcome: { confirmedSteps: string[]; skippedSteps: string[]; failedSteps: string[] },
-): Promise<void> {
-  try {
-    const client = await getConvexClient();
-    const api = await getConvexApi();
-    if (!client || !api) return;
-    await waitForConvexAuth();
-    await client.mutation(
-      (api as any).payments.billing.recordProActivationOutcome,
-      { activationKey, claimNonce, ...outcome },
-    );
-  } catch (error) {
-    console.warn('[pro-activation] failed to record activation outcome', error);
-  }
+  outcome: ProActivationOutcomeSnapshot,
+): Promise<boolean> {
+  const client = await getConvexClient();
+  const api = await getConvexApi();
+  if (!client || !api) throw new Error('Convex unavailable');
+  await waitForConvexAuth();
+  return await client.mutation(
+    (api as any).payments.billing.recordProActivationOutcome,
+    { activationKey, claimNonce, ...outcome },
+  ) as boolean;
 }
 
 const DODO_PORTAL_FALLBACK_URL = 'https://customer.dodopayments.com';
