@@ -5031,4 +5031,86 @@ describe("getSubscriptionForUser activation onboarding eligibility", () => {
       .collect());
     expect(rows).toEqual([]);
   });
+
+  test("recordProActivationOutcome persists confirmed/skipped/failed steps and an exit timestamp", async () => {
+    const t = convexTest(schema, modules);
+    const activationKey = await seedSubscription(t, {
+      planKey: "pro_monthly",
+      dodoProductId: PRODUCT_CATALOG.pro_monthly.dodoProductId!,
+      status: "active",
+      currentPeriodEnd: NOW + 30 * DAY_MS,
+      suffix: "activation_outcome",
+    });
+    await t.withIdentity(IDENTITY).mutation(
+      api.payments.billing.claimProActivationPresentation,
+      { activationKey, claimNonce: "device-a" },
+    );
+
+    const before = Date.now();
+    const persisted = await t.withIdentity(IDENTITY).mutation(
+      api.payments.billing.recordProActivationOutcome,
+      {
+        activationKey,
+        claimNonce: "device-a",
+        confirmedSteps: ["brief", "power"],
+        skippedSteps: ["alerts"],
+        failedSteps: [],
+      },
+    );
+    expect(persisted).toBe(true);
+
+    const row = await t.run(async (ctx) => await ctx.db
+      .query("proActivationPresentations")
+      .withIndex("by_subscription", (q) => q.eq("subscriptionId", activationKey))
+      .unique());
+    expect(row?.confirmedSteps).toEqual(["brief", "power"]);
+    expect(row?.skippedSteps).toEqual(["alerts"]);
+    expect(row?.failedSteps).toEqual([]);
+    expect(row?.exitedAt).toBeGreaterThanOrEqual(before);
+  });
+
+  test("recordProActivationOutcome no-ops on a claimNonce mismatch, another user's row, or a never-claimed subscription", async () => {
+    const t = convexTest(schema, modules);
+    const activationKey = await seedSubscription(t, {
+      planKey: "pro_monthly",
+      dodoProductId: PRODUCT_CATALOG.pro_monthly.dodoProductId!,
+      status: "active",
+      currentPeriodEnd: NOW + 30 * DAY_MS,
+      suffix: "activation_outcome_guard",
+    });
+
+    // No presentation row exists yet -- never claimed.
+    expect(await t.withIdentity(IDENTITY).mutation(
+      api.payments.billing.recordProActivationOutcome,
+      { activationKey, claimNonce: "device-a", confirmedSteps: [], skippedSteps: [], failedSteps: [] },
+    )).toBe(false);
+
+    await t.withIdentity(IDENTITY).mutation(
+      api.payments.billing.claimProActivationPresentation,
+      { activationKey, claimNonce: "device-a" },
+    );
+
+    // Wrong nonce.
+    expect(await t.withIdentity(IDENTITY).mutation(
+      api.payments.billing.recordProActivationOutcome,
+      { activationKey, claimNonce: "wrong-nonce", confirmedSteps: ["brief"], skippedSteps: [], failedSteps: [] },
+    )).toBe(false);
+
+    // Different user.
+    const otherIdentity = {
+      subject: "user_activation_outcome_other",
+      tokenIdentifier: "clerk|user_activation_outcome_other",
+    };
+    expect(await t.withIdentity(otherIdentity).mutation(
+      api.payments.billing.recordProActivationOutcome,
+      { activationKey, claimNonce: "device-a", confirmedSteps: ["brief"], skippedSteps: [], failedSteps: [] },
+    )).toBe(false);
+
+    const row = await t.run(async (ctx) => await ctx.db
+      .query("proActivationPresentations")
+      .withIndex("by_subscription", (q) => q.eq("subscriptionId", activationKey))
+      .unique());
+    expect(row?.confirmedSteps).toBeUndefined();
+    expect(row?.exitedAt).toBeUndefined();
+  });
 });

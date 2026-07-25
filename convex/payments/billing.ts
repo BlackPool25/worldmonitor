@@ -719,6 +719,47 @@ export const confirmProActivationPresentation = mutation({
 });
 
 /**
+ * Persist the wizard's actual outcome once the subscriber exits (#5582):
+ * which steps confirmed, which were skipped, which failed. Independent of
+ * the Umami funnel event -- Umami carries no userId to join against Convex
+ * feature-usage tables, and was found dead for 4 days spanning most of
+ * #5534's launch window (#5565). Best-effort: a missing/mismatched
+ * presentation row (e.g. the lease already expired and a different device
+ * reclaimed it) silently no-ops rather than surfacing an error to a
+ * subscriber who is already leaving the flow.
+ */
+export const recordProActivationOutcome = mutation({
+  args: {
+    activationKey: v.id("subscriptions"),
+    claimNonce: v.string(),
+    confirmedSteps: v.array(v.string()),
+    skippedSteps: v.array(v.string()),
+    failedSteps: v.array(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+    const presentation = await ctx.db
+      .query("proActivationPresentations")
+      .withIndex("by_subscription", (q) => q.eq("subscriptionId", args.activationKey))
+      .first();
+    if (
+      presentation === null ||
+      presentation.userId !== userId ||
+      presentation.claimNonce !== args.claimNonce
+    ) {
+      return false;
+    }
+    await ctx.db.patch(presentation._id, {
+      confirmedSteps: args.confirmedSteps,
+      skippedSteps: args.skippedSteps,
+      failedSteps: args.failedSteps,
+      exitedAt: Date.now(),
+    });
+    return true;
+  },
+});
+
+/**
  * Internal query to retrieve a customer record by userId.
  *
  * NOTE: As of WORLDMONITOR-R5 follow-up, this is no longer used by the

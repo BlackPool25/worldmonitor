@@ -634,12 +634,27 @@ export default defineSchema({
   // Cross-device single-presentation lease for markerless Pro activation.
   // A short pending claim closes concurrent mount races without permanently
   // suppressing onboarding when a browser crashes before rendering the flow.
+  //
+  // `confirmedSteps`/`skippedSteps`/`failedSteps`/`exitedAt` mirror the
+  // ActivationStepOutcome taxonomy (pro-activation-state.ts) and are the
+  // durable outcome record (#5582): what the subscriber actually did in the
+  // wizard, independent of the Umami funnel side, which has no userId to
+  // join against Convex feature-usage tables and was found dead for 4 days
+  // spanning most of #5534's launch window (#5565). Written once on exit,
+  // alongside (not instead of) the existing Umami event. `confirmedSteps`
+  // includes steps already done before the flow opened ('done' outcome), not
+  // only ones newly confirmed in-flow -- both count as "verified" for the
+  // adoption-lift comparison this exists to support.
   proActivationPresentations: defineTable({
     userId: v.string(),
     subscriptionId: v.id("subscriptions"),
     claimNonce: v.string(),
     claimedAt: v.number(),
     presentedAt: v.optional(v.number()),
+    confirmedSteps: v.optional(v.array(v.string())),
+    skippedSteps: v.optional(v.array(v.string())),
+    failedSteps: v.optional(v.array(v.string())),
+    exitedAt: v.optional(v.number()),
   })
     .index("by_subscription", ["subscriptionId"]),
 

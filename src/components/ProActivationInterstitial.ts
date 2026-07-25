@@ -29,6 +29,7 @@ import { getAuthState, subscribeAuthState } from '@/services/auth-state';
 import {
   claimProActivationPresentation,
   confirmProActivationPresentation,
+  recordProActivationOutcome,
 } from '@/services/billing';
 import { escapeHtml } from '@/utils/sanitize';
 import { getFocusableElements, setTrustedHtml, trustedHtml, type TrustedHtml } from '@/utils/dom-utils';
@@ -54,6 +55,7 @@ import {
   buildBriefDigestPayload,
   buildCriticalAlertsPayload,
   buildExitSummary,
+  buildActivationOutcomeBuckets,
   summarizeActivationExit,
   DEFAULT_DIGEST_HOUR,
   type ActivationEventName,
@@ -730,6 +732,11 @@ export interface ProActivationFlowDependencies {
     claimNonce: string,
   ) => Promise<'claimed' | 'not_eligible' | 'already_presented' | 'already_claimed'>;
   confirmPresentation: (activationKey: string, claimNonce: string) => Promise<boolean>;
+  recordOutcome: (
+    activationKey: string,
+    claimNonce: string,
+    outcome: { confirmedSteps: string[]; skippedSteps: string[]; failedSteps: string[] },
+  ) => Promise<void>;
   openInterstitial: typeof openProActivationInterstitial;
   /** Per-operation deadline; injectable only to keep timeout regressions fast. */
   operationTimeoutMs?: number;
@@ -1200,6 +1207,7 @@ export async function openProActivationFlow(
         : readActivationContext(expectedUserId),
     claimPresentation: claimProActivationPresentation,
     confirmPresentation: confirmProActivationPresentation,
+    recordOutcome: recordProActivationOutcome,
     openInterstitial: openProActivationInterstitial,
     ...injected,
   };
@@ -1289,6 +1297,22 @@ export async function openProActivationFlow(
     onSkipStep: (stepId) => options.onEvent?.(ACTIVATION_EVENTS.stepSkipped, stepId),
     onExit: (results) => {
       options.onEvent?.(ACTIVATION_EVENTS.exit, undefined, summarizeActivationExit(results));
+      // Durable outcome record (#5582), independent of the Umami event above
+      // -- only for the markerless cohort, which is what has a presentation
+      // row to attach it to. Fire-and-forget: never blocks the subscriber's
+      // exit or the finish-setup chip below.
+      if (options.onlyIfUnactivated && options.expectedActivationKey && options.activationClaimNonce) {
+        const buckets = buildActivationOutcomeBuckets(results);
+        void dependencies.recordOutcome(
+          options.expectedActivationKey,
+          options.activationClaimNonce,
+          {
+            confirmedSteps: [...buckets.confirmedSteps],
+            skippedSteps: [...buckets.skippedSteps],
+            failedSteps: [...buckets.failedSteps],
+          },
+        );
+      }
       // Chip decision + all localStorage live in the chip module (lazy-imported
       // to keep this component ↔ chip pair free of a static import cycle).
       void import('@/components/ProActivationChip')

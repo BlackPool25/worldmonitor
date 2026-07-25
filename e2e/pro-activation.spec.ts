@@ -184,6 +184,10 @@ async function runMarkerlessFlowHarness(
           confirmCalls += 1;
           return scenario.confirmResult !== false;
         },
+        // Stubbed so these tests never depend on a real Convex client; the
+        // outcome-recording wiring itself is covered at the unit level
+        // (buildActivationOutcomeBuckets in pro-activation-state.test.mts).
+        recordOutcome: async () => {},
         operationTimeoutMs: 20,
       },
     );
