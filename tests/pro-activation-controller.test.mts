@@ -6,6 +6,10 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+// Zero-import decision leaf — safe to import directly under `tsx --test`, and
+// the only honest source for the account-key hash the marker must carry.
+import { deriveActivationAccountKey, PENDING_MARKER_KEY } from '@/services/pro-activation-state';
+
 type GlobalSnapshot = { exists: boolean; value: unknown };
 
 function snapshotGlobal(name: string): GlobalSnapshot {
@@ -615,5 +619,82 @@ describe('ProActivationController power-step surface wiring', () => {
       'without mcpAccess the power step must drop the pointer entirely',
     );
     assert.equal(options.openApiKeys, undefined, 'and must not fall back to the API-keys surface');
+  });
+});
+
+describe('ProActivationController activation-record identity (#5621)', () => {
+  /** Drive one mount for the requested cohort and return the flow options. */
+  async function captureCohortOptions(
+    cohort: 'day0' | 'markerless',
+    userId: string,
+  ): Promise<Record<string, unknown>> {
+    installBrowserState();
+    installEligibleMarkerlessAccount(userId);
+    if (cohort === 'day0') {
+      // A live checkout-return marker for THIS account takes the marker branch
+      // of decideActivationMount, which mounts with onlyIfUnactivated: false.
+      (globalThis as unknown as { window: { localStorage: Storage } }).window.localStorage.setItem(
+        PENDING_MARKER_KEY,
+        JSON.stringify({
+          createdAt: Date.now(),
+          productId: 'pdt_0Nbtt71uObulf7fGXhQup',
+          accountKey: deriveActivationAccountKey(userId),
+        }),
+      );
+    }
+    const { ProActivationController } = await loadController();
+    const ctx = {
+      isDestroyed: false,
+      isDesktopApp: false,
+      container: { dispatchEvent() {} },
+      unifiedSettings: { open() {} },
+    };
+    const controller = new ProActivationController(ctx as never, {
+      reloadPending: false,
+      openAiAnalyst() {},
+    });
+    try {
+      controller.init();
+      await (controller as unknown as { evaluate(): Promise<void> }).evaluate();
+      const captured = (globalThis as unknown as { __activationFlowOptions: unknown[] })
+        .__activationFlowOptions;
+      for (let attempt = 0; attempt < 40 && captured.length === 0; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      assert.equal(captured.length, 1, `the ${cohort} cohort must mount the flow exactly once`);
+      return captured[0] as Record<string, unknown>;
+    } finally {
+      ctx.isDestroyed = true;
+      controller.destroy();
+    }
+  }
+
+  it('hands the day-0 cohort the same subscription identity the retro cohort gets', async () => {
+    // Day-0 used to mount with expectedActivationKey/activationClaimNonce
+    // undefined, which made persistActivationOutcomeWithRetry return early and
+    // left the entire post-checkout cohort absent from Convex (#5621) — the
+    // exact blind spot the #5600 investigation had to work around.
+    const day0 = await captureCohortOptions('day0', 'user-day0-identity');
+
+    assert.equal(day0.onlyIfUnactivated, false, 'a live checkout marker is the day-0 cohort');
+    assert.equal(
+      day0.expectedActivationKey,
+      'opaque-user-day0-identity-subscription',
+      'day-0 must carry the subscription identity its outcome row is keyed by',
+    );
+    assert.equal(
+      typeof day0.activationClaimNonce,
+      'string',
+      'day-0 must carry a session nonce so its outcome writes are attributable',
+    );
+    assert.notEqual(day0.activationClaimNonce, '');
+  });
+
+  it('still hands the markerless cohort its lease identity', async () => {
+    const retro = await captureCohortOptions('markerless', 'user-retro-identity');
+
+    assert.equal(retro.onlyIfUnactivated, true);
+    assert.equal(retro.expectedActivationKey, 'opaque-user-retro-identity-subscription');
+    assert.equal(typeof retro.activationClaimNonce, 'string');
   });
 });

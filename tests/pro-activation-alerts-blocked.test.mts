@@ -174,6 +174,7 @@ async function loadInterstitial(): Promise<InterstitialModule> {
     ['billing-stub', `
       export async function claimProActivationPresentation() { return 'claimed'; }
       export async function confirmProActivationPresentation() { return true; }
+      export async function openProActivationDay0Presentation() { return 'opened'; }
       export async function recordProActivationOutcome() { return true; }
     `],
     ['channels-stub', `

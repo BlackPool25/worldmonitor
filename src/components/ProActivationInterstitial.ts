@@ -29,6 +29,7 @@ import { getAuthState, subscribeAuthState } from '@/services/auth-state';
 import {
   claimProActivationPresentation,
   confirmProActivationPresentation,
+  openProActivationDay0Presentation,
   recordProActivationOutcome,
   type ProActivationOutcomeSnapshot,
 } from '@/services/billing';
@@ -841,6 +842,11 @@ export interface ProActivationFlowDependencies {
     claimNonce: string,
   ) => Promise<'claimed' | 'not_eligible' | 'already_presented' | 'already_claimed'>;
   confirmPresentation: (activationKey: string, claimNonce: string) => Promise<boolean>;
+  /** Day-0 counterpart to claim+confirm; best-effort, never gates the flow (#5621). */
+  openDay0Presentation: (
+    activationKey: string,
+    claimNonce: string,
+  ) => Promise<'opened' | 'already_recorded' | 'not_eligible'>;
   /**
    * Typed against the service's own snapshot rather than a hand-copied shape:
    * the duplicate drifted the moment a bucket was added (#5617), and a stale
@@ -1275,12 +1281,20 @@ function persistActivationOutcomeWithRetry(
   results: readonly ActivationStepResult[],
   revision: number,
   finalized: boolean,
+  /**
+   * Day-0 only: resolves once the row these snapshots attach to exists. `false`
+   * means the server refused it (ineligible, or an earlier session already
+   * finalized), so writing would be rejected anyway — skip quietly.
+   */
+  day0RowReady?: Promise<boolean>,
 ): void {
-  if (!options.onlyIfUnactivated || !options.expectedActivationKey || !options.activationClaimNonce) {
+  if (!options.expectedActivationKey || !options.activationClaimNonce) {
     return;
   }
+  const cohort = options.onlyIfUnactivated ? undefined : ('day0' as const);
   const buckets = buildActivationOutcomeBuckets(results);
   void (async () => {
+    if (day0RowReady && !(await day0RowReady)) return;
     for (let attempt = 0; ; attempt += 1) {
       try {
         await withTimeout(
@@ -1288,6 +1302,7 @@ function persistActivationOutcomeWithRetry(
             options.expectedActivationKey!,
             options.activationClaimNonce!,
             {
+              ...(cohort ? { cohort } : {}),
               confirmedSteps: [...buckets.confirmedSteps],
               skippedSteps: [...buckets.skippedSteps],
               blockedSteps: [...buckets.blockedSteps],
@@ -1343,6 +1358,7 @@ export async function openProActivationFlow(
         : readActivationContext(expectedUserId),
     claimPresentation: claimProActivationPresentation,
     confirmPresentation: confirmProActivationPresentation,
+    openDay0Presentation: openProActivationDay0Presentation,
     recordOutcome: recordProActivationOutcome,
     openInterstitial: openProActivationInterstitial,
     ...injected,
@@ -1417,6 +1433,28 @@ export async function openProActivationFlow(
     }
   }
 
+  // Day-0's counterpart (#5621). Deliberately NOT awaited and never able to
+  // return 'retry': the post-checkout welcome must open even when Convex is
+  // unreachable. The promise is handed to the outcome writer instead, so
+  // snapshots queue behind the row they attach to rather than racing it, and
+  // a refusal (ineligible / already finalized) silently drops them.
+  const day0RowReady =
+    !options.onlyIfUnactivated && options.expectedActivationKey && options.activationClaimNonce
+      ? withTimeout(
+          dependencies.openDay0Presentation(
+            options.expectedActivationKey,
+            options.activationClaimNonce,
+          ),
+          dependencies.operationTimeoutMs ?? ACTIVATION_MUTATION_TIMEOUT_MS,
+          'activation-open-day0-presentation',
+        )
+          .then((status) => status === 'opened')
+          .catch((error) => {
+            console.warn('[pro-activation] failed to open day-0 activation record', error);
+            return false;
+          })
+      : undefined;
+
   // Holds the brief step's delivery-hour pick across the shell's re-renders.
   const selectedHourRef: DigestHourRef = { hour: null };
 
@@ -1438,6 +1476,7 @@ export async function openProActivationFlow(
       results,
       outcomeRevision,
       finalized,
+      day0RowReady,
     );
   };
 
