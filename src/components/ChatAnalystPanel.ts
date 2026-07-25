@@ -5,6 +5,9 @@ import DOMPurify from 'dompurify';
 import { postProcessAnalystHtml } from '@/utils/analyst-markdown';
 import { yieldToMain } from '@/utils/after-paint';
 import { premiumFetch } from '@/services/premium-fetch';
+import { getAuthState } from '@/services/auth-state';
+import { readClientEntitlementBelief } from '@/services/panel-gating';
+import { classifyPremiumDenial, readDenialErrorCode } from '@/services/premium-denial';
 import { trackAnalystControlAction } from '@/services/analytics';
 import { h, replaceChildren, setTrustedHtml, trustedHtml, type TrustedHtml } from '@/utils/dom-utils';
 import {
@@ -51,6 +54,40 @@ interface MetaEvent {
 }
 
 type DashboardControlStatus = 'applied' | 'denied' | 'invalid' | 'skipped';
+
+/**
+ * Turn a failed /api/chat-analyst response into user-facing copy.
+ *
+ * A 403 has several causes and only one of them is "you need to buy Pro":
+ * the route 403s on a missing plan (api/chat-analyst.ts:126), and the shared
+ * gateway also 403s an unidentified caller and a failed entitlement lookup.
+ * Telling a customer who paid minutes ago to buy a subscription — which is
+ * what the old blanket `status === 403` branch did during the #5600 poison
+ * window — is worse than saying nothing (#5608).
+ *
+ * Consumes the response body, so it is only called on the !ok path where the
+ * stream is never read.
+ */
+async function describeDenial(res: Response): Promise<string> {
+  const isDenial = res.status === 401 || res.status === 403;
+  const verdict = classifyPremiumDenial({
+    status: res.status,
+    errorCode: isDenial ? await readDenialErrorCode(res) : null,
+    belief: readClientEntitlementBelief(getAuthState()),
+  });
+  switch (verdict) {
+    case 'sign_in_required':
+      return 'Sign in to use the analyst.';
+    case 'upgrade_required':
+      return 'Pro subscription required.';
+    case 'entitlement_desync':
+      return 'Verifying your Pro access — try again in a moment.';
+    case 'access_denied':
+      return 'Analyst temporarily unavailable — try again in a moment.';
+    default:
+      return `Error ${res.status}`;
+  }
+}
 
 interface DashboardControlResult {
   ok: boolean;
@@ -503,8 +540,7 @@ export class ChatAnalystPanel extends Panel {
       });
 
       if (!res.ok) {
-        const err = res.status === 403 ? 'Pro subscription required.' : `Error ${res.status}`;
-        this.finalizeStreamingBubble(streamingBody, `⚠ ${err}`, false);
+        this.finalizeStreamingBubble(streamingBody, `⚠ ${await describeDenial(res)}`, false);
         return;
       }
 
