@@ -5008,6 +5008,11 @@ describe("getSubscriptionForUser activation onboarding eligibility", () => {
       api.payments.billing.confirmProActivationPresentation,
       { activationKey, claimNonce: "device-a" },
     )).toBe(true);
+    const legacyPresentation = await t.run(async (ctx) => await ctx.db
+      .query("proActivationPresentations")
+      .withIndex("by_subscription", (q) => q.eq("subscriptionId", activationKey))
+      .unique());
+    expect(legacyPresentation?.outcomeTrackingVersion).toBeUndefined();
     const afterConfirmation = await t
       .withIdentity(IDENTITY)
       .query(api.payments.billing.getSubscriptionForUser, {});
@@ -5037,20 +5042,22 @@ describe("getSubscriptionForUser activation onboarding eligibility", () => {
 
     expect(await t.withIdentity(IDENTITY).mutation(
       api.payments.billing.confirmProActivationPresentation,
-      { activationKey, claimNonce: "device-a" },
+      { activationKey, claimNonce: "device-a", outcomeTrackingVersion: 1 },
     )).toBe(true);
-    const firstPresentedAt = (await t.run(async (ctx) => await ctx.db
+    const firstPresentation = await t.run(async (ctx) => await ctx.db
       .query("proActivationPresentations")
       .withIndex("by_subscription", (q) => q.eq("subscriptionId", activationKey))
-      .unique()))!.presentedAt;
+      .unique());
+    const firstPresentedAt = firstPresentation!.presentedAt;
     expect(firstPresentedAt).toBeDefined();
+    expect(firstPresentation?.outcomeTrackingVersion).toBe(1);
 
     // A retried confirm call (e.g. a client that timed out but the server
     // call actually succeeded) must still return true and must not clobber
     // the original presentedAt timestamp.
     expect(await t.withIdentity(IDENTITY).mutation(
       api.payments.billing.confirmProActivationPresentation,
-      { activationKey, claimNonce: "device-a" },
+      { activationKey, claimNonce: "device-a", outcomeTrackingVersion: 1 },
     )).toBe(true);
     const secondPresentedAt = (await t.run(async (ctx) => await ctx.db
       .query("proActivationPresentations")
@@ -5242,6 +5249,7 @@ describe("getSubscriptionForUser activation onboarding eligibility", () => {
       .withIndex("by_subscription", (q) => q.eq("subscriptionId", activationKey))
       .unique());
     expect(progressRow?.presentedAt).toBeTypeOf("number");
+    expect(progressRow?.outcomeTrackingVersion).toBe(1);
     expect(progressRow?.outcomeRevision).toBe(1);
     expect(progressRow?.exitedAt).toBeUndefined();
 

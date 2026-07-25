@@ -12,9 +12,10 @@
  * verdict is refused when any newest-first Convex export may be truncated.
  *
  * Usage:
- *   1. Source prod env: `set -a; source <main-repo>/.env.local; set +a`
- *      Required: CONVEX_DEPLOY_KEY, CONVEX_DEPLOYMENT.
- *   2. `node scripts/report-activation-lift.mjs [--window-days=14] [--limit=20000]`
+ *   `node --env-file=.env.local scripts/report-activation-lift.mjs
+ *      [--window-days=14] [--limit=20000]`
+ *
+ * Required env: CONVEX_DEPLOY_KEY, CONVEX_DEPLOYMENT.
  *
  * Read-only: uses `npx convex data <table>`, never a mutation.
  */
@@ -154,7 +155,8 @@ export function analyzeActivationLift({
   windowMs,
   minGroupSize = MIN_GROUP_SIZE_FOR_A_CLAIM,
 }) {
-  const shown = presentations.filter((row) => typeof row.presentedAt === "number");
+  const presented = presentations.filter((row) => typeof row.presentedAt === "number");
+  const shown = presented.filter((row) => row.outcomeTrackingVersion === 1);
   const observed = shown.map((row) => ({
     ...row,
     observationStartedAt:
@@ -177,6 +179,7 @@ export function analyzeActivationLift({
   const base = {
     totalPresentations: presentations.length,
     shown: shown.length,
+    uninstrumented: presented.length - shown.length,
     mature: mature.length,
     immature: immature.length,
     incompleteExits: incompleteExits.length,
@@ -242,7 +245,8 @@ export function formatActivationLiftReport(
   const lines = [
     `[activation-lift] window=${windowDays}d limit=${limit} per table`,
     "",
-    `Presentations: ${analysis.totalPresentations} exported, ${analysis.shown} shown, ${analysis.mature} with a complete ${windowDays}d window.`,
+    `Presentations: ${analysis.totalPresentations} exported, ${analysis.shown} outcome-instrumented and shown, ${analysis.mature} with a complete ${windowDays}d window.`,
+    `  excluded as pre-instrumentation: ${analysis.uninstrumented}`,
     `  excluded as immature: ${analysis.immature}`,
     `  mature sessions without a recorded exit: ${analysis.incompleteExits} (included from durable presentation/progress state)`,
   ];
@@ -295,7 +299,7 @@ export function runCli(argv = process.argv.slice(2), env = process.env) {
   if (!env.CONVEX_DEPLOY_KEY || !env.CONVEX_DEPLOYMENT) {
     throw new Error(
       "[activation-lift] CONVEX_DEPLOY_KEY and CONVEX_DEPLOYMENT env vars required. " +
-        "Source them from .env.local first (see file header).",
+        "Run with `node --env-file=.env.local` (see file header).",
     );
   }
   const args = new Map(

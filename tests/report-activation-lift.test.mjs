@@ -5,6 +5,7 @@ import {
   fetchTable,
   formatActivationLiftReport,
   indexFeatureRows,
+  runCli,
 } from "../scripts/report-activation-lift.mjs";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -19,6 +20,13 @@ function emptyFeatureRows() {
     mcpProTokens: [],
   };
 }
+
+test("CLI points operators at Node's dotenv loader when credentials are absent", () => {
+  assert.throws(
+    () => runCli([], {}),
+    /node --env-file=\.env\.local/,
+  );
+});
 
 test("fetchTable bounds a hung Convex export and reports the table", () => {
   const timeout = Object.assign(new Error("spawnSync npx ETIMEDOUT"), { code: "ETIMEDOUT" });
@@ -59,25 +67,34 @@ test("analysis uses only mature presentations and table-specific adoption timest
     {
       userId: "engaged",
       presentedAt: presentedBeforeExit,
+      outcomeTrackingVersion: 1,
       confirmedSteps: ["brief"],
       exitedAt: observationStartedAt,
     },
     {
       userId: "presented-only",
       presentedAt: observationStartedAt,
+      outcomeTrackingVersion: 1,
       confirmedSteps: [],
       // Deliberately no exitedAt: lost exits stay in the cohort.
     },
     {
       userId: "immature",
       presentedAt: NOW - WINDOW_MS + 1,
+      outcomeTrackingVersion: 1,
       confirmedSteps: ["brief"],
     },
     {
       userId: "progress-immature",
       presentedAt: presentedBeforeExit,
+      outcomeTrackingVersion: 1,
       confirmedSteps: ["brief"],
       outcomeUpdatedAt: NOW - WINDOW_MS + 1,
+    },
+    {
+      userId: "legacy-pre-instrumentation",
+      presentedAt: presentedBeforeExit,
+      confirmedSteps: [],
     },
   ];
   const featureRowsByTable = {
@@ -123,6 +140,8 @@ test("analysis uses only mature presentations and table-specific adoption timest
   });
 
   assert.equal(analysis.verdict, "comparison");
+  assert.equal(analysis.totalPresentations, 5);
+  assert.equal(analysis.uninstrumented, 1);
   assert.equal(analysis.mature, 2);
   assert.equal(analysis.immature, 2);
   assert.equal(analysis.incompleteExits, 1);
@@ -145,6 +164,7 @@ test("analysis refuses capped exports before rates and enforces the mature sampl
   const presentations = Array.from({ length: 59 }, (_, index) => ({
     userId: `user-${index}`,
     presentedAt: NOW - WINDOW_MS,
+    outcomeTrackingVersion: 1,
     confirmedSteps: index < 29 ? ["brief"] : [],
   }));
 

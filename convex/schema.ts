@@ -651,6 +651,10 @@ export default defineSchema({
     claimNonce: v.string(),
     claimedAt: v.number(),
     presentedAt: v.optional(v.number()),
+    // Set when a presentation is confirmed by an outcome-aware client. This
+    // excludes rows created before #5582 without losing post-deploy sessions
+    // that abandon the flow before their first progress snapshot.
+    outcomeTrackingVersion: v.optional(v.literal(1)),
     confirmedSteps: v.optional(v.array(proActivationStepId)),
     skippedSteps: v.optional(v.array(proActivationStepId)),
     failedSteps: v.optional(v.array(proActivationStepId)),

@@ -184,7 +184,7 @@ export async function confirmProActivationPresentation(
   await waitForConvexAuth();
   return await client.mutation(
     (api as any).payments.billing.confirmProActivationPresentation,
-    { activationKey, claimNonce },
+    { activationKey, claimNonce, outcomeTrackingVersion: 1 },
   ) as boolean;
 }
 

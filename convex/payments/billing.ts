@@ -692,11 +692,16 @@ export const claimProActivationPresentation = mutation({
   },
 });
 
+const PRO_ACTIVATION_OUTCOME_TRACKING_VERSION = 1 as const;
+
 /** Confirm that the browser holding the claim actually rendered the flow. */
 export const confirmProActivationPresentation = mutation({
   args: {
     activationKey: v.id("subscriptions"),
     claimNonce: v.string(),
+    // Optional for mixed deploys: legacy clients can still confirm presentation
+    // without marking their row as outcome-aware.
+    outcomeTrackingVersion: v.optional(v.literal(1)),
   },
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
@@ -711,8 +716,19 @@ export const confirmProActivationPresentation = mutation({
     ) {
       return false;
     }
-    if (presentation.presentedAt === undefined) {
-      await ctx.db.patch(presentation._id, { presentedAt: Date.now() });
+    if (
+      presentation.presentedAt === undefined ||
+      (
+        args.outcomeTrackingVersion === PRO_ACTIVATION_OUTCOME_TRACKING_VERSION &&
+        presentation.outcomeTrackingVersion !== PRO_ACTIVATION_OUTCOME_TRACKING_VERSION
+      )
+    ) {
+      await ctx.db.patch(presentation._id, {
+        ...(presentation.presentedAt === undefined ? { presentedAt: Date.now() } : {}),
+        ...(args.outcomeTrackingVersion === PRO_ACTIVATION_OUTCOME_TRACKING_VERSION
+          ? { outcomeTrackingVersion: PRO_ACTIVATION_OUTCOME_TRACKING_VERSION }
+          : {}),
+      });
     }
     return true;
   },
@@ -784,6 +800,7 @@ export const recordProActivationOutcome = mutation({
       failedSteps: args.failedSteps,
       outcomeRevision: args.revision,
       outcomeUpdatedAt: now,
+      outcomeTrackingVersion: PRO_ACTIVATION_OUTCOME_TRACKING_VERSION,
       ...(presentation.presentedAt === undefined ? { presentedAt: now } : {}),
       ...(args.finalized ? { exitedAt: now } : {}),
     });
