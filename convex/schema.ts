@@ -1,6 +1,12 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
-import { channelTypeValidator, digestModeValidator, quietHoursOverrideValidator, sensitivityValidator } from "./constants";
+import {
+  channelTypeValidator,
+  digestModeValidator,
+  proActivationStepIdValidator,
+  quietHoursOverrideValidator,
+  sensitivityValidator,
+} from "./constants";
 
 // Subscription status enum — maps Dodo statuses to our internal set
 const subscriptionStatus = v.union(
@@ -53,12 +59,6 @@ const apiPlanLimitCtaKind = v.union(
   v.literal("billing_portal"),
   v.literal("contact_support"),
   v.literal("none"),
-);
-
-export const proActivationStepId = v.union(
-  v.literal("brief"),
-  v.literal("alerts"),
-  v.literal("power"),
 );
 
 export default defineSchema({
@@ -655,9 +655,9 @@ export default defineSchema({
     // excludes rows created before #5582 without losing post-deploy sessions
     // that abandon the flow before their first progress snapshot.
     outcomeTrackingVersion: v.optional(v.literal(1)),
-    confirmedSteps: v.optional(v.array(proActivationStepId)),
-    skippedSteps: v.optional(v.array(proActivationStepId)),
-    failedSteps: v.optional(v.array(proActivationStepId)),
+    confirmedSteps: v.optional(v.array(proActivationStepIdValidator)),
+    skippedSteps: v.optional(v.array(proActivationStepIdValidator)),
+    failedSteps: v.optional(v.array(proActivationStepIdValidator)),
     outcomeRevision: v.optional(v.number()),
     outcomeUpdatedAt: v.optional(v.number()),
     exitedAt: v.optional(v.number()),

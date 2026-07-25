@@ -19,7 +19,7 @@ import { resolveUserId, requireUserId } from "../lib/auth";
 import { getFeaturesForPlan } from "../lib/entitlements";
 import { ANON_ID_V4_REGEX, verifyAnonClaimToken } from "../lib/identitySigning";
 import { PLAN_PRECEDENCE, PRODUCT_CATALOG, resolveProductToPlan } from "../config/productCatalog";
-import { proActivationStepId } from "../schema";
+import { proActivationStepIdValidator } from "../constants";
 import {
   isCoveringAt,
   isNewerEvent,
@@ -735,11 +735,11 @@ export const confirmProActivationPresentation = mutation({
   },
 });
 
-// One progress write per step plus one final write on exit -- derived so a
-// future step added to buildActivationSteps (pro-activation-state.ts) can't
-// silently desync this cap from the step union it's meant to bound (review
-// finding: the two were previously independent hardcoded literals).
-const MAX_PRO_ACTIVATION_OUTCOME_REVISION = proActivationStepId.members.length + 1;
+// One progress write per allowed step plus one final write on exit. Keep the
+// cap derived from the same validator used by the mutation and schema so their
+// accepted step set cannot drift from this bound.
+const MAX_PRO_ACTIVATION_OUTCOME_REVISION =
+  proActivationStepIdValidator.members.length + 1;
 
 /**
  * Persist a monotonic snapshot of the wizard outcome (#5582). Progress writes
@@ -751,9 +751,9 @@ export const recordProActivationOutcome = mutation({
   args: {
     activationKey: v.id("subscriptions"),
     claimNonce: v.string(),
-    confirmedSteps: v.array(proActivationStepId),
-    skippedSteps: v.array(proActivationStepId),
-    failedSteps: v.array(proActivationStepId),
+    confirmedSteps: v.array(proActivationStepIdValidator),
+    skippedSteps: v.array(proActivationStepIdValidator),
+    failedSteps: v.array(proActivationStepIdValidator),
     revision: v.number(),
     finalized: v.boolean(),
   },
@@ -787,11 +787,11 @@ export const recordProActivationOutcome = mutation({
       ...args.failedSteps,
     ];
     if (
-      allSteps.length > proActivationStepId.members.length ||
+      allSteps.length > proActivationStepIdValidator.members.length ||
       new Set(allSteps).size !== allSteps.length
     ) {
       throw new ConvexError(
-        `activation outcome buckets must be disjoint and contain at most ${proActivationStepId.members.length} steps`,
+        `activation outcome buckets must be disjoint and contain at most ${proActivationStepIdValidator.members.length} steps`,
       );
     }
     if (args.revision <= (presentation.outcomeRevision ?? 0)) {
