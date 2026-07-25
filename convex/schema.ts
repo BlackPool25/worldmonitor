@@ -55,7 +55,7 @@ const apiPlanLimitCtaKind = v.union(
   v.literal("none"),
 );
 
-const proActivationStepId = v.union(
+export const proActivationStepId = v.union(
   v.literal("brief"),
   v.literal("alerts"),
   v.literal("power"),
