@@ -33,8 +33,12 @@ const stateKeys = [
   '__activationAuthListeners',
   '__activationSubscription',
   '__activationEntitlement',
+  '__activationEntitlementListeners',
+  '__activationSubscriptionListeners',
   '__activationOpenedFor',
   '__activationOpenResult',
+  '__activationOpenGate',
+  '__activationCloseCalls',
 ] as const;
 const stateSnapshots = new Map(stateKeys.map((key) => [key, snapshotGlobal(key)]));
 
@@ -58,16 +62,26 @@ async function loadController(): Promise<typeof import('../src/app/pro-activatio
     `],
     ['billing-stub', `
       export function getSubscription() { return globalThis.__activationSubscription; }
-      export function onSubscriptionChange() { return () => {}; }
+      export function onSubscriptionChange(callback) {
+        globalThis.__activationSubscriptionListeners.add(callback);
+        return () => globalThis.__activationSubscriptionListeners.delete(callback);
+      }
     `],
     ['entitlements-stub', `
       export function getEntitlementState() { return globalThis.__activationEntitlement; }
-      export function onEntitlementChange() { return () => {}; }
+      export function onEntitlementChange(callback) {
+        globalThis.__activationEntitlementListeners.add(callback);
+        return () => globalThis.__activationEntitlementListeners.delete(callback);
+      }
     `],
     ['interstitial-stub', `
       export async function openProActivationFlow(options) {
         globalThis.__activationOpenedFor.push(options.accountUserId);
+        if (globalThis.__activationOpenGate) await globalThis.__activationOpenGate;
         return globalThis.__activationOpenResult ?? 'opened';
+      }
+      export function closeProActivationInterstitial() {
+        globalThis.__activationCloseCalls = (globalThis.__activationCloseCalls ?? 0) + 1;
       }
     `],
     ['chip-stub', 'export function maybeShowFinishSetupChip() {}'],
@@ -136,8 +150,12 @@ function installBrowserState(options: { fastTimers?: boolean } = {}): void {
     __activationAuthListeners: new Set<(state: unknown) => void>(),
     __activationSubscription: null,
     __activationEntitlement: { planKey: 'free', validUntil: Date.now() + 60_000 },
+    __activationEntitlementListeners: new Set<() => void>(),
+    __activationSubscriptionListeners: new Set<() => void>(),
     __activationOpenedFor: [] as string[],
     __activationOpenResult: 'opened' as string,
+    __activationOpenGate: null as Promise<void> | null,
+    __activationCloseCalls: 0,
   });
 }
 
@@ -220,6 +238,7 @@ describe('ProActivationController auth lifecycle', () => {
       }
       assert.deepEqual(openedFor, ['user-second-session']);
     } finally {
+      ctx.isDestroyed = true;
       controller.destroy();
     }
   });
@@ -259,11 +278,12 @@ describe('ProActivationController markerless mount() branching', () => {
       await (controller as unknown as { evaluate(): Promise<void> }).evaluate();
       assert.deepEqual(openedFor, ['user-not-eligible']);
     } finally {
+      ctx.isDestroyed = true;
       controller.destroy();
     }
   });
 
-  it("openFlow returning 'retry' backs off through the bounded schedule and then gives up", async () => {
+  it("openFlow returning 'retry' backs off through the bounded schedule, then falls back to passive listeners instead of giving up", async () => {
     installBrowserState({ fastTimers: true });
     installEligibleMarkerlessAccount('user-retry-forever');
     (globalThis as unknown as { __activationOpenResult: string }).__activationOpenResult = 'retry';
@@ -282,25 +302,105 @@ describe('ProActivationController markerless mount() branching', () => {
       controller.init();
       await (controller as unknown as { evaluate(): Promise<void> }).evaluate();
 
+      const openedFor = (
+        globalThis as unknown as { __activationOpenedFor: string[] }
+      ).__activationOpenedFor;
       // With fast timers, the whole 5-attempt backoff schedule collapses to a
-      // handful of ticks instead of the real ~60s cumulative delay.
+      // handful of ticks instead of the real ~60s cumulative delay. Exhaustion
+      // is observed here as "no new attempt for a while", since the tab no
+      // longer resolves -- it falls back to listening instead of giving up.
       for (
         let attempt = 0;
-        attempt < 200 && (controller as unknown as { resolved: boolean }).resolved === false;
+        attempt < 200 && openedFor.length < 6;
         attempt += 1
       ) {
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
-      assert.equal((controller as unknown as { resolved: boolean }).resolved, true);
-
-      const openedFor = (
-        globalThis as unknown as { __activationOpenedFor: string[] }
-      ).__activationOpenedFor;
-      // One initial attempt plus every entry in ACTIVATION_FLOW_RETRY_DELAYS_MS.
-      assert.equal(openedFor.length, 6);
+      assert.equal(openedFor.length, 6, 'one initial attempt plus every entry in the backoff schedule');
       assert.ok(openedFor.every((id) => id === 'user-retry-forever'));
+
+      // The tab must stay unresolved and retryable, not permanently give up.
+      assert.equal((controller as unknown as { resolved: boolean }).resolved, false);
+      // No 7th attempt fires on its own -- the timer-based schedule is done.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      assert.equal(openedFor.length, 6);
+
+      // An external entitlement/subscription change (e.g. the underlying
+      // outage clearing) must still retrigger a fresh attempt instead of the
+      // tab being stuck until reload. Let this retriggered attempt succeed so
+      // the assertion doesn't depend on how many further backoff attempts a
+      // still-failing mock would cascade through.
+      (globalThis as unknown as { __activationOpenResult: string }).__activationOpenResult = 'opened';
+      for (const listener of (
+        globalThis as unknown as { __activationSubscriptionListeners: Set<() => void> }
+      ).__activationSubscriptionListeners) {
+        listener();
+      }
+      for (
+        let attempt = 0;
+        attempt < 40 && (controller as unknown as { resolved: boolean }).resolved === false;
+        attempt += 1
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.equal(openedFor.length, 7, 'a listener-driven re-evaluate must attempt to mount again');
+      assert.equal(
+        (controller as unknown as { resolved: boolean }).resolved,
+        true,
+        'the retriggered attempt succeeds and resolves the tab',
+      );
     } finally {
+      ctx.isDestroyed = true;
       controller.destroy();
     }
+  });
+
+  it("destroy() during an in-flight openFlow closes any interstitial that was opened, instead of leaving it orphaned", async () => {
+    installBrowserState();
+    installEligibleMarkerlessAccount('user-destroyed-mid-flight');
+    let releaseGate!: () => void;
+    Object.assign(globalThis, {
+      __activationOpenResult: 'opened',
+      __activationOpenGate: new Promise<void>((resolve) => {
+        releaseGate = resolve;
+      }),
+    });
+    const { ProActivationController } = await loadController();
+    const ctx = {
+      isDestroyed: false,
+      isDesktopApp: false,
+      container: { dispatchEvent() {} },
+      unifiedSettings: null,
+    };
+    const controller = new ProActivationController(ctx as never, {
+      reloadPending: false,
+      openAiAnalyst() {},
+    });
+    controller.init();
+    const evaluatePromise = (controller as unknown as { evaluate(): Promise<void> }).evaluate();
+
+    const openedFor = (
+      globalThis as unknown as { __activationOpenedFor: string[] }
+    ).__activationOpenedFor;
+    for (let attempt = 0; attempt < 40 && openedFor.length === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(openedFor.length, 1, 'the flow must have started (and, in real code, rendered) before destroy()');
+
+    // Simulate a same-document app re-init: the owning AppContext flips
+    // isDestroyed and calls destroy() while openFlow() is still awaiting the
+    // (gated) module call -- mirroring how a real teardown works, so this
+    // controller instance never attempts to re-mount afterward.
+    ctx.isDestroyed = true;
+    controller.destroy();
+    releaseGate();
+    await evaluatePromise;
+
+    assert.equal(
+      (globalThis as unknown as { __activationCloseCalls: number }).__activationCloseCalls,
+      1,
+      'a destroy-triggered generation bump must close any interstitial the stale attempt opened',
+    );
+    assert.equal(openedFor.length, 1, 'a destroyed controller must not attempt to re-mount');
   });
 });
