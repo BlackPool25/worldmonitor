@@ -818,13 +818,19 @@ export const openProActivationDay0Presentation = mutation({
       return { status: "already_recorded" as const };
     }
     if (existing.claimNonce !== args.claimNonce) {
-      // A later session supersedes an abandoned one. Clearing the revision
-      // lets the new session's snapshots (which restart at 1) land instead of
-      // being rejected as stale by the monotonic guard below.
+      // A later session supersedes an abandoned one. Reset the full snapshot
+      // so the new session neither inherits stale classifications nor has its
+      // revisions (which restart at 1) rejected by the monotonic guard below.
       await ctx.db.patch(existing._id, {
         claimNonce: args.claimNonce,
         claimedAt: now,
+        presentedAt: now,
+        confirmedSteps: undefined,
+        skippedSteps: undefined,
+        blockedSteps: undefined,
+        failedSteps: undefined,
         outcomeRevision: undefined,
+        outcomeUpdatedAt: undefined,
         outcomeTrackingVersion: PRO_ACTIVATION_OUTCOME_TRACKING_VERSION,
       });
     }

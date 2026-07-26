@@ -414,9 +414,17 @@ export class ProActivationController implements AppModule {
     if (decision !== 'show') return;
 
     const flowOptions = this.buildFlowOptions();
-    if (!flowOptions) return;
+    const subscriptionKey = deriveSubscriptionKey(subscription);
+    if (!flowOptions || subscriptionKey === null) return;
     void import('@/components/ProActivationChip')
-      .then((module) => module.maybeShowFinishSetupChip(flowOptions))
+      .then((module) =>
+        module.maybeShowFinishSetupChip({
+          ...flowOptions,
+          onlyIfUnactivated: false,
+          expectedActivationKey: subscriptionKey,
+          activationClaimNonce: generateMountClaimNonce(),
+        }),
+      )
       .catch((error) => console.warn('[pro-activation] finish-setup chip failed to load', error));
   }
 

@@ -513,6 +513,7 @@ async function runDay0FlowHarness(
     day0Status?: Day0Status;
     day0Throws?: boolean;
     day0NeverResolves?: boolean;
+    day0ResolveAfterMs?: number;
   } = {},
 ): Promise<{ result: string; claimCalls: number; confirmCalls: number; day0Calls: number }> {
   return await page.evaluate(async (scenario) => {
@@ -565,6 +566,9 @@ async function runDay0FlowHarness(
           day0Calls += 1;
           if (scenario.day0NeverResolves) return await new Promise<never>(() => {});
           if (scenario.day0Throws) throw new Error('day-0 record transport failed');
+          if (scenario.day0ResolveAfterMs !== undefined) {
+            await new Promise<void>((resolve) => setTimeout(resolve, scenario.day0ResolveAfterMs));
+          }
           return scenario.day0Status ?? 'opened';
         },
         recordOutcome: async (activationKey, claimNonce, outcome) => {
@@ -639,6 +643,28 @@ test.describe('Pro activation flow — day-0 outcome rows (#5621)', () => {
     expect(result.confirmCalls).toBe(0);
   });
 
+  test('a late successful day-0 open still flushes queued finalized snapshots', async ({ page }) => {
+    const result = await runDay0FlowHarness(page, { day0ResolveAfterMs: 350 });
+    expect(result.result).toBe('opened');
+    await expect(page.locator(OVERLAY)).toBeVisible();
+
+    // Both snapshots are queued before the open resolves, and after the 200ms
+    // observation deadline. A timeout warning must not turn that eventual
+    // server success into a permanent refusal.
+    await page.locator('.pro-activation-close').click();
+    await expect(page.locator(SUMMARY)).toBeVisible();
+    await page.locator(FINISH_BTN).click();
+
+    await expect.poll(async () => (await readCapturedOutcomes(page)).length).toBe(2);
+    expect((await readCapturedOutcomes(page)).map(({ outcome }) => ({
+      revision: outcome.revision,
+      finalized: outcome.finalized,
+    }))).toEqual([
+      { revision: 1, finalized: false },
+      { revision: 2, finalized: true },
+    ]);
+  });
+
   test.describe('a refused or unreachable day-0 record never blocks the welcome flow', () => {
     for (const [name, scenario] of [
       ['server refuses (already finalized)', { day0Status: 'already_recorded' as const }],
@@ -659,8 +685,9 @@ test.describe('Pro activation flow — day-0 outcome rows (#5621)', () => {
         await page.locator(FINISH_BTN).click();
         await expect(page.locator(OVERLAY)).toHaveCount(0);
 
-        // Outlast the 200ms operationTimeoutMs so the hung-transport case has
-        // actually resolved (to false) before asserting nothing was written.
+        // Outlast the 200ms observation deadline. A never-resolving readiness
+        // promise stays pending, but neither blocks the UI nor attempts a
+        // write against a row that does not exist.
         await page.waitForTimeout(400);
 
         // No row to attach to → snapshots are dropped rather than written

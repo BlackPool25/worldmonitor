@@ -8,7 +8,12 @@ import { pathToFileURL } from 'node:url';
 
 // Zero-import decision leaf — safe to import directly under `tsx --test`, and
 // the only honest source for the account-key hash the marker must carry.
-import { deriveActivationAccountKey, PENDING_MARKER_KEY } from '@/services/pro-activation-state';
+import {
+  computeFireOnceRecord,
+  deriveActivationAccountKey,
+  fireOnceStorageKey,
+  PENDING_MARKER_KEY,
+} from '@/services/pro-activation-state';
 
 type GlobalSnapshot = { exists: boolean; value: unknown };
 
@@ -44,6 +49,7 @@ const stateKeys = [
   '__activationOpenGate',
   '__activationCloseCalls',
   '__activationFlowOptions',
+  '__activationChipOptions',
 ] as const;
 const stateSnapshots = new Map(stateKeys.map((key) => [key, snapshotGlobal(key)]));
 
@@ -110,7 +116,11 @@ async function loadController(): Promise<typeof import('../src/app/pro-activatio
         globalThis.__activationCloseCalls = (globalThis.__activationCloseCalls ?? 0) + 1;
       }
     `],
-    ['chip-stub', 'export function maybeShowFinishSetupChip() {}'],
+    ['chip-stub', `
+      export function maybeShowFinishSetupChip(options) {
+        globalThis.__activationChipOptions.push(options);
+      }
+    `],
   ]);
   const aliases = new Map([
     ['@/services/analytics', 'analytics-stub'],
@@ -190,6 +200,7 @@ function installBrowserState(options: { fastTimers?: boolean } = {}): void {
     __activationOpenGate: null as Promise<void> | null,
     __activationCloseCalls: 0,
     __activationFlowOptions: [] as unknown[],
+    __activationChipOptions: [] as unknown[],
   });
 }
 
@@ -696,5 +707,67 @@ describe('ProActivationController activation-record identity (#5621)', () => {
     assert.equal(retro.onlyIfUnactivated, true);
     assert.equal(retro.expectedActivationKey, 'opaque-user-retro-identity-subscription');
     assert.equal(typeof retro.activationClaimNonce, 'string');
+  });
+
+  it('gives each later Finish Setup flow fresh day-0 identity for the current subscription', async () => {
+    installBrowserState();
+    const userId = 'user-chip-identity';
+    const subscriptionKey = `opaque-${userId}-subscription`;
+    installEligibleMarkerlessAccount(userId);
+    (globalThis as unknown as { window: { localStorage: Storage } }).window.localStorage.setItem(
+      fireOnceStorageKey(deriveActivationAccountKey(userId)!),
+      JSON.stringify(computeFireOnceRecord(subscriptionKey, Date.now())),
+    );
+    const { ProActivationController } = await loadController();
+    const ctx = {
+      isDestroyed: false,
+      isDesktopApp: false,
+      container: { dispatchEvent() {} },
+      unifiedSettings: { open() {} },
+    };
+    const controllers = [
+      new ProActivationController(ctx as never, {
+        reloadPending: false,
+        openAiAnalyst() {},
+      }),
+      new ProActivationController(ctx as never, {
+        reloadPending: false,
+        openAiAnalyst() {},
+      }),
+    ];
+
+    try {
+      for (const controller of controllers) {
+        controller.init();
+        await (controller as unknown as { evaluate(): Promise<void> }).evaluate();
+      }
+      const captured = (globalThis as unknown as { __activationChipOptions: unknown[] })
+        .__activationChipOptions;
+      for (let attempt = 0; attempt < 40 && captured.length < 2; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      assert.equal(captured.length, 2, 'each later session must offer the Finish Setup chip');
+
+      const [first, second] = captured as Array<Record<string, unknown>>;
+      for (const options of [first, second]) {
+        assert.equal(options.onlyIfUnactivated, false);
+        assert.equal(options.expectedActivationKey, subscriptionKey);
+        assert.equal(typeof options.activationClaimNonce, 'string');
+        assert.notEqual(options.activationClaimNonce, '');
+      }
+      assert.notEqual(
+        first.activationClaimNonce,
+        (controllers[0] as unknown as { mountNonce: string }).mountNonce,
+        'chip-triggered flows must not reuse the controller mount nonce',
+      );
+      assert.notEqual(
+        second.activationClaimNonce,
+        first.activationClaimNonce,
+        'a later chip flow must get a fresh takeover nonce',
+      );
+    } finally {
+      ctx.isDestroyed = true;
+      for (const controller of controllers) controller.destroy();
+    }
   });
 });

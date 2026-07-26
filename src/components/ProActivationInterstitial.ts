@@ -1275,6 +1275,26 @@ async function confirmPresentationWithRetry(
   return false;
 }
 
+function reportActivationPersistenceFailure(
+  error: unknown,
+  action: 'openDay0Presentation' | 'recordOutcome',
+  extra?: Record<string, unknown>,
+): void {
+  // The activation ledger exists to remove a server-side observability blind
+  // spot, so its terminal write failures cannot stop at the user's console.
+  // Keep Sentry lazy (like the finish-setup chip) so this component retains no
+  // static bootstrap dependency, and never surface telemetry failure to the UI.
+  void import('@/bootstrap/sentry-defer')
+    .then((m) => m.enqueueSentryCall((s) => s.captureException(
+      error instanceof Error ? error : new Error(String(error)),
+      {
+        tags: { component: 'pro-activation', action },
+        ...(extra ? { extra } : {}),
+      },
+    )))
+    .catch(() => {});
+}
+
 function persistActivationOutcomeWithRetry(
   options: ProActivationFlowOptions,
   dependencies: ProActivationFlowDependencies,
@@ -1319,21 +1339,7 @@ function persistActivationOutcomeWithRetry(
         const delay = OUTCOME_WRITE_RETRY_DELAYS_MS[attempt];
         if (delay === undefined) {
           console.warn('[pro-activation] failed to record activation outcome', error);
-          // A permanently failing durable write is the one failure this whole
-          // record exists to rule out: it leaves the account's activation
-          // outcome invisible server-side, which is exactly the blind spot
-          // #5621 is filed about. A browser console line reaches nobody, so
-          // report it. Lazy-imported (like the chip below) to keep this
-          // component free of a static bootstrap import.
-          void import('@/bootstrap/sentry-defer')
-            .then((m) => m.enqueueSentryCall((s) => s.captureException(
-              error instanceof Error ? error : new Error(String(error)),
-              {
-                tags: { component: 'pro-activation', action: 'recordOutcome' },
-                extra: { revision, finalized },
-              },
-            )))
-            .catch(() => {}); // never let telemetry failure surface to the user
+          reportActivationPersistenceFailure(error, 'recordOutcome', { revision, finalized });
           return;
         }
         await new Promise<void>((resolve) => window.setTimeout(resolve, delay));
@@ -1438,22 +1444,30 @@ export async function openProActivationFlow(
   // unreachable. The promise is handed to the outcome writer instead, so
   // snapshots queue behind the row they attach to rather than racing it, and
   // a refusal (ineligible / already finalized) silently drops them.
-  const day0RowReady =
+  const day0OpenRequest =
     !options.onlyIfUnactivated && options.expectedActivationKey && options.activationClaimNonce
-      ? withTimeout(
-          dependencies.openDay0Presentation(
-            options.expectedActivationKey,
-            options.activationClaimNonce,
-          ),
-          dependencies.operationTimeoutMs ?? ACTIVATION_MUTATION_TIMEOUT_MS,
-          'activation-open-day0-presentation',
+      ? dependencies.openDay0Presentation(
+          options.expectedActivationKey,
+          options.activationClaimNonce,
         )
-          .then((status) => status === 'opened')
-          .catch((error) => {
-            console.warn('[pro-activation] failed to open day-0 activation record', error);
-            return false;
-          })
       : undefined;
+  const day0RowReady = day0OpenRequest
+    ?.then((status) => status === 'opened')
+    .catch(() => false);
+  if (day0OpenRequest) {
+    // Observe availability within the normal mutation budget, but keep the raw
+    // promise above as the durable readiness signal. `withTimeout` cannot
+    // cancel its source promise, so a slow successful open can still release
+    // snapshots queued behind it instead of being misclassified as a refusal.
+    void withTimeout(
+      day0OpenRequest,
+      dependencies.operationTimeoutMs ?? ACTIVATION_MUTATION_TIMEOUT_MS,
+      'activation-open-day0-presentation',
+    ).catch((error) => {
+      console.warn('[pro-activation] failed to open day-0 activation record', error);
+      reportActivationPersistenceFailure(error, 'openDay0Presentation');
+    });
+  }
 
   // Holds the brief step's delivery-hour pick across the shell's re-renders.
   const selectedHourRef: DigestHourRef = { hour: null };

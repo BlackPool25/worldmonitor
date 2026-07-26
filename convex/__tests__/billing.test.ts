@@ -5156,8 +5156,8 @@ describe("getSubscriptionForUser activation onboarding eligibility", () => {
       const presentation = await ctx.db
         .query("proActivationPresentations")
         .withIndex("by_subscription_cohort", (q) =>
-        q.eq("subscriptionId", activationKey).eq("cohort", undefined),
-      )
+          q.eq("subscriptionId", activationKey).eq("cohort", undefined),
+        )
         .unique();
       expect(presentation).not.toBeNull();
       await ctx.db.patch(presentation!._id, { claimedAt: Date.now() - 31_000 });
@@ -6040,6 +6040,8 @@ describe("Pro activation — day-0 outcome rows (#5621)", () => {
   });
 
   test("a re-opened day-0 session takes over an abandoned row but never a finalized one", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
     const t = convexTest(schema, modules);
     const activationKey = await seedProSubscription(t, "activation_day0_takeover");
 
@@ -6055,21 +6057,34 @@ describe("Pro activation — day-0 outcome rows (#5621)", () => {
         cohort: "day0" as const,
         confirmedSteps: [],
         skippedSteps: ["brief"],
-        failedSteps: [],
+        blockedSteps: ["alerts"],
+        failedSteps: ["power"],
         revision: 1,
         finalized: false,
       },
     );
 
     // A later boot (storage write failed, so the marker survived) supersedes
-    // the abandoned session in place — one row, and its revision counter is
-    // reset so the new session's snapshots are not rejected as stale.
+    // the abandoned session in place. It must reset the full outcome snapshot,
+    // not let the new session inherit the abandoned session's classifications.
+    vi.setSystemTime(NOW + 1_000);
     const retaken = await t.withIdentity(IDENTITY).mutation(
       api.payments.billing.openProActivationDay0Presentation,
       { activationKey, claimNonce: "second-tab" },
     );
     expect(retaken.status).toBe("opened");
-    expect(await readCohort(t, activationKey, "day0")).toHaveLength(1);
+    const retakenRows = await readCohort(t, activationKey, "day0");
+    expect(retakenRows).toHaveLength(1);
+    const [retakenRow] = retakenRows;
+    expect(retakenRow?.claimNonce).toBe("second-tab");
+    expect(retakenRow?.claimedAt).toBe(NOW + 1_000);
+    expect(retakenRow?.presentedAt).toBe(NOW + 1_000);
+    expect(retakenRow?.confirmedSteps).toBeUndefined();
+    expect(retakenRow?.skippedSteps).toBeUndefined();
+    expect(retakenRow?.blockedSteps).toBeUndefined();
+    expect(retakenRow?.failedSteps).toBeUndefined();
+    expect(retakenRow?.outcomeRevision).toBeUndefined();
+    expect(retakenRow?.outcomeUpdatedAt).toBeUndefined();
     expect(
       await t.withIdentity(IDENTITY).mutation(
         api.payments.billing.recordProActivationOutcome,
