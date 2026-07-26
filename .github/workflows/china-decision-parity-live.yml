@@ -56,6 +56,10 @@ on:
     paths:
       - 'scripts/audit-china-decision-parity.mjs'
       - 'scripts/lib/js-source-structure.mjs'
+      # The audit imports validateChinaDecisionSignalSnapshot from the seeder
+      # for both the access-gating truth table and the live probe's contract
+      # check, so a change there changes what this workflow asserts.
+      - 'scripts/seed-china-decision-signals.mjs'
       - '.github/workflows/china-decision-parity-live.yml'
   schedule:
     - cron: '11 */6 * * *'

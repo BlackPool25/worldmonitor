@@ -262,6 +262,44 @@ describe('China decision-signal structural wiring checks (#5643)', () => {
     });
   }
 
+  it('reads the returned snapshot access block, not an earlier lookalike local', () => {
+    // The dangerous direction is a false PASS: a refactor that introduces an
+    // earlier `access` local with correct-looking tiers would satisfy a check
+    // anchored on the first `access:` token in the function, while the tiers
+    // actually stamped onto the published snapshot are wrong.
+    const check = CHINA_DECISION_STRUCTURAL_CHECKS.find(({ id }) => id === 'access-tier-composition');
+    const original = sourceFor(check.file);
+
+    // A type annotation is what makes this bite: `const access:` contains the
+    // bare `access:` token an anchor-on-first-occurrence check keys on. Anchor
+    // the insertion to composeChinaDecisionSignals itself — the return-type
+    // signature alone also matches an earlier helper, and a decoy that lands
+    // outside the composed body proves nothing.
+    const composeSignature = 'export function composeChinaDecisionSignals(\n'
+      + '  input: ComposeChinaDecisionSignalsInput,\n'
+      + '): ChinaDecisionSignalSnapshot {\n';
+    assert.ok(original.includes(composeSignature), 'compose signature moved — update this mutation');
+    const decoy = `${composeSignature}  const access: ChinaDecisionSignalSnapshot['access'] = {\n`
+      + "    anonymous: 'bounded_public_summary',\n"
+      + "    pro: 'same_provenance_via_mcp',\n"
+      + "    operator: 'source_health_only',\n"
+      + '  };\n';
+    const mutated = original
+      .replace(composeSignature, decoy)
+      .replace("\n      anonymous: 'bounded_public_summary',", "\n      anonymous: 'unrestricted',");
+
+    assert.notEqual(mutated, original, 'the mutation did not apply — this test would be vacuous');
+    assert.ok(mutated.includes("anonymous: 'unrestricted'"), 'the published tier must actually be broken');
+    assert.ok(
+      mutated.includes("    anonymous: 'bounded_public_summary',"),
+      'the decoy must still supply a correct-looking earlier access block',
+    );
+    assert.ok(
+      typeof check.verify(mutated) === 'string',
+      'a correct-looking earlier access local must not mask a wrong published tier',
+    );
+  });
+
   it('proves the published-snapshot validator rejects every downgraded access tier', () => {
     assert.deepEqual(auditChinaDecisionAccessGating(), []);
   });

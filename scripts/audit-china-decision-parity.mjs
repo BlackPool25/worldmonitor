@@ -122,8 +122,17 @@ export const CHINA_DECISION_STRUCTURAL_CHECKS = Object.freeze([
     verify(source) {
       const composed = extractDelimitedBlock(source, 'export function composeChinaDecisionSignals');
       if (composed === null) return 'composeChinaDecisionSignals is missing or was renamed';
-      const access = extractDelimitedBlock(composed, 'access:');
-      if (access === null) return 'composeChinaDecisionSignals no longer stamps an access block';
+      // Anchor on the returned snapshot literal, not on the first `access:`
+      // token in the function: a type-annotated local (`const access: T = {...}`)
+      // carries that token too, and a correct-looking one would mask wrong
+      // tiers on the snapshot that actually gets published.
+      const snapshot = extractDelimitedBlock(composed, 'return boundChinaDecisionSignalSnapshot(');
+      if (snapshot === null) return 'composeChinaDecisionSignals no longer returns a bounded snapshot literal';
+      const stampedAccess = objectLiteralEntryValue(snapshot, 'access');
+      if (stampedAccess === null || !stampedAccess.startsWith('{') || !stampedAccess.endsWith('}')) {
+        return 'the returned snapshot no longer stamps an inline access object literal';
+      }
+      const access = stampedAccess.slice(1, -1);
       for (const [tier, value] of ACCESS_TIERS) {
         const stamped = objectLiteralEntryValue(access, tier);
         if (stamped !== `'${value}'`) {
