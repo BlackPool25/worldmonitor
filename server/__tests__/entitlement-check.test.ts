@@ -27,6 +27,10 @@ import {
   getRequiredTier,
   checkEntitlement,
   getEntitlements,
+  classifyBillingVerification,
+  getBillingVerificationDenial,
+  __negativeCacheTtlMsForTests,
+  __resetEntitlementNegativeCacheForTests,
 } from "../_shared/entitlement-check";
 
 // ---------------------------------------------------------------------------
@@ -610,6 +614,286 @@ describe("gateway entitlement check", () => {
       if (originalSecret === undefined) delete process.env.CONVEX_SERVER_SHARED_SECRET;
       else process.env.CONVEX_SERVER_SHARED_SECRET = originalSecret;
       vi.unstubAllGlobals();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #5622 — classifyBillingVerification: the decision, as an executable table
+// ---------------------------------------------------------------------------
+
+/**
+ * Three consumers cannot take a `Response` (an HTML page, the OAuth-grant
+ * handshake's own error vocabulary, and a boolean premium check), so the
+ * retryable-vs-terminal decision was extracted here. Pin it as a truth table
+ * rather than through any one renderer: a source-level guard on the renderers
+ * would stay green with the decision itself inverted.
+ */
+describe("classifyBillingVerification (#5622)", () => {
+  test("no billing metadata is not a denial", () => {
+    expect(classifyBillingVerification(null)).toBeNull();
+    expect(classifyBillingVerification(undefined)).toBeNull();
+    expect(classifyBillingVerification({})).toBeNull();
+  });
+
+  test("an unrecognised billingStatus string is not a denial (fail-open on vocabulary drift)", () => {
+    expect(
+      classifyBillingVerification({
+        billingStatus: "something_new" as never,
+      }),
+    ).toBeNull();
+  });
+
+  test("a transient lookup failure is retryable with the advertised 5s default", () => {
+    expect(classifyBillingVerification({ verificationUnavailable: true })).toEqual({
+      retryable: true,
+      code: "entitlement_verification_unavailable",
+      retryAfterSeconds: 5,
+      message: "Unable to verify API access",
+      status: 503,
+    });
+  });
+
+  test("verificationUnavailable outranks a stale billingStatus on the same row", () => {
+    // The marker is synthesized over whatever shape the failed lookup had; a
+    // lapsed status carried alongside it is unverified, so it must not turn a
+    // transient failure into a terminal 403.
+    const denial = classifyBillingVerification({
+      verificationUnavailable: true,
+      billingStatus: "subscription_lapsed",
+    });
+    expect(denial?.retryable).toBe(true);
+    expect(denial?.code).toBe("entitlement_verification_unavailable");
+  });
+
+  test("a provider-confirmed lapse is the only terminal member", () => {
+    expect(classifyBillingVerification({ billingStatus: "subscription_lapsed" })).toEqual({
+      retryable: false,
+      code: "subscription_lapsed",
+      retryAfterSeconds: 0,
+      message: "Subscription lapsed",
+      status: 403,
+    });
+  });
+
+  test.each([
+    ["renewal_verification_pending", "Renewal verification pending"],
+    ["renewal_verification_failed", "Renewal verification failed"],
+  ] as const)("%s is retryable and carries the provider's own delay", (billingStatus, message) => {
+    expect(classifyBillingVerification({ billingStatus, retryAfterSeconds: 17 })).toEqual({
+      retryable: true,
+      code: billingStatus,
+      retryAfterSeconds: 17,
+      message,
+      status: 503,
+    });
+  });
+
+  test("retryAfterSeconds is clamped into 1-60 whatever the provider sent", () => {
+    const delay = (raw: unknown) =>
+      classifyBillingVerification({
+        billingStatus: "renewal_verification_pending",
+        retryAfterSeconds: raw as number,
+      })?.retryAfterSeconds;
+    expect(delay(0)).toBe(1);
+    expect(delay(-5)).toBe(1);
+    expect(delay(0.2)).toBe(1);
+    expect(delay(600)).toBe(60);
+    expect(delay(Number.NaN)).toBe(5);
+    expect(delay(undefined)).toBe(5);
+    expect(delay("11")).toBe(5);
+  });
+
+  test("every retryable member advertises a delay and the terminal one does not", () => {
+    for (const input of [
+      { verificationUnavailable: true as const },
+      { billingStatus: "renewal_verification_pending" as const },
+      { billingStatus: "renewal_verification_failed" as const },
+    ]) {
+      const denial = classifyBillingVerification(input);
+      expect(denial?.retryable).toBe(true);
+      expect(denial?.status).toBe(503);
+      expect(denial!.retryAfterSeconds).toBeGreaterThan(0);
+    }
+    const lapsed = classifyBillingVerification({ billingStatus: "subscription_lapsed" });
+    expect(lapsed?.retryable).toBe(false);
+    expect(lapsed?.status).toBe(403);
+    expect(lapsed?.retryAfterSeconds).toBe(0);
+  });
+});
+
+describe("getBillingVerificationDenial renders the classification (#5622)", () => {
+  test("a terminal denial carries no Retry-After — a lapse must not invite a retry loop", async () => {
+    const res = getBillingVerificationDenial({ billingStatus: "subscription_lapsed" }, {}, 1);
+    expect(res?.status).toBe(403);
+    expect(res?.headers.get("Retry-After")).toBeNull();
+    expect(res?.headers.get("X-Billing-Verification")).toBe("subscription_lapsed");
+    expect(await res?.json()).toEqual({
+      error: "Subscription lapsed",
+      code: "subscription_lapsed",
+      requiredTier: 1,
+    });
+  });
+
+  test("requiredTier is omitted, not null, when the caller does not supply one", async () => {
+    const res = getBillingVerificationDenial({ verificationUnavailable: true }, {});
+    expect(await res?.json()).toEqual({
+      error: "Unable to verify API access",
+      code: "entitlement_verification_unavailable",
+    });
+  });
+
+  test("cors headers are merged and cannot clobber the verification header", () => {
+    const res = getBillingVerificationDenial({ verificationUnavailable: true }, {
+      "Access-Control-Allow-Origin": "https://worldmonitor.app",
+    });
+    expect(res?.headers.get("Access-Control-Allow-Origin")).toBe("https://worldmonitor.app");
+    expect(res?.headers.get("X-Billing-Verification")).toBe("entitlement_verification_unavailable");
+    expect(res?.headers.get("Cache-Control")).toBe("no-store");
+  });
+
+  test("returns null when there is nothing to deny", () => {
+    expect(getBillingVerificationDenial(null, {})).toBeNull();
+    expect(getBillingVerificationDenial({}, {})).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #5622 — transient failures are negative-cached so an outage is not amplified
+// ---------------------------------------------------------------------------
+
+describe("transient-failure negative cache (#5622)", () => {
+  test("a repeat lookup inside the window reuses the transient answer without another backend call", async () => {
+    __resetEntitlementNegativeCacheForTests();
+    const originalSiteUrl = process.env.CONVEX_SITE_URL;
+    const originalSecret = process.env.CONVEX_SERVER_SHARED_SECRET;
+    process.env.CONVEX_SITE_URL = "https://example-deployment.convex.site";
+    process.env.CONVEX_SERVER_SHARED_SECRET = "test-secret";
+    vi.mocked(getCachedJson).mockResolvedValue(null);
+    const fetchMock = vi.fn().mockRejectedValue(new Error("fetch failed"));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const first = await getEntitlements("user-negcache-hit");
+      const second = await getEntitlements("user-negcache-hit");
+
+      expect(first?.verificationUnavailable).toBe(true);
+      // Same deny-side answer, so every gate still emits the retryable 503.
+      expect(second?.verificationUnavailable).toBe(true);
+      expect(second?.features.tier).toBe(0);
+      expect(second?.validUntil).toBe(0);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      if (originalSiteUrl === undefined) delete process.env.CONVEX_SITE_URL;
+      else process.env.CONVEX_SITE_URL = originalSiteUrl;
+      if (originalSecret === undefined) delete process.env.CONVEX_SERVER_SHARED_SECRET;
+      else process.env.CONVEX_SERVER_SHARED_SECRET = originalSecret;
+      vi.unstubAllGlobals();
+      vi.mocked(getCachedJson).mockResolvedValue(null);
+      __resetEntitlementNegativeCacheForTests();
+    }
+  });
+
+  test("the cached failure expires, so recovery is not held back past the window", async () => {
+    __resetEntitlementNegativeCacheForTests();
+    const originalSiteUrl = process.env.CONVEX_SITE_URL;
+    const originalSecret = process.env.CONVEX_SERVER_SHARED_SECRET;
+    process.env.CONVEX_SITE_URL = "https://example-deployment.convex.site";
+    process.env.CONVEX_SERVER_SHARED_SECRET = "test-secret";
+    vi.mocked(getCachedJson).mockResolvedValue(null);
+    const recovered = makeEntitlements(1, "pro_monthly");
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("fetch failed"))
+      .mockResolvedValue(
+        new Response(JSON.stringify(recovered), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    // Advance past the window rather than sleeping for it — the TTL is real
+    // seconds and this assertion is about the boundary, not the wall clock.
+    const realNow = Date.now;
+    try {
+      expect((await getEntitlements("user-negcache-expiry"))?.verificationUnavailable).toBe(true);
+      Date.now = () => realNow() + __negativeCacheTtlMsForTests + 1;
+      const after = await getEntitlements("user-negcache-expiry");
+      expect(after?.verificationUnavailable).toBeUndefined();
+      expect(after?.features.tier).toBe(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      Date.now = realNow;
+      if (originalSiteUrl === undefined) delete process.env.CONVEX_SITE_URL;
+      else process.env.CONVEX_SITE_URL = originalSiteUrl;
+      if (originalSecret === undefined) delete process.env.CONVEX_SERVER_SHARED_SECRET;
+      else process.env.CONVEX_SERVER_SHARED_SECRET = originalSecret;
+      vi.unstubAllGlobals();
+      vi.mocked(getCachedJson).mockResolvedValue(null);
+      __resetEntitlementNegativeCacheForTests();
+    }
+  });
+
+  test("the window stays strictly inside the Retry-After the same state advertises", () => {
+    // Load-bearing inequality, not a style preference: if the negative cache
+    // outlived the advertised delay, a client that correctly honors
+    // `Retry-After: 5` would retry straight back into the cached failure and the
+    // outage would outlive the outage.
+    const advertised = classifyBillingVerification({ verificationUnavailable: true });
+    expect(__negativeCacheTtlMsForTests).toBeLessThan(advertised!.retryAfterSeconds * 1_000);
+  });
+
+  test("a confirmed row is never negative-cached", async () => {
+    __resetEntitlementNegativeCacheForTests();
+    const originalSiteUrl = process.env.CONVEX_SITE_URL;
+    const originalSecret = process.env.CONVEX_SERVER_SHARED_SECRET;
+    process.env.CONVEX_SITE_URL = "https://example-deployment.convex.site";
+    process.env.CONVEX_SERVER_SHARED_SECRET = "test-secret";
+    vi.mocked(getCachedJson).mockResolvedValue(null);
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(makeEntitlements(1, "pro_monthly")), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await getEntitlements("user-negcache-confirmed");
+      await getEntitlements("user-negcache-confirmed");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      if (originalSiteUrl === undefined) delete process.env.CONVEX_SITE_URL;
+      else process.env.CONVEX_SITE_URL = originalSiteUrl;
+      if (originalSecret === undefined) delete process.env.CONVEX_SERVER_SHARED_SECRET;
+      else process.env.CONVEX_SERVER_SHARED_SECRET = originalSecret;
+      vi.unstubAllGlobals();
+      vi.mocked(getCachedJson).mockResolvedValue(null);
+      __resetEntitlementNegativeCacheForTests();
+    }
+  });
+
+  test("a fail-closed null is never negative-cached (a 4xx deploy defect keeps its hard posture)", async () => {
+    __resetEntitlementNegativeCacheForTests();
+    const originalSiteUrl = process.env.CONVEX_SITE_URL;
+    const originalSecret = process.env.CONVEX_SERVER_SHARED_SECRET;
+    process.env.CONVEX_SITE_URL = "https://example-deployment.convex.site";
+    process.env.CONVEX_SERVER_SHARED_SECRET = "test-secret";
+    vi.mocked(getCachedJson).mockResolvedValue(null);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response("forbidden", { status: 403 }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      expect(await getEntitlements("user-negcache-4xx")).toBeNull();
+      expect(await getEntitlements("user-negcache-4xx")).toBeNull();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      if (originalSiteUrl === undefined) delete process.env.CONVEX_SITE_URL;
+      else process.env.CONVEX_SITE_URL = originalSiteUrl;
+      if (originalSecret === undefined) delete process.env.CONVEX_SERVER_SHARED_SECRET;
+      else process.env.CONVEX_SERVER_SHARED_SECRET = originalSecret;
+      vi.unstubAllGlobals();
+      vi.mocked(getCachedJson).mockResolvedValue(null);
+      __resetEntitlementNegativeCacheForTests();
     }
   });
 });

@@ -18,6 +18,7 @@ export const config = { runtime: 'edge', regions: ['iad1', 'lhr1', 'fra1', 'sfo1
 import { getCorsHeaders } from './_cors.js';
 // @ts-expect-error — JS module, no declaration file
 import { captureSilentError } from './_sentry-edge.js';
+import { getBillingVerificationDenial } from '../server/_shared/entitlement-check';
 import { resolvePremiumCallerIdentity } from '../server/_shared/premium-check';
 import { checkRateLimit } from '../server/_shared/rate-limit';
 import { runRedisPipeline } from '../server/_shared/redis';
@@ -123,6 +124,23 @@ export default async function handler(req: Request): Promise<Response> {
   try {
     const premiumIdentity = await resolvePremiumCallerIdentity(req);
     if (!premiumIdentity.isPremium) {
+      // #5622: the comment above already committed to "503 (not 403) so a
+      // transient dependency blip never misclassifies a paying Pro user as
+      // unsubscribed" — but the entitlement lookup's OWN transient failure
+      // still landed on this 403, because resolvePremiumCallerIdentity had no
+      // way to say "could not verify". Now it does, and this branch honors it
+      // with the same retryable shape every other Pro surface emits
+      // (docs/usage-errors.mdx). src/services/premium-denial.ts already routes
+      // 503 away from the upsell, so the panel retries instead of upselling.
+      if (premiumIdentity.verificationUnavailable) {
+        // Rendered by the shared helper rather than hand-built here, so this
+        // surface cannot drift from the wire contract the docs describe.
+        const denial = getBillingVerificationDenial(
+          { verificationUnavailable: true },
+          corsHeaders,
+        );
+        if (denial) return denial;
+      }
       return json({ error: 'Pro subscription required' }, 403, corsHeaders);
     }
     if (!premiumIdentity.quotaExempt) {

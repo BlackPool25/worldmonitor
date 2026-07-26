@@ -324,6 +324,99 @@ describe('/api/notification-channels POST billing-verification contract', () => 
     });
   });
 
+  /**
+   * #5622 — the decision on the Clerk `role === 'pro'` allowance, pinned.
+   *
+   * Complimentary, tester, and legacy Clerk-role grants have NO Convex
+   * entitlement row. Every other Pro signal in the product already honors the
+   * role: `checkEntitlementDetailed` allows it for tier <= 1,
+   * `resolvePremiumCallerIdentity` returns premium on its bearer branch, and
+   * `isProUser()` (src/services/widget-store.ts) unlocks the client UI on the
+   * role alone — so such a user could READ their channels (GET is ungated), see
+   * the whole notifications tab, and then be told "Real-time alerts are
+   * available on the Pro plan." on every write, permanently.
+   *
+   * Deliberately scoped to this endpoint; the sibling surfaces swept in #5600
+   * still require a billed row (tracked in #5646).
+   */
+  it('honors the Clerk role=pro allowance for the tier-1 gate, with no Convex row at all', async () => {
+    const mod = await importFreshNotificationChannels();
+    const entitlementCalls: string[] = [];
+    const relayFetch = mock.fn(async () => new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    mod.__setNotificationChannelsDepsForTests({
+      validateBearerToken: async () => ({ valid: true, userId: 'user-clerk-pro', role: 'pro' }),
+      getEntitlements: async (userId: string) => {
+        entitlementCalls.push(userId);
+        return freeShapedEntitlements({});
+      },
+      fetch: relayFetch,
+    });
+    mock.method(console, 'warn', () => {});
+    // The relay stub is not a full success path (the durable-welcome capability
+    // handshake rejects it), so this asserts what the gate decides — the request
+    // got THROUGH to the relay — not the relay's own outcome.
+    mock.method(console, 'error', () => {});
+
+    const res = await mod.default(makeSetChannelRequest(), ctx);
+
+    assert.notEqual(res.status, 403, 'a Clerk-role Pro grant must not hit the upsell');
+    assert.deepEqual(
+      entitlementCalls,
+      [],
+      'the allowance short-circuits before the lookup, matching checkEntitlementDetailed',
+    );
+    assert.ok(relayFetch.mock.calls.length > 0, 'the write must reach the relay');
+  });
+
+  it('a free Clerk role gets no allowance — the gate still reads the entitlement', async () => {
+    const mod = await importFreshNotificationChannels();
+    mod.__setNotificationChannelsDepsForTests({
+      validateBearerToken: async () => ({ valid: true, userId: 'user-clerk-free', role: 'free' }),
+      getEntitlements: async () => freeShapedEntitlements({}),
+      fetch: async () => {
+        throw new Error('relay must not be reached for a denied request');
+      },
+    });
+    mock.method(console, 'warn', () => {});
+
+    const res = await mod.default(makeSetChannelRequest(), ctx);
+    assert.equal(res.status, 403);
+    assert.equal((await res.json()).error, 'pro_required');
+  });
+
+  it('an absent role is not an allowance (fail closed on a session shape without one)', async () => {
+    const mod = await importFreshNotificationChannels();
+    mod.__setNotificationChannelsDepsForTests({
+      validateBearerToken: async () => ({ valid: true, userId: 'user-no-role' }),
+      getEntitlements: async () => freeShapedEntitlements({}),
+      fetch: async () => {
+        throw new Error('relay must not be reached for a denied request');
+      },
+    });
+    mock.method(console, 'warn', () => {});
+
+    const res = await mod.default(makeSetChannelRequest(), ctx);
+    assert.equal(res.status, 403);
+  });
+
+  it('the allowance does not extend to a non-pro role string', async () => {
+    const mod = await importFreshNotificationChannels();
+    mod.__setNotificationChannelsDepsForTests({
+      validateBearerToken: async () => ({ valid: true, userId: 'user-odd-role', role: 'PRO' as never }),
+      getEntitlements: async () => freeShapedEntitlements({}),
+      fetch: async () => {
+        throw new Error('relay must not be reached for a denied request');
+      },
+    });
+    mock.method(console, 'warn', () => {});
+
+    const res = await mod.default(makeSetChannelRequest(), ctx);
+    assert.equal(res.status, 403, 'role matching is exact — no case folding');
+  });
+
   it('fails closed with pro_required when the entitlement lookup returns null', async () => {
     const mod = await importFreshNotificationChannels();
     mod.__setNotificationChannelsDepsForTests({

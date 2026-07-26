@@ -358,8 +358,29 @@ export default async function handler(req: Request, ctx: { waitUntil: (p: Promis
   }
 
   if (req.method === 'POST') {
-    const ent = await notificationChannelsDeps.getEntitlements(session.userId);
-    if (!ent || ent.features.tier < 1) {
+    // #5622: honor the Clerk `role === 'pro'` allowance for this tier-1 gate,
+    // the same way checkEntitlementDetailed does for tier <= 1 and
+    // resolvePremiumCallerIdentity does on its bearer branch. Complimentary,
+    // tester, and legacy Clerk-role grants have no Convex entitlement row, and
+    // the client already unlocks every Pro surface for them (isProUser() in
+    // src/services/widget-store.ts returns true on role alone). Without this,
+    // such a user could READ their channels (GET is ungated), see the whole
+    // notifications tab, and then get a terminal "Real-time alerts are
+    // available on the Pro plan." on every write — permanently, not just during
+    // an outage. That is the #5600 shape with no self-healing window at all.
+    //
+    // Deliberately scoped to this endpoint: the sibling Pro-gated JSON surfaces
+    // swept in #5600 (notify, latest-brief, brief/share-url, slack/discord
+    // oauth-start) still require a billed row, and widening authorization on
+    // five more endpoints is its own change. Tracked in #5646.
+    // The allowance skips the lookup entirely (checkEntitlementDetailed returns
+    // before calling getEntitlements for the same reason), so `ent` is null on
+    // that path and the guard below re-tests the flag rather than reading it.
+    const clerkProAllowance = session.role === 'pro';
+    const ent = clerkProAllowance
+      ? null
+      : await notificationChannelsDeps.getEntitlements(session.userId);
+    if (!clerkProAllowance && (!ent || ent.features.tier < 1)) {
       // #5600: an entitlement the backend could not VERIFY (Convex 5xx/timeout,
       // or a renewal re-check in flight) is not a confirmed free user. Answer
       // it with the shared retryable contract — 503 + Retry-After +

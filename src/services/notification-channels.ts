@@ -50,35 +50,199 @@ export interface ChannelsData {
   alertRules: AlertRule[];
 }
 
+// ---------------------------------------------------------------------------
+// Retryable billing-verification denials (#5622)
+// ---------------------------------------------------------------------------
+
+/**
+ * The `code`s the server marks RETRYABLE on a 503
+ * (server/_shared/entitlement-check.ts, documented in docs/usage-errors.mdx).
+ *
+ * An allowlist, not "any 503", and that is the whole point. This endpoint also
+ * answers 503 for a missing Convex/relay env and for relay failures that happen
+ * AFTER a mutation may have partially landed — blind-retrying a POST on those
+ * risks a duplicate write. A billing-verification denial is emitted by the gate
+ * BEFORE any write, so retrying it is side-effect-free.
+ *
+ * `subscription_lapsed` is absent on purpose: it is a 403 and terminal.
+ */
+const RETRYABLE_BILLING_CODES = new Set([
+  'entitlement_verification_unavailable',
+  'renewal_verification_pending',
+  'renewal_verification_failed',
+]);
+
+/** Used when the server omitted Retry-After; matches the server's own default. */
+const DEFAULT_BILLING_RETRY_AFTER_SECONDS = 5;
+
+/**
+ * Longest delay worth waiting out inline. The server clamps Retry-After to
+ * 1-60s; a user sitting in the activation wizard will not wait a minute, so a
+ * longer hint means "surface the failure now" rather than "retry early".
+ *
+ * Retrying EARLIER than the server asked is deliberately not an option: it
+ * violates the Retry-After contract and, because the server negative-caches a
+ * transient answer for a few seconds
+ * (UNAVAILABLE_NEGATIVE_CACHE_TTL_MS in server/_shared/entitlement-check.ts),
+ * an early retry would deterministically be served the same cached failure.
+ */
+const BILLING_RETRY_MAX_DELAY_MS = 10_000;
+
+/**
+ * How long to wait before the single retry, or null when this response must not
+ * be retried. Pure — the wire decision, testable without a network.
+ */
+export function billingVerificationRetryDelayMs(input: {
+  status: number;
+  code: string | null;
+  retryAfterHeader: string | null;
+}): number | null {
+  if (input.status !== 503) return null;
+  if (!input.code || !RETRYABLE_BILLING_CODES.has(input.code)) return null;
+
+  const parsed = Number(input.retryAfterHeader);
+  const seconds = Number.isFinite(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_BILLING_RETRY_AFTER_SECONDS;
+  const delayMs = Math.ceil(seconds * 1_000);
+  return delayMs > BILLING_RETRY_MAX_DELAY_MS ? null : delayMs;
+}
+
+/**
+ * The denial code, header-first with a body fallback.
+ *
+ * `X-Billing-Verification` is now in Access-Control-Expose-Headers (#5622), but
+ * the dashboard's same-origin calls are not the only consumers — the Tauri shell
+ * and widget embeds are cross-origin, and an intermediary can strip a header.
+ * The body's `code` mirrors it, read off a CLONE so the caller's response stream
+ * is untouched whether or not we end up retrying.
+ */
+async function readBillingVerificationCode(res: Response): Promise<string | null> {
+  const header = res.headers.get('X-Billing-Verification');
+  if (header) return header;
+  try {
+    const body = await res.clone().json() as { code?: unknown };
+    return typeof body.code === 'string' ? body.code : null;
+  } catch {
+    return null;
+  }
+}
+
+function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new Error('Aborted'));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    function onAbort(): void {
+      clearTimeout(timer);
+      reject(signal?.reason ?? new Error('Aborted'));
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/**
+ * Seam for the retry tests. The real Clerk token fetch and `fetch` cannot be
+ * driven from a unit test, and the retry decision is exactly the kind of wiring
+ * that a source-level assertion can claim works while it does not.
+ */
+export interface NotificationChannelsClientDeps {
+  getClerkToken: typeof getClerkToken;
+  getCurrentClerkUser: typeof getCurrentClerkUser;
+  fetch: typeof fetch;
+  sleep: (ms: number, signal?: AbortSignal | null) => Promise<void>;
+}
+
+const defaultClientDeps = (): NotificationChannelsClientDeps => ({
+  getClerkToken,
+  getCurrentClerkUser,
+  fetch: (...args) => globalThis.fetch(...args),
+  sleep,
+});
+
+let clientDeps = defaultClientDeps();
+
+export function __setNotificationChannelsClientDepsForTests(
+  overrides: Partial<NotificationChannelsClientDeps> | null,
+): void {
+  clientDeps = overrides ? { ...defaultClientDeps(), ...overrides } : defaultClientDeps();
+}
+
 function assertExpectedAccount(expectedUserId?: string): void {
-  if (expectedUserId && getCurrentClerkUser()?.id !== expectedUserId) {
+  if (expectedUserId && clientDeps.getCurrentClerkUser()?.id !== expectedUserId) {
     throw new Error('Authenticated account changed during notification setup');
   }
 }
 
-async function authFetch(
+async function sendOnce(
   path: string,
   init?: RequestInit,
   expectedUserId?: string,
 ): Promise<Response> {
   assertExpectedAccount(expectedUserId);
-  let token = await getClerkToken();
+  let token = await clientDeps.getClerkToken();
   if (!token) {
     console.warn('[authFetch] getClerkToken returned null, retrying in 2s...');
-    await new Promise((r) => setTimeout(r, 2000));
-    token = await getClerkToken();
+    await clientDeps.sleep(2000, init?.signal ?? null);
+    token = await clientDeps.getClerkToken();
   }
   if (!token) throw new Error('Not authenticated (Clerk token null after retry)');
   // The token was resolved asynchronously. Re-check immediately before the
   // request so a modal opened by user A cannot write under user B's session.
   assertExpectedAccount(expectedUserId);
-  return fetch(path, {
+  return clientDeps.fetch(path, {
     ...init,
     headers: {
       ...(init?.headers ?? {}),
       Authorization: `Bearer ${token}`,
     },
   });
+}
+
+/**
+ * Authenticated fetch with ONE bounded retry on a retryable
+ * billing-verification 503 (#5622).
+ *
+ * Before this, every caller below threw `Error(\`... ${res.status}\`)` on any
+ * non-2xx, so the 503 + Retry-After + X-Billing-Verification the server emits
+ * for an unverifiable entitlement was inert on this surface — the day-0 Pro
+ * activation wizard failed the step exactly as if the user had no subscription.
+ * The retry is what makes the server-side contract observable behavior.
+ *
+ * Bounded on purpose: one extra attempt, only for the codes the server marks
+ * retryable, only after waiting the delay it asked for. The retry re-derives the
+ * Clerk token and re-asserts the expected account, so it cannot write under a
+ * session that changed while we waited.
+ *
+ * Note this does NOT help the day-0 poisoned-marker cohort — that state is a
+ * 403 by design (see api/notification-channels.ts), and no amount of retrying
+ * should turn a clean upsell into a retry loop.
+ *
+ * `init.body` must be a re-sendable value (every caller here passes a string).
+ * A stream body would be consumed by the first attempt.
+ */
+async function authFetch(
+  path: string,
+  init?: RequestInit,
+  expectedUserId?: string,
+): Promise<Response> {
+  const first = await sendOnce(path, init, expectedUserId);
+  if (first.status !== 503) return first;
+
+  const delayMs = billingVerificationRetryDelayMs({
+    status: first.status,
+    code: await readBillingVerificationCode(first),
+    retryAfterHeader: first.headers.get('Retry-After'),
+  });
+  if (delayMs === null) return first;
+
+  await clientDeps.sleep(delayMs, init?.signal ?? null);
+  return sendOnce(path, init, expectedUserId);
 }
 
 export async function getChannelsData(

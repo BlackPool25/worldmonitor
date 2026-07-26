@@ -19,6 +19,7 @@
  */
 
 import { initClerk, getClerkToken, getCurrentClerkUser, openSignIn, subscribeClerk } from '@/services/clerk';
+import { classifyGrantDenial } from '@/services/mcp-grant-denial';
 
 // Apply user's saved theme preference. Inlined here (not the index.html head)
 // because the page's global CSP is hash-allowlisted and adding per-page
@@ -87,17 +88,20 @@ async function loadContext(nonce: string): Promise<void> {
     return;
   }
 
-  if (resp.status === 401) {
-    // Token went stale between page load and fetch — re-prompt.
-    openSignIn();
-    return;
-  }
-
   if (!resp.ok) {
     let body: ApiError | null = null;
     try { body = (await resp.json()) as ApiError; } catch { /* ignore */ }
-    const msg = errorCodeToMessage(body?.error);
-    showErrorView(msg);
+    const verdict = classifyGrantDenial(resp.status, body?.error);
+    if (verdict.action === 'sign_in') {
+      // Token went stale between page load and fetch — re-prompt.
+      openSignIn();
+      return;
+    }
+    // A retryable denial on the context load has no button to re-enable yet, so
+    // the error view is still where it lands — but the copy says "temporary,
+    // try again" instead of "start over from your MCP client", which is the
+    // difference between a user who retries and one who gives up (#5622).
+    showErrorView(verdict.message);
     return;
   }
 
@@ -117,28 +121,13 @@ async function loadContext(nonce: string): Promise<void> {
   show('consent');
 }
 
-function errorCodeToMessage(code: string | undefined): string {
-  switch (code) {
-    case 'INVALID_NONCE':
-      return 'This authorization request expired or is invalid. Start over from your MCP client.';
-    case 'UNKNOWN_CLIENT':
-      return 'The OAuth client is no longer registered. Start over from your MCP client.';
-    case 'INVALID_REDIRECT_URI':
-      return 'The redirect destination is not allowed. Start over from your MCP client.';
-    case 'INSUFFICIENT_TIER':
-      return 'A WorldMonitor Pro subscription is required to authorize MCP clients.';
-    case 'CONFIGURATION_ERROR':
-      return 'MCP authorization is temporarily unavailable. Please try again later.';
-    case 'SERVICE_UNAVAILABLE':
-      return 'The authorization service is temporarily unavailable. Please try again in a moment.';
-    default:
-      return 'This authorization request could not be completed. Start over from your MCP client.';
-  }
-}
-
 async function onAuthorizeClick(nonce: string): Promise<void> {
   const btn = $('authorizeBtn') as HTMLButtonElement;
   const errEl = $('mintError');
+  const reenable = (): void => {
+    btn.disabled = false;
+    btn.textContent = 'Authorize';
+  };
   btn.disabled = true;
   btn.textContent = 'Authorizing…';
   hide('mintError');
@@ -151,24 +140,32 @@ async function onAuthorizeClick(nonce: string): Promise<void> {
       body: JSON.stringify({ nonce }),
     });
   } catch {
-    btn.disabled = false;
-    btn.textContent = 'Authorize';
+    reenable();
     errEl.textContent = 'Network error. Please try again.';
     show('mintError');
-    return;
-  }
-
-  if (resp.status === 401) {
-    openSignIn();
-    btn.disabled = false;
-    btn.textContent = 'Authorize';
     return;
   }
 
   if (!resp.ok) {
     let body: ApiError | null = null;
     try { body = (await resp.json()) as ApiError; } catch { /* ignore */ }
-    showErrorView(errorCodeToMessage(body?.error));
+    const verdict = classifyGrantDenial(resp.status, body?.error);
+    if (verdict.action === 'sign_in') {
+      openSignIn();
+      reenable();
+      return;
+    }
+    if (verdict.action === 'retryable') {
+      // #5622: a transient entitlement-verification failure used to replace the
+      // consent card with a terminal "start over from your MCP client" — the
+      // nonce is still valid and the SAME click would succeed a moment later, so
+      // keep the card and hand the button back.
+      reenable();
+      errEl.textContent = verdict.message;
+      show('mintError');
+      return;
+    }
+    showErrorView(verdict.message);
     return;
   }
 
@@ -176,8 +173,7 @@ async function onAuthorizeClick(nonce: string): Promise<void> {
   try {
     mint = (await resp.json()) as MintResponse;
   } catch {
-    btn.disabled = false;
-    btn.textContent = 'Authorize';
+    reenable();
     errEl.textContent = 'Unexpected response from the authorization service.';
     show('mintError');
     return;
