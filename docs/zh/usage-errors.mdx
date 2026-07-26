@@ -45,9 +45,9 @@ OAuth 端点遵循 [RFC 6749 §5.2](https://datatracker.ietf.org/doc/html/rfc674
 
 ### 读取 `X-Billing-Verification`
 
-每个计费校验拒绝响应都会将 `X-Billing-Verification` 设为与响应体 `code` 相同的值，且该响应头已列入 `Access-Control-Expose-Headers`，因此浏览器客户端可以跨域直接读取，无需解析响应体。请依据该响应头而非仅依据状态码分支：这些入口返回的 `503` 也可能表示「必需的环境变量未配置」——那是**不可重试**的；而 `403` 既可能是普通的 `pro_required` 升级提示，也可能是 `subscription_lapsed` 判定。
+对于返回 JSON 的网关入口，`X-Billing-Verification` 通常与响应体中的计费 `code` 一致。Pro-MCP OAuth 流程有意采用两种不同的响应结构：其 grant 握手端点在响应体中使用稳定错误码，以 `TIER_VERIFICATION_UNAVAILABLE` 表示可重试的校验故障，以 `INSUFFICIENT_TIER` 表示终态的层级拒绝，而响应头承载底层的具体计费原因；`/oauth/authorize-pro` 返回 HTML，因此该响应头仍是其机器可读的计费原因。该响应头已列入 `Access-Control-Expose-Headers`，因此浏览器客户端可以跨域直接读取。请依据该响应头而非仅依据状态码分支：这些入口返回的 `503` 也可能表示「必需的环境变量未配置」——那是**不可重试**的；而 `403` 既可能是普通的 `pro_required` 升级提示，也可能是 `subscription_lapsed` 判定。
 
-只有 `subscription_lapsed` 是终态。它是唯一从不携带 `Retry-After` 的取值——缺少该响应头本身就是信号：出路是重新订阅，而不是重试。
+在 `X-Billing-Verification` 承载的计费原因中，只有 `subscription_lapsed` 是终态。它从不携带 `Retry-After`——缺少该响应头本身就是信号：出路是重新订阅，而不是重试。在 grant 握手端点，即使没有计费响应头，也应将响应体错误码 `INSUFFICIENT_TIER` 视为终态，将 `TIER_VERIFICATION_UNAVAILABLE` 视为可重试。
 
 ## 常见错误字符串
 

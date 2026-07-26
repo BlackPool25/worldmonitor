@@ -26,6 +26,17 @@ export interface GrantDenialVerdict {
   message: string;
 }
 
+/** Mint lifecycle relevant to a concurrent Clerk-triggered context refresh. */
+export type GrantMintPhase = 'idle' | 'in_flight' | 'retry_cooldown';
+
+/** What a context denial should do after classification. */
+export type GrantContextDenialAction =
+  | 'sign_in'
+  | 'retry'
+  | 'preserve_consent'
+  | 'show_retry'
+  | 'terminal';
+
 /**
  * `TIER_VERIFICATION_UNAVAILABLE` (server/_shared/pro-mcp-gate.ts) is the ONE
  * retryable entitlement code the handshake emits. `SERVICE_UNAVAILABLE` (Redis
@@ -101,4 +112,24 @@ export function classifyGrantDenial(status: number, code: string | undefined): G
     action: code && RETRYABLE_CODES.has(code) ? 'retryable' : 'terminal',
     message: grantErrorMessage(code),
   };
+}
+
+/**
+ * Route a context denial without depending on the DOM.
+ *
+ * A transient Clerk subscription refresh must not replace consent while a mint
+ * is either in flight or waiting out Retry-After. Outside those phases, the
+ * first transient denial receives one caller-owned retry; spending that budget
+ * exposes a manual retry action. Terminal denials never enter either retry
+ * path.
+ */
+export function routeGrantContextDenial(
+  denial: GrantDenialAction,
+  mintPhase: GrantMintPhase,
+  retriesRemaining: number,
+): GrantContextDenialAction {
+  if (denial === 'sign_in') return 'sign_in';
+  if (denial === 'terminal') return 'terminal';
+  if (mintPhase !== 'idle') return 'preserve_consent';
+  return retriesRemaining > 0 ? 'retry' : 'show_retry';
 }

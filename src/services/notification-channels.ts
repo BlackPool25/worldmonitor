@@ -283,71 +283,96 @@ export async function getChannelsData(
   return res.json() as Promise<ChannelsData>;
 }
 
-export async function createPairingToken(): Promise<{ token: string; expiresAt: number }> {
+export async function createPairingToken(
+  signal?: AbortSignal,
+): Promise<{ token: string; expiresAt: number }> {
   const res = await authFetch('/api/notification-channels', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'create-pairing-token', variant: SITE_VARIANT }),
+    signal,
   });
   if (!res.ok) throw new Error(`create pairing token: ${res.status}`);
   return res.json();
 }
 
-export async function setEmailChannel(email: string, expectedUserId?: string): Promise<void> {
+export async function setEmailChannel(
+  email: string,
+  expectedUserId?: string,
+  signal?: AbortSignal,
+): Promise<void> {
   const res = await authFetch('/api/notification-channels', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'set-channel', channelType: 'email', email }),
+    signal,
   }, expectedUserId);
   if (!res.ok) throw new Error(`set email channel: ${res.status}`);
 }
 
-export async function setSlackChannel(webhookEnvelope: string): Promise<void> {
+export async function setSlackChannel(
+  webhookEnvelope: string,
+  signal?: AbortSignal,
+): Promise<void> {
   const res = await authFetch('/api/notification-channels', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'set-channel', channelType: 'slack', webhookEnvelope }),
+    signal,
   });
   if (!res.ok) throw new Error(`set slack channel: ${res.status}`);
 }
 
-export async function setWebhookChannel(webhookUrl: string, label?: string): Promise<void> {
+export async function setWebhookChannel(
+  webhookUrl: string,
+  label?: string,
+  signal?: AbortSignal,
+): Promise<void> {
   const res = await authFetch('/api/notification-channels', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'set-channel', channelType: 'webhook', webhookEnvelope: webhookUrl, webhookLabel: label }),
+    signal,
   });
   if (!res.ok) throw new Error(`set webhook channel: ${res.status}`);
 }
 
-export async function startSlackOAuth(): Promise<string> {
-  const res = await authFetch('/api/slack/oauth/start', { method: 'POST' });
+export async function startSlackOAuth(signal?: AbortSignal): Promise<string> {
+  const res = await authFetch('/api/slack/oauth/start', { method: 'POST', signal });
   if (!res.ok) throw new Error(`slack oauth start: ${res.status}`);
   const data = await res.json() as { oauthUrl: string };
   return data.oauthUrl;
 }
 
-export async function startDiscordOAuth(): Promise<string> {
-  const res = await authFetch('/api/discord/oauth/start', { method: 'POST' });
+export async function startDiscordOAuth(signal?: AbortSignal): Promise<string> {
+  const res = await authFetch('/api/discord/oauth/start', { method: 'POST', signal });
   if (!res.ok) throw new Error(`discord oauth start: ${res.status}`);
   const data = await res.json() as { oauthUrl: string };
   return data.oauthUrl;
 }
 
-export async function deleteChannel(channelType: ChannelType): Promise<void> {
+export async function deleteChannel(
+  channelType: ChannelType,
+  signal?: AbortSignal,
+): Promise<void> {
   const res = await authFetch('/api/notification-channels', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'delete-channel', channelType }),
+    signal,
   });
   if (!res.ok) throw new Error(`delete channel: ${res.status}`);
 }
 
-export async function saveAlertRules(rules: AlertRule): Promise<void> {
+export async function saveAlertRules(
+  rules: AlertRule,
+  signal?: AbortSignal,
+): Promise<void> {
   const res = await authFetch('/api/notification-channels', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'set-alert-rules', ...rules }),
+    signal,
   });
   if (!res.ok) throw new Error(`save alert rules: ${res.status}`);
 }
@@ -360,11 +385,12 @@ export async function setQuietHours(settings: {
   quietHoursTimezone?: string;
   quietHoursOverride?: QuietHoursOverride;
   countries?: string[];
-}): Promise<void> {
+}, signal?: AbortSignal): Promise<void> {
   const res = await authFetch('/api/notification-channels', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'set-quiet-hours', ...settings }),
+    signal,
   });
   if (!res.ok) throw new Error(`set quiet hours: ${res.status}`);
 }
@@ -375,11 +401,12 @@ export async function setDigestSettings(settings: {
   digestHour?: number;
   digestTimezone?: string;
   countries?: string[];
-}): Promise<void> {
+}, signal?: AbortSignal): Promise<void> {
   const res = await authFetch('/api/notification-channels', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'set-digest-settings', ...settings }),
+    signal,
   });
   if (!res.ok) throw new Error(`set digest settings: ${res.status}`);
 }
@@ -435,11 +462,14 @@ export function buildWatchlistTickerSyncPayload(rule: AlertRule | undefined, sym
   };
 }
 
-export async function syncWatchlistTickersToAlertRule(symbols: string[]): Promise<void> {
-  const data = await getChannelsData();
+export async function syncWatchlistTickersToAlertRule(
+  symbols: string[],
+  signal?: AbortSignal,
+): Promise<void> {
+  const data = await getChannelsData(undefined, signal);
   const payload = buildWatchlistTickerSyncPayload(data.alertRules?.[0], symbols);
   if (!payload) return;
-  await saveAlertRules(payload);
+  await saveAlertRules(payload, signal);
 }
 
 /**
@@ -473,11 +503,12 @@ export async function setNotificationConfig(args: {
   digestTimezone?: string;
   countries?: string[];
   tickers?: string[];
-}, expectedUserId?: string): Promise<void> {
+}, expectedUserId?: string, signal?: AbortSignal): Promise<void> {
   const res = await authFetch('/api/notification-channels', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'set-notification-config', ...args }),
+    signal,
   }, expectedUserId);
   if (res.ok) return;
   let body: { error?: string; message?: string } = {};
