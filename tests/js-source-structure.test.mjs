@@ -73,6 +73,58 @@ describe('stripJsComments', () => {
     const source = 'const a = 1; // x\n/* y */\n';
     assert.equal(stripJsComments(stripJsComments(source)), stripJsComments(source));
   });
+
+  it('recognises a regex literal preceded by a keyword operand, not just punctuation', () => {
+    // Before this fix, only punctuation like `(` or `=` was regex-permitting.
+    // `return` ends in `n`, which is not in REGEX_PRECEDING, so the audit used
+    // to misread this `/` as division. It would then hit the escaped `\/\/`
+    // inside the regex body and misread that as a `//` line comment, blanking
+    // the real code that follows it.
+    const source = [
+      'function f(url) {',
+      '  return /https:\\/\\//.test(url); // real',
+      '}',
+      'const kept = 1;',
+    ].join('\n');
+    const stripped = stripJsComments(source);
+    assert.ok(stripped.includes('/https:\\/\\//.test(url);'), 'the regex literal and the call after it must survive');
+    assert.doesNotMatch(stripped, /real/, 'the actual trailing comment must still be stripped');
+  });
+
+  it('recognises a keyword-preceded regex with no separating whitespace', () => {
+    const source = [
+      'function g(url) {',
+      '  if (typeof/https:\\/\\//.exec(url) !== "object") return; // real',
+      '}',
+      'const kept = 1;',
+    ].join('\n');
+    const stripped = stripJsComments(source);
+    assert.ok(stripped.includes('/https:\\/\\//.exec(url)'), 'the regex literal and the call after it must survive');
+    assert.doesNotMatch(stripped, /real/, 'the actual trailing comment must still be stripped');
+  });
+
+  it('recognises a regex literal in a switch case', () => {
+    const source = [
+      'switch (kind) {',
+      '  case /https:\\/\\//.test(url) ? "secure" : "plain":',
+      '    handle(); // real',
+      '    break;',
+      '}',
+    ].join('\n');
+    const stripped = stripJsComments(source);
+    assert.ok(stripped.includes('/https:\\/\\//.test(url)'), 'the regex literal must survive');
+    assert.doesNotMatch(stripped, /real/, 'the actual trailing comment must still be stripped');
+  });
+
+  it('does not treat a non-reserved contextual keyword as regex-permitting', () => {
+    // `of` (unlike `in`, `return`, `typeof`, ...) is not a reserved word in
+    // JS/TS and can be a real identifier, so it must not flip a following `/`
+    // into regex mode.
+    const source = 'const of = computeWidth();\nconst ratio = of / total; // note\n';
+    const stripped = stripJsComments(source);
+    assert.ok(stripped.includes('const ratio = of / total;'));
+    assert.doesNotMatch(stripped, /note/);
+  });
 });
 
 describe('extractDelimitedBlock', () => {

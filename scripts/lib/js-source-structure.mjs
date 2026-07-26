@@ -23,6 +23,18 @@ const REGEX_PRECEDING = new Set([
   '', '(', ',', '=', ':', '[', '!', '&', '|', '?', '{', '}', ';', '+', '-', '*', '%', '~', '^', '<', '>',
 ]);
 
+// A `/` also starts a regex literal when the previous significant *token* is one
+// of these keywords, even though the token's last character (the `n` in
+// `return`) is not itself in REGEX_PRECEDING: `return /foo/`, `typeof /foo/`,
+// `case /foo/:` all expect an operand next, not a division. Restricted to words
+// that are reserved in JS/TS (cannot themselves be identifiers), so this never
+// misreads `const of = width / 2;` as starting a regex.
+const REGEX_PRECEDING_KEYWORDS = new Set([
+  'return', 'typeof', 'instanceof', 'in', 'new', 'delete', 'void', 'throw', 'yield', 'case', 'do', 'else', 'await', 'default',
+]);
+
+const WORD_CHAR = /[A-Za-z0-9_$]/;
+
 /**
  * Replace every comment in `source` with spaces, preserving newlines so the
  * result has the same length and line numbering as the input.
@@ -36,7 +48,13 @@ export function stripJsComments(source) {
   const out = [...source];
   const length = source.length;
   const stack = [];
-  let prevSignificant = '';
+  // The last significant *token* seen at code level: either a single
+  // punctuation character or a completed identifier/keyword word. A word is
+  // only committed here once it ends (whitespace or a following punctuation
+  // character), so `typeof/foo/` with no space still resolves `typeof` before
+  // the regex check runs.
+  let prevToken = '';
+  let wordBuf = '';
   let i = 0;
 
   const blank = (from, to) => {
@@ -45,13 +63,21 @@ export function stripJsComments(source) {
     }
   };
 
+  const finalizeWord = () => {
+    if (wordBuf) { prevToken = wordBuf; wordBuf = ''; }
+  };
+
   while (i < length) {
     const mode = stack[stack.length - 1];
     const ch = source[i];
 
+    if (mode !== 'squote' && mode !== 'dquote' && mode !== 'template' && wordBuf && !WORD_CHAR.test(ch)) {
+      finalizeWord();
+    }
+
     if (mode === 'squote' || mode === 'dquote') {
       if (ch === '\\') { i += 2; continue; }
-      if (ch === CLOSING_QUOTE[mode]) { stack.pop(); prevSignificant = ch; }
+      if (ch === CLOSING_QUOTE[mode]) { stack.pop(); prevToken = ch; }
       // An unterminated quote would otherwise swallow the rest of the file.
       if (ch === '\n') stack.pop();
       i += 1;
@@ -60,7 +86,7 @@ export function stripJsComments(source) {
 
     if (mode === 'template') {
       if (ch === '\\') { i += 2; continue; }
-      if (ch === '`') { stack.pop(); prevSignificant = ch; i += 1; continue; }
+      if (ch === '`') { stack.pop(); prevToken = ch; i += 1; continue; }
       if (ch === '$' && source[i + 1] === '{') { stack.push('interp'); i += 2; continue; }
       i += 1;
       continue;
@@ -81,7 +107,7 @@ export function stripJsComments(source) {
       continue;
     }
 
-    if (ch === '/' && REGEX_PRECEDING.has(prevSignificant)) {
+    if (ch === '/' && (REGEX_PRECEDING.has(prevToken) || REGEX_PRECEDING_KEYWORDS.has(prevToken))) {
       i += 1;
       let inClass = false;
       while (i < length) {
@@ -93,7 +119,7 @@ export function stripJsComments(source) {
         else if (c === '/' && !inClass) { i += 1; break; }
         i += 1;
       }
-      prevSignificant = '/';
+      prevToken = '/';
       continue;
     }
 
@@ -102,7 +128,11 @@ export function stripJsComments(source) {
     if (ch === '{') { stack.push('brace'); }
     if (ch === '}' && (mode === 'brace' || mode === 'interp')) { stack.pop(); }
 
-    if (!/\s/.test(ch)) prevSignificant = ch;
+    if (WORD_CHAR.test(ch)) {
+      wordBuf += ch;
+    } else if (!/\s/.test(ch)) {
+      prevToken = ch;
+    }
     i += 1;
   }
 
