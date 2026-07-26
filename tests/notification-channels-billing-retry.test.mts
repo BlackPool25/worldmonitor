@@ -20,6 +20,7 @@ import {
   billingVerificationRetryDelayMs,
   setNotificationConfig,
   setEmailChannel,
+  startSlackOAuth,
   getChannelsData,
   __setNotificationChannelsClientDepsForTests,
 } from '../src/services/notification-channels.ts';
@@ -175,14 +176,48 @@ describe('billingVerificationRetryDelayMs', () => {
     );
   });
 
+  it('retries the two states whose real delays fit, and declines the one whose cooldown makes it pointless', () => {
+    // The delays the server actually sends (convex/payments/billing.ts), not
+    // hypotheticals — this is what makes the 10s threshold a calibrated choice
+    // rather than a guess, and it is the assertion that fails if either side
+    // moves:
+    //   entitlement_verification_unavailable -> fixed 5s
+    //   renewal_verification_pending         -> 1-3s (2s Dodo re-check window)
+    //   renewal_verification_failed          -> up to 60s (failure cooldown)
+    const delay = (code: string, header: string) =>
+      billingVerificationRetryDelayMs({ status: 503, code, retryAfterHeader: header });
+
+    assert.equal(delay('entitlement_verification_unavailable', '5'), 5_000);
+    for (const header of ['1', '2', '3']) {
+      assert.equal(
+        delay('renewal_verification_pending', header),
+        Number(header) * 1_000,
+        `a pending re-check at ${header}s is short enough to wait out inline`,
+      );
+    }
+    // Not a shortfall: that cooldown exists to stop re-querying the provider, so
+    // any retry inside it is answered from the same cooled-down state. Blocking
+    // the wizard for a minute would reach the identical denial.
+    for (const header of ['30', '45', '60']) {
+      assert.equal(
+        delay('renewal_verification_failed', header),
+        null,
+        `a ${header}s failure cooldown must surface the failure, not stall the UI`,
+      );
+    }
+  });
+
   it('rounds a fractional delay up rather than retrying early', () => {
+    // '1.0001', not '1.2': 1.2 * 1000 is exactly 1200 in IEEE-754, so that value
+    // cannot tell Math.ceil from Math.floor. 1.0001 can.
     assert.equal(
       billingVerificationRetryDelayMs({
         status: 503,
         code: 'entitlement_verification_unavailable',
-        retryAfterHeader: '1.2',
+        retryAfterHeader: '1.0001',
       }),
-      1_200,
+      1_001,
+      'a fractional delay must round UP — rounding down retries before the server allows',
     );
   });
 });
@@ -315,6 +350,49 @@ describe('authFetch honors a retryable billing-verification 503', () => {
       setNotificationConfig({ variant: 'global', enabled: true }, 'user_1'),
       /Authenticated account changed/,
     );
+  });
+
+  it('retries the Slack/Discord OAuth-start writes too — they share authFetch', async () => {
+    const { calls, slept } = installTransport([
+      denial('entitlement_verification_unavailable', '5'),
+      new Response(JSON.stringify({ oauthUrl: 'https://slack.com/oauth/v2/authorize?x=1' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ]);
+
+    const url = await startSlackOAuth();
+
+    assert.equal(calls.length, 2, 'the retry is a property of authFetch, not of one caller');
+    assert.deepEqual(slept, [5_000]);
+    assert.match(url, /^https:\/\/slack\.com\//);
+  });
+
+  it('pins the identity for the retry even when the caller passed no expectedUserId', async () => {
+    // Most callers in this file omit expectedUserId (everything reached from
+    // src/services/notifications-settings.ts), which made assertExpectedAccount a
+    // no-op for them. Tolerable at one round-trip; not once a multi-second wait
+    // sits in the middle. authFetch pins the at-call-time session instead.
+    const calls: Array<{ path: string }> = [];
+    let current = 'user_1';
+    __setNotificationChannelsClientDepsForTests({
+      getClerkToken: async () => 'token-abc',
+      getCurrentClerkUser: () => ({ id: current }) as never,
+      fetch: (async (path: string) => {
+        calls.push({ path });
+        current = 'user_2'; // account switches while we wait out Retry-After
+        return denial('entitlement_verification_unavailable', '5');
+      }) as never,
+      sleep: async () => {},
+    });
+
+    await assert.rejects(
+      // No expectedUserId argument — the shape every notifications-settings call uses.
+      setEmailChannel('buyer@example.com'),
+      /Authenticated account changed/,
+      'the retry must not write under a session the caller never asked for',
+    );
+    assert.equal(calls.length, 1, 'the retry is abandoned, not sent to the new account');
   });
 
   it('leaves a 2xx alone — no clone, no delay, no second call', async () => {

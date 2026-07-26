@@ -235,6 +235,18 @@ export function __resetEntitlementNegativeCacheForTests(): void {
 /** Test-only view of the advertised-retry invariant the TTL above depends on. */
 export const __negativeCacheTtlMsForTests = UNAVAILABLE_NEGATIVE_CACHE_TTL_MS;
 
+/**
+ * Test-only view of the cap and the live entry count, so the eviction branch can
+ * be driven past its threshold and asserted bounded. Without these the cap is
+ * unreachable from a test — the branch only fires above 1000 distinct
+ * concurrently-failing users, which is exactly the fleet-wide-outage case whose
+ * memory behavior the cap exists to bound.
+ */
+export const __negativeCacheMaxEntriesForTests = UNAVAILABLE_NEGATIVE_CACHE_MAX_ENTRIES;
+export function __negativeCacheSizeForTests(): number {
+  return _unavailableUntil.size;
+}
+
 // ---------------------------------------------------------------------------
 // Environment-aware Redis key prefix (P2-3)
 // ---------------------------------------------------------------------------
@@ -610,8 +622,23 @@ export function getBillingVerificationDenial(
   requiredTier?: number,
 ): Response | null {
   const denial = classifyBillingVerification(entitlements);
-  if (!denial) return null;
+  return denial ? renderBillingVerificationDenial(denial, corsHeaders, requiredTier) : null;
+}
 
+/**
+ * Renders an ALREADY-classified denial as the JSON wire contract.
+ *
+ * Split out from getBillingVerificationDenial for callers that classified
+ * earlier and carry the decision with them — `server/_shared/premium-check.ts`
+ * attaches it to the denied identity, and api/chat-analyst.ts renders that.
+ * Before this existed, that route hand-built `{ verificationUnavailable: true }`
+ * to re-enter the classifier, which collapsed all four states into one.
+ */
+export function renderBillingVerificationDenial(
+  denial: BillingVerificationDenial,
+  corsHeaders: Record<string, string>,
+  requiredTier?: number,
+): Response {
   return new Response(
     JSON.stringify({
       error: denial.message,
@@ -621,13 +648,18 @@ export function getBillingVerificationDenial(
     {
       status: denial.status,
       headers: {
+        // corsHeaders FIRST: the contract headers below are this function's own
+        // output and must win. The pre-#5622 version was inconsistent about it
+        // (a corsHeaders map could clobber X-Billing-Verification but not
+        // Retry-After); no cors helper in the repo emits either name, so this is
+        // inert today and pinned by test so it stays that way.
+        ...corsHeaders,
         'Content-Type': 'application/json',
         'Cache-Control': 'no-store',
         'X-Billing-Verification': denial.code,
         // Terminal denials carry no Retry-After — advertising one would invite
         // a lapsed subscriber into an infinite retry instead of a resubscribe.
         ...(denial.retryable ? { 'Retry-After': String(denial.retryAfterSeconds) } : {}),
-        ...corsHeaders,
       },
     },
   );

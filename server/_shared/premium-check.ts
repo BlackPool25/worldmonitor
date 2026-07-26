@@ -3,7 +3,12 @@ import { validateApiKey } from '../../api/_api-key.js';
 // @ts-expect-error — JS module, no declaration file
 import { timingSafeIncludes } from '../../api/_crypto.js';
 import { validateBearerToken } from '../auth-session';
-import { getEntitlements } from './entitlement-check';
+import {
+  classifyBillingVerification,
+  getEntitlements,
+  type BillingVerificationDenial,
+  type BillingVerificationInput,
+} from './entitlement-check';
 import {
   INTERNAL_MCP_VERIFIED_HEADER,
   TRUSTED_USER_ID_HEADER,
@@ -21,22 +26,33 @@ export type PremiumCallerIdentity =
     kind: null;
     quotaExempt: false;
     /**
-     * Set when the denial rests on an entitlement lookup that FAILED rather
-     * than on a confirmed non-premium answer (#5622).
+     * The billing-verification classification behind this denial, when the
+     * denial rests on something OTHER than a confirmed non-premium answer
+     * (#5622) — a lookup that failed, a renewal re-check in flight, or a
+     * provider-confirmed lapse. Absent for a genuine free/unauthenticated
+     * caller.
      *
      * The field is additive and optional on purpose: `isPremium: false` keeps
      * its exact meaning ("do not grant premium"), so all ~25 existing callers
      * — including every `isCallerPremium()` boolean consumer — are unaffected.
      * A caller that wants the retryable posture opts in by reading this and
-     * answering 503 + Retry-After instead of a terminal 403. Without it, a
-     * Convex blip during a paying customer's request is indistinguishable from
-     * "you are not a subscriber", which is exactly the #5600 failure mode.
+     * rendering it via renderBillingVerificationDenial instead of a terminal 403.
+     *
+     * It carries the whole classification rather than a boolean because there
+     * are FOUR of these states, not one. An earlier version of this field was
+     * `verificationUnavailable?: true`, which silently dropped
+     * `renewal_verification_pending` / `renewal_verification_failed` — states
+     * convex/http.ts really does emit — back onto the terminal upsell, i.e. the
+     * exact #5600 failure mode this field exists to remove.
      */
-    verificationUnavailable?: true;
+    billingDenial?: BillingVerificationDenial;
   };
 
+/** The deny arm of the union, named so `{ ...DENIED, billingDenial }` stays in it. */
+type DeniedIdentity = Extract<PremiumCallerIdentity, { isPremium: false }>;
+
 /** Deny with no information about WHY — a confirmed non-premium caller. */
-const DENIED: PremiumCallerIdentity = {
+const DENIED: DeniedIdentity = {
   isPremium: false,
   userId: null,
   kind: null,
@@ -44,23 +60,15 @@ const DENIED: PremiumCallerIdentity = {
 };
 
 /**
- * Deny because the entitlement could not be verified. Same authorization
- * outcome as DENIED; the marker only lets a caller choose retryable wording.
- */
-const DENIED_UNVERIFIABLE: PremiumCallerIdentity = {
-  ...DENIED,
-  verificationUnavailable: true,
-};
-
-/**
- * A deny-side entitlement answer, plus whether it was CONFIRMED.
+ * A deny-side entitlement answer, tagged with its billing classification when
+ * the row carries one.
  *
- * `verificationUnavailable` on the row means getEntitlements() synthesized it
- * after a transient backend failure (server/_shared/entitlement-check.ts), so
- * the tier/apiAccess fields on it are placeholders, not findings.
+ * Same authorization outcome either way — nothing is granted. The tag only lets
+ * a caller choose retryable-vs-terminal wording.
  */
-function denyFor(entitlements: { verificationUnavailable?: true } | null): PremiumCallerIdentity {
-  return entitlements?.verificationUnavailable ? DENIED_UNVERIFIABLE : DENIED;
+function denyFor(entitlements: BillingVerificationInput | null): DeniedIdentity {
+  const billingDenial = classifyBillingVerification(entitlements);
+  return billingDenial ? { ...DENIED, billingDenial } : DENIED;
 }
 
 /**
@@ -186,10 +194,16 @@ export async function resolvePremiumCallerIdentity(request: Request): Promise<Pr
  * It is NOT acceptable for a caller that turns `false` into a terminal
  * "Pro subscription required" 403 — that flattens a backend blip into a
  * misleading upsell for a paying customer. Those callers must use
- * `resolvePremiumCallerIdentity()` and branch on `verificationUnavailable` to
- * answer a retryable 503 instead (see api/chat-analyst.ts). Threading the
- * signal through this boolean would mean changing its return type and every
+ * `resolvePremiumCallerIdentity()` and render `identity.billingDenial` via
+ * `getBillingVerificationDenial` instead (see api/chat-analyst.ts). Threading
+ * the signal through this boolean would mean changing its return type and every
  * caller, which is why the identity API carries it instead.
+ *
+ * Known remaining hard-deniers on this boolean, tracked in #5652: the RPC
+ * surfaces under server/worldmonitor/ that answer `errorType: 'AuthError'`
+ * (summarize-article, run-scenario, and siblings). They share this flattening;
+ * their envelope has no HTTP status of its own, so the fix is a different shape
+ * than the two edge routes and is deliberately not bundled here.
  */
 export async function isCallerPremium(request: Request): Promise<boolean> {
   return (await resolvePremiumCallerIdentity(request)).isPremium;

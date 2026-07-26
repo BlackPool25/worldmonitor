@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 import {
   classifyGrantDenial,
   grantErrorMessage,
+  retryableGrantDelayMs,
 } from '../src/services/mcp-grant-denial.ts';
 
 describe('grantErrorMessage', () => {
@@ -57,6 +58,51 @@ describe('grantErrorMessage', () => {
     assert.match(fallback, /could not be completed/);
     assert.equal(grantErrorMessage('WHATEVER_NEW_CODE'), fallback);
     assert.equal(grantErrorMessage(''), fallback);
+  });
+
+  it('does not resolve inherited object properties as messages', () => {
+    // `code` comes from a server JSON body, so a plain index lookup would return
+    // Object.prototype members — a `code` of "toString" yielded a Function, which
+    // renders as source text in the error view.
+    for (const code of ['constructor', 'toString', 'valueOf', '__proto__', 'hasOwnProperty']) {
+      const msg = grantErrorMessage(code);
+      assert.equal(typeof msg, 'string', `${code} must not resolve to a non-string`);
+      assert.equal(msg, grantErrorMessage(undefined), `${code} must take the fallback`);
+    }
+  });
+});
+
+describe('retryableGrantDelayMs', () => {
+  it('honors the advertised delay', () => {
+    assert.equal(retryableGrantDelayMs('5'), 5_000);
+    assert.equal(retryableGrantDelayMs('1'), 1_000);
+    assert.equal(retryableGrantDelayMs('22'), 22_000);
+  });
+
+  it('falls back to the server default for a missing or unusable header', () => {
+    // RFC 9110 also permits an HTTP-date, which Number() makes NaN — the default
+    // is the right answer there rather than re-enabling instantly.
+    for (const header of [null, '', 'soon', '0', '-3', 'Wed, 21 Oct 2015 07:28:00 GMT']) {
+      assert.equal(
+        retryableGrantDelayMs(header),
+        5_000,
+        `Retry-After ${JSON.stringify(header)} must fall back to the 5s default`,
+      );
+    }
+  });
+
+  it('clamps to the server ceiling rather than disabling the button indefinitely', () => {
+    assert.equal(retryableGrantDelayMs('60'), 60_000);
+    assert.equal(retryableGrantDelayMs('3600'), 60_000);
+  });
+
+  it('never returns 0 — re-enabling instantly walks into the negative cache', () => {
+    for (const header of [null, '0', '-1', '0.1', 'nonsense']) {
+      assert.ok(
+        retryableGrantDelayMs(header) > 0,
+        `Retry-After ${JSON.stringify(header)} must still impose a wait`,
+      );
+    }
   });
 });
 
@@ -150,16 +196,41 @@ describe('mcp-grant page routes denials through the shared classifier', () => {
   });
 
   it('re-enables the Authorize button through one shared helper', () => {
-    // A retryable denial is worthless if the button stays disabled. Counting the
-    // raw re-enable pairs catches a future branch that forgets to call it.
+    // A retryable denial is worthless if the button stays disabled.
     assert.equal(
       [...pageSource.matchAll(/btn\.disabled = false/g)].length,
       1,
       'button re-enabling must stay in the single `reenable` helper',
     );
-    assert.ok(
-      [...pageSource.matchAll(/reenable\(\)/g)].length >= 4,
-      'every non-navigating exit from onAuthorizeClick must hand the button back',
-    );
+    // Three immediate call sites (network-error catch, sign_in, unparseable mint
+    // response) plus one DEFERRED hand-back for the retryable branch, which waits
+    // out Retry-After first. Counting both forms keeps a future branch that
+    // forgets either one from passing.
+    const immediate = [...pageSource.matchAll(/reenable\(\)/g)].length;
+    const deferred = [...pageSource.matchAll(/setTimeout\(reenable\b/g)].length;
+    assert.equal(immediate, 3, 'the three immediate exits must hand the button back');
+    assert.equal(deferred, 1, 'the retryable exit must hand it back after the advertised delay');
+  });
+
+  /**
+   * WHAT THESE PINS DO NOT COVER — stated so nobody mistakes green for covered.
+   *
+   * They assert occurrence counts, not the verdict -> DOM mapping. Swapping the
+   * bodies of the `retryable` and `terminal` branches in onAuthorizeClick would
+   * leave every count identical and every pin green, while the user got a torn-down
+   * page for a transient blip and a stuck consent card for a dead nonce.
+   *
+   * That mapping is genuinely uncovered: the page manipulates real elements, this
+   * repo has no jsdom, and there is no e2e spec for /mcp-grant. The decision it
+   * routes on IS unit-tested (classifyGrantDenial above), so what is missing is
+   * only the wiring — which is exactly the class a regex cannot honestly pin
+   * (memory: source-regex wiring guards false-pass). Tracked in #5654.
+   */
+  it('documents the uncovered verdict-to-DOM wiring rather than implying it is pinned', () => {
+    // A canary, not a guard: if the page stops routing through the classifier at
+    // all, the count pin above already fails. This exists so the limitation is
+    // visible in the suite output rather than only in a comment.
+    assert.match(pageSource, /verdict\.action === 'retryable'/);
+    assert.match(pageSource, /showErrorView\(verdict\.message\)/);
   });
 });

@@ -69,6 +69,22 @@ type DashboardControlStatus = 'applied' | 'denied' | 'invalid' | 'skipped';
  * stream is never read.
  */
 async function describeDenial(res: Response): Promise<string> {
+  // #5622: the route now answers an entitlement it could not VERIFY with a
+  // retryable 503 + `X-Billing-Verification` instead of flattening it into the
+  // 403 upsell. classifyDenialResponse deliberately owns only 401/403 — it is
+  // the #5608 upsell-vs-desync decision and its own tests pin that a 5xx is not
+  // its business — so without this branch the one state where the user's
+  // subscription is fine and waiting actually works would render the least
+  // actionable string we have, `Error 503`.
+  //
+  // Same copy as entitlement_desync below, because it is the same situation from
+  // the user's side: we cannot confirm your access right now, retrying helps.
+  // Reading the header (rather than the body) keeps the response stream intact
+  // for classifyDenialResponse; the header is readable cross-origin because
+  // this change also added it to Access-Control-Expose-Headers.
+  if (res.status === 503 && res.headers.get('X-Billing-Verification')) {
+    return 'Verifying your Pro access — try again in a moment.';
+  }
   const verdict = await classifyDenialResponse(res, readClientEntitlementBelief(getAuthState()));
   switch (verdict) {
     case 'sign_in_required':

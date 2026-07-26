@@ -19,7 +19,7 @@
  */
 
 import { initClerk, getClerkToken, getCurrentClerkUser, openSignIn, subscribeClerk } from '@/services/clerk';
-import { classifyGrantDenial } from '@/services/mcp-grant-denial';
+import { classifyGrantDenial, retryableGrantDelayMs } from '@/services/mcp-grant-denial';
 
 // Apply user's saved theme preference. Inlined here (not the index.html head)
 // because the page's global CSP is hash-allowlisted and adding per-page
@@ -79,11 +79,24 @@ async function authedFetch(path: string, init: RequestInit = {}): Promise<Respon
   return fetch(`${API_BASE}${path}`, { ...init, headers });
 }
 
+/**
+ * True while a mint POST is awaiting its response.
+ *
+ * `subscribeClerk` can re-enter `reactToAuth` -> `loadContext` at any moment
+ * (a token refresh is enough). Without this flag, a context reload that fails
+ * while the user's Authorize click is still in flight would call
+ * `showErrorView` and tear down the very consent card the retryable-mint path
+ * exists to preserve — the user would see a terminal error for a request that
+ * then succeeds.
+ */
+let mintInFlight = false;
+
 async function loadContext(nonce: string): Promise<void> {
   let resp: Response;
   try {
     resp = await authedFetch(`/api/internal/mcp-grant-context?nonce=${encodeURIComponent(nonce)}`);
   } catch {
+    if (mintInFlight) return;
     showErrorView('Could not reach the authorization service. Check your connection and try again.');
     return;
   }
@@ -97,6 +110,10 @@ async function loadContext(nonce: string): Promise<void> {
       openSignIn();
       return;
     }
+    // Never tear down the page under an in-flight mint (see mintInFlight): the
+    // click that is still running owns the user's attention and its own error
+    // reporting.
+    if (mintInFlight) return;
     // A retryable denial on the context load has no button to re-enable yet, so
     // the error view is still where it lands — but the copy says "temporary,
     // try again" instead of "start over from your MCP client", which is the
@@ -133,6 +150,7 @@ async function onAuthorizeClick(nonce: string): Promise<void> {
   hide('mintError');
 
   let resp: Response;
+  mintInFlight = true;
   try {
     resp = await authedFetch('/api/internal/mcp-grant-mint', {
       method: 'POST',
@@ -140,11 +158,13 @@ async function onAuthorizeClick(nonce: string): Promise<void> {
       body: JSON.stringify({ nonce }),
     });
   } catch {
+    mintInFlight = false;
     reenable();
     errEl.textContent = 'Network error. Please try again.';
     show('mintError');
     return;
   }
+  mintInFlight = false;
 
   if (!resp.ok) {
     let body: ApiError | null = null;
@@ -160,9 +180,18 @@ async function onAuthorizeClick(nonce: string): Promise<void> {
       // consent card with a terminal "start over from your MCP client" — the
       // nonce is still valid and the SAME click would succeed a moment later, so
       // keep the card and hand the button back.
-      reenable();
+      //
+      // But hand it back only AFTER the delay the server asked for. An immediate
+      // re-click is answered from the server's own few-second negative cache
+      // (UNAVAILABLE_NEGATIVE_CACHE_TTL_MS in
+      // server/_shared/entitlement-check.ts), so re-enabling instantly would
+      // invite the user to reproduce the same failure by hand. Same-origin
+      // request, so Retry-After is readable without CORS exposure.
       errEl.textContent = verdict.message;
       show('mintError');
+      const waitMs = retryableGrantDelayMs(resp.headers.get('Retry-After'));
+      btn.textContent = 'Retry shortly…';
+      window.setTimeout(reenable, waitMs);
       return;
     }
     showErrorView(verdict.message);

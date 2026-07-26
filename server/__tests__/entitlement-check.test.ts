@@ -29,6 +29,8 @@ import {
   getEntitlements,
   classifyBillingVerification,
   getBillingVerificationDenial,
+  __negativeCacheMaxEntriesForTests,
+  __negativeCacheSizeForTests,
   __negativeCacheTtlMsForTests,
   __resetEntitlementNegativeCacheForTests,
 } from "../_shared/entitlement-check";
@@ -698,6 +700,9 @@ describe("classifyBillingVerification (#5622)", () => {
     expect(delay(0)).toBe(1);
     expect(delay(-5)).toBe(1);
     expect(delay(0.2)).toBe(1);
+    // 2.1 -> 3 is the case that actually distinguishes ceil from floor; the 0.2
+    // case above is masked by the outer Math.max(1, ...) clamp.
+    expect(delay(2.1)).toBe(3);
     expect(delay(600)).toBe(60);
     expect(delay(Number.NaN)).toBe(5);
     expect(delay(undefined)).toBe(5);
@@ -755,6 +760,25 @@ describe("getBillingVerificationDenial renders the classification (#5622)", () =
   test("returns null when there is nothing to deny", () => {
     expect(getBillingVerificationDenial(null, {})).toBeNull();
     expect(getBillingVerificationDenial({}, {})).toBeNull();
+  });
+
+  test("the contract headers win over a corsHeaders map that collides with them", () => {
+    // The refactor changed this precedence (the pre-#5622 version let corsHeaders
+    // clobber X-Billing-Verification but not Retry-After — inconsistent). No cors
+    // helper in the repo emits either name, so it is inert today; pinned so it
+    // stays that way rather than being rediscovered from a wrong header in prod.
+    const res = getBillingVerificationDenial({ verificationUnavailable: true }, {
+      "Access-Control-Allow-Origin": "https://worldmonitor.app",
+      "X-Billing-Verification": "spoofed",
+      "Retry-After": "999",
+      "Cache-Control": "public, max-age=600",
+    });
+    expect(res?.headers.get("X-Billing-Verification")).toBe("entitlement_verification_unavailable");
+    expect(res?.headers.get("Retry-After")).toBe("5");
+    // no-store is load-bearing: a cached denial is a wrongful denial for everyone
+    // behind the same CDN entry.
+    expect(res?.headers.get("Cache-Control")).toBe("no-store");
+    expect(res?.headers.get("Access-Control-Allow-Origin")).toBe("https://worldmonitor.app");
   });
 });
 
@@ -869,6 +893,72 @@ describe("transient-failure negative cache (#5622)", () => {
       vi.mocked(getCachedJson).mockResolvedValue(null);
       __resetEntitlementNegativeCacheForTests();
     }
+  });
+
+  test("stays bounded under a fleet-wide outage, and eviction does not break the answer", async () => {
+    // The cap's whole purpose is the fleet-wide-outage case: one entry per active
+    // user for the life of the isolate. That branch only fires above the cap, so
+    // it is unreachable from any test that does not actually cross it.
+    __resetEntitlementNegativeCacheForTests();
+    const originalSiteUrl = process.env.CONVEX_SITE_URL;
+    const originalSecret = process.env.CONVEX_SERVER_SHARED_SECRET;
+    process.env.CONVEX_SITE_URL = "https://example-deployment.convex.site";
+    process.env.CONVEX_SERVER_SHARED_SECRET = "test-secret";
+    vi.mocked(getCachedJson).mockResolvedValue(null);
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("fetch failed")));
+    try {
+      const overflow = __negativeCacheMaxEntriesForTests + 200;
+      for (let i = 0; i < overflow; i++) {
+        const ent = await getEntitlements(`user-negcache-flood-${i}`);
+        // Every user still gets the correct deny-side answer while evicting.
+        expect(ent?.verificationUnavailable).toBe(true);
+      }
+
+      expect(__negativeCacheSizeForTests()).toBeLessThanOrEqual(
+        __negativeCacheMaxEntriesForTests,
+      );
+      // Eviction drops the OLDEST insertions, so the most recent user is still
+      // cached — an eviction policy that dropped the newest would make the cache
+      // useless precisely when it is needed.
+      const lastUser = `user-negcache-flood-${overflow - 1}`;
+      const fetchMock = vi.fn().mockRejectedValue(new Error("fetch failed"));
+      vi.stubGlobal("fetch", fetchMock);
+      expect((await getEntitlements(lastUser))?.verificationUnavailable).toBe(true);
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      if (originalSiteUrl === undefined) delete process.env.CONVEX_SITE_URL;
+      else process.env.CONVEX_SITE_URL = originalSiteUrl;
+      if (originalSecret === undefined) delete process.env.CONVEX_SERVER_SHARED_SECRET;
+      else process.env.CONVEX_SERVER_SHARED_SECRET = originalSecret;
+      vi.unstubAllGlobals();
+      vi.mocked(getCachedJson).mockResolvedValue(null);
+      __resetEntitlementNegativeCacheForTests();
+    }
+  });
+
+  test.each([
+    "renewal_verification_pending",
+    "renewal_verification_failed",
+  ] as const)("a CONFIRMED %s row is never negative-cached", async (billingStatus) => {
+    // Scope pin for the TTL/Retry-After inequality above. That invariant is
+    // verified against the synthesized marker's fixed 5s delay. The renewal codes
+    // carry a PROVIDER-supplied delay that can be as low as 1s — below the 3s
+    // window — so if a future change ever negative-cached them, the inequality
+    // would silently invert and an honoring client would retry into a cached
+    // failure. These rows have their own (Redis) marker TTL and must stay out.
+    __resetEntitlementNegativeCacheForTests();
+    const row = {
+      ...makeEntitlements(0),
+      validUntil: 0,
+      billingStatus,
+      retryAfterSeconds: 1,
+    };
+    await withConvexEntitlementResponse(row, async () => {
+      const ent = await getEntitlements(`user-negcache-${billingStatus}`);
+      expect(ent?.billingStatus).toBe(billingStatus);
+    });
+    expect(__negativeCacheSizeForTests()).toBe(0);
+    __resetEntitlementNegativeCacheForTests();
   });
 
   test("a fail-closed null is never negative-cached (a 4xx deploy defect keeps its hard posture)", async () => {

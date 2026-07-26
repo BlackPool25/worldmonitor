@@ -421,10 +421,13 @@ export async function authorizeProHandler(req: Request, deps: AuthorizeProDeps):
   }
 
   // ----- 7. Re-fetch entitlement (grant could be up to 5min old; tier may have lapsed) -----
-  // Mirror downstream MCP-edge gate: both tier ≥ 1 AND mcpAccess === true
-  // are required. Reviewer round-2 P2 — without the mcpAccess check here,
-  // a tier-1 user lacking mcpAccess could complete OAuth + get a token
-  // row, then have every tools/call fail at the gateway.
+  // The decision is shared with api/internal/mcp-grant-{mint,context}.ts
+  // (server/_shared/pro-mcp-gate.ts) so the three gates in this flow cannot
+  // drift: both tier >= 1 AND mcpAccess === true are required — mirroring the
+  // downstream MCP-edge gate, because gating on tier alone lets a tier-1 user
+  // lacking mcpAccess complete OAuth and get a token row, then have every
+  // tools/call fail at the gateway — and an entitlement that could not be
+  // VERIFIED renders the retryable page rather than the terminal upsell (#5622).
   const ent = await deps.getEntitlements(userId);
   const gate = checkProMcpAccess(ent, deps.now());
   if (gate) {

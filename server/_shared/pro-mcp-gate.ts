@@ -14,10 +14,18 @@
  * retro-fitted to all three in one review round precisely because gating on tier
  * alone let a user complete OAuth and then fail every tools/call.
  *
- * The decision lives here so it cannot drift, and so the retryable-vs-terminal
- * split (#5622) reaches all three surfaces at once even though they render it
- * three different ways (JSON error vocabulary, JSON error vocabulary, HTML
- * page). Rendering stays with each caller; only the decision is shared.
+ * The decision lives here so those three cannot drift, and so the
+ * retryable-vs-terminal split (#5622) reaches all three at once even though they
+ * render it three different ways (JSON error vocabulary, JSON error vocabulary,
+ * HTML page). Rendering stays with each caller; only the decision is shared.
+ *
+ * SCOPE — this owns the OAuth-grant flow, not every Pro-MCP check in the repo.
+ * `api/mcp/auth.ts::checkMcpEntitlementGate` (the downstream MCP-edge gate the
+ * three comments above say they mirror) and the gateway's own inline check still
+ * spell the four clauses out themselves. They are the harder migration: their
+ * denials are JSON-RPC envelopes with their own billing-denial helper and
+ * telemetry, so folding them in is a separate change — tracked in #5653. Until
+ * then "cannot drift" is a claim about these three call sites only.
  */
 
 import {

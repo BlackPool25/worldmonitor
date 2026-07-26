@@ -18,7 +18,7 @@ export const config = { runtime: 'edge', regions: ['iad1', 'lhr1', 'fra1', 'sfo1
 import { getCorsHeaders } from './_cors.js';
 // @ts-expect-error — JS module, no declaration file
 import { captureSilentError } from './_sentry-edge.js';
-import { getBillingVerificationDenial } from '../server/_shared/entitlement-check';
+import { renderBillingVerificationDenial } from '../server/_shared/entitlement-check';
 import { resolvePremiumCallerIdentity } from '../server/_shared/premium-check';
 import { checkRateLimit } from '../server/_shared/rate-limit';
 import { runRedisPipeline } from '../server/_shared/redis';
@@ -130,13 +130,23 @@ export default async function handler(req: Request): Promise<Response> {
       // still landed on this 403, because resolvePremiumCallerIdentity had no
       // way to say "could not verify". Now it does, and this branch honors it
       // with the same retryable shape every other Pro surface emits
-      // (docs/usage-errors.mdx). src/services/premium-denial.ts already routes
-      // 503 away from the upsell, so the panel retries instead of upselling.
-      if (premiumIdentity.verificationUnavailable) {
-        // Rendered by the shared helper rather than hand-built here, so this
-        // surface cannot drift from the wire contract the docs describe.
-        const denial = getBillingVerificationDenial(
-          { verificationUnavailable: true },
+      // (docs/usage-errors.mdx).
+      //
+      // Client side: `src/services/premium-denial.ts` deliberately does NOT
+      // classify this — it owns the 401/403 upsell-vs-desync decision (#5608)
+      // and returns null for any 5xx. So ChatAnalystPanel's describeDenial
+      // reads `X-Billing-Verification` directly and renders the retry copy;
+      // without that branch this state fell through to a bare "Error 503".
+      // The panel does not auto-retry (the user re-sends), unlike
+      // src/services/notification-channels.ts which does.
+      if (premiumIdentity.billingDenial) {
+        // Render the classification the identity actually carries — not a
+        // hand-built `{ verificationUnavailable: true }`, which would collapse
+        // all four billing states into one and put the two renewal-verification
+        // codes back on the terminal upsell. Rendered by the shared helper so
+        // this surface cannot drift from the wire contract the docs describe.
+        const denial = renderBillingVerificationDenial(
+          premiumIdentity.billingDenial,
           corsHeaders,
         );
         if (denial) return denial;

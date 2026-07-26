@@ -358,29 +358,36 @@ export default async function handler(req: Request, ctx: { waitUntil: (p: Promis
   }
 
   if (req.method === 'POST') {
-    // #5622: honor the Clerk `role === 'pro'` allowance for this tier-1 gate,
-    // the same way checkEntitlementDetailed does for tier <= 1 and
-    // resolvePremiumCallerIdentity does on its bearer branch. Complimentary,
-    // tester, and legacy Clerk-role grants have no Convex entitlement row, and
-    // the client already unlocks every Pro surface for them (isProUser() in
-    // src/services/widget-store.ts returns true on role alone). Without this,
-    // such a user could READ their channels (GET is ungated), see the whole
-    // notifications tab, and then get a terminal "Real-time alerts are
-    // available on the Pro plan." on every write — permanently, not just during
-    // an outage. That is the #5600 shape with no self-healing window at all.
+    // WHY notification writes require a BILLED entitlement row, and do NOT honor
+    // the Clerk `role === 'pro'` allowance that checkEntitlementDetailed grants
+    // for tier <= 1 (#5622 asked for this decision to be made either way):
     //
-    // Deliberately scoped to this endpoint: the sibling Pro-gated JSON surfaces
-    // swept in #5600 (notify, latest-brief, brief/share-url, slack/discord
-    // oauth-start) still require a billed row, and widening authorization on
-    // five more endpoints is its own change. Tracked in #5646.
-    // The allowance skips the lookup entirely (checkEntitlementDetailed returns
-    // before calling getEntitlements for the same reason), so `ent` is null on
-    // that path and the guard below re-tests the flag rather than reading it.
-    const clerkProAllowance = session.role === 'pro';
-    const ent = clerkProAllowance
-      ? null
-      : await notificationChannelsDeps.getEntitlements(session.userId);
-    if (!clerkProAllowance && (!ent || ent.features.tier < 1)) {
+    // Because this gate is not the only one. Convex enforces `tier >= 1` against
+    // the entitlements table independently, inside the mutations themselves —
+    // assertProEntitlement in convex/alertRules.ts:36 and its twin in
+    // convex/notificationChannels.ts:64. A role-only Pro account has no
+    // entitlements row, so relaxing THIS gate does not grant access. It only
+    // moves the denial one hop later and degrades it:
+    //
+    //   set-channel             Convex 402 is not the 503 case below, so it
+    //                           falls through to `500 Operation failed` — and
+    //                           set-channel is what the day-0 wizard calls
+    //   set-alert-rules,        402 PRO_REQUIRED passes through structurally,
+    //   set-notification-config which the client surfaces as a generic failure
+    //
+    // Both are strictly worse for the user than the clean `403 pro_required`
+    // with an upgradeUrl this gate returns. An edge-only allowance was written
+    // and reverted for exactly that reason, verified against both Convex gates
+    // rather than assumed.
+    //
+    // So: notification delivery is gated on a billed row at the DATA layer, and
+    // this gate exists to say so cleanly and early. Granting it to complimentary
+    // / tester / legacy Clerk-role accounts is a real product decision that must
+    // change the Convex gates too — tracked in #5646 along with the client-side
+    // inconsistency it leaves (isProUser() in src/services/widget-store.ts
+    // unlocks the notifications UI on the Clerk role alone).
+    const ent = await notificationChannelsDeps.getEntitlements(session.userId);
+    if (!ent || ent.features.tier < 1) {
       // #5600: an entitlement the backend could not VERIFY (Convex 5xx/timeout,
       // or a renewal re-check in flight) is not a confirmed free user. Answer
       // it with the shared retryable contract — 503 + Retry-After +

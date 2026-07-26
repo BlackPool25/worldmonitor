@@ -121,19 +121,20 @@ afterEach(() => {
 });
 
 describe('resolvePremiumCallerIdentity marks an unverifiable entitlement (#5622)', () => {
-  it('a Convex 5xx denies WITH the verificationUnavailable marker', async () => {
+  it('a Convex 5xx denies WITH the billing classification attached', async () => {
     installFetchStub(async () => new Response('upstream error', { status: 503 }));
 
     const identity = await resolvePremiumCallerIdentity(markerRequest('user_convex_5xx'));
 
     assert.equal(identity.isPremium, false, 'still fail-closed — nothing is granted');
-    assert.equal(identity.verificationUnavailable, true);
+    assert.equal(identity.billingDenial?.code, 'entitlement_verification_unavailable');
+    assert.equal(identity.billingDenial?.retryable, true);
     // No identity leaks out of a denial.
     assert.equal(identity.userId, null);
     assert.equal(identity.kind, null);
   });
 
-  it('a lookup timeout denies WITH the marker', async () => {
+  it('a lookup timeout denies WITH the classification', async () => {
     installFetchStub(async () => {
       throw Object.assign(new Error('The operation was aborted due to timeout'), {
         name: 'TimeoutError',
@@ -142,29 +143,70 @@ describe('resolvePremiumCallerIdentity marks an unverifiable entitlement (#5622)
 
     const identity = await resolvePremiumCallerIdentity(markerRequest('user_timeout'));
     assert.equal(identity.isPremium, false);
-    assert.equal(identity.verificationUnavailable, true);
+    assert.equal(identity.billingDenial?.retryable, true);
   });
 
-  it('a CONFIRMED free row denies WITHOUT the marker — that is a real verdict', async () => {
+  /**
+   * The regression an earlier `verificationUnavailable?: true` boolean allowed.
+   *
+   * convex/http.ts really does return a tier-0 row carrying
+   * `billingStatus: renewal_verification_*` while the provider re-check is in
+   * flight. A boolean that only tracked the synthesized transient marker dropped
+   * those two states straight back onto the terminal upsell — the exact #5600
+   * failure mode this field exists to remove. Both must arrive classified and
+   * retryable.
+   */
+  for (const billingStatus of ['renewal_verification_pending', 'renewal_verification_failed'] as const) {
+    it(`a tier-0 row carrying ${billingStatus} denies as RETRYABLE, not as an upsell`, async () => {
+      installFetchStub(okRow({ ...FREE_ROW, billingStatus, retryAfterSeconds: 7 }));
+
+      const identity = await resolvePremiumCallerIdentity(
+        markerRequest(`user_${billingStatus}`),
+      );
+
+      assert.equal(identity.isPremium, false);
+      assert.equal(identity.billingDenial?.code, billingStatus);
+      assert.equal(identity.billingDenial?.retryable, true);
+      assert.equal(identity.billingDenial?.retryAfterSeconds, 7);
+      assert.equal(identity.billingDenial?.status, 503);
+    });
+  }
+
+  it('a provider-CONFIRMED lapse denies as TERMINAL — classified, but not retryable', async () => {
+    installFetchStub(okRow({ ...FREE_ROW, billingStatus: 'subscription_lapsed' }));
+
+    const identity = await resolvePremiumCallerIdentity(markerRequest('user_lapsed'));
+
+    assert.equal(identity.isPremium, false);
+    assert.equal(identity.billingDenial?.code, 'subscription_lapsed');
+    assert.equal(
+      identity.billingDenial?.retryable,
+      false,
+      'a confirmed lapse must never be presented as retryable',
+    );
+    assert.equal(identity.billingDenial?.status, 403);
+  });
+
+  it('a CONFIRMED free row denies WITHOUT any classification — that is a real verdict', async () => {
     installFetchStub(okRow(FREE_ROW));
 
     const identity = await resolvePremiumCallerIdentity(markerRequest('user_confirmed_free'));
     assert.equal(identity.isPremium, false);
     assert.equal(
-      identity.verificationUnavailable,
+      identity.billingDenial,
       undefined,
       'marking a confirmed free user retryable would replace a clean upsell with a spinner',
     );
   });
 
-  it('a 4xx from Convex is a deploy defect, not a transient — no marker', async () => {
+  it('a 4xx from Convex is a deploy defect, not a transient — no classification', async () => {
     // getEntitlements returns a fail-closed null for a 4xx (bad shared secret,
     // contract rejection). Retrying cannot fix a misconfiguration.
     installFetchStub(async () => new Response('forbidden', { status: 403 }));
 
     const identity = await resolvePremiumCallerIdentity(markerRequest('user_convex_4xx'));
     assert.equal(identity.isPremium, false);
-    assert.equal(identity.verificationUnavailable, undefined);
+    assert.equal(identity.billingDenial, undefined);
   });
 
   it('a genuine Pro row is still premium — the marker path did not disturb the allow case', async () => {
@@ -176,7 +218,7 @@ describe('resolvePremiumCallerIdentity marks an unverifiable entitlement (#5622)
     assert.equal(identity.userId, 'user_real_pro');
   });
 
-  it('an unverifiable answer is NOT premium — the marker changes wording, never authorization', async () => {
+  it('an unverifiable answer is NOT premium — the tag changes wording, never authorization', async () => {
     installFetchStub(async () => new Response('upstream error', { status: 503 }));
     assert.equal(await isCallerPremium(markerRequest('user_boolean_view')), false);
   });
@@ -257,5 +299,47 @@ describe('api/chat-analyst adopts the retryable posture (#5622)', () => {
     assert.equal(res.status, 403);
     assert.equal(res.headers.get('X-Billing-Verification'), null);
     assert.deepEqual(await res.json(), { error: 'Pro subscription required' });
+  });
+
+  /**
+   * The four billing states must reach the wire distinctly. An earlier version of
+   * this route hand-built `{ verificationUnavailable: true }` to re-enter the
+   * classifier, which rendered ALL of them as the same
+   * `entitlement_verification_unavailable` / Retry-After: 5 — losing the
+   * provider's own delay on the renewal codes and, worse, turning a confirmed
+   * lapse into a retryable 503 that tells a lapsed subscriber to wait forever.
+   */
+  it('renders the provider delay for a renewal re-check, not a flattened default', async () => {
+    installFetchStub(okRow({
+      ...FREE_ROW,
+      billingStatus: 'renewal_verification_pending',
+      retryAfterSeconds: 3,
+    }));
+    const { default: handler } = await import('../api/chat-analyst.ts');
+
+    const res = await handler(analystRequest('user_analyst_renewal'));
+
+    assert.equal(res.status, 503);
+    assert.equal(res.headers.get('X-Billing-Verification'), 'renewal_verification_pending');
+    assert.equal(res.headers.get('Retry-After'), '3');
+    assert.deepEqual(await res.json(), {
+      error: 'Renewal verification pending',
+      code: 'renewal_verification_pending',
+    });
+  });
+
+  it('keeps a provider-confirmed lapse a terminal 403 with no Retry-After', async () => {
+    installFetchStub(okRow({ ...FREE_ROW, billingStatus: 'subscription_lapsed' }));
+    const { default: handler } = await import('../api/chat-analyst.ts');
+
+    const res = await handler(analystRequest('user_analyst_lapsed'));
+
+    assert.equal(res.status, 403);
+    assert.equal(res.headers.get('X-Billing-Verification'), 'subscription_lapsed');
+    assert.equal(res.headers.get('Retry-After'), null);
+    assert.deepEqual(await res.json(), {
+      error: 'Subscription lapsed',
+      code: 'subscription_lapsed',
+    });
   });
 });

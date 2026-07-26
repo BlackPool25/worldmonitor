@@ -50,9 +50,39 @@ const MESSAGES: Record<string, string> = {
 const FALLBACK_MESSAGE =
   'This authorization request could not be completed. Start over from your MCP client.';
 
-/** User-facing copy for a handshake error code. */
+/**
+ * User-facing copy for a handshake error code.
+ *
+ * `Object.hasOwn` rather than a bare index: `code` arrives from a server JSON
+ * body, and a plain-object lookup would resolve inherited names — a `code` of
+ * `"constructor"` or `"toString"` returns a Function, which then renders as
+ * source text in the error view.
+ */
 export function grantErrorMessage(code: string | undefined): string {
-  return (code && MESSAGES[code]) || FALLBACK_MESSAGE;
+  // hasOwnProperty.call rather than Object.hasOwn: this module is compiled
+  // against a pre-ES2022 lib target.
+  if (!code || !Object.prototype.hasOwnProperty.call(MESSAGES, code)) return FALLBACK_MESSAGE;
+  return MESSAGES[code] ?? FALLBACK_MESSAGE;
+}
+
+/** Server clamp is 1-60s; fall back to the server's own default when absent. */
+const DEFAULT_GRANT_RETRY_SECONDS = 5;
+const MAX_GRANT_RETRY_SECONDS = 60;
+
+/**
+ * How long the consent page should keep Authorize disabled after a retryable
+ * denial, from the response's `Retry-After`.
+ *
+ * Re-enabling immediately would let the user reproduce the same failure by hand:
+ * the server negative-caches a transient verification answer for a few seconds,
+ * so a click inside that window is served the identical denial.
+ */
+export function retryableGrantDelayMs(retryAfterHeader: string | null): number {
+  const parsed = Number(retryAfterHeader);
+  const seconds = Number.isFinite(parsed) && parsed > 0
+    ? Math.min(parsed, MAX_GRANT_RETRY_SECONDS)
+    : DEFAULT_GRANT_RETRY_SECONDS;
+  return Math.ceil(seconds * 1_000);
 }
 
 /**

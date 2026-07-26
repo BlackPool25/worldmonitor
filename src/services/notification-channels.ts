@@ -80,9 +80,25 @@ const DEFAULT_BILLING_RETRY_AFTER_SECONDS = 5;
  * 1-60s; a user sitting in the activation wizard will not wait a minute, so a
  * longer hint means "surface the failure now" rather than "retry early".
  *
- * Retrying EARLIER than the server asked is deliberately not an option: it
- * violates the Retry-After contract and, because the server negative-caches a
- * transient answer for a few seconds
+ * This threshold is not arbitrary — it lands between the delays the three
+ * retryable states actually ask for (convex/payments/billing.ts):
+ *
+ *   entitlement_verification_unavailable  fixed 5s      -> retried
+ *   renewal_verification_pending          1-3s, from
+ *                                         the 2s Dodo
+ *                                         re-check window -> retried
+ *   renewal_verification_failed           up to 60s, the
+ *                                         per-subscription
+ *                                         failure cooldown -> NOT retried
+ *
+ * Declining the third is the correct outcome, not a shortfall: that cooldown
+ * exists to stop re-querying Dodo, so a retry inside it is answered from the
+ * same cooled-down state. Waiting it out inline would block the wizard for a
+ * minute to arrive at the same denial.
+ *
+ * Retrying EARLIER than the server asked is deliberately not an option either:
+ * it violates the Retry-After contract and, because the server negative-caches
+ * a transient answer for a few seconds
  * (UNAVAILABLE_NEGATIVE_CACHE_TTL_MS in server/_shared/entitlement-check.ts),
  * an early retry would deterministically be served the same cached failure.
  */
@@ -231,7 +247,16 @@ async function authFetch(
   init?: RequestInit,
   expectedUserId?: string,
 ): Promise<Response> {
-  const first = await sendOnce(path, init, expectedUserId);
+  // Pin the identity for the whole call, including the retry. `expectedUserId`
+  // is opt-in and most callers in this file omit it (every setter reached from
+  // src/services/notifications-settings.ts), which made assertExpectedAccount a
+  // no-op for them. That was tolerable while a call was one round-trip; adding a
+  // multi-second wait is not — an account switch during the wait would let the
+  // retry write under the new session. Falling back to the session that was
+  // current when the call started gives those callers the same protection the
+  // activation wizard asks for explicitly.
+  const pinnedUserId = expectedUserId ?? clientDeps.getCurrentClerkUser()?.id;
+  const first = await sendOnce(path, init, pinnedUserId);
   if (first.status !== 503) return first;
 
   const delayMs = billingVerificationRetryDelayMs({
@@ -242,7 +267,7 @@ async function authFetch(
   if (delayMs === null) return first;
 
   await clientDeps.sleep(delayMs, init?.signal ?? null);
-  return sendOnce(path, init, expectedUserId);
+  return sendOnce(path, init, pinnedUserId);
 }
 
 export async function getChannelsData(
