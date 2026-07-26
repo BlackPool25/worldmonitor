@@ -226,6 +226,35 @@ describe('mcp-grant page routes denials through the shared classifier', () => {
    * only the wiring — which is exactly the class a regex cannot honestly pin
    * (memory: source-regex wiring guards false-pass). Tracked in #5654.
    */
+  /**
+   * Greptile flagged this on the PR: a retryable denial on the CONTEXT load went
+   * to `showErrorView`, which has no retry control — so a transient blip at page
+   * load stranded the user on a dead end even though the nonce was untouched (the
+   * context load is a GET; only the mint consumes it). The mint path already
+   * recovered properly, so the two were asymmetric.
+   *
+   * Pinned structurally because the DOM behaviour itself is unreachable here
+   * (#5654): the context path must schedule a bounded retry, and its retry budget
+   * must be guarded so a Clerk-driven re-entry cannot stack timers.
+   */
+  it('retries a retryable context load instead of stranding the user on the error view', () => {
+    assert.match(
+      pageSource,
+      /verdict\.action === 'retryable' && !contextRetryUsed/,
+      'the context load must have a retryable branch that does not fall to showErrorView',
+    );
+    assert.match(
+      pageSource,
+      /contextRetryUsed = true/,
+      'the context retry must be bounded — an unguarded timer stacks on Clerk re-entry',
+    );
+    assert.equal(
+      [...pageSource.matchAll(/void loadContext\(nonce\)/g)].length,
+      1,
+      'exactly one self-retry call site; a second is an unbounded reload loop',
+    );
+  });
+
   it('documents the uncovered verdict-to-DOM wiring rather than implying it is pinned', () => {
     // A canary, not a guard: if the page stops routing through the classifier at
     // all, the count pin above already fails. This exists so the limitation is

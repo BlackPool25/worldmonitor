@@ -91,6 +91,15 @@ async function authedFetch(path: string, init: RequestInit = {}): Promise<Respon
  */
 let mintInFlight = false;
 
+/**
+ * One bounded retry for the context load, mirroring the mint path.
+ *
+ * Guarded rather than unlimited for two reasons: `subscribeClerk` can re-enter
+ * `loadContext` on any token refresh (so an ungated timer could stack), and an
+ * unbounded loop would spin forever on a real outage instead of telling the user.
+ */
+let contextRetryUsed = false;
+
 async function loadContext(nonce: string): Promise<void> {
   let resp: Response;
   try {
@@ -114,10 +123,20 @@ async function loadContext(nonce: string): Promise<void> {
     // click that is still running owns the user's attention and its own error
     // reporting.
     if (mintInFlight) return;
-    // A retryable denial on the context load has no button to re-enable yet, so
-    // the error view is still where it lands — but the copy says "temporary,
-    // try again" instead of "start over from your MCP client", which is the
-    // difference between a user who retries and one who gives up (#5622).
+    // A retryable denial here must not land on the terminal error view. That view
+    // has no retry control, so a transient blip at page load stranded the user on
+    // a dead end — even though the nonce is untouched (this is a GET; only the
+    // mint consumes it), meaning a reload would have worked. Retry once after the
+    // advertised delay instead, keeping the loading state up so the page reads as
+    // still working rather than broken. Only a second failure is terminal.
+    if (verdict.action === 'retryable' && !contextRetryUsed) {
+      contextRetryUsed = true;
+      setText('loadingText', 'Verifying your Pro subscription…');
+      window.setTimeout(() => {
+        void loadContext(nonce);
+      }, retryableGrantDelayMs(resp.headers.get('Retry-After')));
+      return;
+    }
     showErrorView(verdict.message);
     return;
   }
