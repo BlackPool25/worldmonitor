@@ -54,6 +54,7 @@ interface MetaEvent {
 }
 
 type DashboardControlStatus = 'applied' | 'denied' | 'invalid' | 'skipped';
+const PRO_VERIFICATION_RETRY_MESSAGE = 'Verifying your Pro access — try again in a moment.';
 
 /**
  * Turn a failed /api/chat-analyst response into user-facing copy.
@@ -83,7 +84,7 @@ async function describeDenial(res: Response): Promise<string> {
   // for classifyDenialResponse; the header is readable cross-origin because
   // this change also added it to Access-Control-Expose-Headers.
   if (res.status === 503 && res.headers.get('X-Billing-Verification')) {
-    return 'Verifying your Pro access — try again in a moment.';
+    return PRO_VERIFICATION_RETRY_MESSAGE;
   }
   const verdict = await classifyDenialResponse(res, readClientEntitlementBelief(getAuthState()));
   switch (verdict) {
@@ -92,7 +93,7 @@ async function describeDenial(res: Response): Promise<string> {
     case 'upgrade_required':
       return 'Pro subscription required.';
     case 'entitlement_desync':
-      return 'Verifying your Pro access — try again in a moment.';
+      return PRO_VERIFICATION_RETRY_MESSAGE;
     case 'access_denied':
       return 'Analyst temporarily unavailable — try again in a moment.';
     default:
