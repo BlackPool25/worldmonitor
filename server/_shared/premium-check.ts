@@ -71,6 +71,74 @@ function denyFor(entitlements: BillingVerificationInput | null): DeniedIdentity 
   return billingDenial ? { ...DENIED, billingDenial } : DENIED;
 }
 
+type RpcApiErrorLike = Error & {
+  statusCode: number;
+  body: string;
+  retryAfter?: number;
+  exposeMessage?: boolean;
+};
+
+type RpcApiErrorConstructor<T extends RpcApiErrorLike> =
+  new (statusCode: number, message: string, body: string) => T;
+
+type PremiumRpcBillingApiError<T extends RpcApiErrorLike> = T & {
+  billingVerificationCode: BillingVerificationDenial['code'];
+};
+
+/**
+ * RPC billing denials have two transport shapes:
+ * - response-envelope RPCs use `ServiceError` for retryable verification
+ *   states and `AuthError` for the provider-confirmed terminal lapse;
+ * - exception-style RPCs throw their generated service's own `ApiError`.
+ *
+ * Both put the stable billing code in `statusDetail`/`ApiError.body`. Confirmed
+ * free and unauthenticated callers have no billing denial and keep the
+ * handler's existing Pro-required rendering.
+ */
+export function getPremiumRpcBillingErrorType(
+  denial: BillingVerificationDenial,
+): 'AuthError' | 'ServiceError' {
+  return denial.retryable ? 'ServiceError' : 'AuthError';
+}
+
+function createPremiumRpcBillingDenialError<T extends RpcApiErrorLike>(
+  identity: PremiumCallerIdentity,
+  ApiErrorConstructor: RpcApiErrorConstructor<T>,
+): PremiumRpcBillingApiError<T> | null {
+  if (identity.isPremium || !identity.billingDenial) return null;
+  const denial = identity.billingDenial;
+
+  const error = new ApiErrorConstructor(
+    denial.status,
+    denial.message,
+    denial.code,
+  ) as PremiumRpcBillingApiError<T>;
+  error.billingVerificationCode = denial.code;
+  if (denial.status === 503) {
+    error.retryAfter = denial.retryAfterSeconds;
+    error.exposeMessage = true;
+  }
+  return error;
+}
+
+/**
+ * Enforces a hard-denying premium RPC gate while preserving why verification
+ * failed. The generated constructor keeps `instanceof ApiError` service-local;
+ * the fallback message preserves each endpoint's existing `PRO`/`Pro` copy.
+ */
+export async function requirePremiumRpcAccess<T extends RpcApiErrorLike>(
+  request: Request,
+  ApiErrorConstructor: RpcApiErrorConstructor<T>,
+  fallbackMessage: string,
+): Promise<void> {
+  const identity = await resolvePremiumCallerIdentity(request);
+  if (identity.isPremium) return;
+
+  const billingError = createPremiumRpcBillingDenialError(identity, ApiErrorConstructor);
+  if (billingError) throw billingError;
+  throw new ApiErrorConstructor(403, fallbackMessage, '');
+}
+
 /**
  * Resolves premium status and the user-bound identity for spend controls.
  */

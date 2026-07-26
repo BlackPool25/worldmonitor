@@ -534,6 +534,13 @@ export type BillingVerificationCode =
   | BillingVerificationStatus
   | 'entitlement_verification_unavailable';
 
+export function isBillingVerificationCode(
+  value: unknown,
+): value is BillingVerificationCode {
+  return value === 'entitlement_verification_unavailable'
+    || isBillingVerificationStatus(value);
+}
+
 export interface BillingVerificationDenial {
   /**
    * False ONLY for a lapse the provider confirmed. Everything else in this

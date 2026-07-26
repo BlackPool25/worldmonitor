@@ -46,9 +46,13 @@ OAuth endpoints follow [RFC 6749 §5.2](https://datatracker.ietf.org/doc/html/rf
 
 ### Reading `X-Billing-Verification`
 
-Every billing-verification denial sets `X-Billing-Verification` to the same value as the response body's `code`, and the header is listed in `Access-Control-Expose-Headers`, so browser clients can read it cross-origin without parsing the body. Branch on it rather than on the status alone: a `503` from these surfaces can also mean "required env not configured", which is **not** retryable, and a `403` can be either a plain `pro_required` upsell or a `subscription_lapsed` verdict.
+Every HTTP billing-verification denial sets `X-Billing-Verification` to the same value as the response body's `code`, and the header is listed in `Access-Control-Expose-Headers`, so browser clients can read it cross-origin without parsing the body. Branch on it rather than on the status alone: a `503` from these surfaces can also mean "required env not configured", which is **not** retryable, and a `403` can be either a plain `pro_required` upsell or a `subscription_lapsed` verdict.
 
 Only `subscription_lapsed` is terminal. It is the one value that never carries `Retry-After` — the absence of that header is the signal that renewal, not retry, is the way out.
+
+### Generated RPC billing denials
+
+Generated RPC handlers preserve the same billing decision in their native error shape. `summarizeArticle` reports errors inside a successful RPC envelope, so a retryable billing state uses `status: SUMMARIZE_STATUS_ERROR`, `errorType: ServiceError`, and the billing code in `statusDetail`; a provider-confirmed lapse uses `errorType: AuthError`. The scenario, shipping-v2, and forecast-simulation handlers use generated `ApiError` exceptions instead, so retryable states surface as HTTP `503` with `Retry-After`, `X-Billing-Verification`, and the same body `code`. A confirmed free caller still receives the existing Pro-required `403`.
 
 ## Common error strings
 

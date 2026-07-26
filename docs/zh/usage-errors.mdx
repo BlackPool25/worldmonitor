@@ -45,9 +45,13 @@ OAuth 端点遵循 [RFC 6749 §5.2](https://datatracker.ietf.org/doc/html/rfc674
 
 ### 读取 `X-Billing-Verification`
 
-每个计费校验拒绝响应都会将 `X-Billing-Verification` 设为与响应体 `code` 相同的值，且该响应头已列入 `Access-Control-Expose-Headers`，因此浏览器客户端可以跨域直接读取，无需解析响应体。请依据该响应头而非仅依据状态码分支：这些入口返回的 `503` 也可能表示「必需的环境变量未配置」——那是**不可重试**的；而 `403` 既可能是普通的 `pro_required` 升级提示，也可能是 `subscription_lapsed` 判定。
+每个 HTTP 计费校验拒绝响应都会将 `X-Billing-Verification` 设为与响应体 `code` 相同的值，且该响应头已列入 `Access-Control-Expose-Headers`，因此浏览器客户端可以跨域直接读取，无需解析响应体。请依据该响应头而非仅依据状态码分支：这些入口返回的 `503` 也可能表示「必需的环境变量未配置」——那是**不可重试**的；而 `403` 既可能是普通的 `pro_required` 升级提示，也可能是 `subscription_lapsed` 判定。
 
 只有 `subscription_lapsed` 是终态。它是唯一从不携带 `Retry-After` 的取值——缺少该响应头本身就是信号：出路是重新订阅，而不是重试。
+
+### 生成式 RPC 的计费拒绝
+
+生成式 RPC 处理程序会在各自原生的错误形态中保留同一项计费判定。`summarizeArticle` 在成功的 RPC 信封内报告错误，因此可重试的计费状态使用 `status: SUMMARIZE_STATUS_ERROR`、`errorType: ServiceError`，并在 `statusDetail` 中携带计费代码；由提供方确认的订阅失效则使用 `errorType: AuthError`。scenario、shipping-v2 与 forecast-simulation 处理程序改用生成的 `ApiError` 异常，因此可重试状态会返回 HTTP `503`，同时携带 `Retry-After`、`X-Billing-Verification` 与相同的响应体 `code`。已确认的免费调用方仍会收到原有的 Pro-required `403`。
 
 ## 常见错误字符串
 
