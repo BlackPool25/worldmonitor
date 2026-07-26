@@ -40,7 +40,11 @@ vi.mock('@/services/panel-gating', async (importOriginal) => ({
   evaluateExportGate: () => verdict(),
 }));
 
-vi.mock('@/services/auth-state', () => ({
+// Partial, like the others: a full replacement would silently turn any other
+// auth-state export used elsewhere in the event-handlers import graph into
+// `undefined`, failing later with an unrelated-looking error.
+vi.mock('@/services/auth-state', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/services/auth-state')>()),
   getAuthState: () => ({ isPending: false, user: null }),
   subscribeAuthState: (fn: () => void) => {
     emitters.push(fn);
