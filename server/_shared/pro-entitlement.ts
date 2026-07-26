@@ -26,11 +26,16 @@ export async function checkProEntitlement(
   corsHeaders: Record<string, string>,
   loadEntitlements: EntitlementLoader = getEntitlements,
 ): Promise<ProEntitlementDecision> {
-  // Match checkEntitlementDetailed's tier-1 allowance and avoid turning a
-  // complimentary Clerk grant into a dependency on a Convex row it does not
-  // have. This also avoids an unnecessary backend lookup for role-only Pro.
+  // Avoid turning a complimentary Clerk grant into a dependency on a Convex
+  // row it does not have. This also avoids an unnecessary backend lookup for
+  // role-only Pro.
   if (clerkRole === 'pro') return { allowed: true };
 
+  // Preserves the exact tier check each of these five handlers already ran
+  // inline (tier >= 1, no validUntil check) — this intentionally does NOT
+  // match checkEntitlementDetailed, which additionally requires
+  // `validUntil >= Date.now()`. Unifying that gap is a separate concern from
+  // this PR's Clerk-role fix.
   const entitlements = await loadEntitlements(userId);
   if (entitlements && entitlements.features.tier >= 1) {
     return { allowed: true };
