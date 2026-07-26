@@ -206,6 +206,11 @@ async function loadInterstitial(): Promise<InterstitialModule> {
     `],
     ['variant-stub', "export const SITE_VARIANT = 'full';"],
     ['chip-stub', 'export function showFinishSetupChipForResults() {}'],
+    ['sentry-stub', `
+      export function enqueueSentryCall(fn) {
+        fn({ captureException: (err, ctx) => globalThis.__alertsSentry.push({ err, ctx }) });
+      }
+    `],
   ]);
   const aliases = new Map([
     ['@/services/i18n', 'i18n-stub'],
@@ -217,6 +222,7 @@ async function loadInterstitial(): Promise<InterstitialModule> {
     ['@/services/widget-store', 'widgets-stub'],
     ['@/config/variant', 'variant-stub'],
     ['@/components/ProActivationChip', 'chip-stub'],
+    ['@/bootstrap/sentry-defer', 'sentry-stub'],
   ]);
 
   const result = await build({
@@ -256,6 +262,7 @@ function installPushState(permission: 'default' | 'granted' | 'denied', throws: 
     __alertsConfigWrites: [] as unknown[],
     __alertsConfigWriteThrows: false,
     __alertsChannelsData: { channels: [], alertRules: [] },
+    __alertsSentry: [] as unknown[],
   });
 }
 
@@ -438,8 +445,9 @@ describe('activation interstitial blocked transition (#5609)', () => {
     assert.doesNotMatch(html, /pro-activation-skip/, 'blocked steps expose one action, not two');
     assert.match(html, /data-action="advance-skip"/, 'blocked steps advance with Continue');
 
-    // The block itself is reported separately: the step resolves as 'skipped',
-    // so without this signal a browser refusal reads as user disinterest.
+    // The block is reported live the moment it happens, independent of the
+    // durable `blocked` outcome asserted below — without this signal a browser
+    // refusal reads as user disinterest on the event stream.
     assert.deepEqual(blocks, ['alerts'], 'the blocked transition must be observable');
 
     // Continuing resolves the step exactly like one blocked at mount — and,
@@ -447,7 +455,17 @@ describe('activation interstitial blocked transition (#5609)', () => {
     // durable record can still separate a browser refusal from a real skip. It
     // is never 'failed' (which the summary reports as "we couldn't set up").
     assert.equal(clickPrimary(dom), 'advance-skip');
-    assert.deepEqual(skips, ['alerts']);
+    assert.deepEqual(
+      skips,
+      [],
+      'a browser refusal must not also be counted as a voluntary skip, or the ' +
+        'funnel and the durable buckets report different denial cohorts',
+    );
+    assert.deepEqual(
+      blocks,
+      ['alerts'],
+      'and it must be announced exactly once — the confirm already reported it',
+    );
     assert.equal(clickPrimary(dom), 'finish', 'continuing lands on the exit summary');
     assert.deepEqual(exits, [[{ id: 'alerts', outcome: 'blocked' }]]);
   });
@@ -476,7 +494,7 @@ describe('activation interstitial blocked transition (#5609)', () => {
       /summary-line status-pending/,
       'a blocked step still reads as pending to the user',
     );
-    assert.deepEqual(skips, ['alerts']);
+    assert.deepEqual(skips, [], 'abandoning on a refusal is not a voluntary skip either');
 
     assert.equal(clickPrimary(dom), 'finish');
     assert.deepEqual(exits, [[{ id: 'alerts', outcome: 'blocked' }]]);
@@ -489,11 +507,54 @@ describe('activation interstitial blocked transition (#5609)', () => {
     installPushState('denied', true);
     activeDom = installDom();
     const mod = await loadInterstitial();
-    const { dom, exits } = openAlertsStep(mod, async () => 'blocked', 'blocked');
+    const { dom, skips, blocks, exits } = openAlertsStep(mod, async () => 'blocked', 'blocked');
 
     assert.equal(clickPrimary(dom), 'advance-skip', 'mount-blocked advances with Continue');
     assert.equal(clickPrimary(dom), 'finish');
     assert.deepEqual(exits, [[{ id: 'alerts', outcome: 'blocked' }]]);
+
+    // A step already denied before the wizard opened never runs a confirm, so
+    // nothing reported it: before #5617 it emitted only `stepSkipped` and the
+    // whole mount-denied cohort was invisible on the event stream.
+    assert.deepEqual(blocks, ['alerts'], 'a mount-time denial must announce itself too');
+    assert.deepEqual(skips, [], 'and must not be double-counted as a skip');
+  });
+
+  // The denial must become durable the INSTANT the browser refuses, not when
+  // the user next interacts. Being refused and then closing the tab is a likely
+  // reaction, and a snapshot written only on advance would leave that account
+  // recorded as a voluntary skip forever -- losing precisely the cohort the
+  // blocked bucket exists to size (#5617). Driven through the REAL shell: the
+  // assertion is that `handleConfirm` itself flushes, not that a hand-called
+  // onProgress does what it is told.
+  it('flushes a mid-flow denial immediately, before the user advances past it', async () => {
+    installPushState('denied', true);
+    activeDom = installDom();
+    const mod = await loadInterstitial();
+    const dom = activeDom!;
+    const progress: Array<Array<{ id: string; outcome: string }>> = [];
+    mod.openProActivationInterstitial({
+      steps: [{ id: 'alerts', state: 'confirmable' }],
+      accountEmail: 'pro@worldmonitor.test',
+      onConfirmStep: (async () => 'blocked') as never,
+      onSkipStep: () => {},
+      onBlockStep: () => {},
+      onProgress: (results) => progress.push(results as never),
+      onExit: () => {},
+    });
+    activeClose = mod.closeProActivationInterstitial;
+
+    const primary = dom.document.body.querySelector('.pro-activation-primary');
+    assert.ok(primary, 'step must render a primary action');
+    primary!.dispatchEvent(new Event('click'));
+    await new Promise<void>((r) => setImmediate(r));
+
+    // No Continue, no Escape -- the user is refused and stops here.
+    assert.deepEqual(
+      progress,
+      [[{ id: 'alerts', outcome: 'blocked' }]],
+      'the refusal itself must emit a progress snapshot recording it as blocked',
+    );
   });
 
   it('keeps the pre-denied copy for a step already blocked at mount', async () => {
@@ -611,6 +672,52 @@ describe('durable activation outcome carries the blocked bucket (#5617)', () => 
     );
     assert.deepEqual(snapshot.confirmedSteps, ['brief']);
     assert.equal(snapshot.finalized, true);
+  });
+
+  // A durable write that fails permanently leaves the account's activation
+  // outcome invisible server-side. Before this, the only trace was a
+  // console.warn in the user's own browser -- i.e. nobody is told. The retry
+  // schedule is real time (250ms + 750ms), so this test is deliberately slow.
+  it('reports a permanently failing outcome write to Sentry, not just the console', async () => {
+    installPushState('denied', true);
+    // Unlike its siblings here, this test reaches the retry branch, which
+    // schedules through `window.setTimeout` -- so it needs the DOM installed.
+    activeDom = installDom();
+    const mod = await loadInterstitial();
+    let captured: Parameters<InterstitialModule['openProActivationInterstitial']>[0] | null = null;
+    let attempts = 0;
+    await mod.openProActivationFlow(
+      {
+        accountUserId: 'user_alerts',
+        accountEmail: 'pro@worldmonitor.test',
+        isAccountCurrent: () => true,
+        onlyIfUnactivated: true,
+        expectedActivationKey: 'sub_activation_key',
+        activationClaimNonce: 'device-a',
+      },
+      {
+        readContext: async () => activationContext(),
+        recordOutcome: async () => {
+          attempts += 1;
+          // Mirrors an old Convex deployment rejecting an argument its
+          // validator does not yet declare: it fails identically forever.
+          throw new Error('ArgumentValidationError: blockedSteps');
+        },
+        openInterstitial: (interstitialOptions) => {
+          captured = interstitialOptions;
+        },
+      },
+    );
+    assert.ok(captured, 'flow must open the interstitial');
+
+    captured!.onExit([{ id: 'alerts', outcome: 'blocked' }]);
+    await new Promise<void>((r) => setTimeout(r, 1500)); // outlast [250, 750]
+
+    assert.equal(attempts, 3, 'initial attempt plus both scheduled retries');
+    const sentry = (globalThis as Record<string, unknown[]>).__alertsSentry!;
+    assert.equal(sentry.length, 1, 'a permanent failure must reach Sentry exactly once');
+    const { ctx } = sentry[0] as { ctx: { tags: Record<string, string> } };
+    assert.deepEqual(ctx.tags, { component: 'pro-activation', action: 'recordOutcome' });
   });
 
   it('sends an explicit empty blockedSteps when nothing was blocked', async () => {

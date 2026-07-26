@@ -735,11 +735,13 @@ export const confirmProActivationPresentation = mutation({
   },
 });
 
-// One progress write per allowed step plus one final write on exit. Keep the
-// cap derived from the same validator used by the mutation and schema so their
-// accepted step set cannot drift from this bound.
+// One progress write per allowed step, plus one extra for a mid-flow
+// permission denial (the alerts step flushes its `blocked` outcome the instant
+// the browser refuses, before the user advances past it — #5617), plus one
+// final write on exit. Keep the cap derived from the same validator used by the
+// mutation and schema so their accepted step set cannot drift from this bound.
 const MAX_PRO_ACTIVATION_OUTCOME_REVISION =
-  proActivationStepIdValidator.members.length + 1;
+  proActivationStepIdValidator.members.length + 2;
 
 /**
  * Persist a monotonic snapshot of the wizard outcome (#5582). Progress writes
@@ -785,11 +787,10 @@ export const recordProActivationOutcome = mutation({
         `activation outcome revision must be an integer from 1 to ${MAX_PRO_ACTIVATION_OUTCOME_REVISION}`,
       );
     }
-    const blockedSteps = args.blockedSteps ?? [];
     const allSteps = [
       ...args.confirmedSteps,
       ...args.skippedSteps,
-      ...blockedSteps,
+      ...(args.blockedSteps ?? []),
       ...args.failedSteps,
     ];
     if (
@@ -808,10 +809,14 @@ export const recordProActivationOutcome = mutation({
     await ctx.db.patch(presentation._id, {
       confirmedSteps: args.confirmedSteps,
       skippedSteps: args.skippedSteps,
-      // Every snapshot is a full replacement, so this is written even when
-      // empty — omitting it would strand a previous revision's blocked bucket
-      // beside newer confirmed/skipped ones.
-      blockedSteps,
+      // Written straight from the arg, NOT coerced to []. Convex removes a
+      // field patched as `undefined`, so a client too old to report blocked
+      // steps leaves the field ABSENT ("could not report") instead of claiming
+      // "none were blocked" — a claim that is actively false for that client,
+      // which classified denials as skips. Absent is also what lets an analyst
+      // exclude those rows from a denial rate. Every snapshot stays a full
+      // replacement either way: an explicit [] clears, and so does absence.
+      blockedSteps: args.blockedSteps,
       failedSteps: args.failedSteps,
       outcomeRevision: args.revision,
       outcomeUpdatedAt: now,

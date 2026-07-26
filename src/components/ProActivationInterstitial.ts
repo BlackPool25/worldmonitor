@@ -95,9 +95,11 @@ export interface ProActivationInterstitialOptions {
   /** Fire-and-forget skip signal (bookkeeping/telemetry wired by later units). */
   onSkipStep: (stepId: ActivationStepId) => void;
   /**
-   * Fire-and-forget signal that a confirm resolved `blocked`. The step still
-   * resolves as skipped, so without this the denial cohort is indistinguishable
-   * from users who chose to skip.
+   * Fire-and-forget signal that a confirm resolved `blocked`. This is the LIVE
+   * half of separating browser refusals from voluntary skips; the durable half
+   * is the step's own `blocked` outcome and its `blockedSteps` bucket (#5617).
+   * Note the step also still emits `onSkipStep` when the user advances past it,
+   * so the two events are not mutually exclusive on the stream.
    */
   onBlockStep?: (stepId: ActivationStepId) => void;
   /** Called after each durable step-state transition with a full snapshot. */
@@ -331,6 +333,26 @@ export function openProActivationInterstitial(options: ProActivationInterstitial
   const defaultOutcome = (step: ActivationStep): ActivationStepOutcome =>
     selectAdvanceOutcome(effectiveState(step));
 
+  /**
+   * Emit the per-step event matching the outcome a step ADVANCED to, so the
+   * live stream and the durable buckets count the same cohorts. Firing
+   * `onSkipStep` for a browser refusal would leave the funnel's skip count
+   * including denials while `skippedSteps` excludes them — two sources of truth
+   * disagreeing about the same step (#5617).
+   *
+   * Exactly one event per step: a mid-flow denial already announced itself from
+   * `handleConfirm` the instant the browser refused, so only a step blocked at
+   * MOUNT (never confirm-blocked, hence absent from `blockedByConfirm`) still
+   * needs its block reported here.
+   */
+  const reportAdvanceEvent = (stepId: ActivationStepId, outcome: ActivationStepOutcome): void => {
+    if (outcome === 'blocked') {
+      if (!blockedByConfirm.has(stepId)) options.onBlockStep?.(stepId);
+      return;
+    }
+    options.onSkipStep(stepId);
+  };
+
   const buildResults = (): ActivationStepResult[] =>
     steps.map((step) => ({ id: step.id, outcome: outcomes.get(step.id) ?? defaultOutcome(step) }));
 
@@ -552,10 +574,11 @@ export function openProActivationInterstitial(options: ProActivationInterstitial
         outcomes.set(step.id, 'failed');
         continue;
       }
-      options.onSkipStep(step.id);
       // Abandoning the flow on a browser-refused step is still a refusal, not
       // a skip — same seam as the Continue button so the two cannot drift.
-      outcomes.set(step.id, selectAdvanceOutcome(state));
+      const outcome = selectAdvanceOutcome(state);
+      reportAdvanceEvent(step.id, outcome);
+      outcomes.set(step.id, outcome);
     }
     transient = 'idle';
     currentIndex = steps.length;
@@ -599,11 +622,17 @@ export function openProActivationInterstitial(options: ProActivationInterstitial
     } else if (result === 'blocked') {
       // Unrecoverable refusal: drop the retry CTA and render the blocked state
       // so the user gets the site-settings instructions instead of a "Try
-      // again" the browser will refuse identically forever. The step still
-      // resolves as skipped (same as one blocked at mount) when they continue.
+      // again" the browser will refuse identically forever. The step resolves
+      // as its own `blocked` outcome (same as one blocked at mount) when they
+      // continue.
       blockedByConfirm.add(step.id);
       transient = 'idle';
       options.onBlockStep?.(step.id);
+      // Flush the denial NOW, like the `verified` arm above. Being refused and
+      // then abandoning the tab is a likely reaction, and without this the last
+      // durable snapshot still calls the step `skipped` — losing exactly the
+      // cohort the blocked bucket exists to size (#5617).
+      recordProgress();
       renderModal();
     } else {
       transient = 'failed';
@@ -666,16 +695,18 @@ export function openProActivationInterstitial(options: ProActivationInterstitial
             recordProgress();
             advance();
             break;
-          case 'advance-skip':
-            options.onSkipStep(step.id);
+          case 'advance-skip': {
             // `blocked` (mount-time or mid-flow) records as its own outcome so
             // the durable record can still tell a browser refusal from a
-            // voluntary skip; the summary and the funnel event both keep
-            // reading it as pending, exactly as before (#5617).
-            outcomes.set(step.id, selectAdvanceOutcome(effectiveState(step)));
+            // voluntary skip. The exit summary still reads it as pending, so
+            // nothing changes for the user (#5617).
+            const advanced = selectAdvanceOutcome(effectiveState(step));
+            reportAdvanceEvent(step.id, advanced);
+            outcomes.set(step.id, advanced);
             recordProgress();
             advance();
             break;
+          }
         }
       });
       modal.querySelector('.pro-activation-skip')?.addEventListener('click', () => handleSkip(step));
@@ -1273,6 +1304,21 @@ function persistActivationOutcomeWithRetry(
         const delay = OUTCOME_WRITE_RETRY_DELAYS_MS[attempt];
         if (delay === undefined) {
           console.warn('[pro-activation] failed to record activation outcome', error);
+          // A permanently failing durable write is the one failure this whole
+          // record exists to rule out: it leaves the account's activation
+          // outcome invisible server-side, which is exactly the blind spot
+          // #5621 is filed about. A browser console line reaches nobody, so
+          // report it. Lazy-imported (like the chip below) to keep this
+          // component free of a static bootstrap import.
+          void import('@/bootstrap/sentry-defer')
+            .then((m) => m.enqueueSentryCall((s) => s.captureException(
+              error instanceof Error ? error : new Error(String(error)),
+              {
+                tags: { component: 'pro-activation', action: 'recordOutcome' },
+                extra: { revision, finalized },
+              },
+            )))
+            .catch(() => {}); // never let telemetry failure surface to the user
           return;
         }
         await new Promise<void>((resolve) => window.setTimeout(resolve, delay));

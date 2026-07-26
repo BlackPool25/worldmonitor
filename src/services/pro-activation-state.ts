@@ -960,9 +960,10 @@ export const ACTIVATION_EVENTS = {
   stepConfirmed: 'pro-activation-step-confirmed',
   stepSkipped: 'pro-activation-step-skipped',
   // A step the platform refused unrecoverably (a denied notification
-  // permission). It resolves as `skipped` like a step blocked at mount, so
-  // without this event the denial cohort is indistinguishable from users who
-  // chose to skip — the funnel would read a browser block as disinterest.
+  // permission). Without this event the denial cohort would be indistinguishable
+  // on the live stream from users who chose to skip — the funnel would read a
+  // browser block as disinterest. The durable counterpart is the `blocked`
+  // outcome and its own `blockedSteps` bucket (#5617).
   stepBlocked: 'pro-activation-step-blocked',
   exit: 'pro-activation-exit',
 } as const;
