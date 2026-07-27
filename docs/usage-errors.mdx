@@ -50,6 +50,10 @@ On JSON gateway surfaces, `X-Billing-Verification` generally mirrors the respons
 
 Among the billing reasons carried by `X-Billing-Verification`, only `subscription_lapsed` is terminal. It never carries `Retry-After` — the absence of that header is the signal that renewal, not retry, is the way out. At the grant-handshake endpoints, treat the body code `INSUFFICIENT_TIER` as terminal even when there is no billing header, and `TIER_VERIFICATION_UNAVAILABLE` as retryable.
 
+### Generated RPC billing denials
+
+Generated RPC handlers preserve the same billing decision in their native error shape. `summarizeArticle` reports errors inside a successful RPC envelope, so a retryable billing state uses `status: SUMMARIZE_STATUS_ERROR`, `errorType: ServiceError`, and the billing code in `statusDetail`; a provider-confirmed lapse uses `errorType: AuthError`. The scenario, shipping-v2, and forecast-simulation handlers use generated `ApiError` exceptions instead, so retryable states surface as HTTP `503` with `Retry-After`, `X-Billing-Verification`, and the same body `code`. A confirmed free caller still receives the existing Pro-required `403`.
+
 ## Common error strings
 
 | `error` value | Meaning |

@@ -49,6 +49,10 @@ OAuth 端点遵循 [RFC 6749 §5.2](https://datatracker.ietf.org/doc/html/rfc674
 
 在 `X-Billing-Verification` 承载的计费原因中，只有 `subscription_lapsed` 是终态。它从不携带 `Retry-After`——缺少该响应头本身就是信号：出路是重新订阅，而不是重试。在 grant 握手端点，即使没有计费响应头，也应将响应体错误码 `INSUFFICIENT_TIER` 视为终态，将 `TIER_VERIFICATION_UNAVAILABLE` 视为可重试。
 
+### 生成式 RPC 的计费拒绝
+
+生成式 RPC 处理程序会在各自原生的错误形态中保留同一项计费判定。`summarizeArticle` 在成功的 RPC 信封内报告错误，因此可重试的计费状态使用 `status: SUMMARIZE_STATUS_ERROR`、`errorType: ServiceError`，并在 `statusDetail` 中携带计费代码；由提供方确认的订阅失效则使用 `errorType: AuthError`。scenario、shipping-v2 与 forecast-simulation 处理程序改用生成的 `ApiError` 异常，因此可重试状态会返回 HTTP `503`，同时携带 `Retry-After`、`X-Billing-Verification` 与相同的响应体 `code`。已确认的免费调用方仍会收到原有的 Pro-required `403`。
+
 ## 常见错误字符串
 
 | `error` 值 | 含义 |
