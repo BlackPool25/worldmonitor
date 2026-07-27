@@ -64,7 +64,15 @@ function setText(id: string, text: string): void { $(id).textContent = text; }
 function show(id: string): void { $(id).hidden = false; }
 function hide(id: string): void { $(id).hidden = true; }
 
-function showErrorView(message: string, title = 'Authorization request expired'): void {
+/**
+ * `title` is REQUIRED, not defaulted. It used to default to "Authorization
+ * request expired", which was correct for exactly one of the seven call sites —
+ * a caller without Pro read that heading above "a WorldMonitor Pro subscription
+ * is required", and the anti-phishing redirect-host refusal was labelled an
+ * expiry too. Making it required means a new error path has to state what it is
+ * rather than inheriting the wrong answer.
+ */
+function showErrorView(message: string, title: string): void {
   resetMintPhase();
   hide('loading');
   hide('consent');
@@ -174,7 +182,7 @@ async function loadContextAttempt(
         showRetryableContextView(verdict.message);
         return;
       case 'terminal':
-        showErrorView(verdict.message);
+        showErrorView(verdict.message, verdict.title);
         return;
     }
   }
@@ -183,7 +191,7 @@ async function loadContextAttempt(
   try {
     ctx = (await resp.json()) as ContextResponse;
   } catch {
-    showErrorView('The authorization service returned an unexpected response.');
+    showErrorView('The authorization service returned an unexpected response.', 'Unexpected response');
     return;
   }
 
@@ -253,7 +261,7 @@ async function onAuthorizeClick(nonce: string): Promise<void> {
       return;
     }
     resetMintPhase();
-    showErrorView(verdict.message);
+    showErrorView(verdict.message, verdict.title);
     return;
   }
 
@@ -275,11 +283,11 @@ async function onAuthorizeClick(nonce: string): Promise<void> {
   try {
     target = new URL(mint.redirect);
   } catch {
-    showErrorView('The authorization service returned an invalid redirect.');
+    showErrorView('The authorization service returned an invalid redirect.', 'Invalid redirect');
     return;
   }
   if (target.origin !== 'https://api.worldmonitor.app') {
-    showErrorView('The authorization service returned an unexpected redirect host.');
+    showErrorView('The authorization service returned an unexpected redirect host.', 'Unexpected redirect host');
     return;
   }
 
@@ -289,14 +297,14 @@ async function onAuthorizeClick(nonce: string): Promise<void> {
 async function bootstrap(): Promise<void> {
   const nonce = getNonceFromQuery();
   if (!nonce) {
-    showErrorView('Missing authorization parameter. Start over from your MCP client.');
+    showErrorView('Missing authorization parameter. Start over from your MCP client.', 'Missing authorization parameter');
     return;
   }
 
   try {
     await initClerk();
   } catch {
-    showErrorView('Sign-in is unavailable. Please try again later.');
+    showErrorView('Sign-in is unavailable. Please try again later.', 'Sign-in unavailable');
     return;
   }
 
@@ -309,14 +317,21 @@ async function bootstrap(): Promise<void> {
     await loadContext(nonce);
   };
 
-  subscribeClerk(() => { void reactToAuth(); });
-  await reactToAuth();
-
+  // Wire the controls BEFORE the first load. `bootstrap()` is fire-and-forget
+  // (`void bootstrap()`), so anything that rejects inside `reactToAuth` —
+  // `openSignIn()` throwing, say — would skip the rest of this function and
+  // leave both buttons inert. That is survivable for Authorize, but the error
+  // view now *offers* a "Try again" button, and a visible control that does
+  // nothing is worse than no control. Attaching first costs nothing: neither
+  // handler can fire before the user sees a rendered view.
   $('retryContextBtn').addEventListener('click', () => {
     showContextLoading();
     void loadContext(nonce);
   });
   $('authorizeBtn').addEventListener('click', () => { void onAuthorizeClick(nonce); });
+
+  subscribeClerk(() => { void reactToAuth(); });
+  await reactToAuth();
 }
 
 void bootstrap();

@@ -24,6 +24,17 @@ export type GrantDenialAction =
 export interface GrantDenialVerdict {
   action: GrantDenialAction;
   message: string;
+  /**
+   * Heading for the error view, derived from the same code as `message`.
+   *
+   * Carried on the verdict rather than left to the page because the page had a
+   * single hardcoded heading — "Authorization request expired" — rendered above
+   * every terminal body. A caller with no Pro subscription read "expired" above
+   * "a WorldMonitor Pro subscription is required", which points at the wrong
+   * remedy, and the anti-phishing redirect-host refusal was labelled an expiry
+   * too. Deriving both strings together is what keeps them from disagreeing.
+   */
+  title: string;
 }
 
 /** Mint lifecycle relevant to a concurrent Clerk-triggered context refresh. */
@@ -60,6 +71,33 @@ const MESSAGES: Record<string, string> = {
 
 const FALLBACK_MESSAGE =
   'This authorization request could not be completed. Start over from your MCP client.';
+
+/**
+ * Heading per code. Only `INVALID_NONCE` is actually an expiry — the page used
+ * to say so above all of them.
+ */
+const TITLES: Record<string, string> = {
+  INVALID_NONCE: 'Authorization request expired',
+  UNKNOWN_CLIENT: 'Unknown OAuth client',
+  INVALID_REDIRECT_URI: 'Redirect destination not allowed',
+  INSUFFICIENT_TIER: 'Pro subscription required',
+  NONCE_CLAIMED_BY_OTHER_USER: 'Claimed by another account',
+  CONFIGURATION_ERROR: 'Authorization temporarily unavailable',
+  SERVICE_UNAVAILABLE: 'Authorization temporarily unavailable',
+  TIER_VERIFICATION_UNAVAILABLE: 'Verifying your subscription',
+};
+
+const FALLBACK_TITLE = 'Authorization failed';
+
+/**
+ * Heading for a handshake error code. Same prototype-safe lookup as
+ * `grantErrorMessage` — `code` is server-supplied, so a bare index could
+ * resolve `toString` to a Function and render it as a heading.
+ */
+export function grantErrorTitle(code: string | undefined): string {
+  if (!code || !Object.prototype.hasOwnProperty.call(TITLES, code)) return FALLBACK_TITLE;
+  return TITLES[code] ?? FALLBACK_TITLE;
+}
 
 /**
  * User-facing copy for a handshake error code.
@@ -107,10 +145,13 @@ export function retryableGrantDelayMs(retryAfterHeader: string | null): number {
  * handshake speaking.)
  */
 export function classifyGrantDenial(status: number, code: string | undefined): GrantDenialVerdict {
-  if (status === 401) return { action: 'sign_in', message: grantErrorMessage(code) };
+  if (status === 401) {
+    return { action: 'sign_in', message: grantErrorMessage(code), title: grantErrorTitle(code) };
+  }
   return {
     action: code && RETRYABLE_CODES.has(code) ? 'retryable' : 'terminal',
     message: grantErrorMessage(code),
+    title: grantErrorTitle(code),
   };
 }
 

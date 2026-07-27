@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 import {
   classifyGrantDenial,
   grantErrorMessage,
+  grantErrorTitle,
   retryableGrantDelayMs,
   routeGrantContextDenial,
 } from '../src/services/mcp-grant-denial.ts';
@@ -70,6 +71,66 @@ describe('grantErrorMessage', () => {
       assert.equal(typeof msg, 'string', `${code} must not resolve to a non-string`);
       assert.equal(msg, grantErrorMessage(undefined), `${code} must take the fallback`);
     }
+  });
+});
+
+describe('grantErrorTitle', () => {
+  /**
+   * The page rendered ONE heading — "Authorization request expired" — above every
+   * terminal body. Only `INVALID_NONCE` is actually an expiry, so the other six
+   * disagreed with the text underneath them. The worst pair shipped on the flow
+   * this change exists to improve.
+   */
+  it('does not call a Pro-subscription denial an expiry', () => {
+    const title = grantErrorTitle('INSUFFICIENT_TIER');
+    assert.equal(title, 'Pro subscription required');
+    assert.doesNotMatch(
+      title,
+      /expired/i,
+      'a caller without Pro was told their request expired, which points at the '
+      + 'wrong remedy — restarting from the client cannot fix a missing subscription',
+    );
+  });
+
+  it('does not disguise the anti-phishing and hijack refusals as an expiry', () => {
+    // These two are security-relevant states; labelling them "expired" hides the
+    // signal that something was actively refused.
+    assert.doesNotMatch(grantErrorTitle('INVALID_REDIRECT_URI'), /expired/i);
+    assert.doesNotMatch(grantErrorTitle('NONCE_CLAIMED_BY_OTHER_USER'), /expired/i);
+  });
+
+  it('reserves the expiry heading for the one code that is an expiry', () => {
+    assert.equal(grantErrorTitle('INVALID_NONCE'), 'Authorization request expired');
+    const expiryTitled = Object.keys({
+      INVALID_NONCE: 0,
+      UNKNOWN_CLIENT: 0,
+      INVALID_REDIRECT_URI: 0,
+      INSUFFICIENT_TIER: 0,
+      NONCE_CLAIMED_BY_OTHER_USER: 0,
+      CONFIGURATION_ERROR: 0,
+      SERVICE_UNAVAILABLE: 0,
+      TIER_VERIFICATION_UNAVAILABLE: 0,
+    }).filter((code) => /expired/i.test(grantErrorTitle(code)));
+    assert.deepEqual(expiryTitled, ['INVALID_NONCE']);
+  });
+
+  it('falls back without resolving inherited object properties', () => {
+    const fallback = grantErrorTitle(undefined);
+    assert.equal(fallback, 'Authorization failed');
+    for (const code of ['constructor', 'toString', '__proto__', 'WHATEVER_NEW_CODE']) {
+      assert.equal(typeof grantErrorTitle(code), 'string');
+      assert.equal(grantErrorTitle(code), fallback);
+    }
+  });
+
+  it('travels on the verdict so the heading and body cannot be sourced separately', () => {
+    // Deriving both from the same code in one place is what stops them drifting.
+    for (const code of ['INSUFFICIENT_TIER', 'INVALID_NONCE', 'TIER_VERIFICATION_UNAVAILABLE']) {
+      const verdict = classifyGrantDenial(403, code);
+      assert.equal(verdict.title, grantErrorTitle(code));
+      assert.equal(verdict.message, grantErrorMessage(code));
+    }
+    assert.equal(classifyGrantDenial(401, 'UNAUTHENTICATED').title, grantErrorTitle('UNAUTHENTICATED'));
   });
 });
 
@@ -282,11 +343,37 @@ describe('mcp-grant page routes denials through the shared classifier', () => {
    * only the wiring — which is exactly the class a regex cannot honestly pin
    * (memory: source-regex wiring guards false-pass). Tracked in #5654.
    */
+  it('never renders an error view without saying what the error is', () => {
+    // The heading is required, so a new error path cannot inherit a stale
+    // default. Assert no call site relies on one-argument form.
+    const singleArg = [...pageSource.matchAll(/showErrorView\((?:[^(),]|\([^)]*\))*\)/g)]
+      .map((m) => m[0])
+      .filter((call) => !call.includes(','));
+    assert.deepEqual(
+      singleArg,
+      [],
+      'every showErrorView call must pass an explicit title — the removed default '
+      + 'said "Authorization request expired" above bodies that were not expiries',
+    );
+  });
+
+  it('wires the recovery controls before the first load can reject', () => {
+    // `void bootstrap()` swallows a rejection, so listeners attached after the
+    // first await can be skipped entirely — leaving a visible "Try again" button
+    // that does nothing.
+    const retryWiring = pageSource.indexOf("$('retryContextBtn').addEventListener");
+    const authorizeWiring = pageSource.indexOf("$('authorizeBtn').addEventListener");
+    const firstLoad = pageSource.indexOf('await reactToAuth()');
+    assert.ok(retryWiring > 0 && authorizeWiring > 0 && firstLoad > 0, 'anchors must exist');
+    assert.ok(retryWiring < firstLoad, 'retry button must be wired before the first load');
+    assert.ok(authorizeWiring < firstLoad, 'authorize button must be wired before the first load');
+  });
+
   it('documents the uncovered verdict-to-DOM wiring rather than implying it is pinned', () => {
     // A canary, not a guard: if the page stops routing through the classifier at
     // all, the count pin above already fails. This exists so the limitation is
     // visible in the suite output rather than only in a comment.
     assert.match(pageSource, /verdict\.action === 'retryable'/);
-    assert.match(pageSource, /showErrorView\(verdict\.message\)/);
+    assert.match(pageSource, /showErrorView\(verdict\.message, verdict\.title\)/);
   });
 });
