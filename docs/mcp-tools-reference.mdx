@@ -663,6 +663,126 @@ curl -s https://worldmonitor.app/mcp \
 
 </CodeGroup>
 
+### `classify_event`
+
+Classify a supplied news headline or short text into a threat category and severity via the enum-validated WorldMonitor event classifier. The classifier is temperature-0, 24h-cached per title, and only ever returns values from the fixed category/level enums — never free-form LLM output. `classification` is `null` when no enum-valid result could be produced.
+
+**Parameters (tool-specific):**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `text` | string (required) | Headline or short excerpt to classify, 1-500 characters. Longer input is rejected with an `error`, not truncated. |
+
+- **API endpoint:** `GET /api/intelligence/v1/classify-event`
+- **Kind:** bounded canonical-route proxy over an LLM classifier. This op was previously parity-excluded as `llm-passthrough`; exposing it behind the standard MCP daily quota (50 quota-consuming calls/UTC day for OAuth contexts) bounds its per-call LLM cost, and the 24h per-title cache absorbs repeats.
+- **Quota:** standard — every call consumes the MCP daily reservation.
+
+<CodeGroup>
+
+```bash curl
+curl -s https://worldmonitor.app/mcp \
+  -H "X-WorldMonitor-Key: $WM_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "jsonrpc":"2.0","id":1,
+    "method":"tools/call",
+    "params":{"name":"classify_event","arguments":{"text":"Iran closes Strait of Hormuz to tanker traffic"}}
+  }'
+```
+
+</CodeGroup>
+
+### `extract_entities`
+
+Deterministic named-entity extraction shared with the dashboard: registry entities (companies, indices, commodities, crypto, sectors, countries — alias and keyword matched) plus pattern entities (CVE IDs, APT/FIN threat-group designators, tracked world leaders). No LLM is involved.
+
+**Parameters (tool-specific):**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `text` | string | Optional text to extract from, max 2048 characters (longer input is rejected with an `error`). When omitted, the tool aggregates entities across the current headline digest instead. |
+| `limit` | integer | Maximum entities per list (1-50). Defaults to 20. |
+
+- **API endpoint:** `GET /api/news/v1/list-feed-digest` (headlines mode only; text mode performs no fetch).
+- **Kind:** deterministic local compute over the shared extraction cores. In headlines mode, entities aggregate to `mentionCount`/`avgConfidence`; in text mode each match reports `matchType`, `matchedText`, and `confidence`.
+- **Quota:** standard — every call consumes the MCP daily reservation.
+
+<CodeGroup>
+
+```bash curl
+curl -s https://worldmonitor.app/mcp \
+  -H "X-WorldMonitor-Key: $WM_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "jsonrpc":"2.0","id":1,
+    "method":"tools/call",
+    "params":{"name":"extract_entities","arguments":{"text":"CVE-2026-12345 exploited by APT28 against Microsoft cloud tenants"}}
+  }'
+```
+
+</CodeGroup>
+
+### `get_news_clusters`
+
+Current topic clusters computed over the live headline digest with the same Jaccard clustering (0.5 title-token similarity) the dashboard uses, so agents see the same story groupings as the UI. Each cluster reports its primary headline, member count, distinct sources, top keywords (stop-word and generic-term filtered), aggregated threat level/category, and time span. Server-side primary selection is recency-based because digest items carry no per-source tier.
+
+**Parameters (tool-specific):**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `limit` | integer | Maximum clusters returned (1-25). Defaults to 10. |
+| `min_sources` | integer | Only return clusters with at least this many member headlines (1-10). Defaults to 1. |
+
+- **API endpoint:** `GET /api/news/v1/list-feed-digest`
+- **Kind:** deterministic local compute — clustering runs per call over the ~150-200 digest headlines (CDN/Redis-cached upstream, 15-min cadence).
+- **Quota:** standard — every call consumes the MCP daily reservation.
+
+<CodeGroup>
+
+```bash curl
+curl -s https://worldmonitor.app/mcp \
+  -H "X-WorldMonitor-Key: $WM_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "jsonrpc":"2.0","id":1,
+    "method":"tools/call",
+    "params":{"name":"get_news_clusters","arguments":{"min_sources":2,"limit":10}}
+  }'
+```
+
+</CodeGroup>
+
+### `get_keyword_spikes`
+
+Trending keyword, CVE, and APT/FIN threat-group spikes versus baseline, using the same term-candidacy and spike-decision math as the dashboard's trending-keywords engine (minimum recent count, strict baseline multiplier, source-diversity gate). The baseline derives from the 48-hour story accumulator as a per-window story rate — not the dashboard's incremental 7-day client-side history — and the tool description says so honestly. Results are cached for 10 minutes per `(window_hours, min_count)` combination.
+
+**Parameters (tool-specific):**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `window_hours` | integer | Recent window to test for spikes (1-12). Defaults to 2. |
+| `min_count` | integer | Minimum recent-window story count for a term to spike (2-20). Defaults to 5. |
+| `limit` | integer | Maximum spikes returned (1-25). Defaults to 10. |
+
+- **API endpoint:** none — reads the story accumulator and story-track keys from Redis directly; no HTTP endpoint is proxied.
+- **Kind:** deterministic local compute with a 10-minute Redis result cache. `note` is present when the accumulator is unavailable or empty.
+- **Quota:** standard — every call consumes the MCP daily reservation.
+
+<CodeGroup>
+
+```bash curl
+curl -s https://worldmonitor.app/mcp \
+  -H "X-WorldMonitor-Key: $WM_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "jsonrpc":"2.0","id":1,
+    "method":"tools/call",
+    "params":{"name":"get_keyword_spikes","arguments":{"window_hours":2,"limit":10}}
+  }'
+```
+
+</CodeGroup>
+
 ### `get_cyber_threats`
 
 Active cyber threat intelligence: malware IOCs (URLhaus, Feodotracker), CISA known exploited vulnerabilities, and active command-and-control infrastructure.

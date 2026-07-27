@@ -663,6 +663,126 @@ curl -s https://worldmonitor.app/mcp \
 
 </CodeGroup>
 
+### `classify_event`
+
+通过枚举校验的 WorldMonitor 事件分类器，将提供的新闻标题或短文本分类为威胁类别和严重性。分类器为 temperature-0、按标题缓存 24 小时，且只会返回固定类别/级别枚举中的值 —— 绝不返回自由格式的 LLM 输出。无法产生枚举有效结果时 `classification` 为 `null`。
+
+**参数（工具专用）：**
+
+| 名称 | 类型 | 描述 |
+|------|------|------|
+| `text` | string（必填） | 待分类的标题或短摘录，1-500 字符。超长输入会返回 `error` 而不是被截断。 |
+
+- **API 端点：** `GET /api/intelligence/v1/classify-event`
+- **类型：** 对 LLM 分类器的受约束规范路由代理。该操作此前以 `llm-passthrough` 理由被排除在 MCP 对等之外；置于标准 MCP 每日配额之后（OAuth 上下文每 UTC 日 50 次消耗配额的调用）即可约束其单次调用 LLM 成本，且按标题的 24 小时缓存吸收重复请求。
+- **配额：** 标准 —— 每次调用消耗 MCP 每日预留。
+
+<CodeGroup>
+
+```bash curl
+curl -s https://worldmonitor.app/mcp \
+  -H "X-WorldMonitor-Key: $WM_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "jsonrpc":"2.0","id":1,
+    "method":"tools/call",
+    "params":{"name":"classify_event","arguments":{"text":"Iran closes Strait of Hormuz to tanker traffic"}}
+  }'
+```
+
+</CodeGroup>
+
+### `extract_entities`
+
+与仪表盘共享的确定性命名实体提取：注册表实体（公司、指数、大宗商品、加密货币、行业、国家 —— 通过别名与关键词匹配）加上模式实体（CVE 编号、APT/FIN 威胁组织代号、被追踪的世界领导人）。不涉及 LLM。
+
+**参数（工具专用）：**
+
+| 名称 | 类型 | 描述 |
+|------|------|------|
+| `text` | string | 可选的提取文本，最长 2048 字符（超长输入返回 `error`）。省略时，工具转而跨当前头条摘要聚合实体。 |
+| `limit` | integer | 每个列表的最大实体数（1-50）。默认 20。 |
+
+- **API 端点：** `GET /api/news/v1/list-feed-digest`（仅头条模式；文本模式不发起任何请求）。
+- **类型：** 基于共享提取核心的确定性本地计算。头条模式下实体聚合为 `mentionCount`/`avgConfidence`；文本模式下每个匹配报告 `matchType`、`matchedText` 和 `confidence`。
+- **配额：** 标准 —— 每次调用消耗 MCP 每日预留。
+
+<CodeGroup>
+
+```bash curl
+curl -s https://worldmonitor.app/mcp \
+  -H "X-WorldMonitor-Key: $WM_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "jsonrpc":"2.0","id":1,
+    "method":"tools/call",
+    "params":{"name":"extract_entities","arguments":{"text":"CVE-2026-12345 exploited by APT28 against Microsoft cloud tenants"}}
+  }'
+```
+
+</CodeGroup>
+
+### `get_news_clusters`
+
+使用与仪表盘完全相同的 Jaccard 聚类（0.5 标题分词相似度）对实时头条摘要计算当前话题簇，因此 agent 看到的故事分组与 UI 一致。每个簇报告主标题、成员数、去重来源、热门关键词（过滤停用词与泛化词）、聚合威胁级别/类别以及时间跨度。服务器端主标题按新近度选取，因为摘要条目不携带每来源层级。
+
+**参数（工具专用）：**
+
+| 名称 | 类型 | 描述 |
+|------|------|------|
+| `limit` | integer | 返回簇的上限（1-25）。默认 10。 |
+| `min_sources` | integer | 仅返回成员头条数不低于该值的簇（1-10）。默认 1。 |
+
+- **API 端点：** `GET /api/news/v1/list-feed-digest`
+- **类型：** 确定性本地计算 —— 每次调用对约 150-200 条摘要头条运行聚类（上游为 CDN/Redis 缓存，15 分钟节奏）。
+- **配额：** 标准 —— 每次调用消耗 MCP 每日预留。
+
+<CodeGroup>
+
+```bash curl
+curl -s https://worldmonitor.app/mcp \
+  -H "X-WorldMonitor-Key: $WM_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "jsonrpc":"2.0","id":1,
+    "method":"tools/call",
+    "params":{"name":"get_news_clusters","arguments":{"min_sources":2,"limit":10}}
+  }'
+```
+
+</CodeGroup>
+
+### `get_keyword_spikes`
+
+相对基线的关键词、CVE 与 APT/FIN 威胁组织飙升趋势，使用与仪表盘趋势关键词引擎相同的词项候选与飙升判定数学（最低近期计数、严格基线倍数、来源多样性门槛）。基线源自 48 小时故事累积器的按窗口故事速率 —— 而非仪表盘客户端增量式的 7 天历史 —— 工具描述如实说明了这一点。结果按 `(window_hours, min_count)` 组合缓存 10 分钟。
+
+**参数（工具专用）：**
+
+| 名称 | 类型 | 描述 |
+|------|------|------|
+| `window_hours` | integer | 检测飙升的近期窗口（1-12）。默认 2。 |
+| `min_count` | integer | 词项构成飙升所需的最低近期窗口故事数（2-20）。默认 5。 |
+| `limit` | integer | 返回飙升的上限（1-25）。默认 10。 |
+
+- **API 端点：** 无 —— 直接从 Redis 读取故事累积器与 story-track key；不代理任何 HTTP 端点。
+- **类型：** 确定性本地计算，附带 10 分钟 Redis 结果缓存。累积器不可用或为空时返回 `note`。
+- **配额：** 标准 —— 每次调用消耗 MCP 每日预留。
+
+<CodeGroup>
+
+```bash curl
+curl -s https://worldmonitor.app/mcp \
+  -H "X-WorldMonitor-Key: $WM_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "jsonrpc":"2.0","id":1,
+    "method":"tools/call",
+    "params":{"name":"get_keyword_spikes","arguments":{"window_hours":2,"limit":10}}
+  }'
+```
+
+</CodeGroup>
+
 ### `get_cyber_threats`
 
 活跃网络威胁情报：恶意软件 IOC（URLhaus、Feodotracker）、CISA 已知被利用漏洞和活跃的命令与控制基础设施。
