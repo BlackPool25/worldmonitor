@@ -394,6 +394,14 @@ const RPC_CACHE_TIER: Record<string, CacheTier> = {
   '/api/intelligence/v1/get-regime-history': 'slow',
   // get-regional-brief is premium-gated; slow-browser in practice, slow entry for route-parity.
   '/api/intelligence/v1/get-regional-brief': 'slow',
+  // Historical intelligence memory (#5694) — all three are premium-gated, so
+  // the gateway short-circuits them to slow-browser; these entries satisfy the
+  // parity contract in tests/route-cache-tier.test.mjs and document the tier
+  // the routes would take if they ever became public. Slow fits the data:
+  // history is append-only and the seeders write it at most hourly.
+  '/api/intelligence/v1/search-intel-history': 'slow',
+  '/api/intelligence/v1/get-intel-timeline': 'slow',
+  '/api/intelligence/v1/get-similar-events': 'slow',
   '/api/resilience/v1/get-resilience-score': 'slow',
   '/api/resilience/v1/get-resilience-ranking': 'slow',
   '/api/resilience/v1/get-runtime-manifest': 'no-store',
