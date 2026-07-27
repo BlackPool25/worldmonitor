@@ -1,0 +1,155 @@
+#!/usr/bin/env node
+
+// Seeds the market-wide stream of recent SEC 8-K material-event filings from the
+// EDGAR "latest filings" Atom feed (issue #5695). Routine disclosure items
+// (earnings exhibits, Reg FD) are filtered out; only genuinely material item
+// codes survive. Each run merges into the previous snapshot so the stream holds
+// a rolling window across cron gaps and quiet weekend stretches.
+
+import { loadEnvFile, readSeedSnapshot, runSeed, withRetry, resolveProxy, curlFetch } from './_seed-utils.mjs';
+
+loadEnvFile(import.meta.url);
+
+export const SEC_8K_STREAM_KEY = 'intelligence:sec-8k-stream:v1';
+export const SEC_8K_STREAM_TTL_SECONDS = 7 * 24 * 3600;
+export const SEC_8K_STREAM_MAX_STALE_MIN = 120;
+export const MAX_STREAM_EVENTS = 200;
+export const STREAM_WINDOW_MS = 7 * 24 * 3600 * 1000;
+
+// SEC requires a declared User-Agent identifying the requester (no browser
+// spoofing) — same convention as scripts/seed-regulatory-actions.mjs.
+export const SEC_USER_AGENT = 'WorldMonitor/2.0 (monitor@worldmonitor.app)';
+
+// Material 8-K item codes — must equal the high+medium materiality codes in
+// server/_shared/sec-edgar.ts MATERIAL_8K_ITEMS (asserted by
+// tests/sec-corporate-intel.test.mts). Kept inline because nixpacks seed
+// bundles cannot import outside scripts/.
+export const MATERIAL_ITEM_CODES = new Set([
+  '1.01', '1.02', '1.03', '1.04', '1.05',
+  '2.01', '2.02', '2.03', '2.04', '2.05', '2.06',
+  '3.01', '3.02', '3.03',
+  '4.01', '4.02',
+  '5.01', '5.02', '5.03', '5.05', '5.08',
+]);
+
+const FEED_URL = 'https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&company=&dateb=&owner=include&count=100&output=atom';
+
+function unescapeXml(text) {
+  return String(text ?? '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+// Parses one EDGAR getcurrent Atom feed document into raw filing entries.
+// Entry shape in the feed:
+//   <title>8-K - Company Name (0001289848) (Filer)</title>
+//   <link ... href="https://www.sec.gov/Archives/edgar/data/.../...-index.htm"/>
+//   <summary type="html"> &lt;b&gt;Filed:&lt;/b&gt; 2026-07-27 &lt;b&gt;AccNo:&lt;/b&gt; 0001628280-26-049857 ...
+//     &lt;br&gt;Item 5.02: Departure of Directors ...</summary>
+//   <updated>2026-07-27T17:29:58-04:00</updated>
+export function parse8kAtomFeed(xml) {
+  const events = [];
+  const entryRegex = /<entry>([\s\S]*?)<\/entry>/gi;
+  let match;
+  while ((match = entryRegex.exec(String(xml ?? ''))) !== null) {
+    const block = match[1];
+    const rawTitle = unescapeXml((block.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || '');
+    const titleMatch = rawTitle.match(/^\s*(8-K(?:\/A)?)\s+-\s+(.+?)\s+\((\d{7,10})\)/);
+    if (!titleMatch) continue;
+    const form = titleMatch[1];
+    const company = titleMatch[2].trim();
+    const cik = titleMatch[3].padStart(10, '0');
+
+    const linkMatch = block.match(/<link[^>]*href=["']([^"']+)["']/i);
+    const url = linkMatch ? unescapeXml(linkMatch[1]) : '';
+
+    const summary = unescapeXml((block.match(/<summary[^>]*>([\s\S]*?)<\/summary>/i) || [])[1] || '');
+    const accession = (summary.match(/AccNo:<\/b>\s*([0-9-]+)/) || [])[1] || '';
+
+    const items = [];
+    const itemRegex = /Item\s+(\d+\.\d{2}):\s*([^<\n]+)/g;
+    let itemMatch;
+    while ((itemMatch = itemRegex.exec(summary)) !== null) {
+      items.push({ code: itemMatch[1], description: itemMatch[2].trim() });
+    }
+
+    const updated = (block.match(/<updated[^>]*>([\s\S]*?)<\/updated>/i) || [])[1] || '';
+    const filedAtMs = Date.parse(updated.trim()) || 0;
+
+    events.push({ company, cik, form, accession, filedAtMs, items, url });
+  }
+  return events;
+}
+
+export function filterMaterialEvents(events) {
+  return events
+    .map(event => ({
+      ...event,
+      items: event.items.filter(item => MATERIAL_ITEM_CODES.has(item.code)),
+    }))
+    .filter(event => event.items.length > 0 && event.accession && event.filedAtMs > 0);
+}
+
+// Merge freshly fetched events into the previous snapshot: dedupe by accession
+// (newest fetch wins), drop events older than the rolling window, newest first.
+export function mergeEventWindow(previousEvents, freshEvents, nowMs) {
+  const byAccession = new Map();
+  for (const event of Array.isArray(previousEvents) ? previousEvents : []) {
+    if (event?.accession) byAccession.set(event.accession, event);
+  }
+  for (const event of freshEvents) {
+    byAccession.set(event.accession, event);
+  }
+  return [...byAccession.values()]
+    .filter(event => nowMs - event.filedAtMs < STREAM_WINDOW_MS)
+    .sort((a, b) => b.filedAtMs - a.filedAtMs)
+    .slice(0, MAX_STREAM_EVENTS);
+}
+
+async function fetchFeedXml() {
+  try {
+    return await withRetry(async () => {
+      const resp = await fetch(FEED_URL, {
+        headers: { 'User-Agent': SEC_USER_AGENT, Accept: 'application/atom+xml, application/xml, */*' },
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!resp.ok) throw Object.assign(new Error(`HTTP ${resp.status}`), { status: resp.status });
+      return resp.text();
+    }, 2, 2000);
+  } catch (err) {
+    const proxyAuth = resolveProxy();
+    if (!proxyAuth) throw err;
+    console.warn(`  Direct SEC feed fetch failed (${err?.message}); retrying via proxy`);
+    return curlFetch(FEED_URL, proxyAuth, {
+      'User-Agent': SEC_USER_AGENT,
+      Accept: 'application/atom+xml, application/xml, */*',
+    });
+  }
+}
+
+export async function fetch8kStream() {
+  const previous = await readSeedSnapshot(SEC_8K_STREAM_KEY);
+  const xml = await fetchFeedXml();
+  const fresh = filterMaterialEvents(parse8kAtomFeed(xml));
+  const events = mergeEventWindow(previous?.events, fresh, Date.now());
+  return { events, fetchedAt: new Date().toISOString() };
+}
+
+if (process.argv[1]?.endsWith('seed-sec-8k-stream.mjs')) {
+  runSeed('intelligence', 'sec-8k-stream', SEC_8K_STREAM_KEY, fetch8kStream, {
+    ttlSeconds: SEC_8K_STREAM_TTL_SECONDS,
+    validateFn: (data) => Array.isArray(data?.events) && typeof data?.fetchedAt === 'string',
+    declareRecords: (data) => data.events.length,
+    // Weekend/overnight stretches legitimately produce zero *new* filings; the
+    // rolling merge usually keeps the window non-empty, but an empty window
+    // after a quiet week is still a valid publish.
+    zeroIsValid: true,
+    sourceVersion: 'sec-edgar-getcurrent-atom-v1',
+    schemaVersion: 1,
+    maxStaleMin: SEC_8K_STREAM_MAX_STALE_MIN,
+  });
+}

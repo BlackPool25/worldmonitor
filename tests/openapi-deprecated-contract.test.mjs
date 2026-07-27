@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { readdirSync, readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // Guards two OpenAPI completeness invariants restored by the #4599 follow-ups:
@@ -127,8 +127,36 @@ describe('OpenAPI deprecated + operation-description contract', () => {
       }
     }
 
-    assert.ok(deprecatedByFamily.get('json') >= 1, 'expected at least one deprecated operation in JSON specs');
-    assert.ok(deprecatedByFamily.get('yaml') >= 1, 'expected at least one deprecated operation in service YAML specs');
-    assert.ok(deprecatedByFamily.get('bundle') >= 1, 'expected at least one deprecated operation in the bundled YAML spec');
+    // The injector canary: each artifact family must carry exactly as many
+    // deprecated operations as the proto sources declare. A regen that drops
+    // scripts/openapi-inject-deprecated.mjs fails here whenever any RPC is
+    // deprecated; with zero declared (the state since #5695 re-enabled the two
+    // company RPCs) every family must also carry zero.
+    const declared = countDeprecatedRpcDeclarations();
+    assert.equal(deprecatedByFamily.get('json'), declared, 'JSON specs must carry exactly the proto-declared deprecated operations');
+    assert.equal(deprecatedByFamily.get('yaml'), declared, 'service YAML specs must carry exactly the proto-declared deprecated operations');
+    assert.equal(deprecatedByFamily.get('bundle'), declared, 'the bundled YAML spec must carry exactly the proto-declared deprecated operations');
   });
 });
+
+// Counts `option deprecated = true;` declarations inside rpc bodies across all
+// service protos — the single upstream source both the sebuf generator and the
+// deprecated-flag injector read.
+function countDeprecatedRpcDeclarations() {
+  let count = 0;
+  for (const file of walkProtoFiles(resolve(root, 'proto/worldmonitor'))) {
+    const text = readFileSync(file, 'utf8');
+    count += (text.match(/^\s*option\s+deprecated\s*=\s*true\s*;/gm) ?? []).length;
+  }
+  return count;
+}
+
+function walkProtoFiles(dir) {
+  const out = [];
+  for (const name of readdirSync(dir)) {
+    const full = join(dir, name);
+    if (statSync(full).isDirectory()) out.push(...walkProtoFiles(full));
+    else if (name.endsWith('.proto')) out.push(full);
+  }
+  return out;
+}

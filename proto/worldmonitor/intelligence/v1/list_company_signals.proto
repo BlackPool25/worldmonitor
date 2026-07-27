@@ -4,19 +4,19 @@ package worldmonitor.intelligence.v1;
 
 import "sebuf/http/annotations.proto";
 
-// Request to discover and classify company signals (hiring, funding, tech changes).
-// NOTE: This endpoint is DISABLED — the handler returns an empty stub regardless of
-// input. `company` is still required to pass validation, but no signals are discovered.
+// Request to discover and classify company intelligence signals from authoritative
+// sources (SEC 8-K material events, earnings surprises, news mentions). Provide a
+// ticker for the strongest match, or a company name matched against the SEC registry.
 message ListCompanySignalsRequest {
   // Company name to discover signals for.
   string company = 1 [(sebuf.http.query) = {name: "company"}];
   // Company domain to discover signals for.
   string domain = 2 [(sebuf.http.query) = {name: "domain"}];
+  // Exchange ticker symbol, such as "AAPL". Preferred lookup key.
+  string ticker = 3 [(sebuf.http.query) = {name: "ticker"}];
 }
 
 // Discovered company signals with classification and engagement metrics.
-// DISABLED: the handler returns an empty stub — `signals` is always empty and `summary`
-// reports zero counts; only the echoed `company`/`domain` are populated.
 message ListCompanySignalsResponse {
   string company = 1;
   string domain = 2;

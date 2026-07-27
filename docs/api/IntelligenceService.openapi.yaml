@@ -1215,29 +1215,34 @@ paths:
                                     - $ref: '#/components/schemas/GatewayError'
     /api/intelligence/v1/get-company-enrichment:
         get:
-            deprecated: true
             tags:
                 - IntelligenceService
             summary: GetCompanyEnrichment
             description: |-
-                GetCompanyEnrichment is DISABLED and returns an empty stub. The route is preserved
-                 for contract stability, but the handler no longer aggregates any external data
-                 (the prior domain-slug attribution heuristic was unsound). Deprecated pending a
-                 verified attribution model.
+                GetCompanyEnrichment aggregates a per-company intelligence composite: SEC EDGAR
+                 identity and recent filings (via authoritative ticker-to-CIK resolution), market
+                 profile and earnings surprises from Finnhub, and recent news mentions.
             operationId: GetCompanyEnrichment
             parameters:
                 - name: domain
                   in: query
-                  description: Company domain to enrich, such as "github.com".
+                  description: Company domain, such as "apple.com".
                   required: false
                   example: "example"
                   schema:
                     type: string
                 - name: name
                   in: query
-                  description: Company name to enrich when a domain is not available.
+                  description: Company name, such as "Apple Inc".
                   required: false
                   example: "WorldMonitor Analyst"
+                  schema:
+                    type: string
+                - name: ticker
+                  in: query
+                  description: Exchange ticker symbol, such as "AAPL". Preferred lookup key.
+                  required: false
+                  example: "AAPL"
                   schema:
                     type: string
                 - name: jmespath
@@ -1255,28 +1260,29 @@ paths:
                         application/json:
                             example:
                                 "company":
+                                    "cik": "example"
                                     "description": "Example WorldMonitor observation."
                                     "domain": "example"
-                                    "founded": 1
                                     "location": "example"
                                     "name": "WorldMonitor Analyst"
+                                "earningsSurprises":
+                                    - "actualEps": 1.5
+                                      "estimateEps": 1.5
+                                      "period": "daily"
+                                      "quarter": 1
+                                      "surprise": 1.5
                                 "enrichedAtMs": 1
-                                "github":
-                                    "avatarUrl": "https://example.com/worldmonitor"
-                                    "followers": 1
-                                    "publicRepos": 1
-                                "hackerNewsMentions":
-                                    - "comments": 1
-                                      "createdAtMs": 1
-                                      "points": 1
+                                "market":
+                                    "country": "US"
+                                    "currency": "USD"
+                                    "exchange": "example"
+                                    "industry": "example"
+                                    "ipoDate": "2026-01-15"
+                                "newsMentions":
+                                    - "publishedAtMs": 1
+                                      "source": "example"
                                       "title": "example"
                                       "url": "https://example.com/worldmonitor"
-                                "secFilings":
-                                    "recentFilings":
-                                        - "description": "Example WorldMonitor observation."
-                                          "fileDate": "2026-01-15"
-                                          "form": "example"
-                                    "totalFilings": 1
                             schema:
                                 $ref: '#/components/schemas/GetCompanyEnrichmentResponse'
                 "400":
@@ -1334,15 +1340,13 @@ paths:
                                     - $ref: '#/components/schemas/GatewayError'
     /api/intelligence/v1/list-company-signals:
         get:
-            deprecated: true
             tags:
                 - IntelligenceService
             summary: ListCompanySignals
             description: |-
-                ListCompanySignals is DISABLED and returns an empty stub. The route is preserved
-                 for contract stability, but the handler no longer discovers any signals (the prior
-                 guessed-identity/keyword heuristic was unsound). Deprecated pending a verified
-                 attribution model.
+                ListCompanySignals discovers classified intelligence signals for a company from
+                 authoritative sources: SEC 8-K material events, earnings surprises, and recent
+                 news mentions, with per-type summary rollups.
             operationId: ListCompanySignals
             parameters:
                 - name: company
@@ -1357,6 +1361,13 @@ paths:
                   description: Company domain to discover signals for.
                   required: false
                   example: "example"
+                  schema:
+                    type: string
+                - name: ticker
+                  in: query
+                  description: Exchange ticker symbol, such as "AAPL". Preferred lookup key.
+                  required: false
+                  example: "AAPL"
                   schema:
                     type: string
                 - name: jmespath
@@ -1405,6 +1416,232 @@ paths:
                                     "totalSignals": 1
                             schema:
                                 $ref: '#/components/schemas/ListCompanySignalsResponse'
+                "400":
+                    description: Validation error
+                    content:
+                        application/json:
+                            schema:
+                                oneOf:
+                                    - $ref: '#/components/schemas/ValidationError'
+                                    - $ref: '#/components/schemas/JmespathProjectionError'
+                "401":
+                    description: Missing or invalid API key.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/UnauthorizedError'
+                "403":
+                    description: API access requires an active subscription (the API key's subscription is inactive or expired).
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ForbiddenError'
+                "429":
+                    description: Rate limit exceeded.
+                    headers:
+                        X-RateLimit-Limit:
+                            description: Maximum requests allowed in the active rate-limit window.
+                            schema:
+                                type: string
+                        X-RateLimit-Remaining:
+                            description: Requests remaining in the active rate-limit window.
+                            schema:
+                                type: string
+                        X-RateLimit-Reset:
+                            description: Unix epoch milliseconds when the active rate-limit window resets.
+                            schema:
+                                type: string
+                        Retry-After:
+                            description: Seconds to wait before retrying the request.
+                            schema:
+                                type: string
+                    content:
+                        application/json:
+                            schema:
+                                oneOf:
+                                    - $ref: '#/components/schemas/Error'
+                                    - $ref: '#/components/schemas/RateLimitError'
+                default:
+                    description: Gateway or handler error response.
+                    content:
+                        application/json:
+                            schema:
+                                oneOf:
+                                    - $ref: '#/components/schemas/Error'
+                                    - $ref: '#/components/schemas/GatewayError'
+    /api/intelligence/v1/search-sec-filings:
+        get:
+            tags:
+                - IntelligenceService
+            summary: SearchSecFilings
+            description: |-
+                SearchSecFilings runs a full-text search over SEC EDGAR filings with optional
+                 form-type and date-range filters.
+            operationId: SearchSecFilings
+            parameters:
+                - name: query
+                  in: query
+                  description: Full-text query, such as "material weakness" or a company name. Required.
+                  required: false
+                  example: "supply chain risk"
+                  schema:
+                    type: string
+                - name: forms
+                  in: query
+                  description: Comma-separated form-type filter, such as "8-K" or "10-K,10-Q".
+                  required: false
+                  example: "example"
+                  schema:
+                    type: string
+                - name: start_date
+                  in: query
+                  description: Earliest filing date to include (YYYY-MM-DD).
+                  required: false
+                  example: "2026-01-15"
+                  schema:
+                    type: string
+                - name: end_date
+                  in: query
+                  description: Latest filing date to include (YYYY-MM-DD).
+                  required: false
+                  example: "2026-01-15"
+                  schema:
+                    type: string
+                - name: limit
+                  in: query
+                  description: Maximum results to return (default 10, capped at 25).
+                  required: false
+                  example: 25
+                  schema:
+                    type: integer
+                    format: int32
+                - name: jmespath
+                  in: query
+                  description: |-
+                    Optional JMESPath expression applied server-side to project or reduce the JSON response before it is returned (mirrors the MCP jmespath argument). Invalid expressions, expressions larger than 1024 UTF-8 bytes, or projections that exceed the 256 KB output cap return HTTP 400 with a {_jmespath_error, original_keys} envelope. Grammar and worked examples: https://www.worldmonitor.app/docs/mcp-jmespath.
+                  required: false
+                  example: "keys(@)"
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: Successful response
+                    content:
+                        application/json:
+                            example:
+                                "fetchedAtMs": 1
+                                "results":
+                                    - "accession": "example"
+                                      "cik": "example"
+                                      "company": "example"
+                                      "fileDate": "2026-01-15"
+                                      "form": "example"
+                                "total": 1
+                                "unavailable": true
+                            schema:
+                                $ref: '#/components/schemas/SearchSecFilingsResponse'
+                "400":
+                    description: Validation error
+                    content:
+                        application/json:
+                            schema:
+                                oneOf:
+                                    - $ref: '#/components/schemas/ValidationError'
+                                    - $ref: '#/components/schemas/JmespathProjectionError'
+                "401":
+                    description: Missing or invalid API key.
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/UnauthorizedError'
+                "403":
+                    description: API access requires an active subscription (the API key's subscription is inactive or expired).
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ForbiddenError'
+                "429":
+                    description: Rate limit exceeded.
+                    headers:
+                        X-RateLimit-Limit:
+                            description: Maximum requests allowed in the active rate-limit window.
+                            schema:
+                                type: string
+                        X-RateLimit-Remaining:
+                            description: Requests remaining in the active rate-limit window.
+                            schema:
+                                type: string
+                        X-RateLimit-Reset:
+                            description: Unix epoch milliseconds when the active rate-limit window resets.
+                            schema:
+                                type: string
+                        Retry-After:
+                            description: Seconds to wait before retrying the request.
+                            schema:
+                                type: string
+                    content:
+                        application/json:
+                            schema:
+                                oneOf:
+                                    - $ref: '#/components/schemas/Error'
+                                    - $ref: '#/components/schemas/RateLimitError'
+                default:
+                    description: Gateway or handler error response.
+                    content:
+                        application/json:
+                            schema:
+                                oneOf:
+                                    - $ref: '#/components/schemas/Error'
+                                    - $ref: '#/components/schemas/GatewayError'
+    /api/intelligence/v1/list-material-events:
+        get:
+            tags:
+                - IntelligenceService
+            summary: ListMaterialEvents
+            description: |-
+                ListMaterialEvents returns the pre-seeded stream of recent SEC 8-K material-event
+                 filings (M&A, executive changes, restatements, bankruptcies) across all filers.
+            operationId: ListMaterialEvents
+            parameters:
+                - name: item_code
+                  in: query
+                  description: Filter to a single 8-K item code, such as "5.02" (executive changes).
+                  required: false
+                  example: "example"
+                  schema:
+                    type: string
+                - name: limit
+                  in: query
+                  description: Maximum events to return (default 25, capped at 100).
+                  required: false
+                  example: 25
+                  schema:
+                    type: integer
+                    format: int32
+                - name: jmespath
+                  in: query
+                  description: |-
+                    Optional JMESPath expression applied server-side to project or reduce the JSON response before it is returned (mirrors the MCP jmespath argument). Invalid expressions, expressions larger than 1024 UTF-8 bytes, or projections that exceed the 256 KB output cap return HTTP 400 with a {_jmespath_error, original_keys} envelope. Grammar and worked examples: https://www.worldmonitor.app/docs/mcp-jmespath.
+                  required: false
+                  example: "keys(@)"
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: Successful response
+                    content:
+                        application/json:
+                            example:
+                                "events":
+                                    - "accession": "example"
+                                      "cik": "example"
+                                      "company": "example"
+                                      "filedAtMs": 1
+                                      "form": "example"
+                                "fetchedAtMs": 1
+                                "unavailable": true
+                            schema:
+                                $ref: '#/components/schemas/ListMaterialEventsResponse'
                 "400":
                     description: Validation error
                     content:
@@ -5629,32 +5866,25 @@ components:
             properties:
                 domain:
                     type: string
-                    description: Company domain to enrich, such as "github.com".
+                    description: Company domain, such as "apple.com".
                 name:
                     type: string
-                    description: Company name to enrich when a domain is not available.
+                    description: Company name, such as "Apple Inc".
+                ticker:
+                    type: string
+                    description: Exchange ticker symbol, such as "AAPL". Preferred lookup key.
             description: |-
-                Request to fetch enrichment data for a company.
-                 NOTE: This endpoint is DISABLED — the handler returns an empty stub regardless of
-                 input. Requires either domain (e.g. "github.com") or name (e.g. "GitHub") to pass
-                 validation, but no enrichment is performed.
+                Request to fetch enrichment data for a company. Provide at least one of ticker,
+                 name, or domain. Ticker gives the strongest match (authoritative SEC CIK
+                 resolution plus market data); name and domain are matched against the SEC
+                 company registry.
         GetCompanyEnrichmentResponse:
             type: object
             properties:
                 company:
                     $ref: '#/components/schemas/EnrichedCompany'
-                github:
-                    $ref: '#/components/schemas/EnrichedGithub'
-                techStack:
-                    type: array
-                    items:
-                        $ref: '#/components/schemas/TechStackItem'
                 secFilings:
                     $ref: '#/components/schemas/SecFilings'
-                hackerNewsMentions:
-                    type: array
-                    items:
-                        $ref: '#/components/schemas/HNMention'
                 enrichedAtMs:
                     type: integer
                     format: int64
@@ -5663,10 +5893,20 @@ components:
                     type: array
                     items:
                         type: string
-                        description: List of sources successfully reached (e.g. "github", "sec_edgar").
+                        description: List of sources successfully reached (e.g. "sec_edgar", "finnhub", "news").
+                market:
+                    $ref: '#/components/schemas/CompanyMarketProfile'
+                earningsSurprises:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/EarningsSurprise'
+                newsMentions:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/CompanyNewsMention'
             description: |-
-                Company enrichment data. DISABLED: the handler returns an empty stub — `company`
-                 echoes only the requested name/domain, and all other fields are empty/undefined.
+                Company enrichment composite aggregated from SEC EDGAR (identity + filings),
+                 Finnhub (market profile + earnings surprises), and the news corpus (mentions).
         EnrichedCompany:
             type: object
             properties:
@@ -5676,40 +5916,25 @@ components:
                     type: string
                 description:
                     type: string
+                    description: Industry classification (SEC SIC description).
                 location:
                     type: string
+                    description: Business location, such as "Cupertino, CA".
                 website:
                     type: string
-                founded:
-                    type: integer
-                    format: int32
-        EnrichedGithub:
-            type: object
-            properties:
-                publicRepos:
-                    type: integer
-                    format: int32
-                followers:
-                    type: integer
-                    format: int32
-                avatarUrl:
+                cik:
                     type: string
-        TechStackItem:
-            type: object
-            properties:
-                name:
+                    description: SEC Central Index Key (zero-padded 10 digits), empty when no EDGAR match.
+                ticker:
                     type: string
-                category:
-                    type: string
-                confidence:
-                    type: number
-                    format: float
+                    description: Resolved primary ticker symbol.
         SecFilings:
             type: object
             properties:
                 totalFilings:
                     type: integer
                     format: int32
+                    description: Total filings known for this CIK in the recent EDGAR submissions window.
                 recentFilings:
                     type: array
                     items:
@@ -5723,23 +5948,74 @@ components:
                     type: string
                 description:
                     type: string
-        HNMention:
+                url:
+                    type: string
+                    description: Link to the filing index on sec.gov.
+                items:
+                    type: array
+                    items:
+                        type: string
+                        description: 8-K item codes disclosed in this filing (e.g. "2.02"), empty for other forms.
+        CompanyMarketProfile:
+            type: object
+            properties:
+                exchange:
+                    type: string
+                industry:
+                    type: string
+                    description: Industry classification from Finnhub.
+                marketCapMusd:
+                    type: number
+                    format: double
+                    description: Market capitalization in millions of USD.
+                ipoDate:
+                    type: string
+                    description: IPO date (YYYY-MM-DD), empty when unknown.
+                logoUrl:
+                    type: string
+                country:
+                    type: string
+                    description: Company headquarters country code.
+                currency:
+                    type: string
+        EarningsSurprise:
+            type: object
+            properties:
+                period:
+                    type: string
+                    description: Fiscal period end date (YYYY-MM-DD).
+                actualEps:
+                    type: number
+                    format: double
+                estimateEps:
+                    type: number
+                    format: double
+                surprise:
+                    type: number
+                    format: double
+                    description: actual minus estimate.
+                surprisePercent:
+                    type: number
+                    format: double
+                year:
+                    type: integer
+                    format: int32
+                quarter:
+                    type: integer
+                    format: int32
+        CompanyNewsMention:
             type: object
             properties:
                 title:
                     type: string
                 url:
                     type: string
-                points:
-                    type: integer
-                    format: int32
-                comments:
-                    type: integer
-                    format: int32
-                createdAtMs:
+                source:
+                    type: string
+                publishedAtMs:
                     type: integer
                     format: int64
-                    description: 'Unix timestamp in milliseconds when the post was created.. Warning: Values > 2^53 may lose precision in JavaScript'
+                    description: 'Unix timestamp in milliseconds when the story was published (0 when unknown).. Warning: Values > 2^53 may lose precision in JavaScript'
         ListCompanySignalsRequest:
             type: object
             properties:
@@ -5749,10 +6025,13 @@ components:
                 domain:
                     type: string
                     description: Company domain to discover signals for.
+                ticker:
+                    type: string
+                    description: Exchange ticker symbol, such as "AAPL". Preferred lookup key.
             description: |-
-                Request to discover and classify company signals (hiring, funding, tech changes).
-                 NOTE: This endpoint is DISABLED — the handler returns an empty stub regardless of
-                 input. `company` is still required to pass validation, but no signals are discovered.
+                Request to discover and classify company intelligence signals from authoritative
+                 sources (SEC 8-K material events, earnings surprises, news mentions). Provide a
+                 ticker for the strongest match, or a company name matched against the SEC registry.
         ListCompanySignalsResponse:
             type: object
             properties:
@@ -5770,10 +6049,7 @@ components:
                     type: integer
                     format: int64
                     description: 'Unix timestamp in milliseconds when signals were discovered.. Warning: Values > 2^53 may lose precision in JavaScript'
-            description: |-
-                Discovered company signals with classification and engagement metrics.
-                 DISABLED: the handler returns an empty stub — `signals` is always empty and `summary`
-                 reports zero counts; only the echoed `company`/`domain` are populated.
+            description: Discovered company signals with classification and engagement metrics.
         CompanySignal:
             type: object
             properties:
@@ -5841,6 +6117,131 @@ components:
                 value:
                     type: integer
                     format: int32
+        SearchSecFilingsRequest:
+            type: object
+            properties:
+                query:
+                    type: string
+                    description: Full-text query, such as "material weakness" or a company name. Required.
+                forms:
+                    type: string
+                    description: Comma-separated form-type filter, such as "8-K" or "10-K,10-Q".
+                startDate:
+                    type: string
+                    description: Earliest filing date to include (YYYY-MM-DD).
+                endDate:
+                    type: string
+                    description: Latest filing date to include (YYYY-MM-DD).
+                limit:
+                    type: integer
+                    format: int32
+                    description: Maximum results to return (default 10, capped at 25).
+            description: Request for a full-text search over SEC EDGAR filings.
+        SearchSecFilingsResponse:
+            type: object
+            properties:
+                results:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/SecFilingSearchResult'
+                total:
+                    type: integer
+                    format: int32
+                    description: Total matching filings reported by EDGAR (may exceed the returned page).
+                unavailable:
+                    type: boolean
+                    description: True when the EDGAR search upstream could not be reached.
+                fetchedAtMs:
+                    type: integer
+                    format: int64
+                    description: 'Unix timestamp in milliseconds when this result set was fetched.. Warning: Values > 2^53 may lose precision in JavaScript'
+            description: Full-text search results from SEC EDGAR.
+        SecFilingSearchResult:
+            type: object
+            properties:
+                company:
+                    type: string
+                    description: Filer display name, such as "Apple Inc. (AAPL) (CIK 0000320193)".
+                cik:
+                    type: string
+                    description: SEC Central Index Key of the primary filer (zero-padded 10 digits).
+                form:
+                    type: string
+                fileDate:
+                    type: string
+                    description: Filing date (YYYY-MM-DD).
+                items:
+                    type: array
+                    items:
+                        type: string
+                        description: 8-K item codes disclosed in this filing, empty for other forms.
+                url:
+                    type: string
+                    description: Link to the filing document on sec.gov.
+                accession:
+                    type: string
+                    description: EDGAR accession number, such as "0000320193-26-000123".
+        ListMaterialEventsRequest:
+            type: object
+            properties:
+                itemCode:
+                    type: string
+                    description: Filter to a single 8-K item code, such as "5.02" (executive changes).
+                limit:
+                    type: integer
+                    format: int32
+                    description: Maximum events to return (default 25, capped at 100).
+            description: Request for the pre-seeded stream of recent SEC 8-K material-event filings.
+        ListMaterialEventsResponse:
+            type: object
+            properties:
+                events:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/MaterialEvent'
+                unavailable:
+                    type: boolean
+                    description: True when the seeded stream is not available in the cache.
+                fetchedAtMs:
+                    type: integer
+                    format: int64
+                    description: 'Unix timestamp in milliseconds when the stream was last seeded.. Warning: Values > 2^53 may lose precision in JavaScript'
+            description: Recent SEC 8-K material-event filings across all filers, newest first.
+        MaterialEvent:
+            type: object
+            properties:
+                company:
+                    type: string
+                    description: Filer display name.
+                cik:
+                    type: string
+                    description: SEC Central Index Key of the filer (zero-padded 10 digits).
+                form:
+                    type: string
+                    description: Form type, such as "8-K" or "8-K/A".
+                accession:
+                    type: string
+                    description: EDGAR accession number.
+                filedAtMs:
+                    type: integer
+                    format: int64
+                    description: 'Unix timestamp in milliseconds when the filing was accepted.. Warning: Values > 2^53 may lose precision in JavaScript'
+                items:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/MaterialEventItem'
+                url:
+                    type: string
+                    description: Link to the filing index on sec.gov.
+        MaterialEventItem:
+            type: object
+            properties:
+                code:
+                    type: string
+                    description: 8-K item code, such as "2.02".
+                description:
+                    type: string
+                    description: Human-readable item description, such as "Results of Operations and Financial Condition".
         GetCountryFactsRequest:
             type: object
             properties:
