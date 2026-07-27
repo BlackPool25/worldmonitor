@@ -19,7 +19,12 @@
  */
 
 import { initClerk, getClerkToken, getCurrentClerkUser, openSignIn, subscribeClerk } from '@/services/clerk';
-import { classifyGrantDenial, retryableGrantDelayMs } from '@/services/mcp-grant-denial';
+import {
+  classifyGrantDenial,
+  retryableGrantDelayMs,
+  routeGrantContextDenial,
+  type GrantMintPhase,
+} from '@/services/mcp-grant-denial';
 
 // Apply user's saved theme preference. Inlined here (not the index.html head)
 // because the page's global CSP is hash-allowlisted and adding per-page
@@ -59,11 +64,31 @@ function setText(id: string, text: string): void { $(id).textContent = text; }
 function show(id: string): void { $(id).hidden = false; }
 function hide(id: string): void { $(id).hidden = true; }
 
-function showErrorView(message: string): void {
+function showErrorView(message: string, title = 'Authorization request expired'): void {
+  resetMintPhase();
   hide('loading');
   hide('consent');
+  hide('retryContextBtn');
+  setText('errorTitle', title);
   setText('errorBody', message);
   show('errorView');
+}
+
+function showRetryableContextView(message: string): void {
+  resetMintPhase();
+  hide('loading');
+  hide('consent');
+  setText('errorTitle', 'Authorization temporarily unavailable');
+  setText('errorBody', message);
+  show('retryContextBtn');
+  show('errorView');
+}
+
+function showContextLoading(): void {
+  hide('errorView');
+  hide('consent');
+  setText('loadingBody', 'Loading authorization request…');
+  show('loading');
 }
 
 function getNonceFromQuery(): string | null {
@@ -80,65 +105,78 @@ async function authedFetch(path: string, init: RequestInit = {}): Promise<Respon
 }
 
 /**
- * True while a mint POST is awaiting its response.
- *
- * `subscribeClerk` can re-enter `reactToAuth` -> `loadContext` at any moment
- * (a token refresh is enough). Without this flag, a context reload that fails
- * while the user's Authorize click is still in flight would call
- * `showErrorView` and tear down the very consent card the retryable-mint path
- * exists to preserve — the user would see a terminal error for a request that
- * then succeeds.
+ * `subscribeClerk` can re-enter `reactToAuth` -> `loadContext` at any moment.
+ * Keep both the in-flight POST and its Retry-After cooldown explicit: a token
+ * refresh during either phase must not let a retryable context denial tear down
+ * consent. Retaining the timeout identity also lets a terminal transition
+ * cancel the pending re-enable instead of mutating a hidden card later.
  */
-let mintInFlight = false;
+let mintPhase: GrantMintPhase = 'idle';
+let mintRetryTimeout: number | null = null;
 
-/**
- * One bounded retry for the context load, mirroring the mint path.
- *
- * Guarded rather than unlimited for two reasons: `subscribeClerk` can re-enter
- * `loadContext` on any token refresh (so an ungated timer could stack), and an
- * unbounded loop would spin forever on a real outage instead of telling the user.
- */
-let contextRetryUsed = false;
+function resetMintPhase(): void {
+  if (mintRetryTimeout !== null) {
+    window.clearTimeout(mintRetryTimeout);
+    mintRetryTimeout = null;
+  }
+  mintPhase = 'idle';
+}
+
+const CONTEXT_AUTO_RETRY_BUDGET = 1;
+let contextLoadGeneration = 0;
 
 async function loadContext(nonce: string): Promise<void> {
+  const generation = ++contextLoadGeneration;
+  await loadContextAttempt(nonce, CONTEXT_AUTO_RETRY_BUDGET, generation);
+}
+
+async function loadContextAttempt(
+  nonce: string,
+  retriesRemaining: number,
+  generation: number,
+): Promise<void> {
   let resp: Response;
   try {
     resp = await authedFetch(`/api/internal/mcp-grant-context?nonce=${encodeURIComponent(nonce)}`);
   } catch {
-    if (mintInFlight) return;
-    showErrorView('Could not reach the authorization service. Check your connection and try again.');
+    if (mintPhase !== 'idle') return;
+    showRetryableContextView(
+      'Could not reach the authorization service. Check your connection and try again.',
+    );
     return;
   }
+
+  if (generation !== contextLoadGeneration) return;
 
   if (!resp.ok) {
     let body: ApiError | null = null;
     try { body = (await resp.json()) as ApiError; } catch { /* ignore */ }
     const verdict = classifyGrantDenial(resp.status, body?.error);
-    if (verdict.action === 'sign_in') {
-      // Token went stale between page load and fetch — re-prompt.
-      openSignIn();
-      return;
+    const action = routeGrantContextDenial(verdict.action, mintPhase, retriesRemaining);
+    switch (action) {
+      case 'sign_in':
+        // Token went stale between page load and fetch — re-prompt.
+        openSignIn();
+        return;
+      case 'preserve_consent':
+        return;
+      case 'retry': {
+        setText('loadingBody', 'Authorization service is temporarily unavailable. Retrying…');
+        const waitMs = retryableGrantDelayMs(resp.headers.get('Retry-After'));
+        await new Promise<void>((resolve) => {
+          window.setTimeout(resolve, waitMs);
+        });
+        if (generation !== contextLoadGeneration) return;
+        await loadContextAttempt(nonce, retriesRemaining - 1, generation);
+        return;
+      }
+      case 'show_retry':
+        showRetryableContextView(verdict.message);
+        return;
+      case 'terminal':
+        showErrorView(verdict.message);
+        return;
     }
-    // Never tear down the page under an in-flight mint (see mintInFlight): the
-    // click that is still running owns the user's attention and its own error
-    // reporting.
-    if (mintInFlight) return;
-    // A retryable denial here must not land on the terminal error view. That view
-    // has no retry control, so a transient blip at page load stranded the user on
-    // a dead end — even though the nonce is untouched (this is a GET; only the
-    // mint consumes it), meaning a reload would have worked. Retry once after the
-    // advertised delay instead, keeping the loading state up so the page reads as
-    // still working rather than broken. Only a second failure is terminal.
-    if (verdict.action === 'retryable' && !contextRetryUsed) {
-      contextRetryUsed = true;
-      setText('loadingText', 'Verifying your Pro subscription…');
-      window.setTimeout(() => {
-        void loadContext(nonce);
-      }, retryableGrantDelayMs(resp.headers.get('Retry-After')));
-      return;
-    }
-    showErrorView(verdict.message);
-    return;
   }
 
   let ctx: ContextResponse;
@@ -161,15 +199,17 @@ async function onAuthorizeClick(nonce: string): Promise<void> {
   const btn = $('authorizeBtn') as HTMLButtonElement;
   const errEl = $('mintError');
   const reenable = (): void => {
+    resetMintPhase();
     btn.disabled = false;
     btn.textContent = 'Authorize';
   };
+  resetMintPhase();
   btn.disabled = true;
   btn.textContent = 'Authorizing…';
   hide('mintError');
 
   let resp: Response;
-  mintInFlight = true;
+  mintPhase = 'in_flight';
   try {
     resp = await authedFetch('/api/internal/mcp-grant-mint', {
       method: 'POST',
@@ -177,13 +217,11 @@ async function onAuthorizeClick(nonce: string): Promise<void> {
       body: JSON.stringify({ nonce }),
     });
   } catch {
-    mintInFlight = false;
     reenable();
     errEl.textContent = 'Network error. Please try again.';
     show('mintError');
     return;
   }
-  mintInFlight = false;
 
   if (!resp.ok) {
     let body: ApiError | null = null;
@@ -210,9 +248,11 @@ async function onAuthorizeClick(nonce: string): Promise<void> {
       show('mintError');
       const waitMs = retryableGrantDelayMs(resp.headers.get('Retry-After'));
       btn.textContent = 'Retry shortly…';
-      window.setTimeout(reenable, waitMs);
+      mintPhase = 'retry_cooldown';
+      mintRetryTimeout = window.setTimeout(reenable, waitMs);
       return;
     }
+    resetMintPhase();
     showErrorView(verdict.message);
     return;
   }
@@ -272,6 +312,10 @@ async function bootstrap(): Promise<void> {
   subscribeClerk(() => { void reactToAuth(); });
   await reactToAuth();
 
+  $('retryContextBtn').addEventListener('click', () => {
+    showContextLoading();
+    void loadContext(nonce);
+  });
   $('authorizeBtn').addEventListener('click', () => { void onAuthorizeClick(nonce); });
 }
 

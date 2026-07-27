@@ -124,27 +124,9 @@ export default async function handler(req: Request): Promise<Response> {
   try {
     const premiumIdentity = await resolvePremiumCallerIdentity(req);
     if (!premiumIdentity.isPremium) {
-      // #5622: the comment above already committed to "503 (not 403) so a
-      // transient dependency blip never misclassifies a paying Pro user as
-      // unsubscribed" — but the entitlement lookup's OWN transient failure
-      // still landed on this 403, because resolvePremiumCallerIdentity had no
-      // way to say "could not verify". Now it does, and this branch honors it
-      // with the same retryable shape every other Pro surface emits
-      // (docs/usage-errors.mdx).
-      //
-      // Client side: `src/services/premium-denial.ts` deliberately does NOT
-      // classify this — it owns the 401/403 upsell-vs-desync decision (#5608)
-      // and returns null for any 5xx. So ChatAnalystPanel's describeDenial
-      // reads `X-Billing-Verification` directly and renders the retry copy;
-      // without that branch this state fell through to a bare "Error 503".
-      // The panel does not auto-retry (the user re-sends), unlike
-      // src/services/notification-channels.ts which does.
+      // Preserve retryable billing-verification denials instead of flattening
+      // them to the Pro 403. The panel renders this header without auto-retrying.
       if (premiumIdentity.billingDenial) {
-        // Render the classification the identity actually carries — not a
-        // hand-built `{ verificationUnavailable: true }`, which would collapse
-        // all four billing states into one and put the two renewal-verification
-        // codes back on the terminal upsell. Rendered by the shared helper so
-        // this surface cannot drift from the wire contract the docs describe.
         const denial = renderBillingVerificationDenial(
           premiumIdentity.billingDenial,
           corsHeaders,

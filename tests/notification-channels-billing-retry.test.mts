@@ -65,6 +65,36 @@ function installTransport(responses: Response[]) {
   return { calls, slept };
 }
 
+function installAbortableRetryTransport(controller: AbortController) {
+  const calls: Array<{ path: string; init?: RequestInit }> = [];
+  const slept: number[] = [];
+  let observeSleep!: () => void;
+  const sleepStarted = new Promise<void>((resolve) => {
+    observeSleep = resolve;
+  });
+  __setNotificationChannelsClientDepsForTests({
+    getClerkToken: async () => 'token-abc',
+    getCurrentClerkUser: () => ({ id: 'user_1' }) as never,
+    fetch: (async (path: string, init?: RequestInit) => {
+      calls.push({ path, init });
+      return denial('entitlement_verification_unavailable', '5');
+    }) as never,
+    sleep: async (ms: number, signal?: AbortSignal | null) => {
+      slept.push(ms);
+      observeSleep();
+      assert.equal(signal, controller.signal, 'the public client must forward its abort signal');
+      await new Promise<void>((_resolve, reject) => {
+        if (signal.aborted) {
+          reject(signal.reason);
+          return;
+        }
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    },
+  });
+  return { calls, slept, sleepStarted };
+}
+
 afterEach(() => {
   __setNotificationChannelsClientDepsForTests(null);
 });
@@ -393,6 +423,35 @@ describe('authFetch honors a retryable billing-verification 503', () => {
       'the retry must not write under a session the caller never asked for',
     );
     assert.equal(calls.length, 1, 'the retry is abandoned, not sent to the new account');
+  });
+
+  it('cancels a public read during Retry-After without sending a second request', async () => {
+    const controller = new AbortController();
+    const abortReason = new Error('notification settings closed');
+    const { calls, slept, sleepStarted } = installAbortableRetryTransport(controller);
+
+    const request = getChannelsData(undefined, controller.signal);
+    await sleepStarted;
+    controller.abort(abortReason);
+
+    await assert.rejects(request, (err) => err === abortReason);
+    assert.deepEqual(slept, [5_000]);
+    assert.equal(calls.length, 1, 'abort during the delay must prevent the retry fetch');
+  });
+
+  it('cancels a public mutation during Retry-After without sending a second POST', async () => {
+    const controller = new AbortController();
+    const abortReason = new Error('notification settings closed');
+    const { calls, slept, sleepStarted } = installAbortableRetryTransport(controller);
+
+    const request = setEmailChannel('buyer@example.com', undefined, controller.signal);
+    await sleepStarted;
+    controller.abort(abortReason);
+
+    await assert.rejects(request, (err) => err === abortReason);
+    assert.deepEqual(slept, [5_000]);
+    assert.equal(calls.length, 1, 'abort during the delay must prevent the retry POST');
+    assert.equal(calls[0]?.init?.method, 'POST');
   });
 
   it('leaves a 2xx alone — no clone, no delay, no second call', async () => {

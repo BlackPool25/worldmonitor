@@ -24,6 +24,7 @@ import {
   classifyGrantDenial,
   grantErrorMessage,
   retryableGrantDelayMs,
+  routeGrantContextDenial,
 } from '../src/services/mcp-grant-denial.ts';
 
 describe('grantErrorMessage', () => {
@@ -161,6 +162,31 @@ describe('classifyGrantDenial', () => {
   });
 });
 
+describe('routeGrantContextDenial', () => {
+  it('spends exactly one automatic retry before exposing the manual retry action', () => {
+    assert.equal(routeGrantContextDenial('retryable', 'idle', 1), 'retry');
+    assert.equal(routeGrantContextDenial('retryable', 'idle', 0), 'show_retry');
+  });
+
+  it('preserves consent for a retryable Clerk context reload throughout the mint lifecycle', () => {
+    assert.equal(
+      routeGrantContextDenial('retryable', 'in_flight', 1),
+      'preserve_consent',
+    );
+    assert.equal(
+      routeGrantContextDenial('retryable', 'retry_cooldown', 0),
+      'preserve_consent',
+    );
+  });
+
+  it('keeps terminal and sign-in denials out of every retry path', () => {
+    for (const phase of ['idle', 'in_flight', 'retry_cooldown'] as const) {
+      assert.equal(routeGrantContextDenial('terminal', phase, 1), 'terminal');
+      assert.equal(routeGrantContextDenial('sign_in', phase, 1), 'sign_in');
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Wiring: call-site COUNT pins only
 // ---------------------------------------------------------------------------
@@ -212,6 +238,36 @@ describe('mcp-grant page routes denials through the shared classifier', () => {
     assert.equal(deferred, 1, 'the retryable exit must hand it back after the advertised delay');
   });
 
+  it('tracks the mint cooldown phase and timeout so Clerk reloads cannot strand consent', () => {
+    assert.match(pageSource, /let mintPhase: GrantMintPhase = 'idle'/);
+    assert.match(pageSource, /mintPhase = 'retry_cooldown'/);
+    assert.match(pageSource, /let mintRetryTimeout: number \| null = null/);
+    assert.match(pageSource, /mintRetryTimeout = window\.setTimeout\(reenable, waitMs\)/);
+    assert.match(pageSource, /window\.clearTimeout\(mintRetryTimeout\)/);
+    assert.doesNotMatch(pageSource, /mintInFlight/);
+  });
+
+  it('uses one Retry-After delay before rendering a non-expired manual retry view', () => {
+    assert.match(pageSource, /const CONTEXT_AUTO_RETRY_BUDGET = 1/);
+    assert.equal(
+      [...pageSource.matchAll(/retryableGrantDelayMs\(resp\.headers\.get\('Retry-After'\)\)/g)]
+        .length,
+      2,
+      'both the context auto-retry and mint cooldown must honor Retry-After',
+    );
+    assert.match(pageSource, /showRetryableContextView\(verdict\.message\)/);
+    assert.match(pageSource, /'retryContextBtn'\)\.addEventListener\('click'/);
+
+    const html = readFileSync(resolve(root, 'mcp-grant.html'), 'utf8');
+    assert.match(html, /id="errorTitle"/);
+    assert.match(html, /id="retryContextBtn" hidden>Try again<\/button>/);
+    assert.doesNotMatch(
+      pageSource.match(/function showRetryableContextView[\s\S]*?\n}/)?.[0] ?? '',
+      /expired/i,
+      'a transient context failure must not be labelled as an expired request',
+    );
+  });
+
   /**
    * WHAT THESE PINS DO NOT COVER — stated so nobody mistakes green for covered.
    *
@@ -226,35 +282,6 @@ describe('mcp-grant page routes denials through the shared classifier', () => {
    * only the wiring — which is exactly the class a regex cannot honestly pin
    * (memory: source-regex wiring guards false-pass). Tracked in #5654.
    */
-  /**
-   * Greptile flagged this on the PR: a retryable denial on the CONTEXT load went
-   * to `showErrorView`, which has no retry control — so a transient blip at page
-   * load stranded the user on a dead end even though the nonce was untouched (the
-   * context load is a GET; only the mint consumes it). The mint path already
-   * recovered properly, so the two were asymmetric.
-   *
-   * Pinned structurally because the DOM behaviour itself is unreachable here
-   * (#5654): the context path must schedule a bounded retry, and its retry budget
-   * must be guarded so a Clerk-driven re-entry cannot stack timers.
-   */
-  it('retries a retryable context load instead of stranding the user on the error view', () => {
-    assert.match(
-      pageSource,
-      /verdict\.action === 'retryable' && !contextRetryUsed/,
-      'the context load must have a retryable branch that does not fall to showErrorView',
-    );
-    assert.match(
-      pageSource,
-      /contextRetryUsed = true/,
-      'the context retry must be bounded — an unguarded timer stacks on Clerk re-entry',
-    );
-    assert.equal(
-      [...pageSource.matchAll(/void loadContext\(nonce\)/g)].length,
-      1,
-      'exactly one self-retry call site; a second is an unbounded reload loop',
-    );
-  });
-
   it('documents the uncovered verdict-to-DOM wiring rather than implying it is pinned', () => {
     // A canary, not a guard: if the page stops routing through the classifier at
     // all, the count pin above already fails. This exists so the limitation is

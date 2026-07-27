@@ -46,9 +46,9 @@ OAuth endpoints follow [RFC 6749 §5.2](https://datatracker.ietf.org/doc/html/rf
 
 ### Reading `X-Billing-Verification`
 
-Every HTTP billing-verification denial sets `X-Billing-Verification` to the same value as the response body's `code`, and the header is listed in `Access-Control-Expose-Headers`, so browser clients can read it cross-origin without parsing the body. Branch on it rather than on the status alone: a `503` from these surfaces can also mean "required env not configured", which is **not** retryable, and a `403` can be either a plain `pro_required` upsell or a `subscription_lapsed` verdict.
+On JSON gateway surfaces, `X-Billing-Verification` generally mirrors the response body's billing `code`. The Pro-MCP OAuth flow deliberately has two different response shapes: its grant-handshake endpoints keep the stable body codes `TIER_VERIFICATION_UNAVAILABLE` for retryable verification failures and `INSUFFICIENT_TIER` for terminal tier denials, while the header carries the underlying billing reason; `/oauth/authorize-pro` renders HTML, so the header remains its machine-readable billing reason. The header is listed in `Access-Control-Expose-Headers`, so browser clients can read it cross-origin. Branch on it rather than on the status alone: a `503` from these surfaces can also mean "required env not configured", which is **not** retryable, and a `403` can be either a plain `pro_required` upsell or a `subscription_lapsed` verdict.
 
-Only `subscription_lapsed` is terminal. It is the one value that never carries `Retry-After` — the absence of that header is the signal that renewal, not retry, is the way out.
+Among the billing reasons carried by `X-Billing-Verification`, only `subscription_lapsed` is terminal. It never carries `Retry-After` — the absence of that header is the signal that renewal, not retry, is the way out. At the grant-handshake endpoints, treat the body code `INSUFFICIENT_TIER` as terminal even when there is no billing header, and `TIER_VERIFICATION_UNAVAILABLE` as retryable.
 
 ### Generated RPC billing denials
 
