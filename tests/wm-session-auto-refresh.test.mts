@@ -801,6 +801,22 @@ describe('wm-session route-scoped recovery failures (#5674)', () => {
     assert.equal(mod.toRouteTag('/api/brief/2026-07-27'), '/api/brief/:id');
     assert.equal(mod.toRouteTag('/api/thing/a1b2c3d4e5'), '/api/thing/:id');
 
+    // The longest real route name in the registered table (33 chars) must
+    // survive verbatim. A 32-char per-segment cap collapsed this live panel
+    // route to `/api/supply-chain/v1/:id`, which is worse than no tag: it reads
+    // as a legitimately-collapsed dynamic family, so a triager reading the
+    // census would dismiss the one route it was supposed to name.
+    assert.equal(
+      mod.toRouteTag('/api/supply-chain/v1/get-china-corridor-control-towers'),
+      '/api/supply-chain/v1/get-china-corridor-control-towers',
+      'the longest real route name must not be mistaken for an id',
+    );
+    // Next-longest sits at exactly 32, i.e. one character from the old cap.
+    assert.equal(
+      mod.toRouteTag('/api/consumer-prices/v1/get-consumer-price-basket-series'),
+      '/api/consumer-prices/v1/get-consumer-price-basket-series',
+    );
+
     // Non-API paths never reach the wms_ branch; bucket rather than leak.
     assert.equal(mod.toRouteTag('/dashboard'), 'other');
     assert.equal(mod.toRouteTag(''), 'other');

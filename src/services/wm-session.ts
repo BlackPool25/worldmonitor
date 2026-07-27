@@ -53,6 +53,11 @@ const SESSION_DEAD_ROUTE_QUORUM = 2;
 // mechanism exists to remove. The per-route suppression window below stays at
 // SESSION_DEAD_COOLDOWN_MS; only the corroboration arithmetic uses this.
 const SESSION_DEAD_CORROBORATION_MS = 60 * 1000;
+// How long one route stays suppressed after rejecting a fresh cookie. Equal to
+// the global cooldown today, but named separately because it answers a different
+// question ("how long to stop paying mints for this endpoint" vs "how long to
+// blank the whole surface") — tuning one must not silently retune the other.
+const SESSION_DEAD_ROUTE_STRIKE_TTL_MS = SESSION_DEAD_COOLDOWN_MS;
 export const WM_SESSION_DEGRADED_EVENT = 'wm-session-degraded';
 
 type WmSessionDeadReason = 'mint_failed' | 'retry_401';
@@ -94,6 +99,15 @@ const recentRouteFailures = new Map<string, number>();
 // caller-controlled values, so collapse anything id-shaped before tagging.
 const MAX_ROUTE_TAG_SEGMENTS = 8;
 const MAX_ROUTE_TAG_LENGTH = 96;
+// Per-segment cap, sized against the REAL route table rather than guessed. Of
+// the 198 registered routes, the longest final segment is
+// `get-china-corridor-control-towers` at 33 chars, with
+// `get-consumer-price-basket-series` right behind at exactly 32 — so the
+// original 32 collapsed a live panel route (ChinaCorridorPanel) to
+// `/api/supply-chain/v1/:id` and left the next long route name one character
+// from doing the same. The headroom here is the point; the id-shape rules below,
+// not this length, are what actually catch identifiers.
+const MAX_ROUTE_TAG_SEGMENT_LENGTH = 48;
 
 /**
  * Reduce a request pathname to a bounded, aggregable Sentry tag value.
@@ -106,7 +120,7 @@ export function toRouteTag(pathname: string): string {
   const safe = segments.map((segment) => {
     // `v1`/`v2` are real, fixed route segments.
     if (/^v\d+$/.test(segment)) return segment;
-    if (segment.length > 32 || !/^[A-Za-z][A-Za-z0-9._-]*$/.test(segment)) return ':id';
+    if (segment.length > MAX_ROUTE_TAG_SEGMENT_LENGTH || !/^[A-Za-z][A-Za-z0-9._-]*$/.test(segment)) return ':id';
     // Classify on identifier SHAPE, not on merely containing a digit. Real RPC
     // method names embed small numbers (`get-co2-monitoring`, `get-pm25-*`,
     // `get-g20-*`) and collapsing those to `:id` would destroy the one thing
@@ -158,7 +172,7 @@ function recordRouteStrike(route: string): number {
   for (const [struck, until] of routeStrikes) {
     if (until <= now) routeStrikes.delete(struck);
   }
-  routeStrikes.set(route, now + SESSION_DEAD_COOLDOWN_MS);
+  routeStrikes.set(route, now + SESSION_DEAD_ROUTE_STRIKE_TTL_MS);
 
   const corroborationFloor = now - SESSION_DEAD_CORROBORATION_MS;
   for (const [tag, at] of recentRouteFailures) {
