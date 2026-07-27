@@ -14,8 +14,10 @@
 
 import { getCanonicalApiOrigin, toApiUrl } from './runtime';
 import { PREMIUM_RPC_PATHS } from '@/shared/premium-paths';
+import { hasPremiumIntent } from './premium-intent';
 import { isPublicSharedRpcRequest } from '@/shared/public-rpc-cache';
 import { enqueueSentryCall } from '@/bootstrap/sentry-defer';
+import { bootstrapTierKeyNames } from '../../shared/bootstrap-tier-keys.js';
 
 const STORAGE_KEY = 'wm-session-exp';
 // Refresh well before expiry so a half-loaded page doesn't fail mid-flight.
@@ -58,6 +60,7 @@ const SESSION_DEAD_CORROBORATION_MS = 60 * 1000;
 // question ("how long to stop paying mints for this endpoint" vs "how long to
 // blank the whole surface") — tuning one must not silently retune the other.
 const SESSION_DEAD_ROUTE_STRIKE_TTL_MS = SESSION_DEAD_COOLDOWN_MS;
+const PUBLIC_ON_DEMAND_BOOTSTRAP_KEYS = new Set(bootstrapTierKeyNames('on-demand'));
 export const WM_SESSION_DEGRADED_EVENT = 'wm-session-degraded';
 
 type WmSessionDeadReason = 'mint_failed' | 'retry_401';
@@ -70,9 +73,11 @@ let cached: StoredSession | null = null;
 let inflight: Promise<boolean> | null = null;
 let recoveryInFlight: Promise<Response | null> | null = null;
 let sessionGeneration = 0;
+let sessionIdentityGeneration = 0;
 let interceptorInstalled = false;
 let nativeSessionFetch: typeof fetch | null = null;
 let sessionDeadUntil = 0;
+let sessionDeadReason: WmSessionDeadReason | null = null;
 let sentryEnqueue: typeof enqueueSentryCall = enqueueSentryCall;
 // Two pieces of state with deliberately different lifetimes. Collapsing them
 // into one map conflates "stop spending mints on this endpoint" with "the whole
@@ -138,6 +143,7 @@ export function toRouteTag(pathname: string): string {
 export function isWmSessionDead(): boolean {
   if (sessionDeadUntil <= Date.now()) {
     sessionDeadUntil = 0;
+    sessionDeadReason = null;
     return false;
   }
   return true;
@@ -212,6 +218,14 @@ function recordRouteStrike(rawPath: string): number {
 function noteRouteSuccess(rawPath: string): void {
   routeStrikes.delete(rawPath);
   if (recentRouteFailures.size > 0) recentRouteFailures.clear();
+  // A fresh-cookie success is stronger evidence than a two-route retry_401
+  // quorum, including when that success was already in flight as the quorum
+  // formed. Lift only retry-derived cooldowns here: mint_failed means the
+  // session endpoint itself is unavailable and retains its immediate guard.
+  if (sessionDeadReason === 'retry_401') {
+    sessionDeadUntil = 0;
+    sessionDeadReason = null;
+  }
 }
 
 function addSessionBreadcrumb(message: string, data: Record<string, string>): void {
@@ -234,6 +248,7 @@ function addSessionBreadcrumb(message: string, data: Record<string, string>): vo
 function markWmSessionDead(reason: WmSessionDeadReason, rawPath: string): void {
   const alreadyDead = isWmSessionDead();
   sessionDeadUntil = Date.now() + SESSION_DEAD_COOLDOWN_MS;
+  if (!alreadyDead) sessionDeadReason = reason;
   cached = null;
   // The global cooldown supersedes per-route suppression — every anonymous
   // call is already blocked, so keeping strikes alive past it would only make
@@ -246,6 +261,13 @@ function markWmSessionDead(reason: WmSessionDeadReason, rawPath: string): void {
   // One warning per degraded episode — reportServerError (premium-fetch.ts)
   // deliberately skips the synthetic X-Wm-Session-Degraded 503s, so this is
   // the only remote signal that anonymous browsing is degraded (#5245).
+  //
+  // The `route` tag (#5674) identifies which endpoint's retry 401'd. Without
+  // it the capture carried only kind + reason, so a surviving
+  // fresh-mint-then-401 path could not be aggregated and the offending
+  // endpoint was undiagnosable from Sentry alone — the blocker that made
+  // #5674 take a full production probe to find.
+  //
   // Guarded: a telemetry throw must never skip the degraded-event dispatch
   // below, nor turn the interceptor's recovery return into a rejection.
   // `route` must name what actually failed, because the obvious use of this tag
@@ -392,7 +414,9 @@ export async function establishWmKeySession(keys: { widgetKey?: string; proKey?:
   if (!fresh) return false;
   cached = fresh;
   sessionGeneration += 1;
+  sessionIdentityGeneration += 1;
   sessionDeadUntil = 0;
+  sessionDeadReason = null;
   // A key-bound session is a clean slate: strikes recorded against the old
   // anonymous identity say nothing about what this one may reach.
   routeStrikes.clear();
@@ -420,8 +444,10 @@ export function __resetWmSessionForTests(): void {
   inflight = null;
   recoveryInFlight = null;
   sessionGeneration = 0;
+  sessionIdentityGeneration = 0;
   interceptorInstalled = false;
   sessionDeadUntil = 0;
+  sessionDeadReason = null;
   routeStrikes.clear();
   recentRouteFailures.clear();
   sentryEnqueue = enqueueSentryCall;
@@ -502,12 +528,27 @@ function isCredentiallessPublicDataRequest(
   if (pathname !== '/api/bootstrap' || method.toUpperCase() !== 'GET') return false;
 
   const params = Array.from(parsed.searchParams.keys());
-  if (params.some((key) => key !== 'tier' && key !== 'public')) return false;
-
   const tiers = parsed.searchParams.getAll('tier');
   const publicFlags = parsed.searchParams.getAll('public');
-  return tiers.length === 1
+  if (
+    !params.some((key) => key !== 'tier' && key !== 'public')
+    && tiers.length === 1
     && (tiers[0] === 'fast' || tiers[0] === 'slow')
+    && publicFlags.length === 1
+    && publicFlags[0] === '1'
+  ) {
+    return true;
+  }
+
+  // Public on-demand hydration uses one registered key per CDN URL. Reuse the
+  // shared tier registry so a credentials:'omit' request cannot escape the
+  // session guard merely by presenting an arbitrary single-key shape.
+  if (params.some((key) => key !== 'keys' && key !== 'public')) return false;
+  const keys = parsed.searchParams.getAll('keys');
+  const key = keys[0];
+  return keys.length === 1
+    && typeof key === 'string'
+    && PUBLIC_ON_DEMAND_BOOTSTRAP_KEYS.has(key)
     && publicFlags.length === 1
     && publicFlags[0] === '1';
 }
@@ -612,10 +653,16 @@ export function installWmSessionFetchInterceptor(): void {
     // stale-generation branch and the concurrent-burst follower branch), which
     // must report identically — a 401 that survives a newer cookie is
     // fresh-cookie evidence wherever it is observed.
+    const requestSessionIdentityGeneration = sessionIdentityGeneration;
+    const isCurrentSessionIdentity = (): boolean => (
+      sessionIdentityGeneration === requestSessionIdentityGeneration
+    );
     const replayAndReport = async (): Promise<Response> => {
       const replayed = await sendWith(new Headers(headers), requestClone ?? input);
-      if (replayed.status === 401) noteRecoveryFailure('retry_401', path);
-      else noteRouteSuccess(path);
+      if (isCurrentSessionIdentity()) {
+        if (replayed.status === 401) noteRecoveryFailure('retry_401', path);
+        else noteRouteSuccess(path);
+      }
       return replayed;
     };
 
@@ -635,9 +682,28 @@ export function installWmSessionFetchInterceptor(): void {
       // other way (treating a 500 as continued evidence of a dead session) is
       // what produces blackouts of healthy sessions. See noteRouteSuccess for
       // why this releases the session-wide evidence but not a sibling's guard.
-      noteRouteSuccess(path);
+      if (isCurrentSessionIdentity()) noteRouteSuccess(path);
       return resp;
     }
+
+    // #5674 — premiumFetch marked this as a premium call it could not
+    // authenticate, so the 401 is the expected auth denial, not a rejected
+    // cookie. Hand it back untouched: reminting and replaying would produce the
+    // identical 401 and then suppress every anonymous API call for 15 minutes.
+    //
+    // This is the SECOND of the two bypasses in this function, and the only one
+    // that can fire here — path-listed premium routes already returned far
+    // above, before any session work. The two are not interchangeable:
+    //
+    //   - PREMIUM_RPC_PATHS steps aside entirely (a dedicated auth-injection
+    //     layer owns those credentials; PR #3557 review).
+    //   - This one suppresses ONLY the recovery. The request must already have
+    //     minted a session and travelled with credentials, because
+    //     `forcePremium` also covers routes anonymous callers legitimately use
+    //     — the market-quote tape via proFreshRpcFetch — which 401 when no
+    //     cookie is sent at all. premiumFetch keeps that tape unmarked for the
+    //     same reason.
+    if (hasPremiumIntent(init)) return resp;
 
     // A slower initial request can report the old cookie after another caller
     // already recovered it. Replay with the newer cookie instead of clearing
@@ -672,15 +738,11 @@ export function installWmSessionFetchInterceptor(): void {
       const recovery = (async (): Promise<Response | null> => {
         const fresh = await ensureWmSession().catch(() => false);
         if (!fresh) {
-          noteRecoveryFailure('mint_failed', path);
+          if (isCurrentSessionIdentity()) noteRecoveryFailure('mint_failed', path);
           return null;
         }
-        const retryResp = await sendWith(new Headers(headers), requestClone ?? input);
-        if (retryResp.status === 401) {
-          noteRecoveryFailure('retry_401', path);
-          return null;
-        }
-        return retryResp;
+        const retryResp = await replayAndReport();
+        return retryResp.status === 401 ? null : retryResp;
       })();
       recoveryInFlight = recovery;
       void recovery.then(
@@ -703,7 +765,7 @@ export function installWmSessionFetchInterceptor(): void {
       if (isWmSessionDead()) return resp;
       return replayAndReport();
     }
-    return sendWith(new Headers(headers), requestClone ?? input);
+    return replayAndReport();
   };
 
   // Layer 1 — periodic refresh. The token is short-lived (12h server-side)
