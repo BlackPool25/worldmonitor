@@ -22,10 +22,13 @@ import { fileURLToPath } from 'node:url';
 
 import {
   classifyGrantDenial,
+  describeGrantDelay,
   grantErrorMessage,
   grantErrorTitle,
+  MAX_INLINE_GRANT_WAIT_MS,
   retryableGrantDelayMs,
   routeGrantContextDenial,
+  shouldWaitInline,
 } from '../src/services/mcp-grant-denial.ts';
 
 describe('grantErrorMessage', () => {
@@ -289,13 +292,15 @@ describe('mcp-grant page routes denials through the shared classifier', () => {
       1,
       'button re-enabling must stay in the single `reenable` helper',
     );
-    // Three immediate call sites (network-error catch, sign_in, unparseable mint
-    // response) plus one DEFERRED hand-back for the retryable branch, which waits
-    // out Retry-After first. Counting both forms keeps a future branch that
-    // forgets either one from passing.
+    // Four immediate call sites (network-error catch, sign_in, unparseable mint
+    // response, and the too-long-to-wait retryable branch which hands the button
+    // straight back rather than parking it for up to 60s) plus one DEFERRED
+    // hand-back for the short retryable branch, which waits out Retry-After
+    // first. Counting both forms keeps a future branch that forgets either one
+    // from passing.
     const immediate = [...pageSource.matchAll(/reenable\(\)/g)].length;
     const deferred = [...pageSource.matchAll(/setTimeout\(reenable\b/g)].length;
-    assert.equal(immediate, 3, 'the three immediate exits must hand the button back');
+    assert.equal(immediate, 4, 'the four immediate exits must hand the button back');
     assert.equal(deferred, 1, 'the retryable exit must hand it back after the advertised delay');
   });
 
@@ -375,5 +380,56 @@ describe('mcp-grant page routes denials through the shared classifier', () => {
     // visible in the suite output rather than only in a comment.
     assert.match(pageSource, /verdict\.action === 'retryable'/);
     assert.match(pageSource, /showErrorView\(verdict\.message, verdict\.title\)/);
+  });
+});
+
+/**
+ * #5622 review — the inline-wait budget.
+ *
+ * The server may legitimately ask for a full minute: `renewal_verification_failed`
+ * carries the per-subscription provider cooldown (`ON_DEMAND_RENEWAL_FAILURE_COOLDOWN_MS`
+ * = 60s). Honoring that inline parks the consent page on a spinner, or leaves
+ * Authorize dead on "Retry shortly…", for that whole minute. The sibling client
+ * (src/services/notification-channels.ts) already declined to auto-wait past 10s
+ * for the identical state; these pin the same judgment here.
+ */
+describe('inline-wait budget (#5622 review)', () => {
+  it('waits out the short delays the retryable states actually ask for', () => {
+    // entitlement_verification_unavailable: fixed 5s.
+    assert.equal(shouldWaitInline(retryableGrantDelayMs('5')), true);
+    // renewal_verification_pending: 1-3s from the Dodo re-check window.
+    assert.equal(shouldWaitInline(retryableGrantDelayMs('1')), true);
+    assert.equal(shouldWaitInline(retryableGrantDelayMs('3')), true);
+    // The server's own default when the header is absent.
+    assert.equal(shouldWaitInline(retryableGrantDelayMs(null)), true);
+  });
+
+  it('declines to block the page on the 60s renewal cooldown', () => {
+    assert.equal(shouldWaitInline(retryableGrantDelayMs('60')), false);
+    assert.equal(shouldWaitInline(retryableGrantDelayMs('30')), false);
+    assert.equal(shouldWaitInline(retryableGrantDelayMs('11')), false);
+  });
+
+  it('accepts the boundary exactly, so the threshold is not off by one', () => {
+    assert.equal(shouldWaitInline(MAX_INLINE_GRANT_WAIT_MS), true);
+    assert.equal(shouldWaitInline(MAX_INLINE_GRANT_WAIT_MS + 1), false);
+    assert.equal(shouldWaitInline(retryableGrantDelayMs('10')), true);
+  });
+
+  it('matches the sibling client budget, so the two cannot silently diverge', () => {
+    // src/services/notification-channels.ts::BILLING_RETRY_MAX_DELAY_MS.
+    assert.equal(MAX_INLINE_GRANT_WAIT_MS, 10_000);
+  });
+
+  it('names the wait in copy the user can act on', () => {
+    assert.equal(describeGrantDelay(60_000), 'about 60 seconds');
+    assert.equal(describeGrantDelay(5_000), 'about 5 seconds');
+    assert.equal(describeGrantDelay(1_000), 'about 1 second');
+    // Sub-second never rounds to "about 0 seconds".
+    assert.equal(describeGrantDelay(200), 'about 1 second');
+  });
+
+  it('the page routes the too-long case to the manual retry instead of sleeping', () => {
+    assert.match(pageSource, /if \(!shouldWaitInline\(waitMs\)\)/);
   });
 });

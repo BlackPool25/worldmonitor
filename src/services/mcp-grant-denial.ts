@@ -119,6 +119,31 @@ const DEFAULT_GRANT_RETRY_SECONDS = 5;
 const MAX_GRANT_RETRY_SECONDS = 60;
 
 /**
+ * Longest delay worth blocking the UI for, matching
+ * `BILLING_RETRY_MAX_DELAY_MS` in src/services/notification-channels.ts.
+ *
+ * The server can legitimately ask for a full minute: `renewal_verification_failed`
+ * carries the per-subscription provider cooldown, which
+ * `ON_DEMAND_RENEWAL_FAILURE_COOLDOWN_MS` sets to 60s. Honoring that inline
+ * means a spinner (or a dead "Retry shortly…" button) for a minute with no way
+ * out. Above this threshold the page hands the decision back to the user
+ * instead — which still honors `Retry-After`, because the user cannot click
+ * faster than they can read.
+ */
+export const MAX_INLINE_GRANT_WAIT_MS = 10_000;
+
+/** Whether the page should wait this delay out itself, or surface a manual retry. */
+export function shouldWaitInline(delayMs: number): boolean {
+  return delayMs <= MAX_INLINE_GRANT_WAIT_MS;
+}
+
+/** "about 60 seconds" / "about 5 seconds" — for copy that names the wait. */
+export function describeGrantDelay(delayMs: number): string {
+  const seconds = Math.max(1, Math.round(delayMs / 1_000));
+  return `about ${seconds} second${seconds === 1 ? '' : 's'}`;
+}
+
+/**
  * How long the consent page should keep Authorize disabled after a retryable
  * denial, from the response's `Retry-After`.
  *

@@ -419,10 +419,28 @@ describe('premium panels route their denials through the classifier', () => {
   });
 
   it("ChatAnalystPanel no longer hardcodes the upsell as its only 403 copy", () => {
-    const source = readSource('src/components/ChatAnalystPanel.ts');
-    const upsells = [...source.matchAll(/'Pro subscription required\.'/g)];
+    // The decision moved to src/services/analyst-denial.ts (a zero-runtime-import
+    // leaf) so it is reachable from tsx --test — ChatAnalystPanel imports
+    // DOMPurify at module scope and cannot be loaded there. The copy itself is
+    // now pinned by EXECUTION in tests/analyst-denial.test.mts rather than by
+    // this regex, which is strictly stronger: a swapped branch fails there and
+    // would not have failed here.
+    const panel = readSource('src/components/ChatAnalystPanel.ts');
+    assert.equal(
+      [...panel.matchAll(/'Pro subscription required\.'/g)].length,
+      0,
+      'the panel must not re-inline the upsell copy it delegates',
+    );
+    assert.match(
+      panel,
+      /analystDenialMessage\(res\.status, verdict\)/,
+      'the panel must route its denial copy through the extracted decision',
+    );
+
+    const leaf = readSource('src/services/analyst-denial.ts');
+    const upsells = [...leaf.matchAll(/'Pro subscription required\.'/g)];
     assert.equal(upsells.length, 1, 'exactly one upsell string, in the verdict switch');
-    const preceding = source.slice(Math.max(0, upsells[0].index - 200), upsells[0].index);
+    const preceding = leaf.slice(Math.max(0, upsells[0].index - 200), upsells[0].index);
     assert.match(
       preceding,
       /case 'upgrade_required':/,

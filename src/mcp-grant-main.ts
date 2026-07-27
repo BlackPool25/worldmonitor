@@ -21,8 +21,10 @@
 import { initClerk, getClerkToken, getCurrentClerkUser, openSignIn, subscribeClerk } from '@/services/clerk';
 import {
   classifyGrantDenial,
+  describeGrantDelay,
   retryableGrantDelayMs,
   routeGrantContextDenial,
+  shouldWaitInline,
   type GrantMintPhase,
 } from '@/services/mcp-grant-denial';
 
@@ -147,6 +149,12 @@ async function loadContextAttempt(
   try {
     resp = await authedFetch(`/api/internal/mcp-grant-context?nonce=${encodeURIComponent(nonce)}`);
   } catch {
+    // Staleness FIRST. subscribeClerk can re-enter loadContext at any moment,
+    // and nothing cancels the older fetch — so without this a superseded
+    // attempt that fails late would replace a consent card the newer attempt
+    // already rendered. Every other exit path in this function is guarded; this
+    // one was not.
+    if (generation !== contextLoadGeneration) return;
     if (mintPhase !== 'idle') return;
     showRetryableContextView(
       'Could not reach the authorization service. Check your connection and try again.',
@@ -169,8 +177,17 @@ async function loadContextAttempt(
       case 'preserve_consent':
         return;
       case 'retry': {
-        setText('loadingBody', 'Authorization service is temporarily unavailable. Retrying…');
         const waitMs = retryableGrantDelayMs(resp.headers.get('Retry-After'));
+        // A long server-requested delay (up to the 60s renewal cooldown) is not
+        // worth blocking the page on — surface the manual retry instead of a
+        // minute-long spinner. Same threshold the notification client uses.
+        if (!shouldWaitInline(waitMs)) {
+          showRetryableContextView(
+            `${verdict.message} Try again in ${describeGrantDelay(waitMs)}.`,
+          );
+          return;
+        }
+        setText('loadingBody', 'Authorization service is temporarily unavailable. Retrying…');
         await new Promise<void>((resolve) => {
           window.setTimeout(resolve, waitMs);
         });
@@ -191,9 +208,14 @@ async function loadContextAttempt(
   try {
     ctx = (await resp.json()) as ContextResponse;
   } catch {
+    if (generation !== contextLoadGeneration) return;
     showErrorView('The authorization service returned an unexpected response.', 'Unexpected response');
     return;
   }
+
+  // `resp.json()` is a third suspension point — re-check before painting, so a
+  // superseded attempt cannot render another nonce's client metadata.
+  if (generation !== contextLoadGeneration) return;
 
   setText('clientName', ctx.client_name);
   setText('clientHost', ctx.redirect_host);
@@ -252,9 +274,19 @@ async function onAuthorizeClick(nonce: string): Promise<void> {
       // server/_shared/entitlement-check.ts), so re-enabling instantly would
       // invite the user to reproduce the same failure by hand. Same-origin
       // request, so Retry-After is readable without CORS exposure.
+      const waitMs = retryableGrantDelayMs(resp.headers.get('Retry-After'));
+      // Only hold the button when the wait is short enough to be worth holding.
+      // The 60s renewal cooldown is not: parking Authorize on "Retry shortly…"
+      // for a minute reads as a hung page. Above the threshold, name the delay
+      // and hand the button back — the user waits, not a timer.
+      if (!shouldWaitInline(waitMs)) {
+        errEl.textContent = `${verdict.message} Try again in ${describeGrantDelay(waitMs)}.`;
+        show('mintError');
+        reenable();
+        return;
+      }
       errEl.textContent = verdict.message;
       show('mintError');
-      const waitMs = retryableGrantDelayMs(resp.headers.get('Retry-After'));
       btn.textContent = 'Retry shortly…';
       mintPhase = 'retry_cooldown';
       mintRetryTimeout = window.setTimeout(reenable, waitMs);

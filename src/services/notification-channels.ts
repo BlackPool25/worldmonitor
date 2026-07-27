@@ -241,11 +241,20 @@ async function sendOnce(
  *
  * `init.body` must be a re-sendable value (every caller here passes a string).
  * A stream body would be consumed by the first attempt.
+ *
+ * `waitSignal` cancels only the Retry-After WAIT, never a dispatched request.
+ * That distinction is the whole point: a caller whose lifetime signal lands in
+ * `init.signal` cancels the POST itself, and for the fire-and-forget setters
+ * below that silently discards a write the user already made. Read paths pass
+ * their signal in `init` (cancelling a stale read is desirable); write paths
+ * pass it here instead, so closing the settings panel abandons the retry rather
+ * than the mutation.
  */
 async function authFetch(
   path: string,
   init?: RequestInit,
   expectedUserId?: string,
+  waitSignal?: AbortSignal | null,
 ): Promise<Response> {
   // Pin the identity for the whole call, including the retry. `expectedUserId`
   // is opt-in and most callers in this file omit it (every setter reached from
@@ -259,6 +268,15 @@ async function authFetch(
   const first = await sendOnce(path, init, pinnedUserId);
   if (first.status !== 503) return first;
 
+  // No identity could be pinned — `getCurrentClerkUser()` is a synchronous
+  // `clerkInstance?.user` read that never triggers a load, while
+  // `getClerkToken()` above can itself initialise Clerk and succeed. So a call
+  // landing in that window reaches here with `pinnedUserId === undefined`, and
+  // `assertExpectedAccount(undefined)` is a no-op. Rather than retry with the
+  // account check silently disabled — the exact protection the comment above
+  // claims — decline the retry and let the caller surface the 503.
+  if (pinnedUserId === undefined) return first;
+
   const delayMs = billingVerificationRetryDelayMs({
     status: first.status,
     code: await readBillingVerificationCode(first),
@@ -266,7 +284,7 @@ async function authFetch(
   });
   if (delayMs === null) return first;
 
-  await clientDeps.sleep(delayMs, init?.signal ?? null);
+  await clientDeps.sleep(delayMs, waitSignal ?? init?.signal ?? null);
   return sendOnce(path, init, pinnedUserId);
 }
 
@@ -296,6 +314,21 @@ export async function createPairingToken(
   return res.json();
 }
 
+/**
+ * `signal` on the WRITE setters below (set-channel, delete-channel,
+ * set-alert-rules, set-quiet-hours, set-digest-settings, set-notification-config)
+ * abandons the Retry-After wait only — it never cancels a dispatched request.
+ *
+ * That is deliberately NOT what `signal` means on `getChannelsData` /
+ * `createPairingToken`, where it aborts the fetch: cancelling a stale READ is
+ * the point, while cancelling a write silently discards a setting the user
+ * already changed. The settings panel passes its section-lifetime signal to
+ * both, so the distinction has to live here rather than at the call site.
+ *
+ * `startSlackOAuth` / `startDiscordOAuth` keep the read semantics — they persist
+ * nothing the user would miss, and abandoning a popup handoff on teardown is
+ * correct.
+ */
 export async function setEmailChannel(
   email: string,
   expectedUserId?: string,
@@ -305,8 +338,7 @@ export async function setEmailChannel(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'set-channel', channelType: 'email', email }),
-    signal,
-  }, expectedUserId);
+  }, expectedUserId, signal);
   if (!res.ok) throw new Error(`set email channel: ${res.status}`);
 }
 
@@ -318,8 +350,7 @@ export async function setSlackChannel(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'set-channel', channelType: 'slack', webhookEnvelope }),
-    signal,
-  });
+  }, undefined, signal);
   if (!res.ok) throw new Error(`set slack channel: ${res.status}`);
 }
 
@@ -332,8 +363,7 @@ export async function setWebhookChannel(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'set-channel', channelType: 'webhook', webhookEnvelope: webhookUrl, webhookLabel: label }),
-    signal,
-  });
+  }, undefined, signal);
   if (!res.ok) throw new Error(`set webhook channel: ${res.status}`);
 }
 
@@ -359,8 +389,7 @@ export async function deleteChannel(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'delete-channel', channelType }),
-    signal,
-  });
+  }, undefined, signal);
   if (!res.ok) throw new Error(`delete channel: ${res.status}`);
 }
 
@@ -372,8 +401,7 @@ export async function saveAlertRules(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'set-alert-rules', ...rules }),
-    signal,
-  });
+  }, undefined, signal);
   if (!res.ok) throw new Error(`save alert rules: ${res.status}`);
 }
 
@@ -390,8 +418,7 @@ export async function setQuietHours(settings: {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'set-quiet-hours', ...settings }),
-    signal,
-  });
+  }, undefined, signal);
   if (!res.ok) throw new Error(`set quiet hours: ${res.status}`);
 }
 
@@ -406,8 +433,7 @@ export async function setDigestSettings(settings: {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'set-digest-settings', ...settings }),
-    signal,
-  });
+  }, undefined, signal);
   if (!res.ok) throw new Error(`set digest settings: ${res.status}`);
 }
 
@@ -508,8 +534,7 @@ export async function setNotificationConfig(args: {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'set-notification-config', ...args }),
-    signal,
-  }, expectedUserId);
+  }, expectedUserId, signal);
   if (res.ok) return;
   let body: { error?: string; message?: string } = {};
   try { body = await res.json(); } catch { /* keep default */ }

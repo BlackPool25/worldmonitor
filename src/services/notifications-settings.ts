@@ -741,7 +741,15 @@ export function renderNotificationsSettings(host: NotificationsSettingsHost): No
                   if (hint) hint.textContent = err.message;
                   return;
                 }
-                throw err;
+                // This IIFE is `void`-ed with no .catch(), so a rethrow here
+                // escapes as an unhandled rejection and reaches
+                // window.onunhandledrejection — the exact WORLDMONITOR-SN
+                // invariant fireForgetSave exists to uphold. Every sibling save
+                // in this file routes through fireForgetSave; this one cannot,
+                // because it needs the IncompatibleDeliveryError branch above.
+                // So swallow the same way fireForgetSave does instead.
+                if (signal.aborted) return;
+                console.warn('[notifications] save digest mode failed (not saved):', err);
               }
             })();
           }, 800);

@@ -467,4 +467,110 @@ describe('authFetch honors a retryable billing-verification 503', () => {
     assert.equal(calls.length, 1);
     assert.deepEqual(slept, []);
   });
+
+  it('re-derives the Clerk token for the retry rather than reusing the first', async () => {
+    // Every other stub in this file returns a constant token, so a regression
+    // that cached the first attempt's Authorization header — or dropped it on
+    // the second sendOnce — would leave the whole suite green. Hand out a
+    // distinct token per call and assert the retry actually carries the second.
+    const calls: Array<{ path: string; init?: RequestInit }> = [];
+    let tokenIssues = 0;
+    __setNotificationChannelsClientDepsForTests({
+      getClerkToken: async () => {
+        tokenIssues += 1;
+        return `token-${tokenIssues}`;
+      },
+      getCurrentClerkUser: () => ({ id: 'user_1' }) as never,
+      fetch: (async (path: string, init?: RequestInit) => {
+        calls.push({ path, init });
+        return calls.length === 1
+          ? denial('entitlement_verification_unavailable', '5')
+          : new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }) as never,
+      sleep: async () => {},
+    });
+
+    await setNotificationConfig({ variant: 'full', enabled: true });
+
+    assert.equal(calls.length, 2, 'the retryable 503 must produce a second attempt');
+    assert.equal(tokenIssues, 2, 'the retry must call getClerkToken again');
+    const authOf = (i: number) =>
+      (calls[i]?.init?.headers as Record<string, string> | undefined)?.Authorization;
+    assert.equal(authOf(0), 'Bearer token-1');
+    assert.equal(authOf(1), 'Bearer token-2', 'the retry must send the freshly derived token');
+  });
+
+  it('declines the retry when no Clerk identity can be pinned', async () => {
+    // getCurrentClerkUser() is a synchronous `clerkInstance?.user` read that
+    // never triggers a load, while getClerkToken() can itself initialise Clerk
+    // and succeed — so a call in that window reaches the retry with
+    // pinnedUserId === undefined, making assertExpectedAccount a no-op. Retrying
+    // there would run the multi-second wait with the account check silently
+    // disabled, which is the exact protection the retry claims to add.
+    const calls: Array<{ path: string; init?: RequestInit }> = [];
+    const slept: number[] = [];
+    __setNotificationChannelsClientDepsForTests({
+      getClerkToken: async () => 'token-abc',
+      getCurrentClerkUser: () => null as never,
+      fetch: (async (path: string, init?: RequestInit) => {
+        calls.push({ path, init });
+        return denial('entitlement_verification_unavailable', '5');
+      }) as never,
+      sleep: async (ms: number) => { slept.push(ms); },
+    });
+
+    await assert.rejects(setNotificationConfig({ variant: 'full', enabled: true }));
+
+    assert.equal(calls.length, 1, 'an unpinnable identity must not be retried');
+    assert.deepEqual(slept, [], 'and must not wait');
+  });
+
+  it('a write setter aborts only the retry wait, never the dispatched request', async () => {
+    // The panel's lifetime signal reaches authFetch's waitSignal, NOT init.signal
+    // — otherwise closing notification settings cancels an in-flight POST and
+    // silently discards a setting the user already changed.
+    const controller = new AbortController();
+    const calls: Array<{ path: string; init?: RequestInit }> = [];
+    __setNotificationChannelsClientDepsForTests({
+      getClerkToken: async () => 'token-abc',
+      getCurrentClerkUser: () => ({ id: 'user_1' }) as never,
+      fetch: (async (path: string, init?: RequestInit) => {
+        calls.push({ path, init });
+        return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }) as never,
+      sleep: async () => {},
+    });
+
+    await setNotificationConfig({ variant: 'full', enabled: true }, undefined, controller.signal);
+
+    assert.equal(calls.length, 1);
+    assert.equal(
+      calls[0]?.init?.signal,
+      undefined,
+      'the write must not carry the panel signal into fetch()',
+    );
+  });
+
+  it('a read still cancels through init.signal', async () => {
+    // The inverse of the test above: cancelling a stale read IS the point, so
+    // getChannelsData must keep passing its signal to fetch.
+    const controller = new AbortController();
+    const calls: Array<{ path: string; init?: RequestInit }> = [];
+    __setNotificationChannelsClientDepsForTests({
+      getClerkToken: async () => 'token-abc',
+      getCurrentClerkUser: () => ({ id: 'user_1' }) as never,
+      fetch: (async (path: string, init?: RequestInit) => {
+        calls.push({ path, init });
+        return new Response(JSON.stringify({ channels: [], alertRules: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }) as never,
+      sleep: async () => {},
+    });
+
+    await getChannelsData(undefined, controller.signal);
+
+    assert.equal(calls[0]?.init?.signal, controller.signal);
+  });
 });

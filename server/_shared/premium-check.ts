@@ -51,13 +51,21 @@ export type PremiumCallerIdentity =
 /** The deny arm of the union, named so `{ ...DENIED, billingDenial }` stays in it. */
 type DeniedIdentity = Extract<PremiumCallerIdentity, { isPremium: false }>;
 
-/** Deny with no information about WHY — a confirmed non-premium caller. */
-const DENIED: DeniedIdentity = {
+/**
+ * Deny with no information about WHY — a confirmed non-premium caller.
+ *
+ * Frozen because this is now ONE shared object returned by reference from
+ * several deny arms, where the pre-#5622 code built a fresh literal at each
+ * site. A caller that stamped a field onto a returned identity would otherwise
+ * poison every subsequent denial in the isolate. `denyFor`'s
+ * `{ ...DENIED, billingDenial }` spread still produces a fresh mutable copy.
+ */
+const DENIED: DeniedIdentity = Object.freeze({
   isPremium: false,
   userId: null,
   kind: null,
   quotaExempt: false,
-};
+});
 
 /**
  * A deny-side entitlement answer, tagged with its billing classification when
@@ -200,10 +208,15 @@ export async function resolvePremiumCallerIdentity(request: Request): Promise<Pr
  * caller, which is why the identity API carries it instead.
  *
  * Known remaining hard-deniers on this boolean, tracked in #5652: the RPC
- * surfaces under server/worldmonitor/ that answer `errorType: 'AuthError'`
- * (summarize-article, run-scenario, and siblings). They share this flattening;
- * their envelope has no HTTP status of its own, so the fix is a different shape
- * than the two edge routes and is deliberately not bundled here.
+ * surfaces under server/worldmonitor/. They share this flattening, but NOT one
+ * response shape — the #5652 fix has to handle both:
+ *   - an in-body `errorType: 'AuthError'` (only summarize-article.ts does this)
+ *   - a thrown `ApiError(403, ...)`, which server/error-mapper.ts renders as a
+ *     plain `{ message }` with no `errorType` at all (run-scenario.ts,
+ *     trigger-simulation.ts, get-scenario-status.ts, route-intelligence.ts,
+ *     shipping/v2/{list-webhooks,register-webhook}.ts)
+ * Neither envelope has an HTTP status of its own, so the fix is a different
+ * shape than the two edge routes and is deliberately not bundled here.
  */
 export async function isCallerPremium(request: Request): Promise<boolean> {
   return (await resolvePremiumCallerIdentity(request)).isPremium;
