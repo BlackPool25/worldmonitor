@@ -42,6 +42,7 @@ test('built welcome page ships the real hero in #root before JavaScript', () => 
   assert.match(rootContent, /WorldMonitor is not an open-source Palantir/);
   assert.match(rootContent, /Which World Monitor license do I need\?/);
   assert.match(rootContent, /API Business lets that organization embed World Monitor data/);
+  assert.match(rootContent, /href="\/docs\/terms"[^>]*>worldmonitor\.app\/docs\/terms<\/a>/);
   assert.match(rootContent, /Map layers/);
   const navContent = rootContent.slice(
     rootContent.indexOf('<nav'),
