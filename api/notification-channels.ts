@@ -383,9 +383,22 @@ export default async function handler(req: Request, ctx: { waitUntil: (p: Promis
     // So: notification delivery is gated on a billed row at the DATA layer, and
     // this gate exists to say so cleanly and early. Granting it to complimentary
     // / tester / legacy Clerk-role accounts is a real product decision that must
-    // change the Convex gates too — tracked in #5646 along with the client-side
-    // inconsistency it leaves (isProUser() in src/services/widget-store.ts
-    // unlocks the notifications UI on the Clerk role alone).
+    // change the Convex gates too — see #5646.
+    //
+    // The client agrees with this gate, which is why a role-only account gets a
+    // coherent experience rather than a dead end: renderNotificationsSettings
+    // (src/services/notifications-settings.ts) gates its content on
+    // `hasTier(1)` — the Convex entitlement snapshot, NOT the Clerk role — and
+    // renders the upgrade CTA otherwise. So such a user sees an upsell here and
+    // an upsell from this endpoint. (Note `isProUser()` in
+    // src/services/widget-store.ts DOES accept the Clerk role alone, but the
+    // notifications surface deliberately does not use it.)
+    //
+    // #5650 settled the same question for the sibling JSON gates on the same
+    // line this one draws: content reads (latest-brief, brief/share-url) accept
+    // either signal, while anything that creates a delivery obligation or a
+    // third-party grant (notify, slack/discord oauth-start) requires the billed
+    // row — as this endpoint does.
     const ent = await notificationChannelsDeps.getEntitlements(session.userId);
     if (!ent || ent.features.tier < 1) {
       // #5600: an entitlement the backend could not VERIFY (Convex 5xx/timeout,
