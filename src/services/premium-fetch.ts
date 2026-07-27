@@ -34,6 +34,7 @@
 import { enqueueSentryCall } from '@/bootstrap/sentry-defer';
 import { PREMIUM_RPC_PATHS } from '@/shared/premium-paths';
 import { PRO_FRESH_CACHE_RPC_PATHS } from '@/shared/pro-fresh-rpc';
+import { withPremiumIntent } from './premium-intent';
 import { isDesktopRuntime } from './runtime';
 
 /**
@@ -284,7 +285,24 @@ export async function premiumFetch(
   // attaches wms_) → gateway accepts → 200. For premium paths reached here
   // (no API key, no tester key, no Clerk Bearer) the gateway will return
   // 401, which is correct.
-  const res = await globalThis.fetch(input, withCredentials(requestInit));
+  //
+  // Mark premium-intent requests so the interceptor reads that 401 as the
+  // expected auth denial it is (#5674). Path-listed premium routes already
+  // short-circuit inside the interceptor, so this only changes behaviour for
+  // routes that are premium per REQUEST rather than per path — today
+  // `/api/news/v1/summarize-article` via `forcePremium`, which must stay out
+  // of PREMIUM_RPC_PATHS so its free translate mode keeps receiving the
+  // anonymous wms_ cookie. Unmarked, each denial cost a session mint, a
+  // replay, and a 15-minute blackout of every anonymous API call.
+  //
+  // Steps 1-3 return as soon as any credential resolves, so everything that
+  // reaches this line is unauthenticated by definition — exactly the population
+  // the marker is meant to describe, and never a request that already steps
+  // aside via its own Authorization / X-WorldMonitor-Key header.
+  const unauthenticatedInit = isPremiumRpcTarget(input, forcePremium)
+    ? withPremiumIntent(withCredentials(requestInit))
+    : withCredentials(requestInit);
+  const res = await globalThis.fetch(input, unauthenticatedInit);
   reportServerError(res, input);
   return res;
 }

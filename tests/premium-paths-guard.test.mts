@@ -6,6 +6,7 @@ import { describe, it } from 'node:test';
 import ts from 'typescript';
 
 import { DIRECT_LLM_GATEWAY_QUOTA_PATHS } from '../server/_shared/direct-llm-quota.ts';
+import { TIER_GATED_PATHS } from '../server/_shared/entitlement-check.ts';
 import { PREMIUM_RPC_PATHS } from '../src/shared/premium-paths.ts';
 
 // ---------------------------------------------------------------------------
@@ -55,10 +56,34 @@ const PREMIUM_FETCH_BYPASS_ALLOWLIST: Record<string, string> = {
 // the expected anonymous 401 for a dead HttpOnly session. Summarize stays out:
 // its translate mode is intentionally available to free callers and the
 // gateway only applies direct-LLM quota after inspecting the request body.
+//
+// #5674 — an entry here is NOT sufficient on its own. Membership in
+// PREMIUM_RPC_PATHS does two independent jobs: it tells premiumFetch to attach
+// a Bearer, and it tells the wm-session interceptor that a 401 on this route is
+// an expected auth denial rather than a rejected session cookie. This allowlist
+// was originally justified against the FIRST job only, which left the second
+// unhandled: every unauthenticated summarize call 401'd, the interceptor minted
+// a fresh session, replayed, 401'd again, and suppressed ALL anonymous API
+// calls for 15 minutes (#5219). Each entry must therefore also name the
+// mechanism that keeps its 401s out of session recovery, and
+// SESSION_RECOVERY_BYPASS_PROOF must assert that mechanism is actually wired.
 const DIRECT_LLM_PREMIUM_BYPASS_ALLOWLIST: Record<string, string> = {
   '/api/news/v1/summarize-article':
-    'The route also serves free translate mode; spend-bearing summarize calls ' +
-    'opt into premiumFetch with forcePremium instead of gating the whole path.',
+    'The route also serves free translate mode — which REQUIRES the anonymous ' +
+    'wms_ cookie, so the path cannot join PREMIUM_RPC_PATHS. Spend-bearing ' +
+    'summarize calls opt into premiumFetch with forcePremium instead of gating ' +
+    'the whole path, and session recovery is bypassed per-request via the ' +
+    'premium-intent marker (src/services/premium-intent.ts).',
+};
+
+// The wiring each allowlisted route depends on to keep its expected 401s out of
+// wm-session recovery. A rationale in a comment is not a guarantee — this is
+// asserted structurally below.
+const SESSION_RECOVERY_BYPASS_PROOF: Record<string, { file: string; premiumFetchCall: string }> = {
+  '/api/news/v1/summarize-article': {
+    file: 'src/services/summarization.ts',
+    premiumFetchCall: 'forcePremium',
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -193,6 +218,113 @@ describe('premium-paths guard — browser direct-LLM routes cannot trigger wm-se
       );
     });
   }
+
+  it('every direct-LLM bypass also proves how its 401s stay out of session recovery', () => {
+    // #5674 root cause: the allowlist justified skipping premiumFetch's Bearer
+    // injection but said nothing about the interceptor, whose 401 handling
+    // reads the SAME path set. An entry without a session-recovery bypass
+    // turns every expected Pro denial into a 15-minute anonymous blackout.
+    for (const route of Object.keys(DIRECT_LLM_PREMIUM_BYPASS_ALLOWLIST)) {
+      const proof = SESSION_RECOVERY_BYPASS_PROOF[route];
+      assert.ok(
+        proof,
+        [
+          `Direct-LLM route ${route} is allowlisted out of PREMIUM_RPC_PATHS but has`,
+          `no SESSION_RECOVERY_BYPASS_PROOF entry.`,
+          ``,
+          `PREMIUM_RPC_PATHS membership does TWO jobs: Bearer injection in`,
+          `premiumFetch AND telling the wm-session interceptor that a 401 here is`,
+          `an expected auth denial. Opting out of the first without handling the`,
+          `second means every unauthenticated call to this route mints a session,`,
+          `replays, 401s again, and suppresses ALL anonymous API calls for 15`,
+          `minutes (#5674 / #5219).`,
+          ``,
+          `Route the browser caller through premiumFetch with forcePremium (which`,
+          `marks premium intent — src/services/premium-intent.ts), then record the`,
+          `call site here.`,
+        ].join('\n'),
+      );
+
+      const source = readFileSync(join(repoRoot, proof.file), 'utf8');
+      const ast = ts.createSourceFile(proof.file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      let marksPremiumIntent = false;
+
+      // Structural check, not a substring scan: find a `premiumFetch(...)` call
+      // whose init object literal sets `forcePremium`. A regex for
+      // "premiumFetch" and "forcePremium" would stay green if the two drifted
+      // into unrelated statements.
+      function visit(node: ts.Node): void {
+        if (
+          ts.isCallExpression(node) &&
+          node.expression.getText(ast) === 'premiumFetch' &&
+          node.arguments[1] &&
+          ts.isObjectLiteralExpression(node.arguments[1])
+        ) {
+          for (const prop of (node.arguments[1] as ts.ObjectLiteralExpression).properties) {
+            const name = prop.name?.getText(ast);
+            if (name !== proof.premiumFetchCall) continue;
+            // `forcePremium: false` would not mark intent — require a literal true.
+            if (ts.isPropertyAssignment(prop) && prop.initializer.kind === ts.SyntaxKind.TrueKeyword) {
+              marksPremiumIntent = true;
+            }
+          }
+        }
+        ts.forEachChild(node, visit);
+      }
+      visit(ast);
+
+      assert.equal(
+        marksPremiumIntent,
+        true,
+        `${proof.file} must dispatch ${route} through ` +
+        `premiumFetch(..., { ${proof.premiumFetchCall}: true }) so the request carries ` +
+        `premium intent. Without it the wm-session interceptor treats the expected ` +
+        `Pro denial as a rejected cookie and blacks out anonymous browsing (#5674).`,
+      );
+    }
+  });
+
+  it('every tier-gated endpoint is also in PREMIUM_RPC_PATHS', () => {
+    // src/services/premium-fetch.ts documents this as true "at the time of
+    // writing" and relies on it — `isPremiumRpcTarget` checks PREMIUM_RPC_PATHS
+    // alone and claims that "one check covers both". Nothing enforced it.
+    //
+    // The gateway sets `forceKey: isTierGated && !sessionUserId`
+    // (server/gateway.ts), and forceKey rejects a perfectly valid anonymous
+    // wms_ token with 401 "Pro authentication required" (api/_api-key.js). So a
+    // route added to ENDPOINT_ENTITLEMENTS but not to PREMIUM_RPC_PATHS 401s
+    // every anonymous browser call while the interceptor still treats that 401
+    // as a dead cookie — the exact fresh-mint-then-401 loop behind #5674 and
+    // #5251, arriving via a one-line map edit in a different directory.
+    const missing = [...TIER_GATED_PATHS].filter((route) => !PREMIUM_RPC_PATHS.has(route));
+    assert.deepEqual(
+      missing,
+      [],
+      [
+        `These endpoints are tier-gated in ENDPOINT_ENTITLEMENTS`,
+        `(server/_shared/entitlement-check.ts) but missing from PREMIUM_RPC_PATHS`,
+        `(src/shared/premium-paths.ts):`,
+        ...missing.map((r) => `  - ${r}`),
+        ``,
+        `The gateway forces an API key on tier-gated routes, so an anonymous`,
+        `browser gets 401 no matter how fresh its session cookie is. The`,
+        `wm-session interceptor then mints, replays, 401s again, and suppresses`,
+        `ALL anonymous API calls for 15 minutes (#5674).`,
+        ``,
+        `Add each route to PREMIUM_RPC_PATHS.`,
+      ].join('\n'),
+    );
+  });
+
+  it('every session-recovery-bypass proof still points at a live allowlist entry', () => {
+    for (const route of Object.keys(SESSION_RECOVERY_BYPASS_PROOF)) {
+      assert.ok(
+        DIRECT_LLM_PREMIUM_BYPASS_ALLOWLIST[route],
+        `Stale SESSION_RECOVERY_BYPASS_PROOF entry ${route}: the route is no longer ` +
+        `allowlisted, so either drop this proof or restore the allowlist rationale.`,
+      );
+    }
+  });
 
   it('every direct-LLM bypass remains real and intentionally non-premium', () => {
     for (const route of Object.keys(DIRECT_LLM_PREMIUM_BYPASS_ALLOWLIST)) {
