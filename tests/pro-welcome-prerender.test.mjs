@@ -47,6 +47,8 @@ test('built welcome page ships the real hero in #root before JavaScript', () => 
   );
   assert.match(navContent, /href="\/blog\/"/);
   assert.match(navContent, />Blog<\/a>/);
+  assert.match(navContent, /id="welcome-tablet-navigation"/);
+  assert.match(navContent, />Menu</);
   const headlineIndex = rootContent.indexOf('By the time it&#x27;s news,');
   assert.ok(headlineIndex > 0, 'welcome headline should be in the prerendered root');
   const heroSection = rootContent.slice(0, rootContent.indexOf('<section class="py-16'));
