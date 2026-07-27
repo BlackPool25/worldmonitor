@@ -2,6 +2,7 @@
 
 import { loadEnvFile, CHROME_UA, runSeed, httpsProxyFetchRaw } from './_seed-utils.mjs';
 import { resolveProxyStringConnect } from './_proxy-utils.cjs';
+import { appendSeedHistory } from './_seed-history.mjs';
 
 loadEnvFile(import.meta.url);
 
@@ -206,16 +207,53 @@ export function declareRecords(data) {
   return Array.isArray(data?.items) ? data.items.length : 0;
 }
 
+// Project published energy news items into intel-history records (#5694).
+// Items already carry a stable id (`source-hash(url)-publishedAt`), a headline,
+// and a cleaned summary, so this is a direct field mapping.
+export function buildEnergyHistoryRecords(data) {
+  return (data?.items ?? []).map((item) => {
+    if (!item?.id || !item?.title || !Number.isFinite(item?.publishedAt)) return null;
+    return {
+      dedupeKey: `energy:intelligence:${item.id}`,
+      category: 'news',
+      title: item.title,
+      summary: item.summary || undefined,
+      sourceUrl: item.url || undefined,
+      occurredAt: item.publishedAt,
+    };
+  }).filter(Boolean);
+}
+
+// Best-effort by contract: the canonical publish already succeeded, so a
+// history failure must log and return, never throw (a throw would skip
+// runSeed's freshness write and crash a healthy run).
+export async function energyIntelAfterPublish(data, meta, append = appendSeedHistory) {
+  try {
+    const result = await append({
+      domain: 'energy',
+      resource: 'intelligence',
+      runId: String(meta?.runId ?? ''),
+      records: buildEnergyHistoryRecords(data),
+    });
+    if (result?.skipped !== 'unconfigured') {
+      console.log(`[EnergyIntel] intel-history appended ${result?.inserted ?? 0}, deduped ${result?.skipped ?? 0}`);
+    }
+  } catch (err) {
+    console.warn(`[EnergyIntel] intel-history append failed (non-fatal): ${err?.message || err}`);
+  }
+}
+
 if (process.argv[1]?.endsWith('seed-energy-intelligence.mjs')) {
   runSeed('energy', 'intelligence', CANONICAL_KEY, fetchEnergyIntelligence, {
     validateFn: validate,
     ttlSeconds: INTELLIGENCE_TTL_SECONDS,
     sourceVersion: 'energy-intel-rss-v1',
     recordCount: (data) => data?.items?.length || 0,
-  
+
     declareRecords,
     schemaVersion: 1,
     maxStaleMin: 720,
+    afterPublish: energyIntelAfterPublish,
   }).catch((err) => {
     const _cause = err.cause ? ` (cause: ${err.cause.message || err.cause.code || err.cause})` : '';
     console.error('FATAL:', (err.message || err) + _cause);
