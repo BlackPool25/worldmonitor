@@ -93,6 +93,13 @@ Three review findings all reduced to conflating these:
 
 **5. Order the struck-route short-circuit below the generation replay.** The `sessionGeneration` replay spends no mint, so denying it to a struck route pinned that route to a stale 401 for the remainder of its window even after an unrelated caller had already obtained a working cookie.
 
+**6. Make the tag name what failed, and the state readable.** Two smaller review findings, both about the deliverable rather than the logic:
+
+- On `mint_failed` the `route` tag carried whichever route happened to be in flight. The obvious use of the tag is to group `WORLDMONITOR-WG` by it and read off the offending endpoint, so tagging a bystander seeds the census with innocent routes under a name that means "the denied route" everywhere else. `mint_failed` now tags `/api/wm-session` — the thing that actually failed — and the blocked route rides the breadcrumb as `blocked`.
+- Per-route suppression is intentionally silent, which makes "one panel is broken, the rest work" the one state this module can enter with no local way to confirm it. Diagnosing it meant a Sentry search scoped to the user's IP inside the 15-minute window before the strike self-expired. `getStruckRoutes()` is now exported alongside `isWmSessionDead()`.
+
+**Sizing a cardinality bound against the real thing, not a round number.** The per-segment cap was 32 chars. Across the 198 registered routes exactly one final segment exceeds it — `get-china-corridor-control-towers` at 33 — and it is live (`src/components/ChinaCorridorPanel.ts`), so the tag reported that panel's route as `/api/supply-chain/v1/:id`. That is worse than emitting nothing: it is indistinguishable from a legitimately-collapsed dynamic family, so a triager dismisses the one route the tag existed to name. `get-consumer-price-basket-series` sat at exactly 32, one character behind. The lesson is that a guessed bound on a real namespace is a latent bug — enumerate the namespace, size the bound against its actual maximum, and pin the extreme case in a test so the next long name cannot silently reopen it.
+
 ## Why This Works
 
 `mint_failed` and `retry_401` carry different scopes, and the old code conflated them. `mint_failed` means `/api/wm-session` itself returned nothing usable, so no cookie exists for *any* route — session-wide by construction, and it still trips immediately. `retry_401` only ever observed **one** route.

@@ -144,21 +144,37 @@ export function isWmSessionDead(): boolean {
 }
 
 /**
- * True when `route` already failed a replay-with-a-fresh-cookie inside the
+ * Raw pathnames currently under per-route suppression.
+ *
+ * Per-route suppression is deliberately silent — no toast, no degraded event —
+ * which makes "one panel is broken but the rest of the dashboard works" the one
+ * state this module can enter with no local way to confirm it. Without this the
+ * only diagnosis is a Sentry search for `kind: wm_session_route_401` scoped to
+ * the user's IP inside the 15-minute window before the strike self-expires, so a
+ * console-reachable reader is the difference between answering that question in
+ * seconds and needing Sentry access plus exact timing. Mirrors
+ * `isWmSessionDead()`; route paths are already client-visible strings.
+ */
+export function getStruckRoutes(): string[] {
+  return [...routeStrikes.keys()].filter((rawPath) => isRouteStruck(rawPath));
+}
+
+/**
+ * True when `rawPath` already failed a replay-with-a-fresh-cookie inside the
  * current window. Re-running recovery for it would re-derive the same denial
  * and spend another mint, which is the request+mint+retry amplification #5219
  * exists to prevent.
  */
-function isRouteStruck(route: string): boolean {
-  const until = routeStrikes.get(route);
+function isRouteStruck(rawPath: string): boolean {
+  const until = routeStrikes.get(rawPath);
   if (until === undefined) return false;
   if (until > Date.now()) return true;
-  routeStrikes.delete(route);
+  routeStrikes.delete(rawPath);
   return false;
 }
 
 /**
- * Record a failed fresh-mint replay for `route`, and return how many DISTINCT
+ * Record a failed fresh-mint replay for `rawPath`, and return how many DISTINCT
  * routes have failed inside the corroboration window — i.e. how much evidence
  * there is that the session itself (not this one endpoint) is broken.
  *
@@ -167,18 +183,18 @@ function isRouteStruck(route: string): boolean {
  * the returned count only sees failures from the last
  * SESSION_DEAD_CORROBORATION_MS.
  */
-function recordRouteStrike(route: string): number {
+function recordRouteStrike(rawPath: string): number {
   const now = Date.now();
   for (const [struck, until] of routeStrikes) {
     if (until <= now) routeStrikes.delete(struck);
   }
-  routeStrikes.set(route, now + SESSION_DEAD_ROUTE_STRIKE_TTL_MS);
+  routeStrikes.set(rawPath, now + SESSION_DEAD_ROUTE_STRIKE_TTL_MS);
 
   const corroborationFloor = now - SESSION_DEAD_CORROBORATION_MS;
   for (const [tag, at] of recentRouteFailures) {
     if (at <= corroborationFloor) recentRouteFailures.delete(tag);
   }
-  recentRouteFailures.set(toRouteTag(route), now);
+  recentRouteFailures.set(toRouteTag(rawPath), now);
   return recentRouteFailures.size;
 }
 
@@ -193,8 +209,8 @@ function recordRouteStrike(route: string): number {
  * amplification #5219 exists to prevent. Session-wide evidence, by contrast, is
  * void the moment anything succeeds.
  */
-function noteRouteSuccess(route: string): void {
-  routeStrikes.delete(route);
+function noteRouteSuccess(rawPath: string): void {
+  routeStrikes.delete(rawPath);
   if (recentRouteFailures.size > 0) recentRouteFailures.clear();
 }
 
@@ -215,7 +231,7 @@ function addSessionBreadcrumb(message: string, data: Record<string, string>): vo
   } catch { /* best-effort telemetry */ }
 }
 
-function markWmSessionDead(reason: WmSessionDeadReason, route: string): void {
+function markWmSessionDead(reason: WmSessionDeadReason, rawPath: string): void {
   const alreadyDead = isWmSessionDead();
   sessionDeadUntil = Date.now() + SESSION_DEAD_COOLDOWN_MS;
   cached = null;
@@ -232,8 +248,16 @@ function markWmSessionDead(reason: WmSessionDeadReason, route: string): void {
   // the only remote signal that anonymous browsing is degraded (#5245).
   // Guarded: a telemetry throw must never skip the degraded-event dispatch
   // below, nor turn the interceptor's recovery return into a rejection.
-  const routeTag = toRouteTag(route);
-  addSessionBreadcrumb('wm-session recovery failed', { route: routeTag, reason });
+  // `route` must name what actually failed, because the obvious use of this tag
+  // is to group WORLDMONITOR-WG by it and read off the offending endpoint. For
+  // retry_401 that is the replayed route. For mint_failed it is /api/wm-session:
+  // the mint returned nothing usable, and whichever route happened to be in
+  // flight is a bystander — tagging it would seed the census with innocent
+  // endpoints under the same tag name that means "the denied route" elsewhere.
+  // The bystander is still worth having, so it rides the breadcrumb instead.
+  const blockedTag = toRouteTag(rawPath);
+  const routeTag = reason === 'mint_failed' ? '/api/wm-session' : blockedTag;
+  addSessionBreadcrumb('wm-session recovery failed', { route: routeTag, blocked: blockedTag, reason });
   try {
     sentryEnqueue((s) => s.captureMessage(
       'wm-session dead: anonymous API calls suppressed',
@@ -252,8 +276,8 @@ function markWmSessionDead(reason: WmSessionDeadReason, route: string): void {
  * endpoint still becomes aggregable. Bounded to one report per route per
  * cooldown window: a struck route short-circuits before recovery runs again.
  */
-function reportRouteRecoveryFailure(route: string): void {
-  const routeTag = toRouteTag(route);
+function reportRouteRecoveryFailure(rawPath: string): void {
+  const routeTag = toRouteTag(rawPath);
   addSessionBreadcrumb('wm-session route denied after fresh mint', { route: routeTag });
   try {
     sentryEnqueue((s) => s.captureMessage(
@@ -273,16 +297,16 @@ function reportRouteRecoveryFailure(route: string): void {
  * `retry_401` only implicates the one route that was replayed, so it needs
  * SESSION_DEAD_ROUTE_QUORUM distinct routes before it may black out the tab.
  */
-function noteRecoveryFailure(reason: WmSessionDeadReason, route: string): void {
+function noteRecoveryFailure(reason: WmSessionDeadReason, rawPath: string): void {
   if (reason === 'mint_failed') {
-    markWmSessionDead(reason, route);
+    markWmSessionDead(reason, rawPath);
     return;
   }
-  if (recordRouteStrike(route) >= SESSION_DEAD_ROUTE_QUORUM) {
-    markWmSessionDead(reason, route);
+  if (recordRouteStrike(rawPath) >= SESSION_DEAD_ROUTE_QUORUM) {
+    markWmSessionDead(reason, rawPath);
     return;
   }
-  reportRouteRecoveryFailure(route);
+  reportRouteRecoveryFailure(rawPath);
 }
 
 function sessionDegradedResponse(): Response {

@@ -1168,7 +1168,7 @@ describe('wm-session route-scoped recovery failures (#5674)', () => {
     // mint_failed is session-wide by construction: no cookie exists for ANY
     // route, so corroboration would be pure delay.
     memoryStorage.clear();
-    const { captures } = collectSentry();
+    const { captures, crumbs } = collectSentry();
 
     currentFetchHandler = (input) => {
       const url = typeof input === 'string' ? input : (input instanceof URL ? input.href : input.url);
@@ -1189,6 +1189,49 @@ describe('wm-session route-scoped recovery failures (#5674)', () => {
     const dead = captures.filter((c) => c.ctx.tags?.kind === 'wm_session_dead');
     assert.equal(dead.length, 1);
     assert.equal(dead[0].ctx.tags?.reason, 'mint_failed');
-    assert.equal(dead[0].ctx.tags?.route, '/api/infrastructure/v1/list-service-statuses');
+    // The `route` tag must name what FAILED, since grouping WORLDMONITOR-WG by it
+    // to find the offending endpoint is the tag's whole purpose. On mint_failed
+    // the mint is what failed; the in-flight route is a bystander and tagging it
+    // would seed the route census with innocent endpoints.
+    assert.equal(dead[0].ctx.tags?.route, '/api/wm-session');
+    // The bystander is still useful for triage, so it rides the breadcrumb.
+    assert.ok(
+      crumbs.some((c) => c.data?.blocked === '/api/infrastructure/v1/list-service-statuses'),
+      `the blocked route is preserved on the breadcrumb, got ${JSON.stringify(crumbs.map((c) => c.data))}`,
+    );
+  });
+
+  it('releases a struck route once its suppression window lapses', async () => {
+    // The strike is a time-boxed mint guard, not a permanent verdict. If expiry
+    // did not actually release it, a route denied once would never attempt
+    // recovery again for the life of the tab.
+    memoryStorage.clear();
+    collectSentry();
+    const url = 'https://api.worldmonitor.app/api/intelligence/v1/get-risk-scores';
+    const counters = { mints: 0, hits: new Map<string, number>() };
+    currentFetchHandler = handlerRejecting(['/api/intelligence/v1/get-risk-scores'], counters);
+
+    const realNow = Date.now;
+    let clock = realNow.call(Date);
+    Date.now = () => clock;
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    try {
+      await wrappedFetch(url);
+      assert.deepEqual(mod.getStruckRoutes(), ['/api/intelligence/v1/get-risk-scores'], 'the route is struck');
+
+      const mintsWhileStruck = counters.mints;
+      await wrappedFetch(url);
+      assert.equal(counters.mints, mintsWhileStruck, 'still struck: no mint');
+
+      // Past the per-route suppression TTL.
+      clock += 15 * 60 * 1000 + 1;
+      assert.deepEqual(mod.getStruckRoutes(), [], 'the strike lapsed');
+      await wrappedFetch(url);
+      assert.equal(counters.mints, mintsWhileStruck + 1, 'a lapsed strike lets recovery run again');
+    } finally {
+      Date.now = realNow;
+      console.warn = originalWarn;
+    }
   });
 });
