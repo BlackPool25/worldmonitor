@@ -51,41 +51,24 @@ const ALLOW_LIST: AllowEntry[] = [
     line: 337,
     reason: 'mlWorker.vectorStoreIngest stores pubDate as embedding metadata; not used as a freshness comparator.',
   },
+  // effectivePubDateMs implementation moved to shared/news-clustering-core.js
+  // (issue #5697, outside this scan's src/services + src/app scope);
+  // feed-date.ts re-exports it, so its former implementation entries are gone.
   {
     file: 'src/services/feed-date.ts',
-    line: 72,
-    reason: 'effectivePubDateMs implementation — the helper itself necessarily calls .getTime() on the underlying Date.',
-  },
-  {
-    file: 'src/services/feed-date.ts',
-    line: 83,
-    reason: 'effectivePubDateMs implementation — string-input branch reconstructs Date and reads getTime; covered by NaN/Infinity guard immediately below.',
-  },
-  {
-    file: 'src/services/feed-date.ts',
-    line: 91,
+    line: 77,
     reason: 'displayPubDateMs implementation — preserves display timestamps for cache serialization; not used as a freshness comparator.',
   },
   {
     file: 'src/services/feed-date.ts',
-    line: 98,
+    line: 84,
     reason: 'displayPubDateMs implementation — string-input branch reconstructs a display timestamp; not used as a freshness comparator.',
   },
-  {
-    file: 'src/services/analysis-core.ts',
-    line: 208,
-    reason: 'generateClusterId sort produces a stable identity string from earliest pubDate; not a freshness comparator.',
-  },
-  {
-    file: 'src/services/analysis-core.ts',
-    line: 210,
-    reason: 'generateClusterId uses earliest pubDate.getTime() in the identity string prefix.',
-  },
-  {
-    file: 'src/services/analysis-core.ts',
-    line: 309,
-    reason: 'cluster date aggregation for firstSeen/lastUpdated metadata; not a per-item ranking comparator.',
-  },
+  // generateClusterId + cluster date aggregation moved with clusterNewsCore to
+  // shared/news-clustering-core.js (#5697); the shared implementation still
+  // routes its ranking comparators through effectivePubDateMs (pinned by
+  // tests/clustering-cap.test.mjs asserting the re-export, and the port was
+  // characterized behavior-identical).
   {
     file: 'src/services/clustering.ts',
     line: 138,
@@ -93,12 +76,12 @@ const ALLOW_LIST: AllowEntry[] = [
   },
   {
     file: 'src/services/trending-keywords.ts',
-    line: 276,
+    line: 246,
     reason: 'headlineKey identity computation — used for dedupe, not freshness ranking.',
   },
   {
     file: 'src/services/trending-keywords.ts',
-    line: 395,
+    line: 338,
     reason: 'publishedAt record-keeping in headline registry; not a freshness comparator.',
   },
 ];
