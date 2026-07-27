@@ -4,6 +4,9 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '..');
+// clusterNewsCore + the input cap moved to shared/news-clustering-core.js
+// (issue #5697); analysis-core re-exports them for client consumers.
+const clusteringCoreSrc = readFileSync(resolve(root, 'shared/news-clustering-core.js'), 'utf8');
 const analysisCoreSrc = readFileSync(resolve(root, 'src/services/analysis-core.ts'), 'utf8');
 const clusteringSrc = readFileSync(resolve(root, 'src/services/clustering.ts'), 'utf8');
 const workerSrc = readFileSync(resolve(root, 'src/workers/analysis.worker.ts'), 'utf8');
@@ -11,15 +14,20 @@ const workerSrc = readFileSync(resolve(root, 'src/workers/analysis.worker.ts'), 
 describe('news clustering caps unbounded input work', () => {
   it('caps the shared clustering input before O(n^2) dedupe work', () => {
     assert.match(
-      analysisCoreSrc,
+      clusteringCoreSrc,
       /export const MAX_CLUSTER_NEWS_ITEMS = \d+;/,
-      'analysis-core must expose the shared clustering input cap',
+      'news-clustering-core must expose the shared clustering input cap',
     );
-    const capIdx = analysisCoreSrc.indexOf('const boundedItems = items.length > MAX_CLUSTER_NEWS_ITEMS');
-    const worksetIdx = analysisCoreSrc.indexOf('const itemsWithTier: NewsItemWithTier[] = boundedItems.map');
+    const capIdx = clusteringCoreSrc.indexOf('const boundedItems = items.length > MAX_CLUSTER_NEWS_ITEMS');
+    const worksetIdx = clusteringCoreSrc.indexOf('const itemsWithTier = boundedItems.map');
     assert.ok(capIdx !== -1, 'clusterNewsCore must build a bounded input set');
     assert.ok(worksetIdx !== -1, 'clusterNewsCore must cluster from boundedItems');
     assert.ok(capIdx < worksetIdx, 'clusterNewsCore must cap input before tokenization/dedupe work starts');
+    assert.match(
+      analysisCoreSrc,
+      /MAX_CLUSTER_NEWS_ITEMS,[\s\S]*?clusterNewsCore,[\s\S]*?\} from '\.\.\/\.\.\/shared\/news-clustering-core\.js';/,
+      'analysis-core must re-export the shared clustering implementation, not fork it',
+    );
     assert.match(workerSrc, /const clusters = clusterNewsCore\(items, getSourceTier\);/);
   });
 
