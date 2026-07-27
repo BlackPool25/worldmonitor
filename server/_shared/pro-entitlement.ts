@@ -1,12 +1,12 @@
 /**
- * Canonical entitlement decision for standalone tier-1 JSON endpoints.
+ * Canonical entitlement decisions for standalone tier-1 JSON endpoints.
  *
- * Pro access has two equivalent signals throughout the product:
+ * Content-only Pro access has two equivalent signals:
  *   - Clerk session role === 'pro' (complimentary, tester, or legacy grants)
  *   - a resolved Convex entitlement with tier >= 1
  *
- * Keep standalone handlers on this helper so they cannot unlock their client
- * UI on the Clerk role and then require a billed Convex row at the API gate.
+ * Notification-backed workflows deliberately require the second signal because
+ * their configuration and relay delivery paths also require a Convex tier.
  */
 import {
   getBillingVerificationDenial,
@@ -31,7 +31,15 @@ export async function checkProEntitlement(
   // role-only Pro.
   if (clerkRole === 'pro') return { allowed: true };
 
-  // Preserves the exact tier check each of these five handlers already ran
+  return checkTierProEntitlement(userId, corsHeaders, loadEntitlements);
+}
+
+export async function checkTierProEntitlement(
+  userId: string,
+  corsHeaders: Record<string, string>,
+  loadEntitlements: EntitlementLoader = getEntitlements,
+): Promise<ProEntitlementDecision> {
+  // Preserves the exact tier check these handlers already ran
   // inline (tier >= 1, no validUntil check) — this intentionally does NOT
   // match checkEntitlementDetailed, which additionally requires
   // `validUntil >= Date.now()`. Unifying that gap is a separate concern from

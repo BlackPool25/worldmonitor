@@ -1,12 +1,15 @@
 /**
- * #5646 — the five standalone Pro-gated JSON endpoints must make the same
- * entitlement decision as the gateway and client: Clerk role=pro OR a resolved
- * Convex tier >= 1. The shared helper keeps that policy from drifting again.
+ * #5646 — content-only JSON endpoints accept Clerk role=pro OR a resolved
+ * Convex tier >= 1. Notification-backed endpoints intentionally require the
+ * tier-backed signal used by their configuration and delivery paths.
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { checkProEntitlement } from '../server/_shared/pro-entitlement';
+import {
+  checkProEntitlement,
+  checkTierProEntitlement,
+} from '../server/_shared/pro-entitlement';
 
 function entitlements(tier: number, extra: Record<string, unknown> = {}) {
   return {
@@ -97,5 +100,48 @@ describe('checkProEntitlement', () => {
       code: 'entitlement_verification_unavailable',
       requiredTier: 1,
     });
+  });
+});
+
+describe('checkTierProEntitlement', () => {
+  it('denies a role-only caller without a tier-backed entitlement', async () => {
+    let lookups = 0;
+    const result = await checkTierProEntitlement(
+      'user-clerk-pro',
+      {},
+      async () => {
+        lookups += 1;
+        return entitlements(0);
+      },
+    );
+
+    assert.equal(lookups, 1, 'notification policy must consult the tier source');
+    if (result.allowed) assert.fail('role-only caller must be denied');
+    assert.equal(result.billingDenial, null);
+  });
+
+  it('allows a tier-backed Pro caller', async () => {
+    const result = await checkTierProEntitlement(
+      'user-dodo-pro',
+      {},
+      async () => entitlements(1),
+    );
+
+    assert.deepEqual(result, { allowed: true });
+  });
+
+  it('preserves retryable billing-verification denials', async () => {
+    const result = await checkTierProEntitlement(
+      'user-convex-blip',
+      {},
+      async () => entitlements(0, { verificationUnavailable: true }),
+    );
+
+    if (result.allowed) assert.fail('unverifiable caller must not be allowed');
+    assert.equal(result.billingDenial?.status, 503);
+    assert.equal(
+      result.billingDenial?.headers.get('X-Billing-Verification'),
+      'entitlement_verification_unavailable',
+    );
   });
 });

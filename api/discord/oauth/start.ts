@@ -14,7 +14,7 @@ export const config = { runtime: 'edge' };
 // @ts-expect-error — JS module, no declaration file
 import { getCorsHeaders } from '../../_cors.js';
 import { validateBearerToken } from '../../../server/auth-session';
-import { checkProEntitlement } from '../../../server/_shared/pro-entitlement';
+import { checkTierProEntitlement } from '../../../server/_shared/pro-entitlement';
 
 const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID ?? '';
 const DISCORD_REDIRECT_URI = process.env.DISCORD_REDIRECT_URI ?? '';
@@ -48,7 +48,7 @@ export default async function handler(req: Request): Promise<Response> {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
   }
 
-  const proAccess = await checkProEntitlement(session.userId, session.role, corsHeaders);
+  const proAccess = await checkTierProEntitlement(session.userId, corsHeaders);
   if (!proAccess.allowed) {
     // #5600: an entitlement the backend could not VERIFY is not a confirmed
     // free user. Answer the shared retryable contract (503 + Retry-After) for

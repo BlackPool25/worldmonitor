@@ -167,8 +167,8 @@ describe('docs Idempotency-Key prose contract', () => {
     assert.match(notifySource, /validateBearerToken/, 'notify handler validates Clerk bearer tokens');
     assert.match(
       notifySource,
-      /checkProEntitlement\(session\.userId,\s*session\.role,\s*cors\)/,
-      'notify handler requires the shared PRO entitlement check with Clerk role context',
+      /checkTierProEntitlement\(session\.userId,\s*cors\)/,
+      'notify handler requires the tier-backed PRO entitlement used by notification delivery',
     );
     assert.match(
       notifySource,

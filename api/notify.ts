@@ -19,7 +19,7 @@ import {
   getIdempotencyKey,
 } from './_idempotency.js';
 import { validateBearerToken } from '../server/auth-session';
-import { checkProEntitlement } from '../server/_shared/pro-entitlement';
+import { checkTierProEntitlement } from '../server/_shared/pro-entitlement';
 
 const VALID_SEVERITIES = new Set(['critical', 'high', 'medium', 'low', 'info']);
 const INTERNAL_EVENT_TYPES = new Set(['flush_quiet_held', 'channel_welcome', 'watchlist_story_alert']);
@@ -56,7 +56,7 @@ export default async function handler(req: Request): Promise<Response> {
 
   const idempotencyRequest = req.clone();
 
-  const proAccess = await checkProEntitlement(session.userId, session.role, cors);
+  const proAccess = await checkTierProEntitlement(session.userId, cors);
   if (!proAccess.allowed) {
     // #5600: an entitlement the backend could not VERIFY is not a confirmed
     // free user. Answer the shared retryable contract (503 + Retry-After) for

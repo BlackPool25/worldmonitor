@@ -118,9 +118,11 @@ describe('widget-agent structured billing denial (#4771)', () => {
 });
 
 describe('Pro-gated endpoint policy and billing denial ordering (#5600, #5646)', () => {
-  // Five standalone endpoints delegate the complete role-or-tier decision to
-  // checkProEntitlement. notification-channels retains its handler-level seam
-  // because it also owns denial-capture observability.
+  // Content-only endpoints delegate the complete role-or-tier decision to
+  // checkProEntitlement. Notification-backed entry points use the tier-only
+  // helper to match their configuration and delivery paths. notification-
+  // channels retains its handler-level seam because it also owns denial-capture
+  // observability.
   //
   // These are source-order assertions, the same shape as the widget-agent block
   // above: they pin integration and ordering, while the shared helper's truth
@@ -128,31 +130,37 @@ describe('Pro-gated endpoint policy and billing denial ordering (#5600, #5646)',
   const endpoints: Array<{
     file: string;
     decisionCall?: string;
+    decisionHelper?: string;
   }> = [
     {
       file: 'api/latest-brief.ts',
       decisionCall: 'checkProEntitlement(session.userId, session.role, cors)',
+      decisionHelper: 'checkProEntitlement',
     },
     {
       file: 'api/notify.ts',
-      decisionCall: 'checkProEntitlement(session.userId, session.role, cors)',
+      decisionCall: 'checkTierProEntitlement(session.userId, cors)',
+      decisionHelper: 'checkTierProEntitlement',
     },
     {
       file: 'api/brief/share-url.ts',
       decisionCall: 'checkProEntitlement(session.userId, session.role, cors)',
+      decisionHelper: 'checkProEntitlement',
     },
     {
       file: 'api/slack/oauth/start.ts',
-      decisionCall: 'checkProEntitlement(session.userId, session.role, corsHeaders)',
+      decisionCall: 'checkTierProEntitlement(session.userId, corsHeaders)',
+      decisionHelper: 'checkTierProEntitlement',
     },
     {
       file: 'api/discord/oauth/start.ts',
-      decisionCall: 'checkProEntitlement(session.userId, session.role, corsHeaders)',
+      decisionCall: 'checkTierProEntitlement(session.userId, corsHeaders)',
+      decisionHelper: 'checkTierProEntitlement',
     },
     { file: 'api/notification-channels.ts' },
   ];
 
-  for (const { file, decisionCall } of endpoints) {
+  for (const { file, decisionCall, decisionHelper } of endpoints) {
     it(`${file} evaluates its shared decision before the generic 403`, async () => {
       const src = await read(file);
       const decisionIdx = decisionCall
@@ -161,10 +169,10 @@ describe('Pro-gated endpoint policy and billing denial ordering (#5600, #5646)',
       const genericIdx = src.indexOf("error: 'pro_required'");
 
       if (decisionCall) {
-        assert.match(
-          src,
-          /import\s*\{\s*checkProEntitlement\s*\}\s*from\s*['"][^'"]*pro-entitlement['"]/,
-          `${file} must import the shared Pro entitlement policy`,
+        assert.ok(
+          src.includes(`import { ${decisionHelper} } from`) &&
+            src.includes("pro-entitlement';"),
+          `${file} must import ${decisionHelper}`,
         );
         assert.match(
           src,
@@ -184,6 +192,25 @@ describe('Pro-gated endpoint policy and billing denial ordering (#5600, #5646)',
         src,
         /if \(billingDenial\)/,
         `${file} must return the denial Response when the helper produces one`,
+      );
+    });
+  }
+
+  for (const file of [
+    'api/notify.ts',
+    'api/slack/oauth/start.ts',
+    'api/discord/oauth/start.ts',
+  ]) {
+    it(`${file} does not grant notification access from Clerk role alone`, async () => {
+      const src = await read(file);
+
+      assert.doesNotMatch(
+        src,
+        /checkProEntitlement\(session\.userId,\s*session\.role,/,
+      );
+      assert.match(
+        src,
+        /checkTierProEntitlement\(session\.userId,\s*(?:cors|corsHeaders)\)/,
       );
     });
   }
