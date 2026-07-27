@@ -17,9 +17,9 @@
  * body fetches a portal session.
  */
 
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock, type MockInstance } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi, type Mock, type MockInstance } from 'vitest';
 
-import { initTestI18n } from './helpers/dom-harness.mts';
+import { initTestI18n } from './helpers/i18n.mts';
 
 const openBillingPortal = vi.fn(async () => ({ outcome: 'opened' as const, url: 'https://portal' }));
 const getSubscription = vi.fn<() => { planKey: string } | null>(() => null);
@@ -52,9 +52,9 @@ beforeEach(() => {
   getSubscription.mockReset().mockReturnValue(null);
 });
 
-afterEach(() => {
-  vi.restoreAllMocks();
-});
+// Spies are restored by `restoreMocks: true` in vitest.dom.config.mts — a
+// second mechanism here would only invite the two to drift. The vi.fn()s above
+// are not spies, so they are reset explicitly in beforeEach.
 
 const act = (reason: (typeof PanelGateReason)[keyof typeof PanelGateReason], planKey?: string | null) =>
   resolveGateAction(reason, { openAuthModal, ...(planKey === undefined ? {} : { planKey }) });

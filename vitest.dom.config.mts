@@ -26,11 +26,16 @@ export default defineConfig({
   },
   test: {
     environment: 'happy-dom',
-    include: ['tests/dom/**/*.test.mts'],
+    // Both extensions on purpose: `tests/` is 573 `.test.mjs` to 416
+    // `.test.mts`, so an `.mts`-only glob would silently never run a file a
+    // contributor named after the repo's more common convention — the exact
+    // never-reported-test failure this directory exists to prevent.
+    include: ['tests/dom/**/*.test.{mts,mjs}'],
     // Every test file installs its own listeners on a shared `document`;
     // isolate so a leaked listener cannot reach across files.
     isolate: true,
+    // Single mechanism for spy cleanup — test files must NOT also call
+    // vi.restoreAllMocks() or the two can drift.
     restoreMocks: true,
-    unstubGlobals: true,
   },
 });

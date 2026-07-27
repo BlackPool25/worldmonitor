@@ -9,7 +9,7 @@
  * and that the CTA runs the injected action.
  *
  * The copy is compared against the real `en.json` strings via the shared
- * i18next singleton — see `helpers/dom-harness.mts` for why an uninitialised
+ * i18next singleton — see `helpers/i18n.mts` for why an uninitialised
  * i18next would otherwise make every one of these assertions a false pass.
  */
 
@@ -18,7 +18,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock }
 import { ExportGateControl } from '@/components/ExportGateControl';
 import { PanelGateReason } from '@/services/panel-gating';
 
-import { initTestI18n, tt } from './helpers/dom-harness.mts';
+import { initTestI18n, tt } from './helpers/i18n.mts';
 
 beforeAll(async () => {
   await initTestI18n();

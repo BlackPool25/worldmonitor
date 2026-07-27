@@ -20,7 +20,7 @@ import { PanelTabBar, tabCapGateCopy, type TabAddLock } from '@/components/Panel
 import { PanelGateReason } from '@/services/panel-gating';
 import type { PanelTab, TabsState } from '@/services/tab-store';
 
-import { initTestI18n, tt } from './helpers/dom-harness.mts';
+import { initTestI18n, tt } from './helpers/i18n.mts';
 
 beforeAll(async () => {
   await initTestI18n();

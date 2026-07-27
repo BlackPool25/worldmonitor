@@ -12,16 +12,23 @@
  * and asserts what reached the printed document, with no dependency injection
  * anywhere in the chain. happy-dom has no `window.print()`, so the harness
  * shims one that records the document it was called on — see
- * `helpers/dom-harness.mts`.
+ * `helpers/print-recorder.mts`.
  */
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock, type MockInstance } from 'vitest';
 
 import { ExportPanel, type ExportData } from '@/utils/export';
 
-import { initTestI18n, installPrintRecorder, tt, type PrintRecorder } from './helpers/dom-harness.mts';
+import { initTestI18n, tt } from './helpers/i18n.mts';
+import { installPrintRecorder, type PrintRecorder } from './helpers/print-recorder.mts';
 
-/** Matches printReportDocument's own defaults. */
+/**
+ * Mirrors `printReportDocument`'s own defaults (`deps.printDelayMs ?? 300`,
+ * `deps.cleanupDelayMs ?? 5000`). They are inline literals over there, so
+ * nothing links these to them — `clickExportPdf` below therefore asserts the
+ * cycle actually settled, so a raised production delay fails with a message
+ * naming the cause instead of an opaque "printed is empty".
+ */
 const PRINT_DELAY_MS = 300;
 const CLEANUP_DELAY_MS = 5000;
 
@@ -82,6 +89,15 @@ afterEach(() => {
 async function clickExportPdf(): Promise<void> {
   pdfOption().click();
   await vi.advanceTimersByTimeAsync(PRINT_DELAY_MS);
+  // The button is restored in a `finally`, so it is false on BOTH the success
+  // and failure paths once the cycle settles. Still busy means we did not
+  // advance far enough — i.e. PRINT_DELAY_MS no longer matches production.
+  if (pdfOption().disabled) {
+    throw new Error(
+      `[export-pdf-cycle] cycle had not settled after ${PRINT_DELAY_MS}ms — ` +
+        "printReportDocument's printDelayMs default has probably changed",
+    );
+  }
 }
 
 describe('Export PDF click cycle — button to printed document', () => {

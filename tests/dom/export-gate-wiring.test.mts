@@ -17,14 +17,15 @@
  * `setupExportPanel` against a minimal AppContext and asserts the composed
  * result: which URL a CTA click opens, and what the live region says.
  *
- * Only the reactive edges are stubbed — the gate verdict and the auth /
- * entitlement emitters. `exportLockToGateReason`, `resolveGateAction` and
+ * Only the reactive edges are stubbed — the gate verdict, the auth /
+ * entitlement emitters, and `openBillingPortal` (whose real body fetches a
+ * portal session). `exportLockToGateReason`, `resolveGateAction` and
  * `ExportGateControl` all run for real.
  */
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock, type MockInstance } from 'vitest';
 
-import { initTestI18n, tt } from './helpers/dom-harness.mts';
+import { initTestI18n, tt } from './helpers/i18n.mts';
 
 type Verdict =
   | { locked: false; pendingActivation: boolean }
@@ -68,6 +69,15 @@ vi.mock('@/services/export-gate', async (importOriginal) => ({
 vi.mock('@/services/analytics', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/services/analytics')>()),
   trackGateHit: (feature: string) => trackGateHit(feature),
+}));
+
+// `resolveGateAction` runs for real here, and its PAYMENT_ON_HOLD /
+// RENEWAL_FAILED branches call openBillingPortal — whose real body fetches a
+// portal session. The cases below never reach those branches, but leaving the
+// real function in place would arm a live network call for whoever adds them.
+vi.mock('@/services/billing', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/services/billing')>()),
+  openBillingPortal: async () => ({ outcome: 'opened' as const, url: 'https://portal' }),
 }));
 
 const { EventHandlerManager } = await import('@/app/event-handlers');
@@ -126,7 +136,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  vi.restoreAllMocks();
+  // Spies are restored by `restoreMocks: true` in vitest.dom.config.mts.
   document.body.replaceChildren();
 });
 
@@ -219,7 +229,11 @@ describe('setupExportPanel — aria-live announcements', () => {
 
     emit({ locked: false, pendingActivation: false });
     // The unlock path lazy-imports the exporter chunk before announcing.
-    await vi.waitFor(() => expect(liveRegion().textContent).not.toBe(''));
+    // Explicit timeout: the default is ~1s, and this awaits a lazy
+    // import('@/utils/export') whose first Vite transform on a cold CI runner
+    // can approach it. A flake here blocks every PR in the repo, because
+    // dom-tests is in deploy-gate's required list.
+    await vi.waitFor(() => expect(liveRegion().textContent).not.toBe(''), { timeout: 5000 });
 
     expect(liveRegion().textContent).toBe(tt('components.exportGate.unlockedAnnouncement'));
     // The locked row is gone and the real format options took its place.
@@ -233,7 +247,7 @@ describe('setupExportPanel — aria-live announcements', () => {
     manager.setupExportPanel();
 
     emit({ locked: false, pendingActivation: false });
-    await vi.waitFor(() => expect(formatOptions().length).toBeGreaterThan(0));
+    await vi.waitFor(() => expect(formatOptions().length).toBeGreaterThan(0), { timeout: 5000 });
 
     expect(liveRegion().textContent).toBe('');
   });
