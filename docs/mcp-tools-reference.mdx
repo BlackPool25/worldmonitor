@@ -265,6 +265,42 @@ curl -s https://worldmonitor.app/mcp \
 
 </CodeGroup>
 
+### `get_company_intelligence`
+
+Per-company corporate intelligence from SEC EDGAR and market data (#5695). Company identity always resolves through the SEC's own ticker/name registry to a CIK; companies that do not resolve return empty envelopes with `sources: []` — never guessed attribution. Four views multiplex the four backing REST routes.
+
+**Parameters (tool-specific):**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `view` | `string: enrichment / signals / filings-search / material-events` | Defaults to `enrichment`. |
+| `ticker` | string | Exchange ticker symbol, such as `AAPL`. Preferred company key for `enrichment` and `signals`. |
+| `name` | string | Company name fallback when no ticker is known; matched against the SEC registry. |
+| `query` | string | `filings-search` only: full-text query. Required for that view. |
+| `forms` | string | `filings-search` only: comma-separated form filter, such as `8-K` or `10-K,10-Q`. |
+| `start_date` / `end_date` | string | `filings-search` only: filing-date range (YYYY-MM-DD). |
+| `item_code` | string | `material-events` only: filter to one 8-K item code, such as `5.02`. |
+| `limit` | integer | `filings-search` (max 25) and `material-events` (max 100) result cap. |
+
+- **API endpoints:** `GET /api/intelligence/v1/get-company-enrichment`, `GET /api/intelligence/v1/list-company-signals`, `GET /api/intelligence/v1/search-sec-filings`, `GET /api/intelligence/v1/list-material-events`
+- **Kind:** canonical-route proxy — `enrichment`/`signals` fan out per-company (SEC submissions, Finnhub profile + earnings surprises, news mentions) with per-upstream Redis caching; `filings-search` proxies EDGAR full-text search; `material-events` reads the seeded market-wide 8-K stream (30-minute cadence).
+- **Freshness:** every view's payload carries its own timestamp (`enrichedAtMs`, `discoveredAtMs`, `fetchedAtMs`); `material-events.fetchedAtMs` is the seed time of the stream snapshot.
+
+<CodeGroup>
+
+```bash curl
+curl -s https://worldmonitor.app/mcp \
+  -H "X-WorldMonitor-Key: $WM_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "jsonrpc":"2.0","id":1,
+    "method":"tools/call",
+    "params":{"name":"get_company_intelligence","arguments":{"ticker":"AAPL","view":"signals"}}
+  }'
+```
+
+</CodeGroup>
+
 ### `get_country_macro`
 
 Per-country macroeconomic indicators from IMF WEO (~210 countries, monthly cadence). Bundles fiscal/external balance (inflation, current account, gov revenue/expenditure/primary balance, CPI), growth & per-capita (real GDP growth, GDP/capita USD & PPP, savings & investment rates, savings-investment gap), labor & demographics (unemployment, population), and external trade (current account USD, import/export volume % changes). Latest available year per series. Use for country-level economic screening, peer benchmarking, and stagflation/imbalance flags. NOTE: export/import LEVELS in USD (exportsUsd, importsUsd, tradeBalanceUsd) are returned as null — WEO retracted broad coverage for BX/BM indicators in 2026-04; use currentAccountUsd or volume changes (import/exportVolumePctChg) instead.

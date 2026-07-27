@@ -19,7 +19,10 @@
     "endpoint": "https://worldmonitor.app/mcp"
   },
   "remotes": [
-    { "type": "streamable-http", "url": "https://worldmonitor.app/mcp" }
+    {
+      "type": "streamable-http",
+      "url": "https://worldmonitor.app/mcp"
+    }
   ],
   "capabilities": {
     "tools": true,
@@ -194,6 +197,10 @@
       "description": "Global mining sites with coordinates, operator, mineral type, and production status. Covers 71 major mines spanning gold, silver, copper, lithium, uranium, coal, and other minerals worldwide."
     },
     {
+      "name": "get_company_intelligence",
+      "description": "Per-company corporate intelligence from SEC EDGAR and market data. Views: enrichment (SEC identity, recent filings, market profile, earnings surprises, news mentions), signals (classified 8-K material events + earnings surprises + news), filings-search (EDGAR full-text search with form/date filters), material-events (market-wide stream of recent material 8-K filings). Company identity resolves through the SEC ticker registry — unresolvable companies return empty envelopes, never guessed attribution."
+    },
+    {
       "name": "describe_tool",
       "description": "Return the full uncompressed definition of one tool by name. Use when the compressed tools/list entry is ambiguous about behaviour or argument semantics."
     }
@@ -210,9 +217,13 @@
   ],
   "authentication": {
     "type": "oauth2",
-    "authorization_servers": ["https://api.worldmonitor.app"],
+    "authorization_servers": [
+      "https://api.worldmonitor.app"
+    ],
     "resource": "https://worldmonitor.app",
-    "scopes": ["mcp"],
+    "scopes": [
+      "mcp"
+    ],
     "alternative_methods": [
       {
         "type": "api_key",

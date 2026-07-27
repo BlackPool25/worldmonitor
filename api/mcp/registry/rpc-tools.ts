@@ -1315,6 +1315,124 @@ export const RPC_TOOLS: ToolDef[] = [
     _apiPaths: [],
   },
   {
+    // get_company_intelligence (#5695) — per-company corporate intelligence on
+    // top of the four intelligence/v1 REST routes. Identity always resolves
+    // through the SEC ticker/name registry to a CIK (never domain-slug or
+    // keyword guessing — the unsound heuristics removed in #3754/#3755).
+    name: 'get_company_intelligence',
+    _outputBudgetBytes: 65536,
+    description: 'Per-company corporate intelligence from SEC EDGAR and market data. Views: enrichment (SEC identity, recent filings, market profile, earnings surprises, news mentions), signals (classified 8-K material events + earnings surprises + news), filings-search (EDGAR full-text search with form/date filters), material-events (market-wide stream of recent material 8-K filings). Company identity resolves through the SEC ticker registry — unresolvable companies return empty envelopes, never guessed attribution.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        view: { type: 'string', enum: ['enrichment', 'signals', 'filings-search', 'material-events'], description: 'Defaults to enrichment.' },
+        ticker: { type: 'string', description: 'Exchange ticker symbol, such as AAPL. Preferred company key for enrichment and signals.' },
+        name: { type: 'string', description: 'Company name fallback when no ticker is known; matched against the SEC registry.' },
+        query: { type: 'string', description: 'filings-search only: full-text query. Required for that view.' },
+        forms: { type: 'string', description: 'filings-search only: comma-separated form filter, such as "8-K" or "10-K,10-Q".' },
+        start_date: { type: 'string', description: 'filings-search only: earliest filing date (YYYY-MM-DD).' },
+        end_date: { type: 'string', description: 'filings-search only: latest filing date (YYYY-MM-DD).' },
+        item_code: { type: 'string', description: 'material-events only: filter to one 8-K item code, such as "5.02".' },
+        limit: { type: 'integer', minimum: 1, maximum: 100, description: 'filings-search (max 25) and material-events (max 100) result cap.' },
+      },
+      required: [],
+    },
+    // One envelope per view; exactly one of the view payload keys is present.
+    outputSchema: {
+      type: 'object',
+      required: ['view'],
+      properties: {
+        view: { type: 'string', enum: ['enrichment', 'signals', 'filings-search', 'material-events'] },
+        error: { type: 'string', enum: ['ticker_or_name_required', 'query_required'], description: 'Present only on user-input failure.' },
+        enrichment: { type: 'object', properties: {
+          company: { type: 'object', properties: { name: { type: 'string' }, domain: { type: 'string' }, description: { type: 'string' }, location: { type: 'string' }, website: { type: 'string' }, cik: { type: 'string' }, ticker: { type: 'string' } } },
+          secFilings: { type: 'object', properties: { totalFilings: { type: 'number' }, recentFilings: { type: 'array', items: { type: 'object' } } } },
+          market: { type: 'object', properties: { exchange: { type: 'string' }, industry: { type: 'string' }, marketCapMusd: { type: 'number' }, ipoDate: { type: 'string' }, logoUrl: { type: 'string' }, country: { type: 'string' }, currency: { type: 'string' } } },
+          earningsSurprises: { type: 'array', items: { type: 'object' } },
+          newsMentions: { type: 'array', items: { type: 'object' } },
+          sources: { type: 'array', items: { type: 'string' }, description: 'Sources actually reached; an empty array means the company did not resolve in the SEC registry or every upstream was down.' },
+          enrichedAtMs: { type: 'number' },
+        } },
+        signals: { type: 'object', properties: {
+          company: { type: 'string' },
+          signals: { type: 'array', items: { type: 'object', properties: { type: { type: 'string' }, title: { type: 'string' }, url: { type: 'string' }, source: { type: 'string' }, sourceTier: { type: 'number' }, timestampMs: { type: 'number' }, strength: { type: 'string' } } } },
+          summary: { type: 'object' },
+          discoveredAtMs: { type: 'number' },
+        } },
+        search: { type: 'object', properties: {
+          results: { type: 'array', items: { type: 'object' } }, total: { type: 'number' }, unavailable: { type: 'boolean' }, fetchedAtMs: { type: 'number' },
+        } },
+        events: { type: 'object', properties: {
+          events: { type: 'array', items: { type: 'object' } }, unavailable: { type: 'boolean' }, fetchedAtMs: { type: 'number' },
+        } },
+      },
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    _execute: async (params, base, context) => {
+      const view = typeof params.view === 'string' && ['enrichment', 'signals', 'filings-search', 'material-events'].includes(params.view)
+        ? params.view
+        : 'enrichment';
+      const str = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+      const limit = Number.isInteger(params.limit) && (params.limit as number) > 0 ? (params.limit as number) : 0;
+
+      const call = async (path: string, query: URLSearchParams, timeoutMs: number) => {
+        const url = `${base}${path}?${query}`;
+        const auth = await buildAuthHeaders(context, 'GET', url, null);
+        const response = await fetch(url, {
+          headers: { ...auth, 'User-Agent': 'worldmonitor-mcp-edge/1.0' },
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        assertToolFetchOk(response, path.split('/').pop() ?? path);
+        return response.json();
+      };
+
+      if (view === 'filings-search') {
+        const query = str(params.query);
+        if (!query) return { view, error: 'query_required' };
+        const search = new URLSearchParams({ query });
+        if (str(params.forms)) search.set('forms', str(params.forms));
+        if (str(params.start_date)) search.set('start_date', str(params.start_date));
+        if (str(params.end_date)) search.set('end_date', str(params.end_date));
+        if (limit) search.set('limit', String(Math.min(limit, 25)));
+        return { view, search: await call('/api/intelligence/v1/search-sec-filings', search, 10_000) };
+      }
+
+      if (view === 'material-events') {
+        const search = new URLSearchParams();
+        if (str(params.item_code)) search.set('item_code', str(params.item_code));
+        if (limit) search.set('limit', String(Math.min(limit, 100)));
+        return { view, events: await call('/api/intelligence/v1/list-material-events', search, 8_000) };
+      }
+
+      const ticker = str(params.ticker);
+      const name = str(params.name);
+      if (!ticker && !name) return { view, error: 'ticker_or_name_required' };
+
+      if (view === 'signals') {
+        const search = new URLSearchParams();
+        if (ticker) search.set('ticker', ticker);
+        if (name) search.set('company', name);
+        return { view, signals: await call('/api/intelligence/v1/list-company-signals', search, 12_000) };
+      }
+
+      const search = new URLSearchParams();
+      if (ticker) search.set('ticker', ticker);
+      if (name) search.set('name', name);
+      return { view, enrichment: await call('/api/intelligence/v1/get-company-enrichment', search, 12_000) };
+    },
+    // The seeded corporate-intelligence keys this tool's REST routes read.
+    _coverageKeys: [
+      'intelligence:sec-cik-map:v1',
+      'intelligence:sec-8k-stream:v1',
+    ],
+    _apiPaths: [
+      'GET /api/intelligence/v1/get-company-enrichment',
+      'GET /api/intelligence/v1/list-company-signals',
+      'GET /api/intelligence/v1/search-sec-filings',
+      'GET /api/intelligence/v1/list-material-events',
+    ],
+  },
+  {
     // describe_tool (v1.5.0) — on-demand escape hatch for the full
     // uncompressed tool definition. tools/list (default) emits each tool's
     // description compressed to ≤TOOL_DESCRIPTION_MAX_BYTES (first sentence
