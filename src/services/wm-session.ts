@@ -62,12 +62,41 @@ export function isWmSessionDead(): boolean {
 // anything real.
 const ROUTE_TAG_MAX_LENGTH = 120;
 
+// A path segment that is an identifier rather than a route name: a pure number,
+// a UUID, or a long token carrying a digit.
+//
+// Why this is needed at all: PREMIUM_RPC_PATHS is an EXACT-match set, so a
+// dynamic route like `/api/v2/shipping/webhooks/<subscriberId>` does NOT match
+// its parent entry and can therefore reach this tag — putting a subscriber id
+// into an indexed Sentry tag and giving the tag unbounded cardinality.
+//
+// Deliberately narrow, because over-matching destroys the diagnostic value the
+// tag exists for: our own route names are kebab-case words with no digits
+// (`summarize-article`, `list-market-quotes`), so requiring a digit keeps every
+// real segment intact while still catching ids. Version prefixes (`v1`, `v2`)
+// carry a digit but sit far under the length floor.
+const UUID_SEGMENT_RE =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+const OPAQUE_MIN_LENGTH = 12;
+
+function isOpaqueSegment(segment: string): boolean {
+  if (/^\d+$/.test(segment)) return true;
+  if (UUID_SEGMENT_RE.test(segment)) return true;
+  return segment.length >= OPAQUE_MIN_LENGTH && /\d/.test(segment);
+}
+
 // Bound an already-extracted pathname for use as the `route` tag. Callers pass
 // a pathname, never a full URL: the query string carries per-user parameters
 // (symbols, coordinates, langs) that would explode tag cardinality and defeat
 // the aggregation this tag exists to enable.
 function boundRouteTag(path: string): string {
-  return path.length > ROUTE_TAG_MAX_LENGTH ? path.slice(0, ROUTE_TAG_MAX_LENGTH) : path;
+  const normalized = path
+    .split('/')
+    .map((segment) => (isOpaqueSegment(segment) ? ':id' : segment))
+    .join('/');
+  return normalized.length > ROUTE_TAG_MAX_LENGTH
+    ? normalized.slice(0, ROUTE_TAG_MAX_LENGTH)
+    : normalized;
 }
 
 function markWmSessionDead(reason: WmSessionDeadReason, route: string): void {
@@ -108,15 +137,23 @@ function markWmSessionDead(reason: WmSessionDeadReason, route: string): void {
       // recovery and are therefore harmless, which makes an innocent route
       // look like the culprit. Trust the `route` tag below, not the
       // breadcrumbs.
-      s.addBreadcrumb?.({
-        category: 'wm-session',
-        level: 'warning',
-        message: `session recovery failed (${reason})`,
-        // The 401 that triggered recovery — not necessarily the last status
-        // seen, since `mint_failed` means the remint itself never returned a
-        // usable session.
-        data: { route, triggeringStatus: 401 },
-      });
+      // Its own try/catch, INSIDE the outer one: the breadcrumb is a
+      // nice-to-have, the capture is the only remote signal that anonymous
+      // browsing is degraded (#5245). Sharing one try would let a throwing
+      // addBreadcrumb (an extension patching window state, a malformed value,
+      // an SDK bug) skip the captureMessage below and silently drop the
+      // episode entirely.
+      try {
+        s.addBreadcrumb?.({
+          category: 'wm-session',
+          level: 'warning',
+          message: `session recovery failed (${reason})`,
+          // The 401 that triggered recovery — not necessarily the last status
+          // seen, since `mint_failed` means the remint itself never returned a
+          // usable session.
+          data: { route, triggeringStatus: 401 },
+        });
+      } catch { /* breadcrumb is best-effort; the capture below is not */ }
       s.captureMessage(
         'wm-session dead: anonymous API calls suppressed',
         { level: 'warning', tags: { kind: 'wm_session_dead', reason, route } },
@@ -294,43 +331,6 @@ export function isApiCallTarget(url: string, apiOrigin: string): boolean {
   return parsed.origin === apiOrigin && parsed.pathname.startsWith('/api/');
 }
 
-// Decide whether a 401 on this request is an EXPECTED auth denial rather than
-// evidence that the anonymous session cookie is dead — i.e. return it to the
-// caller instead of remint → replay → `markWmSessionDead`.
-//
-// Exported as a pure predicate (same reason as `isApiCallTarget` above) so the
-// truth table in tests/wm-session-premium-intent.test.mts can lock this
-// decision without standing up a DOM. A source-regex "wiring guard" cannot:
-// the tokens it greps for are all still present when the decision is wrong.
-//
-// Two ways in, and they are NOT redundant:
-//
-//   1. `PREMIUM_RPC_PATHS` — routes that are premium for every request. These
-//      already returned above, before any session work: a dedicated
-//      auth-injection layer owns their credential, and attaching ours would
-//      make that layer bail and the server 401 anyway (PR #3557 review).
-//
-//   2. The per-request premium-intent marker — routes that are premium per
-//      REQUEST and so cannot be represented by any path set (#5674).
-//      `/api/news/v1/summarize-article` is the live case: the gateway charges
-//      Pro auth for spend-bearing summarize calls but keeps `mode: 'translate'`
-//      free, and translate REQUIRES the anonymous wms_ cookie — so listing the
-//      path under (1) would break free translation for every anonymous
-//      visitor, while leaving it out sent each expected Pro denial through
-//      mint → replay → `markWmSessionDead('retry_401')`, blacking out ALL
-//      anonymous API calls for 15 minutes (#5219).
-//
-// CRITICAL — this suppresses only the RECOVERY, never the session machinery
-// itself. A marked request still mints and still travels with credentials.
-// `proFreshRpcFetch` sets `forcePremium` on the market-quote tape, whose paths
-// are NOT Pro-only: anonymous callers use them on the ordinary cache tier and
-// they 401 without a cookie (verified against prod). Skipping the whole flow
-// for marked requests would leave an anonymous first paint with no cookie to
-// send and no retry — a silently dead price tape.
-export function bypassesSessionRecovery(path: string, init?: RequestInit | null): boolean {
-  return PREMIUM_RPC_PATHS.has(path) || hasPremiumIntent(init);
-}
-
 function isCredentiallessPublicDataRequest(
   input: RequestInfo | URL,
   init: RequestInit | undefined,
@@ -472,12 +472,19 @@ export function installWmSessionFetchInterceptor(): void {
     // cookie. Hand it back untouched: reminting and replaying would produce the
     // identical 401 and then suppress every anonymous API call for 15 minutes.
     //
-    // Deliberately placed HERE and not beside the PREMIUM_RPC_PATHS bypass
-    // above: the request must still have minted a session and travelled with
-    // credentials, because `forcePremium` also covers routes anonymous callers
-    // legitimately use (the market-quote tape via proFreshRpcFetch), which 401
-    // when no cookie is sent at all.
-    if (bypassesSessionRecovery(path, init)) return resp;
+    // This is the SECOND of the two bypasses in this function, and the only one
+    // that can fire here — path-listed premium routes already returned far
+    // above, before any session work. The two are not interchangeable:
+    //
+    //   - PREMIUM_RPC_PATHS steps aside entirely (a dedicated auth-injection
+    //     layer owns those credentials; PR #3557 review).
+    //   - This one suppresses ONLY the recovery. The request must already have
+    //     minted a session and travelled with credentials, because
+    //     `forcePremium` also covers routes anonymous callers legitimately use
+    //     — the market-quote tape via proFreshRpcFetch — which 401 when no
+    //     cookie is sent at all. premiumFetch keeps that tape unmarked for the
+    //     same reason.
+    if (hasPremiumIntent(init)) return resp;
 
     // A slower initial request can report the old cookie after another caller
     // already recovered it. Replay with the newer cookie instead of clearing

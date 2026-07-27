@@ -3,8 +3,8 @@
 //
 //   1. `hasPremiumIntent(init)` — does this request carry premiumFetch's
 //      per-request premium marker?
-//   2. `bypassesSessionRecovery(path, init)` — should the interceptor skip the
-//      wms_ machinery for it entirely?
+//   2. The recovery-skip decision at the interceptor's 401 branch, which reads
+//      that same marker.
 //
 // Both are pure and exported specifically so this file can pin their shape
 // without a DOM. That matters more than usual here: the previous guard for
@@ -30,12 +30,9 @@ import {
   hasPremiumIntent,
   withPremiumIntent,
 } from '../src/services/premium-intent.ts';
-import { bypassesSessionRecovery } from '../src/services/wm-session.ts';
 import { PREMIUM_RPC_PATHS } from '../src/shared/premium-paths.ts';
 
 const SUMMARIZE = '/api/news/v1/summarize-article';
-const PREMIUM_PATH = '/api/market/v1/analyze-stock';
-const PLAIN_PATH = '/api/economic/v1/get-bls-series';
 
 describe('premium-intent marker', () => {
   it('round-trips through withPremiumIntent', () => {
@@ -82,43 +79,36 @@ describe('premium-intent marker', () => {
   });
 });
 
-describe('bypassesSessionRecovery truth table', () => {
-  const cases: Array<{ name: string; path: string; init?: RequestInit; expected: boolean }> = [
+describe('recovery-skip truth table', () => {
+  // The interceptor's 401 branch skips recovery on exactly `hasPremiumIntent`.
+  // Path-listed premium routes never reach that branch — they step aside far
+  // earlier, before any session work — so the decision here is marker-only.
+  const cases: Array<{ name: string; init?: RequestInit; expected: boolean }> = [
     {
-      name: 'path-listed premium route, unmarked — the pre-existing bypass',
-      path: PREMIUM_PATH,
-      init: undefined,
-      expected: true,
-    },
-    {
-      name: 'path-listed premium route, marked — still bypasses',
-      path: PREMIUM_PATH,
-      init: withPremiumIntent(),
-      expected: true,
-    },
-    {
-      name: 'ordinary anonymous route, unmarked — must keep full recovery',
-      path: PLAIN_PATH,
+      name: 'ordinary anonymous request, unmarked — must keep full recovery',
       init: undefined,
       expected: false,
     },
     {
       name: 'summarize WITH premium intent — the #5674 fix',
-      path: SUMMARIZE,
       init: withPremiumIntent({ method: 'POST' }),
       expected: true,
     },
     {
       name: 'summarize WITHOUT premium intent (free translate) — must keep recovery',
-      path: SUMMARIZE,
       init: { method: 'POST' },
+      expected: false,
+    },
+    {
+      name: 'pro-fresh market read stays unmarked — a 401 there IS a dead cookie',
+      init: { credentials: 'include' },
       expected: false,
     },
   ];
 
-  for (const { name, path, init, expected } of cases) {
+  for (const { name, init, expected } of cases) {
     it(name, () => {
-      assert.equal(bypassesSessionRecovery(path, init), expected);
+      assert.equal(hasPremiumIntent(init), expected);
     });
   }
 

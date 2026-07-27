@@ -374,6 +374,27 @@ describe('premiumFetch', () => {
     );
   });
 
+  it('does NOT mark the pro-fresh price tape — forcePremium means something else there', async () => {
+    // `forcePremium` is overloaded. On the summarize route it means "this call
+    // requires Pro, so a 401 is an expected denial". In proFreshRpcFetch it
+    // means "attach a Bearer opportunistically for a fresher cache tier" — the
+    // route is NOT Pro-only, anonymous callers use it, and it 401s when the
+    // wms_ cookie is rejected. Marking it would strip wm-session's 401 recovery
+    // from the anonymous price tape and turn a recoverable cookie blip into a
+    // dead panel.
+    setup({ clerkToken: null });
+
+    await proFreshRpcFetch(PRO_FRESH_MARKET_TARGET);
+
+    assert.equal(fetchMock.mock.calls.length, 1);
+    assert.equal(sentHeaders().get('Authorization'), null, 'anonymous: unauthenticated fallback');
+    assert.equal(
+      hasPremiumIntent(fallbackInit()),
+      false,
+      'a pro-fresh market read must keep wm-session 401 recovery',
+    );
+  });
+
   it('does not leak the marker into an authenticated request', async () => {
     setup({ clerkToken: 'clerk-jwt' });
 

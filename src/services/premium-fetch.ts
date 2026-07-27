@@ -299,7 +299,22 @@ export async function premiumFetch(
   // reaches this line is unauthenticated by definition — exactly the population
   // the marker is meant to describe, and never a request that already steps
   // aside via its own Authorization / X-WorldMonitor-Key header.
-  const unauthenticatedInit = isPremiumRpcTarget(input, forcePremium)
+  //
+  // EXCEPT the Pro-fresh cache tape. `forcePremium` carries two meanings, and
+  // only one of them licenses the marker:
+  //
+  //   - summarization.ts  — "this call requires Pro"; a 401 IS the expected
+  //     denial, so suppressing session recovery is correct.
+  //   - proFreshRpcFetch  — "attach a Bearer opportunistically for a fresher
+  //     cache tier". PRO_FRESH_CACHE_RPC_PATHS is explicitly an authentication
+  //     surface, not an authorization gate: anonymous and free callers keep
+  //     access on the ordinary cache policy, and those paths 401 when the wms_
+  //     cookie is rejected (verified against prod). Marking them would strip
+  //     the mint-and-replay that absorbs an HMAC rotation or cache flap, so a
+  //     recoverable blip would surface as a dead price tape instead.
+  const marksPremiumIntent =
+    isPremiumRpcTarget(input, forcePremium) && !isProFreshCacheRpcTarget(input);
+  const unauthenticatedInit = marksPremiumIntent
     ? withPremiumIntent(withCredentials(requestInit))
     : withCredentials(requestInit);
   const res = await globalThis.fetch(input, unauthenticatedInit);

@@ -52,9 +52,19 @@
  * interceptor reads the very same object `premiumFetch` passed to
  * `globalThis.fetch`.
  *
- * Pure module (zero imports) so it is loadable under `tsx --test` — sibling
- * convention to summarize-gate.ts, whose consumers pull in `@/services/i18n`
- * and therefore cannot be imported by the node test runner.
+ * ## Why this is its own module
+ *
+ * It is a contract between two peers, and neither should own it. Putting it in
+ * `premium-fetch.ts` would make `wm-session.ts` import that module's whole
+ * graph (and vice versa) purely to read one boolean, coupling the interceptor
+ * to the auth-injection layer it deliberately knows nothing about. Keeping the
+ * marker dependency-free lets either side import it for free.
+ *
+ * (Not, as an earlier revision of this comment claimed, because its consumers
+ * would otherwise be un-loadable under `tsx --test` — both `premium-fetch.ts`
+ * and `wm-session.ts` are already exercised there. That constraint is real for
+ * summarize-gate.ts, whose consumer pulls in `@/services/i18n`; it is not the
+ * reason this file exists.)
  */
 
 /**
