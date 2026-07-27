@@ -614,7 +614,19 @@ describe('wm-session refresh-on-401 (Layer 2)', () => {
     assert.equal(degradedEvents, 1, 'degraded event must still dispatch when telemetry throws');
   });
 
-  it('single-flights concurrent 401 recovery so only one retry verifies the mint', async () => {
+  it('single-flights the MINT across a concurrent 401 burst, and lets the burst corroborate itself', async () => {
+    // The invariant that matters is the MINT count: one shared mint for the
+    // whole burst, never one per caller (#5219 amplification).
+    //
+    // Each follower does re-send once with the freshly minted cookie, and that
+    // is load-bearing rather than waste (#5674): a dashboard fires its panels
+    // together, so the cookie-cannot-be-delivered failure arrives as ONE
+    // concurrent burst. If followers returned the leader's verdict without
+    // testing their own route, the burst would contribute a single strike and
+    // could never reach SESSION_DEAD_ROUTE_QUORUM — the global cooldown would be
+    // deferred to a later sequential round. Verifying its own route is also what
+    // keeps this honest in the other direction: a follower whose route is
+    // actually healthy gets a 200 and clears the corroboration evidence.
     memoryStorage.clear();
     let gatedAttempts = 0;
     let mintCalls = 0;
@@ -644,7 +656,17 @@ describe('wm-session refresh-on-401 (Layer 2)', () => {
       console.warn = originalWarn;
     }
     assert.equal(mintCalls, 2, 'all callers share the initial mint and one recovery mint');
-    assert.equal(gatedAttempts, 4, 'three initial 401s plus one verifier retry, never one retry per caller');
+    assert.equal(
+      gatedAttempts, 6,
+      'three initial 401s, the leader’s verifier retry, and one fresh-cookie re-send per follower — no extra MINTS',
+    );
+    // The behavioural delta this burst exists to pin: three distinct routes all
+    // rejected a demonstrably fresh cookie, which is the #5219/#5251 failure, so
+    // the quorum is satisfied by the burst itself rather than a later round.
+    assert.equal(
+      mod.isWmSessionDead(), true,
+      'a concurrent burst of distinct routes rejecting a fresh cookie must reach the quorum',
+    );
   });
 
   it('replays a delayed stale 401 after another caller has refreshed the session', async () => {
@@ -767,12 +789,32 @@ describe('wm-session route-scoped recovery failures (#5674)', () => {
     assert.equal(mod.toRouteTag('/api/user/prefs/9d4c7b2e'), '/api/user/prefs/:id');
     assert.equal(mod.toRouteTag('/api/thing/' + 'x'.repeat(64)), '/api/thing/:id');
 
+    // Real RPC method names embed small numbers. Collapsing these would throw
+    // away the only thing the tag exists to deliver (#5674 AC#1) while looking
+    // exactly like a legitimately-collapsed dynamic route family, so a triager
+    // would read `/api/climate/v1/:id` and dismiss it as unresolvable noise.
+    assert.equal(mod.toRouteTag('/api/climate/v1/get-co2-monitoring'), '/api/climate/v1/get-co2-monitoring');
+    assert.equal(mod.toRouteTag('/api/health/v1/get-pm25-exposure'), '/api/health/v1/get-pm25-exposure');
+    assert.equal(mod.toRouteTag('/api/economic/v1/get-g20-outlook'), '/api/economic/v1/get-g20-outlook');
+    // ...but a segment whose word STARTS with a digit, or that runs letters and
+    // digits together at id length, is an identifier and must still collapse.
+    assert.equal(mod.toRouteTag('/api/brief/2026-07-27'), '/api/brief/:id');
+    assert.equal(mod.toRouteTag('/api/thing/a1b2c3d4e5'), '/api/thing/:id');
+
     // Non-API paths never reach the wms_ branch; bucket rather than leak.
     assert.equal(mod.toRouteTag('/dashboard'), 'other');
     assert.equal(mod.toRouteTag(''), 'other');
 
-    const long = mod.toRouteTag(`/api/${Array.from({ length: 40 }, () => 'segment').join('/')}`);
-    assert.ok(long.length <= 96, `route tag must stay bounded, got ${long.length}`);
+    // Segment cap: many short segments are truncated by MAX_ROUTE_TAG_SEGMENTS.
+    const many = mod.toRouteTag(`/api/${Array.from({ length: 40 }, () => 'segment').join('/')}`);
+    assert.ok(many.length <= 96, `route tag must stay bounded, got ${many.length}`);
+    assert.equal(many.split('/').filter(Boolean).length, 8, 'segment cap applies');
+    // Length cap: 8 legal-but-long segments clear the segment cap, so this is
+    // the case that actually exercises MAX_ROUTE_TAG_LENGTH. The previous
+    // 40-short-segment input collapsed to 60 chars and never reached the slice.
+    const wide = mod.toRouteTag(`/api/${Array.from({ length: 7 }, () => 'x'.repeat(30)).join('/')}`);
+    assert.ok(wide.length > 60, 'pre-slice input must exceed the segment-cap-only length');
+    assert.equal(wide.length, 96, 'the length cap itself must truncate');
   });
 
   it('suppresses ONLY the offending route when a single endpoint 401s after a fresh mint', async () => {
@@ -822,7 +864,7 @@ describe('wm-session route-scoped recovery failures (#5674)', () => {
 
   it('does not re-mint for a route that already failed its fresh-cookie replay', async () => {
     memoryStorage.clear();
-    collectSentry();
+    const { captures } = collectSentry();
     const counters = { mints: 0, hits: new Map<string, number>() };
     currentFetchHandler = handlerRejecting(['/api/intelligence/v1/get-risk-scores'], counters);
 
@@ -844,6 +886,11 @@ describe('wm-session route-scoped recovery failures (#5674)', () => {
       console.warn = originalWarn;
     }
     assert.equal(counters.hits.get(url), 4, 'first attempt + one verifier retry, then one bare pass-through each');
+    // reportRouteRecoveryFailure is documented as bounded to one report per
+    // route per cooldown window. Without this assertion a regression that
+    // re-reported on every pass-through would keep the suite green while
+    // multiplying wm_session_route_401 volume in Sentry.
+    assert.equal(captures.length, 1, 'a struck route must not re-report on every pass-through hit');
   });
 
   it('still blacks out the session once a SECOND distinct route fails the fresh-cookie replay', async () => {
@@ -851,7 +898,7 @@ describe('wm-session route-scoped recovery failures (#5674)', () => {
     // HttpOnly cookie at all — makes every route 401, so the quorum is reached
     // and the global cooldown must still engage.
     memoryStorage.clear();
-    const { captures, crumbs } = collectSentry();
+    const { captures, crumbs, order } = collectSentry();
 
     let degradedEvents = 0;
     const g = globalThis as unknown as { dispatchEvent?: (ev: Event) => boolean };
@@ -894,6 +941,211 @@ describe('wm-session route-scoped recovery failures (#5674)', () => {
       crumbs.some((c) => c.data?.route === '/api/intelligence/v1/get-risk-scores' && c.data?.reason === 'retry_401'),
       'the otherwise-invisible 401 is recorded as a breadcrumb before the capture',
     );
+    // ORDERING is the load-bearing half of the AC#1 fix, not mere existence: the
+    // manual crumb only lands in the episode's event if it is added BEFORE the
+    // captureMessage. Assert the interleaving the harness collects, or a
+    // regression that swapped the two calls would keep every other assertion
+    // above green while restoring the invisible-401 blind spot.
+    const deadCapture = order.indexOf('capture:wm_session_dead');
+    const deadCrumb = order.indexOf('crumb:wm-session recovery failed');
+    assert.ok(deadCrumb >= 0 && deadCapture >= 0, `both events must be recorded, got ${JSON.stringify(order)}`);
+    assert.ok(deadCrumb < deadCapture, `breadcrumb must precede the capture, got ${JSON.stringify(order)}`);
+  });
+
+  it('does NOT black out when two route denials fall outside the corroboration window', async () => {
+    // Corroboration is temporal coincidence, not "twice in 15 minutes". Two
+    // unrelated endpoint bugs an hour apart are not evidence that the cookie is
+    // undeliverable, and blacking out a demonstrably healthy session on that
+    // basis is the exact harm #5674 is about.
+    memoryStorage.clear();
+    collectSentry();
+    const counters = { mints: 0, hits: new Map<string, number>() };
+    currentFetchHandler = handlerRejecting(['/api/'], counters);
+
+    const realNow = Date.now;
+    let clock = realNow.call(Date);
+    Date.now = () => clock;
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    try {
+      await wrappedFetch('https://api.worldmonitor.app/api/infrastructure/v1/list-service-statuses');
+      assert.equal(mod.isWmSessionDead(), false, 'one route is not yet proof');
+
+      // Well past SESSION_DEAD_CORROBORATION_MS but well inside the 15-minute
+      // per-route suppression window.
+      clock += 5 * 60 * 1000;
+      await wrappedFetch('https://api.worldmonitor.app/api/intelligence/v1/get-risk-scores');
+      assert.equal(
+        mod.isWmSessionDead(), false,
+        'a denial 5 minutes later is not corroborating evidence of a session-wide failure',
+      );
+    } finally {
+      Date.now = realNow;
+      console.warn = originalWarn;
+    }
+  });
+
+  it('lets a healthy sibling’s 200 retire the corroboration evidence', async () => {
+    // The #5674 diagnosis rested on siblings returning 200 in the very same
+    // second the client declared the session dead. A success is therefore
+    // counter-evidence and must void the quorum — while NOT releasing the struck
+    // route's own mint guard, which is what keeps #5219 amplification bounded.
+    memoryStorage.clear();
+    collectSentry();
+    const counters = { mints: 0, hits: new Map<string, number>() };
+    currentFetchHandler = handlerRejecting(
+      ['/api/intelligence/v1/get-risk-scores', '/api/economic/v1/get-bls-series'],
+      counters,
+    );
+
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    try {
+      await wrappedFetch('https://api.worldmonitor.app/api/intelligence/v1/get-risk-scores');
+      assert.equal(mod.isWmSessionDead(), false, 'one broken endpoint is not a dead session');
+
+      const healthy = await wrappedFetch('https://api.worldmonitor.app/api/news/v1/list-feed-digest');
+      assert.equal(healthy.status, 200, 'the sibling is fine, which is the whole point');
+
+      // A second, unrelated broken endpoint. Two failures — but a success in
+      // between proved the cookie is being delivered, so this is two endpoint
+      // bugs, not a session failure.
+      await wrappedFetch('https://api.worldmonitor.app/api/economic/v1/get-bls-series');
+      assert.equal(
+        mod.isWmSessionDead(), false,
+        'a proven-live session must not be blacked out by two unrelated endpoint denials',
+      );
+
+      const stillWorking = await wrappedFetch('https://api.worldmonitor.app/api/news/v1/list-feed-digest');
+      assert.equal(stillWorking.status, 200, 'every healthy panel keeps loading');
+
+      // The mint guard for the broken route must survive the sibling's success,
+      // or it would remint on every poll (~120/hr instead of ~4/hr).
+      const mintsBefore = counters.mints;
+      await wrappedFetch('https://api.worldmonitor.app/api/intelligence/v1/get-risk-scores');
+      assert.equal(
+        counters.mints, mintsBefore,
+        'a sibling’s success must NOT release the struck route’s mint guard (#5219)',
+      );
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  it('clears route strikes when a key-bound session replaces the anonymous one', async () => {
+    // establishWmKeySession is what migrateLegacyKeysToHttpOnlySession calls when
+    // a user holding a legacy widget/pro key upgrades. Strikes recorded against
+    // the anonymous identity say nothing about what the key-bound one may reach,
+    // so a paying user must not inherit a 15-minute suppression on their panel.
+    memoryStorage.clear();
+    collectSentry();
+    const gated = '/api/intelligence/v1/get-risk-scores';
+    const counters = { mints: 0, hits: new Map<string, number>() };
+    currentFetchHandler = (input) => {
+      const url = typeof input === 'string' ? input : (input instanceof URL ? input.href : input.url);
+      if (url.includes('/api/wm-session')) {
+        counters.mints += 1;
+        return Promise.resolve(new Response(JSON.stringify({ exp: FAR_FUTURE }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      counters.hits.set(url, (counters.hits.get(url) ?? 0) + 1);
+      const denied = url.includes(gated);
+      return Promise.resolve(new Response(denied ? 'denied' : 'ok', { status: denied ? 401 : 200 }));
+    };
+
+    const url = `https://api.worldmonitor.app${gated}`;
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    try {
+      await wrappedFetch(url);
+
+      // Struck: the next call short-circuits, spending neither a mint nor a retry.
+      let mintsBefore = counters.mints;
+      let hitsBefore = counters.hits.get(url) ?? 0;
+      await wrappedFetch(url);
+      assert.equal(counters.mints, mintsBefore, 'a struck route spends no mint');
+      assert.equal(counters.hits.get(url), hitsBefore + 1, 'a struck route passes through exactly once');
+
+      assert.equal(await mod.establishWmKeySession({ proKey: 'pk_test' }), true, 'the key session is established');
+
+      // Still denied, so the observable difference is whether recovery is
+      // ATTEMPTED. Asserting a 200 here instead would pass even with the clear
+      // removed, because a route that starts succeeding returns at the success
+      // branch before the struck check is ever consulted.
+      mintsBefore = counters.mints;
+      hitsBefore = counters.hits.get(url) ?? 0;
+      await wrappedFetch(url);
+      assert.equal(
+        counters.mints, mintsBefore + 1,
+        'the upgraded identity must get a fresh recovery attempt, not inherit the anonymous strike',
+      );
+      assert.equal(counters.hits.get(url), hitsBefore + 2, 'initial attempt plus the verifier retry');
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  it('gives a struck route the free newer-cookie replay when the session has moved on', async () => {
+    // The struck-route short-circuit must sit BELOW the sessionGeneration check.
+    // That replay spends no mint, so denying it to a struck route pins the route
+    // to a stale 401 for the rest of its 15-minute window even after an
+    // unrelated caller has already obtained a cookie that works.
+    memoryStorage.clear();
+    collectSentry();
+    const struck = 'https://api.worldmonitor.app/api/intelligence/v1/get-risk-scores';
+    let mints = 0;
+    let struckAttempts = 0;
+    let bootstrapAttempts = 0;
+    let releaseStale401: (() => void) | null = null;
+    currentFetchHandler = (input) => {
+      const url = typeof input === 'string' ? input : (input instanceof URL ? input.href : input.url);
+      if (url.includes('/api/wm-session')) {
+        mints += 1;
+        return Promise.resolve(new Response(JSON.stringify({ exp: FAR_FUTURE }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      if (url.includes('/api/bootstrap')) {
+        bootstrapAttempts += 1;
+        // 401 once, then accept — this is what advances sessionGeneration.
+        return Promise.resolve(new Response('x', { status: bootstrapAttempts === 1 ? 401 : 200 }));
+      }
+      struckAttempts += 1;
+      // Attempts 1-2 strike the route. Attempt 3 hangs, holding a stale 401 open
+      // across another caller's refresh. Attempt 4 is the replay, which works.
+      if (struckAttempts === 3) {
+        return new Promise((resolve) => { releaseStale401 = () => resolve(new Response('stale', { status: 401 })); });
+      }
+      return Promise.resolve(new Response('x', { status: struckAttempts >= 4 ? 200 : 401 }));
+    };
+
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    try {
+      await wrappedFetch(struck);
+      assert.equal(struckAttempts, 2, 'the route is struck after its fresh-cookie replay fails');
+
+      const delayed = wrappedFetch(struck);
+      await new Promise((resolve) => { setImmediate(resolve); });
+      assert.ok(releaseStale401, 'the struck route should be awaiting its stale 401');
+
+      // An unrelated caller recovers the session, advancing sessionGeneration.
+      const other = await wrappedFetch('https://api.worldmonitor.app/api/bootstrap');
+      assert.equal(other.status, 200, 'the unrelated caller recovers normally');
+
+      releaseStale401?.();
+      const replayed = await delayed;
+      assert.equal(
+        replayed.status, 200,
+        'a struck route must still take the mint-free newer-cookie replay once the generation advances',
+      );
+      assert.equal(struckAttempts, 4, 'the stale 401 was replayed rather than handed back');
+    } finally {
+      console.warn = originalWarn;
+    }
   });
 
   it('trips the global cooldown immediately when the mint itself fails', async () => {

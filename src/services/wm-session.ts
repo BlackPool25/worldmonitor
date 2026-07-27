@@ -42,9 +42,17 @@ const SESSION_DEAD_COOLDOWN_MS = 15 * 60 * 1000;
 // Require corroboration from this many DISTINCT routes before suppressing all
 // anonymous traffic. The failure mode #5219/#5251 originally targeted — the
 // browser cannot deliver the HttpOnly cookie at all — makes EVERY route 401,
-// so it still reaches the quorum (after one extra mint) and still engages the
-// global cooldown.
+// so it still reaches the quorum and still engages the global cooldown.
 const SESSION_DEAD_ROUTE_QUORUM = 2;
+// How close together those distinct denials must fall to count as ONE
+// session-wide failure. This is deliberately NOT SESSION_DEAD_COOLDOWN_MS: the
+// evidence that justifies a blackout is temporal coincidence (the sampled
+// episodes showed siblings returning 200 in the very same second), so a horizon
+// three orders of magnitude wider would let two unrelated endpoint bugs 14
+// minutes apart black out a demonstrably healthy session — the exact harm this
+// mechanism exists to remove. The per-route suppression window below stays at
+// SESSION_DEAD_COOLDOWN_MS; only the corroboration arithmetic uses this.
+const SESSION_DEAD_CORROBORATION_MS = 60 * 1000;
 export const WM_SESSION_DEGRADED_EVENT = 'wm-session-degraded';
 
 type WmSessionDeadReason = 'mint_failed' | 'retry_401';
@@ -61,10 +69,24 @@ let interceptorInstalled = false;
 let nativeSessionFetch: typeof fetch | null = null;
 let sessionDeadUntil = 0;
 let sentryEnqueue: typeof enqueueSentryCall = enqueueSentryCall;
-// Routes whose replay-with-a-fresh-cookie still 401'd, mapped to the moment
-// their strike lapses. Doubles as the corroboration counter and as the
-// per-route suppression list.
+// Two pieces of state with deliberately different lifetimes. Collapsing them
+// into one map conflates "stop spending mints on this endpoint" with "the whole
+// session looks broken", and those need opposite clearing rules: a sibling's 200
+// must NOT release the mint guard (that reopens the #5219 request+mint+retry
+// loop — a broken route re-polled every 30s would remint every 30s), but it MUST
+// void the session-wide evidence.
+//
+// 1. Suppression — raw pathname -> moment the strike lapses. Keyed by the RAW
+//    path because one id of a dynamic route being denied says nothing about its
+//    siblings. Cleared only by expiry, by its own route succeeding, by the
+//    global cooldown, or by a key-bound session replacing the identity.
 const routeStrikes = new Map<string, number>();
+// 2. Corroboration evidence — bounded route TAG -> when it failed. Keyed by the
+//    TAG so two ids of one dynamic endpoint cannot masquerade as two
+//    independent routes and fake a quorum. Any successful credentialed response
+//    clears it: a 200 proves the cookie is being delivered, which is precisely
+//    the counter-evidence the #5674 diagnosis rested on.
+const recentRouteFailures = new Map<string, number>();
 
 // Sentry tags must stay low-cardinality. Interceptor traffic only ever targets
 // our own /api/ surface, but dynamic segments (`/api/v2/shipping/webhooks/
@@ -82,10 +104,18 @@ export function toRouteTag(pathname: string): string {
   if (!pathname.startsWith('/api/')) return 'other';
   const segments = pathname.split('/').filter(Boolean).slice(0, MAX_ROUTE_TAG_SEGMENTS);
   const safe = segments.map((segment) => {
-    // `v1`/`v2` are real, fixed route segments; every other digit-bearing or
-    // over-long segment is treated as an identifier.
+    // `v1`/`v2` are real, fixed route segments.
     if (/^v\d+$/.test(segment)) return segment;
-    if (/\d/.test(segment) || segment.length > 32 || !/^[A-Za-z][A-Za-z._-]*$/.test(segment)) return ':id';
+    if (segment.length > 32 || !/^[A-Za-z][A-Za-z0-9._-]*$/.test(segment)) return ':id';
+    // Classify on identifier SHAPE, not on merely containing a digit. Real RPC
+    // method names embed small numbers (`get-co2-monitoring`, `get-pm25-*`,
+    // `get-g20-*`) and collapsing those to `:id` would destroy the one thing
+    // this tag exists to deliver — naming the offending endpoint (#5674 AC#1) —
+    // while looking indistinguishable from a genuinely dynamic route family.
+    // An identifier instead has a word that STARTS with a digit (`8f2a11`,
+    // `2026`, `9d4c7b2e`) or a long letter+digit run (uuid/hash chunks).
+    const words = segment.split(/[-._]/);
+    if (words.some((word) => /^\d/.test(word) || (word.length >= 6 && /\d/.test(word)))) return ':id';
     return segment;
   });
   return `/${safe.join('/')}`.slice(0, MAX_ROUTE_TAG_LENGTH);
@@ -113,14 +143,45 @@ function isRouteStruck(route: string): boolean {
   return false;
 }
 
-/** Record a failed fresh-mint replay for `route`; returns the live strike count. */
+/**
+ * Record a failed fresh-mint replay for `route`, and return how many DISTINCT
+ * routes have failed inside the corroboration window — i.e. how much evidence
+ * there is that the session itself (not this one endpoint) is broken.
+ *
+ * The two stores move on different clocks by design: suppression lasts
+ * SESSION_DEAD_COOLDOWN_MS so a known-bad endpoint stops costing mints, while
+ * the returned count only sees failures from the last
+ * SESSION_DEAD_CORROBORATION_MS.
+ */
 function recordRouteStrike(route: string): number {
   const now = Date.now();
   for (const [struck, until] of routeStrikes) {
     if (until <= now) routeStrikes.delete(struck);
   }
   routeStrikes.set(route, now + SESSION_DEAD_COOLDOWN_MS);
-  return routeStrikes.size;
+
+  const corroborationFloor = now - SESSION_DEAD_CORROBORATION_MS;
+  for (const [tag, at] of recentRouteFailures) {
+    if (at <= corroborationFloor) recentRouteFailures.delete(tag);
+  }
+  recentRouteFailures.set(toRouteTag(route), now);
+  return recentRouteFailures.size;
+}
+
+/**
+ * A credentialed request just succeeded, so the browser IS delivering the
+ * session cookie. Retire the evidence that argued otherwise.
+ *
+ * Asymmetric on purpose: the succeeding route's own suppression is released
+ * (it demonstrably works again, so letting it back into recovery costs nothing),
+ * but a SIBLING's success must not release a struck route's suppression — that
+ * would put the broken endpoint back through mint-on-every-poll, which is the
+ * amplification #5219 exists to prevent. Session-wide evidence, by contrast, is
+ * void the moment anything succeeds.
+ */
+function noteRouteSuccess(route: string): void {
+  routeStrikes.delete(route);
+  if (recentRouteFailures.size > 0) recentRouteFailures.clear();
 }
 
 function addSessionBreadcrumb(message: string, data: Record<string, string>): void {
@@ -148,6 +209,7 @@ function markWmSessionDead(reason: WmSessionDeadReason, route: string): void {
   // call is already blocked, so keeping strikes alive past it would only make
   // the first post-cooldown failure trip the quorum on stale evidence.
   routeStrikes.clear();
+  recentRouteFailures.clear();
   try { sessionStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
   if (alreadyDead) return;
   console.warn('[wm-session] refreshed HttpOnly session cookie was still rejected; suppressing anonymous API calls briefly');
@@ -296,6 +358,7 @@ export async function establishWmKeySession(keys: { widgetKey?: string; proKey?:
   // A key-bound session is a clean slate: strikes recorded against the old
   // anonymous identity say nothing about what this one may reach.
   routeStrikes.clear();
+  recentRouteFailures.clear();
   saveToStorage(fresh);
   return true;
 }
@@ -322,6 +385,7 @@ export function __resetWmSessionForTests(): void {
   interceptorInstalled = false;
   sessionDeadUntil = 0;
   routeStrikes.clear();
+  recentRouteFailures.clear();
   sentryEnqueue = enqueueSentryCall;
   fetchNewSessionTimeoutMs = 10_000;
 }
@@ -505,6 +569,18 @@ export function installWmSessionFetchInterceptor(): void {
       return original(src, { ...withCredentials(init), headers: h });
     };
 
+    // Replay once with whatever cookie is current now and record what that
+    // proves about THIS route. Used by both mint-free replay paths below (the
+    // stale-generation branch and the concurrent-burst follower branch), which
+    // must report identically — a 401 that survives a newer cookie is
+    // fresh-cookie evidence wherever it is observed.
+    const replayAndReport = async (): Promise<Response> => {
+      const replayed = await sendWith(new Headers(headers), requestClone ?? input);
+      if (replayed.status === 401) noteRecoveryFailure('retry_401', path);
+      else noteRouteSuccess(path);
+      return replayed;
+    };
+
     const requestSessionGeneration = sessionGeneration;
     const resp = await sendWith(headers, input);
 
@@ -513,20 +589,36 @@ export function installWmSessionFetchInterceptor(): void {
     // had no token to begin with OR the token we sent was rejected, mint a
     // fresh one and replay ONCE. Premium routes already returned above; the
     // wms_ token is irrelevant there.
-    if (resp.status !== 401) return resp;
+    if (resp.status !== 401) {
+      // Anything other than 401 means the server did not reject our credential,
+      // so neither "this route is denied" nor "the session is dead" is supported
+      // any more. Deliberately keyed on "not 401" rather than on 2xx: this
+      // module's whole model is that 401 is the session signal, and biasing the
+      // other way (treating a 500 as continued evidence of a dead session) is
+      // what produces blackouts of healthy sessions. See noteRouteSuccess for
+      // why this releases the session-wide evidence but not a sibling's guard.
+      noteRouteSuccess(path);
+      return resp;
+    }
+
+    // A slower initial request can report the old cookie after another caller
+    // already recovered it. Replay with the newer cookie instead of clearing
+    // that success and spending another mint.
+    //
+    // Checked BEFORE the struck-route short-circuit below: this branch spends no
+    // mint, so a struck route must not be denied it — otherwise a route stays
+    // pinned to a stale 401 for the rest of its 15-minute window even after some
+    // unrelated caller has already obtained a cookie that would work. A 401 that
+    // survives the newer cookie IS fresh-cookie evidence, so report it.
+    if (sessionGeneration !== requestSessionGeneration) {
+      return replayAndReport();
+    }
 
     // This route already 401'd once with a demonstrably fresh cookie. Running
     // recovery again would re-derive the same denial at the cost of another
     // mint, so hand the server's own verdict back to the caller untouched —
     // and, critically, leave the session (and every other route) alone.
     if (isRouteStruck(path)) return resp;
-
-    // A slower initial request can report the old cookie after another caller
-    // already recovered it. Replay with the newer cookie instead of clearing
-    // that success and spending another mint.
-    if (sessionGeneration !== requestSessionGeneration) {
-      return sendWith(new Headers(headers), requestClone ?? input);
-    }
 
     // Invalidate the cached expiry (and its sessionStorage twin) before
     // re-minting. ensureWmSession() is opportunistic — without invalidation,
@@ -561,7 +653,18 @@ export function installWmSessionFetchInterceptor(): void {
     }
 
     const verified = await recoveryInFlight;
-    if (!verified) return resp;
+    if (!verified) {
+      // The leader's replay failed, but that verdict is about the LEADER's route.
+      // A dashboard launches its panels together, so the session-wide failure
+      // this quorum exists to catch (cookie undeliverable => every route 401s)
+      // arrives as one concurrent burst — and if every follower just returned
+      // here, the burst would contribute exactly ONE strike and never corroborate
+      // itself. A fresh cookie does exist unless the mint itself failed (which
+      // already blacked out globally), so replay once and report our OWN route's
+      // verdict. Costs no mint: recoveryInFlight already spent the only one.
+      if (isWmSessionDead()) return resp;
+      return replayAndReport();
+    }
     return sendWith(new Headers(headers), requestClone ?? input);
   };
 

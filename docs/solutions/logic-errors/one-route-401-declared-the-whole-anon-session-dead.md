@@ -60,6 +60,8 @@ sentryEnqueue((s) => s.captureMessage(
 
 `toRouteTag` is exported for direct unit coverage — the cardinality bound *is* the feature, and it is not observable from outside the interceptor. It preserves real static routes verbatim and `v1`/`v2` version segments, collapses id-shaped segments to `:id`, buckets non-`/api/` paths to `other`, and caps at 8 segments / 96 chars.
 
+The collapse rule has to key on identifier *shape*, not on merely containing a digit. Real RPC method names embed small numbers (`get-co2-monitoring`, `get-pm25-*`, `get-g20-*`), and a digit-presence rule reported them as `/api/climate/v1/:id` — destroying the one thing the tag exists to deliver while looking indistinguishable from a legitimately-collapsed dynamic family, so a triager would read it as unresolvable noise. An identifier instead has a word that *starts* with a digit (`8f2a11`, `2026`, `9d4c7b2e`) or a long letter+digit run.
+
 **2. Require corroboration before the global blackout.** A lone route gets per-route suppression and its own `kind`; two distinct routes are needed to black out the tab:
 
 ```ts
@@ -72,13 +74,32 @@ function noteRecoveryFailure(reason: WmSessionDeadReason, route: string): void {
 
 A struck route also short-circuits before recovery (`if (isRouteStruck(path)) return resp;`), returning the server's real 401 instead of spending another mint — preserving the request+mint+retry amplification guard that motivated #5219.
 
+**3. Keep suppression and evidence in separate stores.** Review of the first draft found that one map cannot do both jobs, because the two need opposite clearing rules — and getting that wrong is how the original bug comes back:
+
+| | `routeStrikes` (suppression) | `recentRouteFailures` (evidence) |
+|---|---|---|
+| keyed by | raw pathname | bounded route tag |
+| lifetime | `SESSION_DEAD_COOLDOWN_MS` (15 min) | `SESSION_DEAD_CORROBORATION_MS` (60 s) |
+| purpose | stop spending mints on a known-bad endpoint | decide whether the *session* is broken |
+| a sibling's 200 | must NOT clear it | clears it |
+
+Three review findings all reduced to conflating these:
+
+- **Window.** Reusing the 15-minute cooldown as the corroboration horizon let two unrelated endpoint bugs 14 minutes apart black out a healthy session — the original harm, re-entering through the fix. The justifying evidence was denials *in the same second*, so the horizon has to match.
+- **Success as counter-evidence.** Nothing retracted a strike when a route succeeded, so the very signal the diagnosis rested on ("siblings returned 200 in the same second") was never consulted. The tempting one-line fix — `routeStrikes.clear()` on any success — is **wrong**: it releases the *failing* route's mint guard too, so a broken endpoint re-polled every 30 s reminted every 30 s (~120 mints/hour against ~4 with suppression intact). Independent validation caught this before it shipped; it is exactly the #5219 amplification, reintroduced by the fix for #5674.
+- **Keying.** Evidence keyed by raw pathname let two ids of one dynamic endpoint pose as two independent routes and fake a quorum. Suppression must stay raw-keyed (one id being denied says nothing about its siblings), so the two stores genuinely need different keys.
+
+**4. A concurrent burst has to be able to corroborate itself.** `recoveryInFlight` single-flights the mint, and originally every follower returned the leader's verdict untested — so a dashboard firing 10+ panels at once produced exactly ONE strike and could not reach a quorum of 2 from the burst that *is* the session-wide failure. Followers now replay once with the already-minted cookie and report their own route's verdict. That costs no additional mint, and it stays honest in both directions: a follower whose route is actually healthy gets a 200, which retracts the evidence.
+
+**5. Order the struck-route short-circuit below the generation replay.** The `sessionGeneration` replay spends no mint, so denying it to a struck route pinned that route to a stale 401 for the remainder of its window even after an unrelated caller had already obtained a working cookie.
+
 ## Why This Works
 
 `mint_failed` and `retry_401` carry different scopes, and the old code conflated them. `mint_failed` means `/api/wm-session` itself returned nothing usable, so no cookie exists for *any* route — session-wide by construction, and it still trips immediately. `retry_401` only ever observed **one** route.
 
 The failure #5219/#5251 originally targeted — the browser cannot deliver the HttpOnly cookie at all — makes *every* route 401, so it still reaches the quorum and still engages the cooldown, at a cost of one extra mint. The protection is preserved; only the over-generalization is removed.
 
-The strike map is self-bounding: the quorum is 2 and `markWmSessionDead` clears it, so it never holds more than two entries.
+The evidence map is self-bounding: the quorum is 2 and `markWmSessionDead` clears it, so it never holds more than two entries. The suppression map is bounded differently — one entry per distinct failing pathname, each expiring after 15 minutes — so a tab with several independently-broken endpoints can hold more than two at once. That is intended: each entry is one endpoint's mint guard.
 
 ## Prevention
 
