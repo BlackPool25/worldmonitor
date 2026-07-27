@@ -43,6 +43,7 @@ const originalEnv = { ...process.env };
 // before reaching dispatch. Values are deliberately benign and aligned with
 // each tool's documented format (e.g. ISO 3166-1 alpha-2 for country_code).
 const REQUIRED_ARGS = {
+  classify_event: { text: 'Iran closes Strait of Hormuz to tanker traffic' },
   get_country_brief: { country_code: 'US' },
   get_country_risk: { country_code: 'US' },
   get_consumer_prices: { country_code: 'US' },
