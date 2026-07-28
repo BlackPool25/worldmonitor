@@ -619,6 +619,27 @@ export interface BillingVerificationDenial {
 }
 
 /**
+ * The "we could not verify" denial, built in ONE place.
+ *
+ * Two situations produce it and they must not drift apart on the wire: the
+ * synthesized `verificationUnavailable` marker below, and a caller that already
+ * knows no lookup could have answered — `getEntitlements` returns null WITHOUT
+ * attempting one when the backend is unconfigured, so an absent row there is a
+ * deploy defect rather than a verdict about the account (#5619).
+ */
+export function unverifiableEntitlementDenial(
+  retryAfterSeconds?: number,
+): BillingVerificationDenial {
+  return {
+    retryable: true,
+    code: 'entitlement_verification_unavailable',
+    retryAfterSeconds: clampRetryAfterSeconds(retryAfterSeconds),
+    message: 'Unable to verify API access',
+    status: 503,
+  };
+}
+
+/**
  * The billing-verification decision, as a pure predicate over an entitlement
  * row — no Response, no headers, no transport.
  *
@@ -638,15 +659,9 @@ export function classifyBillingVerification(
   entitlements: BillingVerificationInput | null | undefined,
 ): BillingVerificationDenial | null {
   if (entitlements?.verificationUnavailable) {
-    // Transient lookup failure: same wire contract as server/gateway.ts's
-    // wm_-key null-entitlement branch (docs/usage-errors.mdx).
-    return {
-      retryable: true,
-      code: 'entitlement_verification_unavailable',
-      retryAfterSeconds: clampRetryAfterSeconds(entitlements.retryAfterSeconds),
-      message: 'Unable to verify API access',
-      status: 503,
-    };
+    // Lookup failure: same wire contract as server/gateway.ts's wm_-key
+    // null-entitlement branch (docs/usage-errors.mdx).
+    return unverifiableEntitlementDenial(entitlements.retryAfterSeconds);
   }
 
   const status = entitlements?.billingStatus;
