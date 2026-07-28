@@ -1366,7 +1366,7 @@ export const RPC_TOOLS: ToolDef[] = [
     // 64 records max, each carrying a title plus a free-text summary — sized
     // one step below the timeline tool, which returns up to 200 of the same.
     _outputBudgetBytes: 131072,
-    description: "Semantic search over WorldMonitor's accumulating store of past intelligence events (Pro), ranked by similarity. Records are appended as the conflict, military, and energy seeders publish, so the store starts at activation and deepens from there: a thin or empty result means that window is not covered yet, not that nothing happened. Optional domain, country, and occurredAt bounds narrow the candidates before ranking. The route embeds your query on every call, so it is rate-limited fail-closed — prefer one well-phrased query over several near-duplicates.",
+    description: "Semantic search over WorldMonitor's accumulating store of past intelligence events (Pro), ranked by similarity. Records are appended as the conflict, military, and energy seeders publish, so the store starts at activation and deepens from there: a thin or empty result means that window is not covered yet, not that nothing happened. Optional domain, country, and occurredAt bounds are applied to the ranked candidate window, so a narrow filter over a broad store can return fewer than the limit even when older matches exist — widen the window or drop a filter before concluding the history is thin. The route embeds your query on every call, so it is rate-limited fail-closed — prefer one well-phrased query over several near-duplicates.",
     inputSchema: {
       type: 'object',
       properties: {

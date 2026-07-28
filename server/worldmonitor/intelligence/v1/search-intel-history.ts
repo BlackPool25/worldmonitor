@@ -5,6 +5,8 @@ import type {
   SearchIntelHistoryResponse,
 } from '../../../../src/generated/server/worldmonitor/intelligence/v1/service_server';
 import {
+  normalizeCountry,
+  normalizeDomain,
   embedQueryText,
   intelHistorySearch,
   resolveLimit,
@@ -15,6 +17,14 @@ const DEFAULT_LIMIT = 20;
 
 /** Hard cap — SEARCH_MAX_LIMIT in convex/intelHistory.ts. */
 const MAX_LIMIT = 64;
+
+/**
+ * Matches the proto's documented `max_len`, enforced HERE because the gateway
+ * supplies no `validateRequest` (server/gateway.ts) — buf.validate annotations
+ * document the contract but do not run. Unclamped, an arbitrarily long string
+ * would be shipped to a paid embeddings provider on every call.
+ */
+const MAX_QUERY_LEN = 500;
 
 /**
  * SearchIntelHistory handler.
@@ -38,7 +48,7 @@ export const searchIntelHistory: IntelligenceServiceHandler['searchIntelHistory'
   _ctx: ServerContext,
   req: SearchIntelHistoryRequest,
 ): Promise<SearchIntelHistoryResponse> => {
-  const query = typeof req.query === 'string' ? req.query : '';
+  const query = typeof req.query === 'string' ? req.query.slice(0, MAX_QUERY_LEN) : '';
   const limit = resolveLimit(req.limit, DEFAULT_LIMIT, MAX_LIMIT);
 
   const embedding = await embedQueryText(query);
@@ -48,8 +58,8 @@ export const searchIntelHistory: IntelligenceServiceHandler['searchIntelHistory'
 
   const result = await intelHistorySearch({
     embedding,
-    domain: req.domain,
-    country: req.country,
+    domain: normalizeDomain(req.domain),
+    country: normalizeCountry(req.country),
     from: req.from,
     to: req.to,
     limit,

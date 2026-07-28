@@ -140,6 +140,69 @@ describe('query-time normalization parity', () => {
 
 // ── SearchIntelHistory ──────────────────────────────────────────────────────
 
+// ── scope normalization ─────────────────────────────────────────────────────
+
+describe('scope normalization', () => {
+  // Convex compares scope values with eq against what the seeders wrote, so a
+  // lower-case or padded country silently matches nothing — indistinguishable,
+  // to the caller, from "we have no history for that country".
+  it('upper-cases and trims country before querying', async () => {
+    stubFetch({
+      [CONVEX_TIMELINE_URL]: () => jsonResponse({ records: [convexRecord] }),
+    });
+
+    await getIntelTimeline(ctx, { domain: '', country: ' ua ', from: 0, to: 0, limit: 0 });
+
+    const call = calls.find((c) => c.url === CONVEX_TIMELINE_URL);
+    assert.equal(call?.body?.country, 'UA');
+  });
+
+  it('lower-cases and trims domain before querying', async () => {
+    stubFetch({
+      [CONVEX_TIMELINE_URL]: () => jsonResponse({ records: [] }),
+    });
+
+    await getIntelTimeline(ctx, { domain: ' Conflict ', country: '', from: 0, to: 0, limit: 0 });
+
+    const call = calls.find((c) => c.url === CONVEX_TIMELINE_URL);
+    assert.equal(call?.body?.domain, 'conflict');
+  });
+
+  // Whitespace must not satisfy the "at least one scope" requirement and then
+  // match nothing downstream.
+  it('rejects a whitespace-only scope as unscoped', async () => {
+    stubFetch({});
+    await assert.rejects(
+      getIntelTimeline(ctx, { domain: '   ', country: '  ', from: 0, to: 0, limit: 0 }),
+      /at least one of domain or country/i,
+    );
+    assert.equal(calls.length, 0, 'no upstream call for an unscoped read');
+  });
+});
+
+// ── embedding dimension parity ──────────────────────────────────────────────
+
+describe('embedding dimension contract', () => {
+  // Three independent literals must agree or the store silently breaks: the
+  // seeder embeds at EMBED_DIMS, Convex validates against
+  // INTEL_HISTORY_EMBED_DIMS, and the vector index is declared with a hardcoded
+  // `dimensions:`. A mismatch is not a type error — it surfaces as every insert
+  // being rejected at runtime, after deploy.
+  it('pins EMBED_DIMS, INTEL_HISTORY_EMBED_DIMS, and the vector index together', () => {
+    const convexSrc = readFileSync(resolve(root, 'convex/intelHistory.ts'), 'utf8');
+    const convexDims = convexSrc.match(/INTEL_HISTORY_EMBED_DIMS\s*=\s*(\d+)/);
+    assert.ok(convexDims, 'INTEL_HISTORY_EMBED_DIMS must be a numeric literal');
+    assert.equal(Number(convexDims[1]), EMBED_DIMS);
+
+    const schemaSrc = readFileSync(resolve(root, 'convex/schema.ts'), 'utf8');
+    const indexBlock = schemaSrc.match(
+      /vectorIndex\("by_embedding",\s*\{[\s\S]*?dimensions:\s*(\d+)/,
+    );
+    assert.ok(indexBlock, 'the by_embedding vector index must declare dimensions');
+    assert.equal(Number(indexBlock[1]), EMBED_DIMS);
+  });
+});
+
 // ── query-vector cache ──────────────────────────────────────────────────────
 
 describe('query-vector cache', () => {

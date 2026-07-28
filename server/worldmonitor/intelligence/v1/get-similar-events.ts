@@ -5,6 +5,8 @@ import type {
   GetSimilarEventsResponse,
 } from '../../../../src/generated/server/worldmonitor/intelligence/v1/service_server';
 import {
+  normalizeCountry,
+  normalizeDomain,
   embedQueryText,
   intelHistorySearch,
   resolveLimit,
@@ -19,6 +21,14 @@ const DEFAULT_LIMIT = 10;
 
 /** Hard cap, well inside SEARCH_MAX_LIMIT in convex/intelHistory.ts. */
 const MAX_LIMIT = 32;
+
+/**
+ * Matches the proto's documented `max_len`, enforced HERE because the gateway
+ * supplies no `validateRequest` (server/gateway.ts) — buf.validate annotations
+ * document the contract but do not run. Unclamped, an arbitrarily long string
+ * would be shipped to a paid embeddings provider on every call.
+ */
+const MAX_SITUATION_LEN = 1000;
 
 /**
  * GetSimilarEvents handler.
@@ -36,7 +46,8 @@ export const getSimilarEvents: IntelligenceServiceHandler['getSimilarEvents'] = 
   _ctx: ServerContext,
   req: GetSimilarEventsRequest,
 ): Promise<GetSimilarEventsResponse> => {
-  const situation = typeof req.situation === 'string' ? req.situation : '';
+  const situation =
+    typeof req.situation === 'string' ? req.situation.slice(0, MAX_SITUATION_LEN) : '';
   const limit = resolveLimit(req.limit, DEFAULT_LIMIT, MAX_LIMIT);
 
   const embedding = await embedQueryText(situation);
@@ -46,8 +57,8 @@ export const getSimilarEvents: IntelligenceServiceHandler['getSimilarEvents'] = 
 
   const result = await intelHistorySearch({
     embedding,
-    domain: req.domain,
-    country: req.country,
+    domain: normalizeDomain(req.domain),
+    country: normalizeCountry(req.country),
     limit,
   });
   if (!result) {

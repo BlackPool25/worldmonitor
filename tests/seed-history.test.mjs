@@ -252,7 +252,7 @@ describe('appendSeedHistory env guard', () => {
       },
     );
 
-    assert.deepEqual(result, { inserted: 1, skipped: 0, chunks: 1 });
+    assert.deepEqual(result, { inserted: 1, skipped: 0, chunks: 1, abandoned: 0, failedChunks: 0 });
     assert.equal(calls[0].url, 'https://fearless-otter-42.convex.site/relay/intel-history');
   });
 });
@@ -274,7 +274,7 @@ describe('appendSeedHistory', () => {
       { fetchImpl, embed, env: ENV },
     );
 
-    assert.deepEqual(result, { inserted: 0, skipped: 0, chunks: 0 });
+    assert.deepEqual(result, { inserted: 0, skipped: 0, chunks: 0, abandoned: 0, failedChunks: 0 });
     assert.equal(calls.length, 0);
     assert.equal(batches.length, 0);
   });
@@ -298,7 +298,7 @@ describe('appendSeedHistory', () => {
       { fetchImpl, embed, env: ENV },
     );
 
-    assert.deepEqual(result, { inserted: 103, skipped: 17, chunks: 3 });
+    assert.deepEqual(result, { inserted: 103, skipped: 17, chunks: 3, abandoned: 0, failedChunks: 0 });
     assert.equal(calls.length, 3);
     assert.deepEqual(
       calls.map((c) => c.body.records.length),
@@ -376,6 +376,79 @@ describe('appendSeedHistory', () => {
     assert.deepEqual(batches[0], ['bare title']);
   });
 
+  // The append runs AFTER the canonical publish but BEFORE runSeed writes
+  // seed-meta. A degraded relay that stalls this loop (3 chunks x 3 attempts x
+  // a 10s timeout) risks a SIGTERM landing before the freshness write, which
+  // would publish fresh data that health then reads as stale. The budget stops
+  // issuing chunks instead of stalling; whatever already committed is kept.
+  it('abandons remaining chunks once the aggregate budget is spent', async () => {
+    const { fetchImpl, calls } = stubFetch({ body: { inserted: 50, skipped: 0 } });
+    const { embed } = stubEmbed();
+
+    const records = [];
+    for (let i = 0; i < 120; i++) records.push(record(i));
+
+    // now() is read once to set the deadline and once per chunk iteration.
+    // Stay inside the budget for the deadline + first check, then jump past it.
+    let ticks = 0;
+    const now = () => (ticks++ < 2 ? 0 : 999_999);
+
+    const result = await appendSeedHistory(
+      { domain: 'conflict', resource: 'acled', runId: 'run-budget', records },
+      { fetchImpl, embed, env: ENV, now, budgetMs: 30_000 },
+    );
+
+    assert.equal(calls.length, 1, 'only the pre-deadline chunk is sent');
+    assert.equal(result.chunks, 1);
+    assert.equal(result.inserted, 50, 'the committed chunk still counts');
+    assert.equal(result.abandoned, 70, 'the untried remainder (120 - the 50 sent) is reported');
+    assert.equal(result.failedChunks, 0);
+  });
+
+  // Chunks are independent POSTs over a newest-first slice, so letting one
+  // rejection unwind the loop would discard the OLDER history the remaining
+  // chunks would have stored fine.
+  it('keeps going when a middle chunk fails permanently', async () => {
+    const { fetchImpl, calls } = stubFetch(
+      { body: { inserted: 50, skipped: 0 } },
+      { 1: { status: 400, body: { error: 'INVALID_RECORD' }, text: 'INVALID_RECORD' } },
+    );
+    const { embed } = stubEmbed();
+
+    const records = [];
+    for (let i = 0; i < 120; i++) records.push(record(i));
+
+    const { result, warns } = await withCapturedWarn(() =>
+      appendSeedHistory(
+        { domain: 'conflict', resource: 'acled', runId: 'run-partial', records },
+        { fetchImpl, embed, env: ENV },
+      ),
+    );
+
+    assert.equal(calls.length, 3, 'the third chunk is still attempted');
+    assert.equal(result.chunks, 2, 'two chunks committed');
+    assert.equal(result.failedChunks, 1);
+    assert.equal(result.inserted, 100);
+    assert.ok(warns.some((w) => w.includes('chunk 2 failed')));
+  });
+
+  // A systemic outage (bad secret, relay down) must not be reported as a
+  // successful no-op run — every chunk failing still surfaces the error.
+  it('throws when every chunk fails', async () => {
+    const { fetchImpl } = stubFetch({ status: 500, body: { error: 'boom' }, text: 'boom' });
+    const { embed } = stubEmbed();
+
+    await withCapturedWarn(async () => {
+      await assert.rejects(
+        appendSeedHistory(
+          { domain: 'conflict', resource: 'acled', runId: 'run-dead', records: [record(1)] },
+          { fetchImpl, embed, env: ENV },
+        ),
+        /HTTP 500/,
+      );
+    });
+  });
+
   it('retries a 500 chunk and still aggregates the full result', async () => {
     const { fetchImpl, calls } = stubFetch(
       { body: { inserted: 0, skipped: 0 } },
@@ -398,7 +471,7 @@ describe('appendSeedHistory', () => {
       ),
     );
 
-    assert.deepEqual(result, { inserted: 3, skipped: 1, chunks: 1 });
+    assert.deepEqual(result, { inserted: 3, skipped: 1, chunks: 1, abandoned: 0, failedChunks: 0 });
     assert.equal(calls.length, 2, 'one failed attempt + one successful retry');
   });
 

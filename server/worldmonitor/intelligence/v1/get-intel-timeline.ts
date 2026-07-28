@@ -5,7 +5,12 @@ import type {
   GetIntelTimelineResponse,
 } from '../../../../src/generated/server/worldmonitor/intelligence/v1/service_server';
 import { ApiError } from '../../../../src/generated/server/worldmonitor/intelligence/v1/service_server';
-import { intelHistoryTimeline, resolveLimit } from '../../../_shared/intel-history-client';
+import {
+  intelHistoryTimeline,
+  normalizeCountry,
+  normalizeDomain,
+  resolveLimit,
+} from '../../../_shared/intel-history-client';
 
 /** Server-side default when the request omits `limit`. */
 const DEFAULT_LIMIT = 50;
@@ -36,8 +41,10 @@ export const getIntelTimeline: IntelligenceServiceHandler['getIntelTimeline'] = 
   _ctx: ServerContext,
   req: GetIntelTimelineRequest,
 ): Promise<GetIntelTimelineResponse> => {
-  const domain = typeof req.domain === 'string' ? req.domain : '';
-  const country = typeof req.country === 'string' ? req.country : '';
+  // Normalize BEFORE the scope check: a whitespace-only country would
+  // otherwise satisfy "at least one scope" and then match nothing.
+  const domain = normalizeDomain(req.domain);
+  const country = normalizeCountry(req.country);
   if (!domain && !country) {
     throw new ApiError(400, 'At least one of domain or country is required', '');
   }

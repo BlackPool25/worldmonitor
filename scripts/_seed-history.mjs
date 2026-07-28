@@ -60,6 +60,20 @@ const RELAY_RETRY_DELAY_MS = 1000;
 const RELAY_RETRY_AFTER_CAP_MS = 10_000;
 const ERROR_SNIPPET_MAX_CHARS = 200;
 
+/**
+ * Aggregate wall-clock budget for the whole append, mirroring the fetch
+ * phase's own deadline in _seed-utils.mjs.
+ *
+ * Without it, a degraded relay costs chunks x attempts x timeout — around 99s
+ * for a full run — all of it spent AFTER the canonical publish but BEFORE
+ * runSeed writes seed-meta. A SIGTERM landing in that window kills the process
+ * before the freshness write, so the run publishes fresh data that health then
+ * reads as stale: precisely the failure the fail-open try/catch exists to
+ * prevent, reintroduced by stalling instead of throwing. Chunks already sent
+ * stay committed; the rest are abandoned and reported.
+ */
+const HISTORY_TOTAL_BUDGET_MS = 30_000;
+
 /** Typed error so callers can distinguish history failures from seed failures. */
 export class SeedHistoryError extends Error {
   constructor(message, { status, cause } = {}) {
@@ -279,7 +293,10 @@ export function makeSeedHistoryAfterPublish({ domain, resource, buildRecords }) 
  * @param {typeof fetch} [deps.fetchImpl]
  * @param {(texts: string[]) => Promise<number[][]>} [deps.embed]
  * @param {Record<string, string | undefined>} [deps.env]
- * @returns {Promise<{inserted: number, skipped: number, chunks: number} | {skipped: 'unconfigured'}>}
+ * @param {() => number} [deps.now]        clock seam for the budget
+ * @param {number} [deps.budgetMs]         aggregate wall-clock budget override
+ * @returns {Promise<{inserted: number, skipped: number, chunks: number, abandoned: number,
+ *   failedChunks: number} | {skipped: 'unconfigured'}>}
  *
  * Throws SeedHistoryError on a hard runtime failure; propagates the
  * embedder's own EmbeddingProviderError / EmbeddingTimeoutError. Never
@@ -304,7 +321,9 @@ export async function appendSeedHistory({ domain, resource, runId, records }, de
   }
 
   const sanitized = normalizeHistoryRecords(records);
-  if (sanitized.length === 0) return { inserted: 0, skipped: 0, chunks: 0 };
+  if (sanitized.length === 0) {
+    return { inserted: 0, skipped: 0, chunks: 0, abandoned: 0, failedChunks: 0 };
+  }
 
   // Wrap rather than capture: a bare `fetch` default would bind the
   // global at module load and miss later instrumentation shims.
@@ -322,26 +341,51 @@ export async function appendSeedHistory({ domain, resource, runId, records }, de
   }
 
   const url = `${config.siteUrl}${RELAY_PATH}`;
+  const now = deps.now ?? (() => Date.now());
+  const deadline = now() + (deps.budgetMs ?? HISTORY_TOTAL_BUDGET_MS);
   let inserted = 0;
   let skipped = 0;
   let chunks = 0;
+  let abandoned = 0;
+  let failedChunks = 0;
+  let lastError = null;
 
   for (let start = 0; start < sanitized.length; start += HISTORY_CHUNK_SIZE) {
     const chunk = sanitized
       .slice(start, start + HISTORY_CHUNK_SIZE)
       .map((record, i) => ({ ...record, embedding: vectors[start + i] }));
 
-    const body = await postHistoryChunk({
-      fetchImpl,
-      url,
-      secret: config.secret,
-      payload: { domain, resource, runId, records: chunk },
-    });
+    if (now() >= deadline) {
+      abandoned = sanitized.length - start;
+      console.warn(
+        `[seed-history] budget exhausted after ${chunks} chunk(s); abandoning ${abandoned} record(s)`,
+      );
+      break;
+    }
 
-    inserted += Number(body?.inserted) || 0;
-    skipped += Number(body?.skipped) || 0;
-    chunks += 1;
+    // Chunks are independent POSTs, and the slice is ordered newest-first, so
+    // letting one rejection unwind the loop would discard the OLDER history
+    // that a later chunk would have stored fine. Isolate the failure and keep
+    // going; if every chunk fails the error still surfaces below, because a
+    // systemic outage must not be reported as a successful no-op run.
+    try {
+      const body = await postHistoryChunk({
+        fetchImpl,
+        url,
+        secret: config.secret,
+        payload: { domain, resource, runId, records: chunk },
+      });
+      inserted += Number(body?.inserted) || 0;
+      skipped += Number(body?.skipped) || 0;
+      chunks += 1;
+    } catch (err) {
+      failedChunks += 1;
+      lastError = err;
+      console.warn(`[seed-history] chunk ${chunks + failedChunks} failed: ${err?.message || err}`);
+    }
   }
 
-  return { inserted, skipped, chunks };
+  if (chunks === 0 && failedChunks > 0) throw lastError;
+
+  return { inserted, skipped, chunks, abandoned, failedChunks };
 }
