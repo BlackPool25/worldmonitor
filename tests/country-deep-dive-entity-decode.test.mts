@@ -51,6 +51,18 @@ describe('decodeHtmlEntities: one pass must decode exactly one level', () => {
     assert.equal(decodeHtmlEntities('a&#999999999;b'), 'ab');
   });
 
+  it('drops surrogate-range numeric references instead of emitting lone surrogates', () => {
+    assert.equal(decodeHtmlEntities('a&#55296;b'), 'ab');
+    assert.equal(decodeHtmlEntities('a&#xD800;b'), 'ab');
+  });
+
+  it('blanks unknown entities and invalid numeric refs when unknownEntity: "blank"', () => {
+    assert.equal(decodeHtmlEntities('a &bogus; b', { unknownEntity: 'blank' }), 'a   b');
+    assert.equal(decodeHtmlEntities('&amp;bogus;', { unknownEntity: 'blank' }), '&bogus;');
+    // A space, not '', so adjacent digits cannot weld (`100...200` -> `100 200`).
+    assert.equal(decodeHtmlEntities('100&#999999999;200', { unknownEntity: 'blank' }), '100 200');
+  });
+
   it('still decodes a single level of the predefined entities', () => {
     assert.equal(decodeHtmlEntities('5 &lt; 6 &amp; 7 &gt; 2'), '5 < 6 & 7 > 2');
     assert.equal(decodeHtmlEntities('&quot;quoted&quot; &apos;single&apos;'), '"quoted" \'single\'');

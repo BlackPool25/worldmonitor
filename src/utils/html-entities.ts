@@ -16,10 +16,16 @@
  * cannot be imported from `src/`).
  */
 
-function decodeNumericReference(codePoint: number): string {
+/**
+ * Returns null for anything that is not a Unicode scalar value: out-of-range
+ * numbers throw RangeError in fromCodePoint, and surrogates (0xD800-0xDFFF)
+ * would otherwise pass through as lone surrogates into published text.
+ */
+function decodeNumericReference(codePoint: number): string | null {
   return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff
+    && !(codePoint >= 0xd800 && codePoint <= 0xdfff)
     ? String.fromCodePoint(codePoint)
-    : '';
+    : null;
 }
 
 // Named entities the decoders historically handled. `nbsp` maps to a plain
@@ -46,16 +52,21 @@ const ENTITY_RE = /&(?:#x([0-9a-f]+)|#(\d+)|([a-z][a-z0-9]*));/gi;
 /**
  * Decode exactly one level of HTML/XML entities.
  *
- * `unknownEntity` controls unrecognized entities: `keep` (default) leaves
- * them untouched; `blank` replaces them with a single space.
+ * `unknownEntity` controls unrecognized entities AND invalid numeric
+ * references: `keep` (default) leaves unknown entities untouched and drops
+ * invalid refs; `blank` replaces both with a single space (a space keeps
+ * adjacent digits from welding into one number, e.g. `100&#999999999;200`).
  */
 export function decodeHtmlEntities(
   text: unknown,
   { unknownEntity = 'keep' }: { unknownEntity?: 'keep' | 'blank' } = {},
 ): string {
   return String(text ?? '').replace(ENTITY_RE, (match, hex, dec, name) => {
-    if (hex !== undefined) return decodeNumericReference(parseInt(hex as string, 16));
-    if (dec !== undefined) return decodeNumericReference(Number(dec));
+    if (hex !== undefined || dec !== undefined) {
+      const decoded = decodeNumericReference(hex !== undefined ? parseInt(hex as string, 16) : Number(dec));
+      // A null (invalid scalar) drops to '' — or to a space under 'blank'.
+      return decoded ?? (unknownEntity === 'blank' ? ' ' : '');
+    }
     const value = NAMED_ENTITIES[(name as string).toLowerCase()];
     if (value !== undefined) return value;
     return unknownEntity === 'blank' ? ' ' : match;

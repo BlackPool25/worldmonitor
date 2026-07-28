@@ -339,7 +339,9 @@ function stripHtmlInline(value) {
   // which the Assets regex then mis-parses as a single number.
   // Entities decode through the shared single-pass decoder (exactly one
   // level — `&amp;lt;` stays literal `&lt;`); `unknownEntity: 'blank'`
-  // preserves the old `&[#\w]+;` -> ' ' catch-all for unknown entities.
+  // preserves the old `&[#\w]+;` -> ' ' catch-all for unknown entities AND
+  // invalid numeric refs, so a malformed ref can't weld neighboring digits
+  // (`100&#999999999;200` -> `100 200`, never `100200`).
   return decodeHtmlEntities(
     String(value || '').replace(/<[^>]+>/g, ' '),
     { unknownEntity: 'blank' },

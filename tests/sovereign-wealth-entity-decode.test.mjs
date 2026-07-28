@@ -55,8 +55,16 @@ describe('stripHtmlInline (via parseWikipediaRankingsTable): one pass decodes ex
     assert.equal(fundNameOf('Global&amp;nbsp;Macro Fund'), 'Global&nbsp;Macro Fund');
   });
 
-  it('drops out-of-range numeric references instead of throwing', () => {
-    assert.equal(fundNameOf('Foo&#999999999;Bar Fund'), 'FooBar Fund');
+  it('blanks out-of-range numeric references instead of throwing or welding', () => {
+    // unknownEntity: 'blank' replaces invalid refs with a space (the old
+    // catch-all behavior) so adjacent digits cannot weld into one number.
+    assert.equal(fundNameOf('Foo&#999999999;Bar Fund'), 'Foo Bar Fund');
+    assert.equal(fundNameOf('Foo&#55296;Bar Fund'), 'Foo Bar Fund');
+  });
+
+  it('does not weld AUM digits across a malformed numeric reference', () => {
+    // Review finding: dropping `&#999999999;` to '' would parse as 100200.
+    assert.equal(fundNameOf('100&#999999999;200 Global Fund'), '100 200 Global Fund');
   });
 
   it('preserves the catch-all intent for unknown named entities', () => {

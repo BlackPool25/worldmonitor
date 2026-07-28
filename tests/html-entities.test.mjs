@@ -54,6 +54,12 @@ describe('decodeHtmlEntities: one pass must decode exactly one level', () => {
     assert.equal(decodeHtmlEntities('a&#x110000;b'), 'ab');
   });
 
+  it('drops surrogate-range numeric references instead of emitting lone surrogates', () => {
+    assert.equal(decodeHtmlEntities('a&#55296;b'), 'ab');
+    assert.equal(decodeHtmlEntities('a&#xD800;b'), 'ab');
+    assert.equal(decodeHtmlEntities('a&#57343;b'), 'ab');
+  });
+
   it('still decodes a single level of the predefined entities', () => {
     assert.equal(decodeHtmlEntities('5 &lt; 6 &amp; 7 &gt; 2'), '5 < 6 & 7 > 2');
     assert.equal(decodeHtmlEntities('&quot;quoted&quot; &apos;single&apos;'), '"quoted" \'single\'');
@@ -78,6 +84,13 @@ describe('decodeHtmlEntities: one pass must decode exactly one level', () => {
     assert.equal(decodeHtmlEntities('a &bogus; b', { unknownEntity: 'blank' }), 'a   b');
     // Single pass: the `&bogus;` produced by decoding `&amp;bogus;` is NOT re-consumed.
     assert.equal(decodeHtmlEntities('&amp;bogus;', { unknownEntity: 'blank' }), '&bogus;');
+  });
+
+  it('blanks invalid numeric refs when unknownEntity: "blank" so digits cannot weld', () => {
+    // Dropping to '' would weld `100...200` into `100200`; a space keeps the
+    // old seed-sovereign-wealth catch-all behavior for malformed refs.
+    assert.equal(decodeHtmlEntities('100&#999999999;200', { unknownEntity: 'blank' }), '100 200');
+    assert.equal(decodeHtmlEntities('a&#55296;b', { unknownEntity: 'blank' }), 'a b');
   });
 
   it('tolerates nullish input', () => {

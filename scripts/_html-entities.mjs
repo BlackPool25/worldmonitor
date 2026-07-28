@@ -13,10 +13,16 @@
  * would decode to U+F600 (a private-use glyph) rather than 😀.
  */
 
+/**
+ * Returns null for anything that is not a Unicode scalar value: out-of-range
+ * numbers throw RangeError in fromCodePoint, and surrogates (0xD800-0xDFFF)
+ * would otherwise pass through as lone surrogates into published text.
+ */
 function decodeNumericReference(codePoint) {
   return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff
+    && !(codePoint >= 0xd800 && codePoint <= 0xdfff)
     ? String.fromCodePoint(codePoint)
-    : '';
+    : null;
 }
 
 // Named entities the seeders historically handled. `nbsp` maps to a plain
@@ -45,13 +51,18 @@ const ENTITY_RE = /&(?:#x([0-9a-f]+)|#(\d+)|([a-z][a-z0-9]*));/gi;
  *
  * @param {unknown} text
  * @param {{ unknownEntity?: 'keep' | 'blank' }} [options]
- *   `keep` (default) leaves unrecognized entities untouched; `blank` replaces
- *   them with a single space (the old seed-sovereign-wealth catch-all).
+ *   `keep` (default) leaves unrecognized entities untouched and drops invalid
+ *   numeric references; `blank` replaces both with a single space (the old
+ *   seed-sovereign-wealth catch-all — a space keeps adjacent digits from
+ *   welding into one number, e.g. `100&#999999999;200`).
  */
 export function decodeHtmlEntities(text, { unknownEntity = 'keep' } = {}) {
   return String(text ?? '').replace(ENTITY_RE, (match, hex, dec, name) => {
-    if (hex !== undefined) return decodeNumericReference(parseInt(hex, 16));
-    if (dec !== undefined) return decodeNumericReference(Number(dec));
+    if (hex !== undefined || dec !== undefined) {
+      const decoded = decodeNumericReference(hex !== undefined ? parseInt(hex, 16) : Number(dec));
+      // A null (invalid scalar) drops to '' — or to a space under 'blank'.
+      return decoded ?? (unknownEntity === 'blank' ? ' ' : '');
+    }
     const value = NAMED_ENTITIES[name.toLowerCase()];
     if (value !== undefined) return value;
     return unknownEntity === 'blank' ? ' ' : match;
