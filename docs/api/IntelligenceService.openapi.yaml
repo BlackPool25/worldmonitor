@@ -2736,7 +2736,7 @@ paths:
                   in: query
                   description: Restrict to one producing domain. Empty searches every domain.
                   required: false
-                  example: "example"
+                  example: "conflict"
                   schema:
                     type: string
                     pattern: '^(conflict|military|energy)?$'
@@ -2875,7 +2875,7 @@ paths:
                   in: query
                   description: Restrict to one producing domain. Required unless `country` is set.
                   required: false
-                  example: "example"
+                  example: "conflict"
                   schema:
                     type: string
                     pattern: '^(conflict|military|energy)?$'
@@ -3018,14 +3018,14 @@ paths:
                      "a naval blockade closes a major grain export corridor for weeks".
                      Longer than a search query on purpose: more context ranks better.
                   required: true
-                  example: "example"
+                  example: "chokepoint closure with an energy price spike"
                   schema:
                     type: string
                 - name: domain
                   in: query
                   description: Restrict precedents to one producing domain. Empty searches every domain.
                   required: false
-                  example: "example"
+                  example: "conflict"
                   schema:
                     type: string
                     pattern: '^(conflict|military|energy)?$'
@@ -3069,7 +3069,7 @@ paths:
                                       "domain": "example"
                                       "id": "example-id"
                                       "ingestedAt": 1717200000000
-                                "situation": "example"
+                                "situation": "chokepoint closure with an energy price spike"
                                 "upstreamUnavailable": true
                             schema:
                                 $ref: '#/components/schemas/GetSimilarEventsResponse'
