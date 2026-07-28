@@ -21,7 +21,7 @@ import type {
 } from '../../../../src/generated/server/worldmonitor/intelligence/v1/service_server';
 import { ValidationError } from '../../../../src/generated/server/worldmonitor/intelligence/v1/service_server';
 import {
-  MATERIAL_8K_ITEMS,
+  describeItemCodes,
   fetchSecSubmissions,
   filingIndexUrl,
   resolveCompany,
@@ -91,7 +91,7 @@ export async function getCompanyEnrichment(
       form: filing.form,
       fileDate: filing.filingDate,
       description: filing.form.startsWith('8-K') && filing.items.length > 0
-        ? filing.items.map(code => MATERIAL_8K_ITEMS[code]?.description ?? `Item ${code}`).join('; ')
+        ? describeItemCodes(filing.items)
         : '',
       url: filing.accessionNumber ? filingIndexUrl(resolved.cik, filing.accessionNumber) : '',
       items: filing.items,

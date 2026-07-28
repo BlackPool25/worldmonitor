@@ -19,6 +19,7 @@ import type {
 import { ValidationError } from '../../../../src/generated/server/worldmonitor/intelligence/v1/service_server';
 import {
   MATERIAL_8K_ITEMS,
+  describeItemCodes,
   fetchSecSubmissions,
   filingIndexUrl,
   resolveCompany,
@@ -84,7 +85,7 @@ export async function listCompanySignals(
     const primaryItem = materialItems[0] as string;
     signals.push({
       type: SIGNAL_TYPE_BY_ITEM[primaryItem] ?? 'Material Event',
-      title: `${filing.form}: ${materialItems.map(code => MATERIAL_8K_ITEMS[code]?.description ?? `Item ${code}`).join('; ')}`,
+      title: `${filing.form}: ${describeItemCodes(materialItems)}`,
       url: filing.accessionNumber ? filingIndexUrl(resolved.cik, filing.accessionNumber) : '',
       source: 'sec_edgar',
       sourceTier: 1,

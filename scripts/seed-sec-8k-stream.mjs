@@ -132,8 +132,10 @@ async function fetchFeedXml() {
 }
 
 export async function fetch8kStream() {
-  const previous = await readSeedSnapshot(SEC_8K_STREAM_KEY);
-  const xml = await fetchFeedXml();
+  const [previous, xml] = await Promise.all([
+    readSeedSnapshot(SEC_8K_STREAM_KEY),
+    fetchFeedXml(),
+  ]);
   const fresh = filterMaterialEvents(parse8kAtomFeed(xml));
   const events = mergeEventWindow(previous?.events, fresh, Date.now());
   return { events, fetchedAt: new Date().toISOString() };

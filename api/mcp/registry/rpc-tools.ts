@@ -190,6 +190,10 @@ function compactProcurementOpportunity(tender: ProcurementRouteTender) {
   };
 }
 
+// The four views of get_company_intelligence (#5695) — single source for the
+// input enum, output enum, and runtime guard so they can never drift apart.
+const COMPANY_INTEL_VIEWS = ['enrichment', 'signals', 'filings-search', 'material-events'] as const;
+
 export const RPC_TOOLS: ToolDef[] = [
   {
     name: 'get_china_decision_signals',
@@ -1319,13 +1323,14 @@ export const RPC_TOOLS: ToolDef[] = [
     // top of the four intelligence/v1 REST routes. Identity always resolves
     // through the SEC ticker/name registry to a CIK (never domain-slug or
     // keyword guessing — the unsound heuristics removed in #3754/#3755).
+    // COMPANY_INTEL_VIEWS is declared just above RPC_TOOLS.
     name: 'get_company_intelligence',
     _outputBudgetBytes: 65536,
     description: 'Per-company corporate intelligence from SEC EDGAR and market data. Views: enrichment (SEC identity, recent filings, market profile, earnings surprises, news mentions), signals (classified 8-K material events + earnings surprises + news), filings-search (EDGAR full-text search with form/date filters), material-events (market-wide stream of recent material 8-K filings). Company identity resolves through the SEC ticker registry — unresolvable companies return empty envelopes, never guessed attribution.',
     inputSchema: {
       type: 'object',
       properties: {
-        view: { type: 'string', enum: ['enrichment', 'signals', 'filings-search', 'material-events'], description: 'Defaults to enrichment.' },
+        view: { type: 'string', enum: [...COMPANY_INTEL_VIEWS], description: 'Defaults to enrichment.' },
         ticker: { type: 'string', description: 'Exchange ticker symbol, such as AAPL. Preferred company key for enrichment and signals.' },
         name: { type: 'string', description: 'Company name fallback when no ticker is known; matched against the SEC registry.' },
         query: { type: 'string', description: 'filings-search only: full-text query. Required for that view.' },
@@ -1342,7 +1347,7 @@ export const RPC_TOOLS: ToolDef[] = [
       type: 'object',
       required: ['view'],
       properties: {
-        view: { type: 'string', enum: ['enrichment', 'signals', 'filings-search', 'material-events'] },
+        view: { type: 'string', enum: [...COMPANY_INTEL_VIEWS] },
         error: { type: 'string', enum: ['ticker_or_name_required', 'query_required'], description: 'Present only on user-input failure.' },
         enrichment: { type: 'object', properties: {
           company: { type: 'object', properties: { name: { type: 'string' }, domain: { type: 'string' }, description: { type: 'string' }, location: { type: 'string' }, website: { type: 'string' }, cik: { type: 'string' }, ticker: { type: 'string' } } },
@@ -1369,7 +1374,7 @@ export const RPC_TOOLS: ToolDef[] = [
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     _execute: async (params, base, context) => {
-      const view = typeof params.view === 'string' && ['enrichment', 'signals', 'filings-search', 'material-events'].includes(params.view)
+      const view = typeof params.view === 'string' && (COMPANY_INTEL_VIEWS as readonly string[]).includes(params.view)
         ? params.view
         : 'enrichment';
       const str = (value: unknown) => (typeof value === 'string' ? value.trim() : '');

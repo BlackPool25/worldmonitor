@@ -5,6 +5,7 @@
 // filing data is fetched per-CIK from data.sec.gov. No domain-slug or keyword
 // guessing (the unsound heuristics removed in issues #3754/#3755).
 
+import { sha256Hex } from './hash';
 import { cachedFetchJson, getCachedJson } from './redis';
 
 // SEC requires a declared User-Agent identifying the requester and rejects
@@ -63,6 +64,10 @@ export function materialItemCodes(): string[] {
   return Object.entries(MATERIAL_8K_ITEMS)
     .filter(([, v]) => v.materiality !== 'routine')
     .map(([code]) => code);
+}
+
+export function describeItemCodes(codes: string[]): string {
+  return codes.map(code => MATERIAL_8K_ITEMS[code]?.description ?? `Item ${code}`).join('; ');
 }
 
 export interface CikMapEntry {
@@ -144,15 +149,6 @@ export function parseItemCodes(items: string | undefined): string[] {
     .filter(s => /^\d+\.\d{2}$/.test(s));
 }
 
-function fnv1aHex(input: string): string {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < input.length; i++) {
-    hash ^= input.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0');
-}
-
 // --- ticker/name → CIK resolution against the seeded SEC registry ------------
 
 let cikMapMemo: { map: CikMap; loadedAt: number } | null = null;
@@ -218,8 +214,8 @@ function matchByName(map: CikMap, needle: string, opts: { requireUnique: boolean
   for (const [ticker, entry] of Object.entries(map)) {
     const title = entry.name.toLowerCase();
     if (title === needle) {
-      exact ??= { cik: padCik(entry.cik), ticker, name: entry.name };
-      continue;
+      exact = { cik: padCik(entry.cik), ticker, name: entry.name };
+      break;
     }
     if (title.startsWith(needle) && prefix.length < 25) {
       prefix.push({ cik: padCik(entry.cik), ticker, name: entry.name });
@@ -351,7 +347,9 @@ export async function searchEdgarFullText(params: {
   if (startDate) search.set('startdt', startDate);
   if (endDate) search.set('enddt', endDate);
 
-  const cacheKey = `intel:company:edgar-fts:${fnv1aHex(search.toString())}`;
+  // sha256, not a weak string hash: the key derives from user-controlled query
+  // params, and a collision would serve one query's cached results for another.
+  const cacheKey = `intel:company:edgar-fts:${(await sha256Hex(search.toString())).slice(0, 16)}`;
   try {
     return await cachedFetchJson<EdgarSearchResult>(
       cacheKey,

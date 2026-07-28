@@ -18,11 +18,6 @@ const NEGATIVE_TTL = 300;
 const UPSTREAM_TIMEOUT = 10_000;
 export const MAX_NEWS_MENTIONS = 5;
 
-export function sanitizeCompanySymbol(raw: string): string {
-  const t = (raw ?? '').trim().toUpperCase();
-  return /^[A-Z][A-Z0-9.\-]{0,9}$/.test(t) ? t : '';
-}
-
 interface FinnhubProfile {
   name?: string;
   exchange?: string;
