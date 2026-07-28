@@ -24,18 +24,15 @@ import {
   describeItemCodes,
   fetchSecSubmissions,
   filingIndexUrl,
+  isRelevantForm,
   resolveCompany,
 } from '../../../_shared/sec-edgar';
 import {
   fetchCompanyNewsMentions,
-  fetchEarningsSurprises,
-  fetchFinnhubCompanyProfile,
+  fetchFinnhubCompanyAndEarnings,
 } from './_company-shared';
 
 const MAX_RECENT_FILINGS = 15;
-// Forms worth surfacing in the enrichment filing list (ownership forms 3/4/5
-// and prospectus supplements are noise at this altitude).
-const ENRICHMENT_FORMS = new Set(['10-K', '10-Q', '8-K', '8-K/A', '20-F', '6-K', 'S-1', 'DEF 14A', '10-K/A', '10-Q/A']);
 
 export async function getCompanyEnrichment(
   _ctx: ServerContext,
@@ -56,20 +53,24 @@ export async function getCompanyEnrichment(
   }
   const resolved = resolution.company;
 
-  const [submissions, profile, earnings, mentions] = await Promise.all([
+  // Finnhub profile + earnings share one gate on cold miss (30/min budget).
+  const [submissions, finnhub, mentions] = await Promise.all([
     fetchSecSubmissions(resolved.cik),
-    fetchFinnhubCompanyProfile(resolved.ticker),
-    fetchEarningsSurprises(resolved.ticker),
+    fetchFinnhubCompanyAndEarnings(resolved.ticker),
     fetchCompanyNewsMentions(resolved.ticker, resolved.name),
   ]);
+  const profile = finnhub.profile;
+  const earnings = finnhub.earnings;
 
   const sources: string[] = [];
   if (submissions) sources.push('sec_edgar');
   if (profile || earnings) sources.push('finnhub');
   if (mentions) sources.push('news');
 
+  // submissions.filings is already isRelevantForm-filtered; keep that single
+  // predicate (includes 40-F and slash-amendments) rather than a second Set.
   const recentFilings: SecFiling[] = (submissions?.filings ?? [])
-    .filter(filing => ENRICHMENT_FORMS.has(filing.form))
+    .filter(filing => isRelevantForm(filing.form))
     .slice(0, MAX_RECENT_FILINGS)
     .map(filing => ({
       form: filing.form,

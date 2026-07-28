@@ -27,17 +27,22 @@ const NEGATIVE_TTL = 300;
 const SEARCH_NEGATIVE_TTL = 120;
 const UPSTREAM_TIMEOUT = 10_000;
 const CIK_MAP_MEMO_MS = 60 * 60 * 1_000;
+// Last-good serve after a failed refresh is capped so warm isolates cannot
+// resolve against a ghost registry forever while cold isolates report unavailable.
+const CIK_MAP_STALE_MAX_MS = 6 * 60 * 60 * 1_000;
 const CIK_MAP_READ_TIMEOUT_MS = 6_000;
 const CIK_MAP_RETRY_BACKOFF_MS = 30_000;
 const MAX_SLIM_FILINGS = 200;
+const EDGAR_SEARCH_SIZE = 25;
 
 // Forms worth keeping from a filer's recent-submissions window. A high-volume
 // filer's newest 200 filings are mostly ownership forms (Apple's most recent
 // page is nearly all Form 4), so keeping the first 200 chronologically can
 // push every 10-K/10-Q/8-K out of the slice entirely. Filter first, then cap.
-const RELEVANT_FORM_PREFIXES = ['10-K', '10-Q', '8-K', '20-F', '6-K', 'S-1', 'DEF 14A', '40-F'];
+// Exported so enrichment reuses the same predicate (no second allowlist to drift).
+export const RELEVANT_FORM_PREFIXES = ['10-K', '10-Q', '8-K', '20-F', '6-K', 'S-1', 'DEF 14A', '40-F'];
 
-function isRelevantForm(form: string): boolean {
+export function isRelevantForm(form: string): boolean {
   return RELEVANT_FORM_PREFIXES.some(prefix => form === prefix || form.startsWith(`${prefix}/`));
 }
 
@@ -248,12 +253,22 @@ async function readCikRegistry(): Promise<unknown | null> {
   }
 }
 
+function serveStaleMemo(now: number): CikMap | null {
+  if (!cikMapMemo) return null;
+  if (now - cikMapMemo.loadedAt >= CIK_MAP_STALE_MAX_MS) {
+    cikMapMemo = null;
+    return null;
+  }
+  return cikMapMemo.map;
+}
+
 async function loadCikMap(): Promise<CikMap | null> {
   const now = Date.now();
   if (cikMapMemo && now - cikMapMemo.loadedAt < CIK_MAP_MEMO_MS) return cikMapMemo.map;
-  // A failed refresh keeps serving the last good map — stale tickers beat no
-  // answers — but with nothing cached there is no registry at all.
-  if (now < cikMapRetryAfter) return cikMapMemo?.map ?? null;
+  // During backoff after a failed refresh, keep serving last-good only while it
+  // is younger than CIK_MAP_STALE_MAX_MS. Past that, all isolates converge on
+  // registry_unavailable instead of warm/cold split-brain.
+  if (now < cikMapRetryAfter) return serveStaleMemo(now);
   if (cikMapInFlight) return cikMapInFlight;
 
   cikMapInFlight = (async () => {
@@ -263,7 +278,7 @@ async function loadCikMap(): Promise<CikMap | null> {
       : null;
     if (!map || typeof map !== 'object') {
       cikMapRetryAfter = Date.now() + CIK_MAP_RETRY_BACKOFF_MS;
-      return cikMapMemo?.map ?? null;
+      return serveStaleMemo(Date.now());
     }
     cikMapMemo = { map, loadedAt: Date.now() };
     cikMapRetryAfter = 0;
@@ -276,10 +291,10 @@ async function loadCikMap(): Promise<CikMap | null> {
 /**
  * Resolve a company reference to its SEC CIK via the seeded registry.
  * - ticker: exact match (authoritative).
- * - name: exact match, else a prefix match that is unique across filers. An
- *   ambiguous prefix resolves to NOTHING — picking the "most canonical" title
- *   would be a coin flip between real companies, which is the guessed-identity
- *   failure that disabled these endpoints (#3754/#3755).
+ * - name: case-insensitive exact SEC title only, and only when that title maps
+ *   to a single CIK. Unique *prefix* matching was removed: a short unique
+ *   prefix (e.g. "delta") is still a guess, and uniqueness is not ownership
+ *   (docs/solutions unique-match-is-not-identity). Prefer ticker when known.
  *
  * There is deliberately NO domain path. Matching a domain label against filer
  * names is a guess, and confirming that guess needs a domain the authority
@@ -302,44 +317,31 @@ export async function resolveCompany(query: { ticker?: string; name?: string }):
 
   const name = (query.name ?? '').trim().toLowerCase();
   if (name) {
-    const company = matchByName(map, name, { requireUnique: true, matchedBy: 'name' });
+    const company = matchByName(map, name);
     return company ? { status: 'ok', company } : { status: 'not_found' };
   }
 
   return { status: 'not_found' };
 }
 
-export const __testing__ = { matchByName };
+export const __testing__ = { matchByName, serveStaleMemo, CIK_MAP_STALE_MAX_MS, CIK_MAP_MEMO_MS };
 
-function matchByName(
-  map: CikMap,
-  needle: string,
-  opts: { requireUnique: boolean; matchedBy: 'name' },
-): ResolvedCompany | null {
-  let exact: ResolvedCompany | null = null;
-  const prefix: ResolvedCompany[] = [];
-  // Counted separately from `prefix`, which is capped: a 26th distinct filer
-  // must still make the match ambiguous rather than fall outside the check.
-  const distinctCiks = new Set<string>();
+/**
+ * Exact title match only. If two distinct CIKs share the same lowercased legal
+ * title, refuse rather than returning the first Object.entries hit.
+ */
+function matchByName(map: CikMap, needle: string): ResolvedCompany | null {
+  const exactHits: ResolvedCompany[] = [];
+  const exactCiks = new Set<string>();
   for (const [ticker, entry] of Object.entries(map)) {
-    const title = entry.name.toLowerCase();
-    if (title === needle) {
-      exact = { cik: padCik(entry.cik), ticker, name: entry.name, matchedBy: opts.matchedBy };
-      break;
-    }
-    if (title.startsWith(needle)) {
-      distinctCiks.add(padCik(entry.cik));
-      if (prefix.length < 25) {
-        prefix.push({ cik: padCik(entry.cik), ticker, name: entry.name, matchedBy: opts.matchedBy });
-      }
-    }
+    if (entry.name.toLowerCase() !== needle) continue;
+    const cik = padCik(entry.cik);
+    if (exactCiks.has(cik)) continue;
+    exactCiks.add(cik);
+    exactHits.push({ cik, ticker, name: entry.name, matchedBy: 'name' });
   }
-  if (exact) return exact;
-  if (prefix.length === 0) return null;
-  // Distinct tickers of the same filer (share classes) still count as one company.
-  if (opts.requireUnique && distinctCiks.size > 1) return null;
-  prefix.sort((a, b) => a.name.length - b.name.length);
-  return prefix[0] ?? null;
+  if (exactHits.length === 1) return exactHits[0] ?? null;
+  return null;
 }
 
 // --- per-CIK submissions (profile + recent filings) --------------------------
@@ -444,24 +446,40 @@ export interface EdgarSearchResult {
 
 // Exported so handlers reject malformed filters up front instead of silently
 // dropping them (a dropped filter widens the result set).
+// Requires at least one alphanumeric form token so "," / spaces-only cannot
+// pass the regex then normalize to an empty (unfiltered) query.
 export const EDGAR_ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-export const EDGAR_FORMS_RE = /^[A-Za-z0-9/, .\-]{1,40}$/;
+export const EDGAR_FORMS_RE = /^(?=[A-Za-z0-9/, .\-]{1,40}$)(?=.*[A-Za-z0-9])[A-Za-z0-9/, .\-]+$/;
+
+/** Normalize a forms filter; returns null when the input is present but empty after parse. */
+export function normalizeEdgarForms(raw: string | undefined): string | null | '' {
+  if (raw == null || raw === '') return '';
+  if (!EDGAR_FORMS_RE.test(raw)) return null;
+  const forms = raw.split(',').map(f => f.trim().toUpperCase()).filter(Boolean).join(',');
+  // Non-empty input that normalizes to zero tokens would silently widen the search.
+  if (!forms) return null;
+  return forms;
+}
 
 export async function searchEdgarFullText(params: {
   query: string;
   forms?: string;
   startDate?: string;
   endDate?: string;
+  /** Upstream page size (1–25). Defaults to EDGAR_SEARCH_SIZE. */
+  size?: number;
 }): Promise<EdgarSearchResult | null> {
   const query = params.query.trim().slice(0, 160);
   if (!query) return null;
-  const forms = params.forms && EDGAR_FORMS_RE.test(params.forms)
-    ? params.forms.split(',').map(f => f.trim().toUpperCase()).filter(Boolean).join(',')
-    : '';
+  const formsNormalized = normalizeEdgarForms(params.forms);
+  // Caller should have rejected null; treat as unfiltered only when forms omitted.
+  const forms = formsNormalized === null ? '' : formsNormalized;
   const startDate = params.startDate && EDGAR_ISO_DATE_RE.test(params.startDate) ? params.startDate : '';
   const endDate = params.endDate && EDGAR_ISO_DATE_RE.test(params.endDate) ? params.endDate : '';
+  const size = Math.max(1, Math.min(params.size ?? EDGAR_SEARCH_SIZE, EDGAR_SEARCH_SIZE));
 
   const search = new URLSearchParams({ q: `"${query.replace(/"/g, '')}"` });
+  search.set('size', String(size));
   if (forms) search.set('forms', forms);
   if (startDate) search.set('startdt', startDate);
   if (endDate) search.set('enddt', endDate);
@@ -482,7 +500,7 @@ export async function searchEdgarFullText(params: {
           if (!resp.ok) return null;
           const raw = (await resp.json()) as EftsResponse;
           if (!raw.hits) return null;
-          const results: EdgarSearchHit[] = (raw.hits.hits ?? []).slice(0, 25).map(hit => {
+          const results: EdgarSearchHit[] = (raw.hits.hits ?? []).slice(0, size).map(hit => {
             const src = hit._source ?? {};
             const cikRaw = src.ciks?.[0] ?? '';
             const accession = src.adsh ?? hit._id?.split(':')[0] ?? '';

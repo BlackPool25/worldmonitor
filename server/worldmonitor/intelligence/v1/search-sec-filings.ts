@@ -10,7 +10,7 @@ import type {
   SearchSecFilingsResponse,
 } from '../../../../src/generated/server/worldmonitor/intelligence/v1/service_server';
 import { ValidationError } from '../../../../src/generated/server/worldmonitor/intelligence/v1/service_server';
-import { EDGAR_FORMS_RE, EDGAR_ISO_DATE_RE, searchEdgarFullText } from '../../../_shared/sec-edgar';
+import { EDGAR_ISO_DATE_RE, normalizeEdgarForms, searchEdgarFullText } from '../../../_shared/sec-edgar';
 
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 25;
@@ -27,8 +27,9 @@ export async function searchSecFilings(
   // Fail closed on malformed filters. Silently dropping one WIDENS the result
   // set, so a typo'd date range would return unrelated filings while the caller
   // believes the range was applied.
+  const formsNormalized = normalizeEdgarForms(req.forms);
   const violations = [
-    ...(req.forms && !EDGAR_FORMS_RE.test(req.forms)
+    ...(formsNormalized === null
       ? [{ field: 'forms', description: 'forms must be a comma-separated form list such as "8-K" or "10-K,10-Q"' }]
       : []),
     ...(req.startDate && !EDGAR_ISO_DATE_RE.test(req.startDate)
@@ -44,9 +45,10 @@ export async function searchSecFilings(
 
   const result = await searchEdgarFullText({
     query,
-    forms: req.forms,
+    forms: formsNormalized || undefined,
     startDate: req.startDate,
     endDate: req.endDate,
+    size: limit,
   });
 
   if (!result) {

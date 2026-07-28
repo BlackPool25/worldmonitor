@@ -1332,7 +1332,7 @@ export const RPC_TOOLS: ToolDef[] = [
       properties: {
         view: { type: 'string', enum: [...COMPANY_INTEL_VIEWS], description: 'Defaults to enrichment.' },
         ticker: { type: 'string', description: 'Exchange ticker symbol, such as AAPL. Preferred company key for enrichment and signals.' },
-        name: { type: 'string', description: 'Company name fallback when no ticker is known; resolves only when it identifies exactly one SEC filer.' },
+        name: { type: 'string', description: 'Company name fallback when no ticker is known; case-insensitive exact SEC title match only, and only when that title maps to a single CIK. Prefer ticker.' },
         query: { type: 'string', description: 'filings-search only: full-text query. Required for that view.' },
         forms: { type: 'string', description: 'filings-search only: comma-separated form filter, such as "8-K" or "10-K,10-Q".' },
         start_date: { type: 'string', description: 'filings-search only: earliest filing date (YYYY-MM-DD).' },
@@ -1355,15 +1355,17 @@ export const RPC_TOOLS: ToolDef[] = [
           market: { type: 'object', properties: { exchange: { type: 'string' }, industry: { type: 'string' }, marketCapMusd: { type: 'number' }, ipoDate: { type: 'string' }, logoUrl: { type: 'string' }, country: { type: 'string' }, currency: { type: 'string' } } },
           earningsSurprises: { type: 'array', items: { type: 'object' } },
           newsMentions: { type: 'array', items: { type: 'object' } },
-          sources: { type: 'array', items: { type: 'string' }, description: 'Sources actually reached; an empty array means the company did not resolve in the SEC registry or every upstream was down.' },
+          sources: { type: 'array', items: { type: 'string' }, description: 'Sources that returned data. Empty is not an identity signal — combine with company.cik and unavailable: empty cik + unavailable false = no such filer; unavailable true = CIK registry could not be read.' },
           enrichedAtMs: { type: 'number' },
+          unavailable: { type: 'boolean', description: 'True when the SEC CIK registry could not be read (not cacheable). False with empty sources/cik means the company is not in the registry.' },
         } },
         signals: { type: 'object', properties: {
           company: { type: 'string' },
-          cik: { type: 'string', description: 'Resolved SEC filer CIK; empty means the company did not resolve, which distinguishes "no such company" from "resolved but quiet".' },
+          cik: { type: 'string', description: 'Resolved SEC filer CIK. Empty + unavailable false = not in registry; empty + unavailable true = registry down; non-empty with zero signals = resolved but quiet.' },
           signals: { type: 'array', items: { type: 'object', properties: { type: { type: 'string' }, title: { type: 'string' }, url: { type: 'string' }, source: { type: 'string' }, sourceTier: { type: 'number' }, timestampMs: { type: 'number' }, strength: { type: 'string' } } } },
           summary: { type: 'object' },
           discoveredAtMs: { type: 'number' },
+          unavailable: { type: 'boolean', description: 'True when the SEC CIK registry could not be read. Distinguishes registry outage from not-found or a quiet window.' },
         } },
         search: { type: 'object', properties: {
           results: { type: 'array', items: { type: 'object' } }, total: { type: 'number' }, unavailable: { type: 'boolean' }, fetchedAtMs: { type: 'number' },
@@ -1425,13 +1427,14 @@ export const RPC_TOOLS: ToolDef[] = [
         const search = new URLSearchParams();
         if (ticker) search.set('ticker', ticker);
         if (name) search.set('company', name);
-        return { view, signals: await call('/api/intelligence/v1/list-company-signals', search, 12_000) };
+        // 20s: CIK registry read ≤6s + SEC/Finnhub ≤10s + slack (news leg is internally 6s).
+        return { view, signals: await call('/api/intelligence/v1/list-company-signals', search, 20_000) };
       }
 
       const search = new URLSearchParams();
       if (ticker) search.set('ticker', ticker);
       if (name) search.set('name', name);
-      return { view, enrichment: await call('/api/intelligence/v1/get-company-enrichment', search, 12_000) };
+      return { view, enrichment: await call('/api/intelligence/v1/get-company-enrichment', search, 20_000) };
     },
     // The seeded corporate-intelligence keys this tool's REST routes read.
     _coverageKeys: [

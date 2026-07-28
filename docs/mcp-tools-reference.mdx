@@ -267,7 +267,7 @@ curl -s https://worldmonitor.app/mcp \
 
 ### `get_company_intelligence`
 
-Per-company corporate intelligence from SEC EDGAR and market data (#5695). Company identity resolves through the SEC's own ticker/name registry to a CIK — by exact ticker, or by a name that identifies exactly one filer. Companies that do not resolve return empty envelopes with `sources: []`; there is no domain lookup, because no field SEC publishes could confirm one. Four views multiplex the four backing REST routes.
+Per-company corporate intelligence from SEC EDGAR and market data (#5695). Company identity resolves through the SEC's own ticker/name registry to a CIK — by exact ticker, or by a case-insensitive exact SEC title that maps to a single CIK (no prefix guessing). Companies that do not resolve return empty envelopes with `sources: []`; use `unavailable` to tell a registry outage from not-found. There is no domain lookup, because no field SEC publishes could confirm one. Four views multiplex the four backing REST routes.
 
 **Parameters (tool-specific):**
 
@@ -275,7 +275,7 @@ Per-company corporate intelligence from SEC EDGAR and market data (#5695). Compa
 |------|------|-------------|
 | `view` | `string: enrichment / signals / filings-search / material-events` | Defaults to `enrichment`. |
 | `ticker` | string | Exchange ticker symbol, such as `AAPL`. Preferred company key for `enrichment` and `signals`. |
-| `name` | string | Company name fallback when no ticker is known; resolves only when it identifies exactly one SEC filer. |
+| `name` | string | Company name fallback when no ticker is known; case-insensitive exact SEC title only, and only when that title maps to a single CIK. Prefer ticker. |
 | `query` | string | `filings-search` only: full-text query. Required for that view. |
 | `forms` | string | `filings-search` only: comma-separated form filter, such as `8-K` or `10-K,10-Q`. |
 | `start_date` / `end_date` | string | `filings-search` only: filing-date range (YYYY-MM-DD). |

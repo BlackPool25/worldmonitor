@@ -10930,7 +10930,7 @@ paths:
                                       "fileDate": "2026-01-15"
                                       "form": "example"
                                 "total": 1
-                                "unavailable": true
+                                "unavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_intelligence_v1_SearchSecFilingsResponse'
                 "400":
@@ -11032,7 +11032,7 @@ paths:
                                       "filedAtMs": 1
                                       "form": "example"
                                 "fetchedAtMs": 1
-                                "unavailable": true
+                                "unavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_intelligence_v1_ListMaterialEventsResponse'
                 "400":

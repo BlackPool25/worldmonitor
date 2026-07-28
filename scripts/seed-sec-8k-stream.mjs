@@ -19,8 +19,10 @@ export const STREAM_WINDOW_MS = 7 * 24 * 3600 * 1000;
 // further into the future is malformed, not early.
 export const FUTURE_SKEW_TOLERANCE_MS = 60 * 60 * 1000;
 // A market-wide 7-day window that falls below this is decaying, not quiet: one
-// feed page alone yields ~75 material events.
-export const MIN_STREAM_EVENTS = 20;
+// feed page alone yields ~75 material events. Floor is well below healthy
+// yield so quiet weekends still publish, but high enough that partial Atom
+// parse decay cannot stay green at a hollow ~20-event stream.
+export const MIN_STREAM_EVENTS = 50;
 
 // SEC requires a declared User-Agent identifying the requester (no browser
 // spoofing) — same convention as scripts/seed-regulatory-actions.mjs.

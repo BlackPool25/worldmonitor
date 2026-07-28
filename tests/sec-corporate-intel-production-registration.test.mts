@@ -52,7 +52,7 @@ describe('SEC corporate-intelligence production registration (#5695)', () => {
     );
     assert.match(
       health,
-      /sec8kStream:\s*\{ key: 'seed-meta:intelligence:sec-8k-stream',\s*maxStaleMin: 120, minRecordCount: 20 \}/,
+      /sec8kStream:\s*\{ key: 'seed-meta:intelligence:sec-8k-stream',\s*maxStaleMin: 120, minRecordCount: 50 \}/,
     );
     assert.equal(SEC_CIK_MAP_MAX_STALE_MIN, 2880, 'seeder and /api/health must publish the same CIK-map budget');
     assert.equal(SEC_8K_STREAM_MAX_STALE_MIN, 120, 'seeder and /api/health must publish the same 8-K budget');
@@ -62,11 +62,12 @@ describe('SEC corporate-intelligence production registration (#5695)', () => {
   it('treats a drained 8-K window as decay, not as a quiet market', () => {
     // A market-wide 7-day window that empties means the Atom parse decayed —
     // one feed page alone yields ~75 material events — so neither key may be
-    // exempt from the zero-record alarm.
+    // exempt from the zero-record alarm. Floor is 50 (below healthy yield,
+    // above a hollow partial-parse stream).
     assert.equal(healthTesting.ZERO_RECORD_DATA_OK_KEYS.has('sec8kStream'), false);
     assert.equal(healthTesting.ZERO_RECORD_DATA_OK_KEYS.has('secCikMap'), false);
     assert.equal(healthTesting.EMPTY_DATA_OK_KEYS.has('secCikMap'), false);
-    assert.equal(MIN_STREAM_EVENTS, 20, 'health minRecordCount mirrors the seeder floor');
+    assert.equal(MIN_STREAM_EVENTS, 50, 'health minRecordCount mirrors the seeder floor');
   });
 
   it('keeps the seed-health sibling classifier in agreement (intervalMin = maxStaleMin / 2)', () => {
@@ -77,8 +78,30 @@ describe('SEC corporate-intelligence production registration (#5695)', () => {
     );
     assert.match(
       seedHealth,
-      /'intelligence:sec-8k-stream':\s*\{ key: 'seed-meta:intelligence:sec-8k-stream', intervalMin: 60, minRecordCount: 20 \}/,
+      /'intelligence:sec-8k-stream':\s*\{ key: 'seed-meta:intelligence:sec-8k-stream', intervalMin: 60, minRecordCount: 50 \}/,
     );
+  });
+
+  it('registers fail-closed 30/min rate policies for the three provider-proxy GETs', () => {
+    const rateLimit = read('server/_shared/rate-limit.ts');
+    for (const route of [
+      '/api/intelligence/v1/get-company-enrichment',
+      '/api/intelligence/v1/list-company-signals',
+      '/api/intelligence/v1/search-sec-filings',
+    ]) {
+      const escaped = route.replace(/\//g, '\\/');
+      assert.match(
+        rateLimit,
+        new RegExp(`'${escaped}':\\s*\\{\\s*limit:\\s*30,\\s*window:\\s*'60 s'\\s*\\}`),
+        `${route} must have a 30/min ENDPOINT_RATE_POLICIES entry`,
+      );
+      // Fail-closed required-policy map (list-material-events is Redis-only and omitted).
+      assert.match(
+        rateLimit,
+        new RegExp(`'${escaped}':\\s*\\{\\s*reason:`),
+        `${route} must be in FAIL_CLOSED_ENDPOINT_RATE_POLICY_REQUIRED`,
+      );
+    }
   });
 
   it('documents both members in the consolidation runbook', () => {

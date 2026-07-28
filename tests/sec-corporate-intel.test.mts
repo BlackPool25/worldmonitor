@@ -8,16 +8,20 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  EDGAR_FORMS_RE,
   MATERIAL_8K_ITEMS,
   __resetCikMapMemoForTests,
   __testing__ as secEdgarTesting,
   filingDocumentUrl,
   filingIndexUrl,
+  isRelevantForm,
   materialItemCodes,
+  normalizeEdgarForms,
   padCik,
   parseItemCodes,
   sanitizeTicker,
 } from '../server/_shared/sec-edgar';
+import { safeHttpUrl } from '../server/worldmonitor/intelligence/v1/_company-shared';
 import {
   MATERIAL_ITEM_CODES,
   filterMaterialEvents,
@@ -109,32 +113,52 @@ describe('sec-edgar pure helpers', () => {
     assert.deepEqual(parseItemCodes(undefined), []);
   });
 
-  it('matches names exactly and by unique prefix, refusing ambiguous ones', () => {
+  it('rejects forms filters that would silently widen EDGAR search', () => {
+    assert.equal(normalizeEdgarForms(undefined), '');
+    assert.equal(normalizeEdgarForms(''), '');
+    assert.equal(normalizeEdgarForms('8-K'), '8-K');
+    assert.equal(normalizeEdgarForms('10-K,10-Q'), '10-K,10-Q');
+    // Comma/space-only used to pass EDGAR_FORMS_RE then drop to unfiltered.
+    assert.equal(normalizeEdgarForms(','), null);
+    assert.equal(normalizeEdgarForms('   '), null);
+    assert.equal(normalizeEdgarForms('...'), null);
+    assert.equal(EDGAR_FORMS_RE.test(','), false);
+    assert.equal(isRelevantForm('40-F'), true);
+    assert.equal(isRelevantForm('40-F/A'), true);
+  });
+
+  it('strips non-http(s) third-party URLs', () => {
+    assert.equal(safeHttpUrl('https://logo.example/t.png'), 'https://logo.example/t.png');
+    assert.equal(safeHttpUrl('javascript:alert(1)'), '');
+    assert.equal(safeHttpUrl('data:text/html,hi'), '');
+    assert.equal(safeHttpUrl('https://user:pass@evil.example/x'), '');
+  });
+
+  it('matches names by exact title only, refusing multi-CIK collisions and prefixes', () => {
     const map = {
       AAPL: { cik: 320193, name: 'Apple Inc.' },
       FMNB: { cik: 709337, name: 'Farmers National Banc Corp' },
       FARM: { cik: 34563, name: 'Farmer Bros Co' },
     };
-    const exact = secEdgarTesting.matchByName(map, 'apple inc.', { requireUnique: false, matchedBy: 'name' });
+    const exact = secEdgarTesting.matchByName(map, 'apple inc.');
     assert.equal(exact?.cik, '0000320193');
     assert.equal(exact?.matchedBy, 'name');
-    // Unique prefix resolves.
-    const prefix = secEdgarTesting.matchByName(map, 'apple', { requireUnique: true, matchedBy: 'name' });
-    assert.equal(prefix?.ticker, 'AAPL');
-    assert.equal(prefix?.matchedBy, 'name');
-    // Ambiguous prefix across two distinct filers must NOT resolve — for names
-    // Picking the shortest title would be a coin flip between two
-    // real companies.
-    assert.equal(secEdgarTesting.matchByName(map, 'farm', { requireUnique: true, matchedBy: 'name' }), null);
-    // Share classes of one filer are still a single company, so they resolve.
+    // Prefix matching was removed: uniqueness of a short label is not ownership.
+    assert.equal(secEdgarTesting.matchByName(map, 'apple'), null);
+    assert.equal(secEdgarTesting.matchByName(map, 'farm'), null);
+    // Two distinct CIKs with the same legal title must not pick the first map hit.
+    const collision = {
+      AAA: { cik: 1, name: 'Duplicate Title LLC' },
+      BBB: { cik: 2, name: 'Duplicate Title LLC' },
+    };
+    assert.equal(secEdgarTesting.matchByName(collision, 'duplicate title llc'), null);
+    // Share classes: exact title for one class still resolves that ticker.
     const shareClasses = {
       GOOGL: { cik: 1652044, name: 'Alphabet Inc.' },
       GOOG: { cik: 1652044, name: 'Alphabet Inc. Class C' },
     };
-    assert.equal(
-      secEdgarTesting.matchByName(shareClasses, 'alphabet', { requireUnique: true, matchedBy: 'name' })?.cik,
-      '0001652044',
-    );
+    assert.equal(secEdgarTesting.matchByName(shareClasses, 'alphabet inc.')?.ticker, 'GOOGL');
+    assert.equal(secEdgarTesting.matchByName(shareClasses, 'alphabet'), null);
   });
 
 });
@@ -497,13 +521,23 @@ describe('getCompanyEnrichment', () => {
     assert.equal(resp.secFilings?.totalFilings, 251, 'the reported total still counts every filing');
   });
 
-  it('refuses an ambiguous company name instead of picking one (#3754/#3755)', async () => {
+  it('refuses a non-exact company name instead of prefix-guessing (#3754/#3755)', async () => {
     configureRedis();
     installFetchMock({ submissions: SUBMISSIONS_FIXTURE });
-    // "Testable" prefix-matches two distinct filers — neither may be returned.
+    // Prefix of two distinct filers — exact-title policy returns empty, not a coin flip.
     const resp = await getCompanyEnrichment(ctx, { ticker: '', name: 'Testable' });
     assert.deepEqual(resp.sources, []);
     assert.equal(resp.company?.cik, '');
+    assert.equal(resp.unavailable, false);
+  });
+
+  it('resolves an exact SEC title to the unique filer', async () => {
+    configureRedis();
+    installFetchMock({ submissions: SUBMISSIONS_FIXTURE });
+    const resp = await getCompanyEnrichment(ctx, { ticker: '', name: 'Testable Alpha Inc.' });
+    assert.equal(resp.company?.cik, '0000111222');
+    assert.equal(resp.company?.ticker, 'TSTA');
+    assert.equal(resp.unavailable, false);
   });
 
 
@@ -658,6 +692,7 @@ describe('searchSecFilings', () => {
 
   it('maps EDGAR full-text hits and honors the limit', async () => {
     configureRedis();
+    const eftsUrls: string[] = [];
     installFetchMock({
       efts: {
         hits: {
@@ -679,10 +714,17 @@ describe('searchSecFilings', () => {
         },
       },
     });
+    const innerFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.startsWith('https://efts.sec.gov/')) eftsUrls.push(url);
+      return innerFetch(input, init);
+    }) as typeof fetch;
     const resp = await searchSecFilings(ctx, { query: 'material weakness', forms: '8-K', startDate: '2026-07-01', endDate: '2026-07-28', limit: 1 });
     assert.equal(resp.unavailable, false);
     assert.equal(resp.total, 42);
     assert.equal(resp.results.length, 1);
+    assert.ok(eftsUrls.some(u => /[?&]size=1(?:&|$)/.test(u)), `EFTS request must set size=limit; got ${eftsUrls.join(' | ')}`);
     const [first] = resp.results;
     assert.equal(first.cik, '0001889450');
     assert.deepEqual(first.items, ['4.02']);
@@ -699,6 +741,11 @@ describe('searchSecFilings', () => {
     await assert.rejects(
       () => searchSecFilings(ctx, { query: 'merger', forms: '8-K"; DROP', startDate: '', endDate: '', limit: 0 }),
       ValidationError,
+    );
+    await assert.rejects(
+      () => searchSecFilings(ctx, { query: 'merger', forms: ',', startDate: '', endDate: '', limit: 0 }),
+      ValidationError,
+      'comma-only forms must not silently widen the EDGAR query',
     );
   });
 
