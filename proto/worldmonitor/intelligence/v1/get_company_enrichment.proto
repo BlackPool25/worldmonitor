@@ -9,7 +9,8 @@ import "sebuf/http/annotations.proto";
 // resolution plus market data); name and domain are matched against the SEC
 // company registry.
 message GetCompanyEnrichmentRequest {
-  // Company domain, such as "apple.com".
+  // Company domain, such as "apple.com". Accepted only when it matches one SEC
+  // filer unambiguously and that filer registered the same website.
   string domain = 1 [(sebuf.http.query) = {name: "domain"}];
   // Company name, such as "Apple Inc".
   string name = 2 [(sebuf.http.query) = {name: "name"}];
@@ -42,6 +43,11 @@ message GetCompanyEnrichmentResponse {
 
   // Recent news headlines mentioning the company, most recent first.
   repeated CompanyNewsMention news_mentions = 10;
+
+  // True when the SEC ticker registry could not be read at all, so this empty
+  // envelope means "could not look up", not "no such company". Responses with
+  // this set are never cached.
+  bool unavailable = 11;
 }
 
 message EnrichedCompany {

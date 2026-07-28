@@ -10,7 +10,8 @@ import "sebuf/http/annotations.proto";
 message ListCompanySignalsRequest {
   // Company name to discover signals for.
   string company = 1 [(sebuf.http.query) = {name: "company"}];
-  // Company domain to discover signals for.
+  // Company domain to discover signals for. Accepted only when it matches one
+  // SEC filer unambiguously and that filer registered the same website.
   string domain = 2 [(sebuf.http.query) = {name: "domain"}];
   // Exchange ticker symbol, such as "AAPL". Preferred lookup key.
   string ticker = 3 [(sebuf.http.query) = {name: "ticker"}];
@@ -25,6 +26,16 @@ message ListCompanySignalsResponse {
   
   // Unix timestamp in milliseconds when signals were discovered.
   int64 discovered_at_ms = 5 [(sebuf.http.int64_encoding) = INT64_ENCODING_NUMBER];
+
+  // SEC Central Index Key of the resolved filer (zero-padded 10 digits). Empty
+  // when the company did not resolve — this is what distinguishes "no such
+  // company" from "resolved company with no recent signals".
+  string cik = 6;
+
+  // True when the SEC ticker registry could not be read at all, so this empty
+  // envelope means "could not look up", not "no such company". Responses with
+  // this set are never cached.
+  bool unavailable = 7;
 }
 
 message CompanySignal {

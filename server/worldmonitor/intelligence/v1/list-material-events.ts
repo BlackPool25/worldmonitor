@@ -10,6 +10,7 @@ import type {
   ListMaterialEventsResponse,
   MaterialEvent,
 } from '../../../../src/generated/server/worldmonitor/intelligence/v1/service_server';
+import { ValidationError } from '../../../../src/generated/server/worldmonitor/intelligence/v1/service_server';
 import { getCachedJson } from '../../../_shared/redis';
 import { SEC_8K_STREAM_KEY } from '../../../_shared/sec-edgar';
 
@@ -27,6 +28,11 @@ export async function listMaterialEvents(
   req: ListMaterialEventsRequest,
 ): Promise<ListMaterialEventsResponse> {
   const itemCode = req.itemCode?.trim() ?? '';
+  // Fail closed: silently ignoring a malformed filter would return the entire
+  // unfiltered stream, which reads as "these are all 5.02 events".
+  if (itemCode && !ITEM_CODE_RE.test(itemCode)) {
+    throw new ValidationError([{ field: 'item_code', description: 'item_code must be an 8-K item code such as 5.02' }]);
+  }
   const limit = req.limit > 0 ? Math.min(req.limit, MAX_LIMIT) : DEFAULT_LIMIT;
 
   try {
@@ -36,7 +42,7 @@ export async function listMaterialEvents(
     }
 
     let events = raw.events.filter(event => Array.isArray(event?.items) && event.items.length > 0);
-    if (itemCode && ITEM_CODE_RE.test(itemCode)) {
+    if (itemCode) {
       events = events.filter(event => event.items.some(item => item.code === itemCode));
     }
 

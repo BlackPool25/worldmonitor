@@ -293,6 +293,7 @@ export interface GetCompanyEnrichmentResponse {
   market?: CompanyMarketProfile;
   earningsSurprises: EarningsSurprise[];
   newsMentions: CompanyNewsMention[];
+  unavailable: boolean;
 }
 
 export interface EnrichedCompany {
@@ -357,6 +358,8 @@ export interface ListCompanySignalsResponse {
   signals: CompanySignal[];
   summary?: SignalSummary;
   discoveredAtMs: number;
+  cik: string;
+  unavailable: boolean;
 }
 
 export interface CompanySignal {

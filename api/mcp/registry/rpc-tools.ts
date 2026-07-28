@@ -1333,6 +1333,7 @@ export const RPC_TOOLS: ToolDef[] = [
         view: { type: 'string', enum: [...COMPANY_INTEL_VIEWS], description: 'Defaults to enrichment.' },
         ticker: { type: 'string', description: 'Exchange ticker symbol, such as AAPL. Preferred company key for enrichment and signals.' },
         name: { type: 'string', description: 'Company name fallback when no ticker is known; matched against the SEC registry.' },
+        domain: { type: 'string', description: 'Company domain fallback, such as apple.com. Accepted only when it matches one SEC filer unambiguously AND that filer registered the same website; otherwise the company resolves to nothing rather than a guess.' },
         query: { type: 'string', description: 'filings-search only: full-text query. Required for that view.' },
         forms: { type: 'string', description: 'filings-search only: comma-separated form filter, such as "8-K" or "10-K,10-Q".' },
         start_date: { type: 'string', description: 'filings-search only: earliest filing date (YYYY-MM-DD).' },
@@ -1360,6 +1361,7 @@ export const RPC_TOOLS: ToolDef[] = [
         } },
         signals: { type: 'object', properties: {
           company: { type: 'string' },
+          cik: { type: 'string', description: 'Resolved SEC filer CIK; empty means the company did not resolve, which distinguishes "no such company" from "resolved but quiet".' },
           signals: { type: 'array', items: { type: 'object', properties: { type: { type: 'string' }, title: { type: 'string' }, url: { type: 'string' }, source: { type: 'string' }, sourceTier: { type: 'number' }, timestampMs: { type: 'number' }, strength: { type: 'string' } } } },
           summary: { type: 'object' },
           discoveredAtMs: { type: 'number' },
@@ -1411,18 +1413,21 @@ export const RPC_TOOLS: ToolDef[] = [
 
       const ticker = str(params.ticker);
       const name = str(params.name);
-      if (!ticker && !name) return { view, error: 'ticker_or_name_required' };
+      const domain = str(params.domain);
+      if (!ticker && !name && !domain) return { view, error: 'ticker_or_name_required' };
 
       if (view === 'signals') {
         const search = new URLSearchParams();
         if (ticker) search.set('ticker', ticker);
         if (name) search.set('company', name);
+        if (domain) search.set('domain', domain);
         return { view, signals: await call('/api/intelligence/v1/list-company-signals', search, 12_000) };
       }
 
       const search = new URLSearchParams();
       if (ticker) search.set('ticker', ticker);
       if (name) search.set('name', name);
+      if (domain) search.set('domain', domain);
       return { view, enrichment: await call('/api/intelligence/v1/get-company-enrichment', search, 12_000) };
     },
     // The seeded corporate-intelligence keys this tool's REST routes read.

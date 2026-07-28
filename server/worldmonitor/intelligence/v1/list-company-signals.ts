@@ -21,7 +21,9 @@ import {
   MATERIAL_8K_ITEMS,
   describeItemCodes,
   fetchSecSubmissions,
+  filerWebsiteMatchesDomain,
   filingIndexUrl,
+  isCikRegistryUnavailable,
   resolveCompany,
 } from '../../../_shared/sec-edgar';
 import { fetchCompanyNewsMentions, fetchEarningsSurprises } from './_company-shared';
@@ -61,7 +63,7 @@ export async function listCompanySignals(
 
   const resolved = await resolveCompany({ ticker, name: company, domain });
   if (!resolved) {
-    return emptyResponse(company || ticker?.toUpperCase() || '', domain || '');
+    return emptyResponse(company || ticker?.toUpperCase() || '', domain || '', isCikRegistryUnavailable());
   }
 
   const [submissions, earnings, mentions] = await Promise.all([
@@ -69,6 +71,13 @@ export async function listCompanySignals(
     fetchEarningsSurprises(resolved.ticker),
     fetchCompanyNewsMentions(resolved.ticker, resolved.name),
   ]);
+
+  // A domain match is provisional: a unique name-prefix hit is not proof of
+  // identity. Confirm it against the filer's SEC-registered website, or emit no
+  // signals rather than attribute another company's events (#3754/#3755).
+  if (resolved.matchedBy === 'domain' && !filerWebsiteMatchesDomain(domain ?? '', submissions?.website ?? '')) {
+    return emptyResponse(company || ticker?.toUpperCase() || '', domain || '');
+  }
 
   const now = Date.now();
   const signals: CompanySignal[] = [];
@@ -82,7 +91,11 @@ export async function listCompanySignals(
     if (materialItems.length === 0) continue;
     const timestampMs = Date.parse(filing.acceptanceDateTime || filing.filingDate) || 0;
     if (timestampMs === 0 || now - timestampMs > FILING_SIGNAL_WINDOW_MS) continue;
-    const primaryItem = materialItems[0] as string;
+    // A filing like "2.02,5.02" carries both an earnings exhibit and an
+    // executive departure; the headline must be the material one, not whichever
+    // item code sorts first.
+    const primaryItem = (materialItems.find(code => MATERIAL_8K_ITEMS[code]?.materiality === 'high')
+      ?? materialItems[0]) as string;
     signals.push({
       type: SIGNAL_TYPE_BY_ITEM[primaryItem] ?? 'Material Event',
       title: `${filing.form}: ${describeItemCodes(materialItems)}`,
@@ -135,6 +148,8 @@ export async function listCompanySignals(
     signals: bounded,
     summary: summarize(bounded),
     discoveredAtMs: now,
+    cik: resolved.cik,
+    unavailable: false,
   };
 }
 
@@ -159,7 +174,7 @@ function summarize(signals: CompanySignal[]): SignalSummary {
   };
 }
 
-function emptyResponse(company: string, domain: string): ListCompanySignalsResponse {
+function emptyResponse(company: string, domain: string, unavailable = false): ListCompanySignalsResponse {
   return {
     company,
     domain,
@@ -171,5 +186,9 @@ function emptyResponse(company: string, domain: string): ListCompanySignalsRespo
       signalDiversity: 0,
     },
     discoveredAtMs: Date.now(),
+    // Empty CIK is the "did not resolve" discriminator; a resolved company with
+    // a quiet 90-day window returns its real CIK alongside zero signals.
+    cik: '',
+    unavailable,
   };
 }

@@ -9,14 +9,31 @@ import type {
   EarningsSurprise,
 } from '../../../../src/generated/server/worldmonitor/intelligence/v1/service_server';
 import { cachedFetchJson } from '../../../_shared/redis';
-import { finnhubGate } from '../../../_shared/constants';
+import { CHROME_UA, finnhubGate } from '../../../_shared/constants';
 import { searchRecentStockHeadlines } from '../../market/v1/stock-news-search';
 
 const PROFILE_TTL = 86_400;
 const EARNINGS_TTL = 43_200;
 const NEGATIVE_TTL = 300;
 const UPSTREAM_TIMEOUT = 10_000;
+// searchRecentStockHeadlines walks a multi-provider/multi-key fallback ladder
+// bounded only by cachedFetchJson's generic 30s watchdog — longer than the MCP
+// tool's 12s abort. Without its own bound, a degraded news provider would sink
+// the whole composite and discard SEC/Finnhub data that already resolved.
+const NEWS_TIMEOUT_MS = 6_000;
 export const MAX_NEWS_MENTIONS = 5;
+
+async function withTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), timeoutMs); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 interface FinnhubProfile {
   name?: string;
@@ -49,7 +66,7 @@ export async function fetchFinnhubCompanyProfile(symbol: string): Promise<Compan
           const resp = await fetch(
             `https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(symbol)}`,
             {
-              headers: { 'X-Finnhub-Token': apiKey },
+              headers: { 'X-Finnhub-Token': apiKey, 'User-Agent': CHROME_UA },
               signal: AbortSignal.timeout(UPSTREAM_TIMEOUT),
             },
           );
@@ -103,7 +120,7 @@ export async function fetchEarningsSurprises(symbol: string): Promise<EarningsSu
           const resp = await fetch(
             `https://finnhub.io/api/v1/stock/earnings?symbol=${encodeURIComponent(symbol)}&limit=8`,
             {
-              headers: { 'X-Finnhub-Token': apiKey },
+              headers: { 'X-Finnhub-Token': apiKey, 'User-Agent': CHROME_UA },
               signal: AbortSignal.timeout(UPSTREAM_TIMEOUT),
             },
           );
@@ -111,16 +128,28 @@ export async function fetchEarningsSurprises(symbol: string): Promise<EarningsSu
           const raw = (await resp.json()) as FinnhubEarningsRow[];
           if (!Array.isArray(raw)) return null;
           return raw
-            .filter(row => typeof row?.period === 'string')
-            .map(row => ({
-              period: row.period ?? '',
-              actualEps: Number.isFinite(row.actual) ? (row.actual as number) : 0,
-              estimateEps: Number.isFinite(row.estimate) ? (row.estimate as number) : 0,
-              surprise: Number.isFinite(row.surprise) ? (row.surprise as number) : 0,
-              surprisePercent: Number.isFinite(row.surprisePercent) ? (row.surprisePercent as number) : 0,
-              year: row.year ?? 0,
-              quarter: row.quarter ?? 0,
-            }))
+            // Finnhub returns not-yet-reported quarters with null actual/estimate.
+            // Coercing those to 0 would render an unreported period as a 0-vs-0
+            // "beat" downstream, so drop any row without both figures reported.
+            .filter(row => typeof row?.period === 'string'
+              && Number.isFinite(row.actual)
+              && Number.isFinite(row.estimate))
+            .map(row => {
+              const actualEps = row.actual as number;
+              const estimateEps = row.estimate as number;
+              const surprise = Number.isFinite(row.surprise) ? (row.surprise as number) : actualEps - estimateEps;
+              return {
+                period: row.period ?? '',
+                actualEps,
+                estimateEps,
+                surprise,
+                surprisePercent: Number.isFinite(row.surprisePercent)
+                  ? (row.surprisePercent as number)
+                  : (estimateEps !== 0 ? (surprise / Math.abs(estimateEps)) * 100 : 0),
+                year: row.year ?? 0,
+                quarter: row.quarter ?? 0,
+              };
+            })
             .sort((a, b) => (a.period < b.period ? 1 : -1));
         } catch {
           return null;
@@ -136,7 +165,7 @@ export async function fetchEarningsSurprises(symbol: string): Promise<EarningsSu
 export async function fetchCompanyNewsMentions(symbol: string, name: string): Promise<CompanyNewsMention[] | null> {
   if (!symbol) return null;
   try {
-    const result = await searchRecentStockHeadlines(symbol, name, MAX_NEWS_MENTIONS);
+    const result = await withTimeout(searchRecentStockHeadlines(symbol, name, MAX_NEWS_MENTIONS), NEWS_TIMEOUT_MS);
     if (!result || !Array.isArray(result.headlines) || result.headlines.length === 0) return null;
     return result.headlines.slice(0, MAX_NEWS_MENTIONS).map(headline => ({
       title: headline.title,

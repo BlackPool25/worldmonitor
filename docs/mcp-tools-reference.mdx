@@ -276,6 +276,7 @@ Per-company corporate intelligence from SEC EDGAR and market data (#5695). Compa
 | `view` | `string: enrichment / signals / filings-search / material-events` | Defaults to `enrichment`. |
 | `ticker` | string | Exchange ticker symbol, such as `AAPL`. Preferred company key for `enrichment` and `signals`. |
 | `name` | string | Company name fallback when no ticker is known; matched against the SEC registry. |
+| `domain` | string | Company domain fallback, such as `apple.com`. Accepted only when it matches one SEC filer unambiguously AND that filer registered the same website; otherwise the company resolves to nothing rather than a guess. |
 | `query` | string | `filings-search` only: full-text query. Required for that view. |
 | `forms` | string | `filings-search` only: comma-separated form filter, such as `8-K` or `10-K,10-Q`. |
 | `start_date` / `end_date` | string | `filings-search` only: filing-date range (YYYY-MM-DD). |

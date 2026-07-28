@@ -26,6 +26,16 @@ const UPSTREAM_TIMEOUT = 10_000;
 const CIK_MAP_MEMO_MS = 60 * 60 * 1_000;
 const MAX_SLIM_FILINGS = 200;
 
+// Forms worth keeping from a filer's recent-submissions window. A high-volume
+// filer's newest 200 filings are mostly ownership forms (Apple's most recent
+// page is nearly all Form 4), so keeping the first 200 chronologically can
+// push every 10-K/10-Q/8-K out of the slice entirely. Filter first, then cap.
+const RELEVANT_FORM_PREFIXES = ['10-K', '10-Q', '8-K', '20-F', '6-K', 'S-1', 'DEF 14A', '40-F'];
+
+function isRelevantForm(form: string): boolean {
+  return RELEVANT_FORM_PREFIXES.some(prefix => form === prefix || form.startsWith(`${prefix}/`));
+}
+
 // 8-K item taxonomy (17 CFR 249.308). `high`/`medium` items are genuine
 // intelligence signals; `routine` items (earnings boilerplate exhibits, Reg FD)
 // are surfaced in filing lists but excluded from the material-events stream.
@@ -81,6 +91,10 @@ export interface ResolvedCompany {
   cik: string; // zero-padded 10 digits
   ticker: string;
   name: string;
+  // Which input produced the match. A 'domain' match is provisional until
+  // confirmed against the filer's SEC-registered website — see
+  // filerWebsiteMatchesDomain.
+  matchedBy: 'ticker' | 'name' | 'domain';
 }
 
 export interface SlimSecFiling {
@@ -133,11 +147,21 @@ export function filingIndexUrl(cik: number | string, accession: string): string 
 }
 
 // Direct document URL inside a filing, used for full-text search hits whose _id
-// is "<accession>:<filename>".
+// is "<accession>:<filename>". EDGAR filenames may carry one XSL subdirectory
+// (e.g. "xslF345X06/form4.xml"), so slashes are legitimate — but dot-segments
+// are not: they would let an upstream-supplied name walk out of the filing
+// directory and emit a sec.gov URL pointing at unrelated content. Returns ''
+// when nothing safe survives so callers fall back to filingIndexUrl.
 export function filingDocumentUrl(cik: number | string, accession: string, filename: string): string {
   const cikNum = String(Number(String(cik).replace(/\D/g, '') || '0'));
-  const safeName = filename.replace(/[^A-Za-z0-9._\-/]/g, '');
-  return `https://www.sec.gov/Archives/edgar/data/${cikNum}/${accession.replace(/-/g, '')}/${safeName}`;
+  const accessionDigits = accession.replace(/[^0-9]/g, '');
+  const safeName = filename
+    .split('/')
+    .map(segment => segment.replace(/[^A-Za-z0-9._-]/g, ''))
+    .filter(segment => segment && segment !== '.' && segment !== '..')
+    .join('/');
+  if (!accessionDigits || !safeName) return '';
+  return `https://www.sec.gov/Archives/edgar/data/${cikNum}/${accessionDigits}/${safeName}`;
 }
 
 // Submissions `items` come as a comma-separated string like "2.02,9.01".
@@ -152,13 +176,26 @@ export function parseItemCodes(items: string | undefined): string[] {
 // --- ticker/name → CIK resolution against the seeded SEC registry ------------
 
 let cikMapMemo: { map: CikMap; loadedAt: number } | null = null;
+let registryUnavailable = false;
 
 export function __resetCikMapMemoForTests(): void {
   cikMapMemo = null;
+  registryUnavailable = false;
+}
+
+/**
+ * True when the last resolution attempt could not read the ticker registry at
+ * all. Callers must surface this as `unavailable` rather than "no such
+ * company": a Redis outage is not evidence that a company does not exist, and
+ * an authoritative-looking empty answer would otherwise be CDN-cached.
+ */
+export function isCikRegistryUnavailable(): boolean {
+  return registryUnavailable;
 }
 
 async function loadCikMap(): Promise<CikMap | null> {
   if (cikMapMemo && Date.now() - cikMapMemo.loadedAt < CIK_MAP_MEMO_MS) {
+    registryUnavailable = false;
     return cikMapMemo.map;
   }
   // The map is ~580KB; a cold read can trip the 1.5s Redis op timeout, so one
@@ -168,20 +205,34 @@ async function loadCikMap(): Promise<CikMap | null> {
   if (!raw || typeof raw !== 'object') {
     raw = await getCachedJson(SEC_CIK_MAP_KEY, true);
   }
-  if (!raw || typeof raw !== 'object') return cikMapMemo?.map ?? null;
+  if (!raw || typeof raw !== 'object') return staleFallback();
   const map = (raw as { tickers?: CikMap }).tickers ?? null;
-  if (!map || typeof map !== 'object') return cikMapMemo?.map ?? null;
+  if (!map || typeof map !== 'object') return staleFallback();
   cikMapMemo = { map, loadedAt: Date.now() };
+  registryUnavailable = false;
   return map;
+}
+
+// A failed refresh keeps serving the last good map (better than no answers),
+// but with nothing cached there is no registry at all — that must be reported
+// as unavailable, never as "company not found".
+function staleFallback(): CikMap | null {
+  registryUnavailable = !cikMapMemo;
+  return cikMapMemo?.map ?? null;
 }
 
 /**
  * Resolve a company reference to its SEC CIK via the seeded registry.
  * - ticker: exact match (authoritative).
- * - name: exact match, else unique prefix match; ambiguous prefixes resolve to
- *   the shortest (most canonical) registry title.
- * - domain: the leading label is matched as a name prefix but only accepted
- *   when unambiguous — a domain is never force-matched (issues #3754/#3755).
+ * - name: exact match, else a prefix match that is unique across filers. An
+ *   ambiguous prefix resolves to NOTHING — picking the "most canonical" title
+ *   would be a coin flip between real companies ("Delta" matches both Delta Air
+ *   Lines and Delta Apparel), which is the guessed-identity failure that
+ *   disabled these endpoints (#3754/#3755).
+ * - domain: the leading label is matched the same way, and the result is
+ *   PROVISIONAL — callers must confirm it with filerWebsiteMatchesDomain
+ *   against the filer's SEC-registered website before attributing any data.
+ *   Uniqueness alone does not establish ownership of a domain.
  */
 export async function resolveCompany(query: { ticker?: string; name?: string; domain?: string }): Promise<ResolvedCompany | null> {
   const map = await loadCikMap();
@@ -190,41 +241,75 @@ export async function resolveCompany(query: { ticker?: string; name?: string; do
   const ticker = sanitizeTicker(query.ticker ?? '');
   if (ticker) {
     const entry = map[ticker];
-    return entry ? { cik: padCik(entry.cik), ticker, name: entry.name } : null;
+    return entry ? { cik: padCik(entry.cik), ticker, name: entry.name, matchedBy: 'ticker' } : null;
   }
 
   const name = (query.name ?? '').trim().toLowerCase();
-  if (name) return matchByName(map, name, { requireUnique: false });
+  if (name) return matchByName(map, name, { requireUnique: true, matchedBy: 'name' });
 
   const domain = (query.domain ?? '').trim().toLowerCase();
   if (domain) {
     const label = domain.replace(/^www\./, '').split('.')[0] ?? '';
     if (label.length < 3) return null;
-    return matchByName(map, label, { requireUnique: true });
+    return matchByName(map, label, { requireUnique: true, matchedBy: 'domain' });
   }
 
   return null;
 }
 
+/**
+ * Confirms a provisional domain match: the filer's SEC-registered website must
+ * be the same registrable host as the requested domain. Fails closed — an
+ * absent or unparseable website means "cannot confirm", never "close enough".
+ */
+export function filerWebsiteMatchesDomain(requestedDomain: string, filerWebsite: string): boolean {
+  const requested = normalizeHost(requestedDomain);
+  const filer = normalizeHost(filerWebsite);
+  if (!requested || !filer) return false;
+  return requested === filer
+    || filer.endsWith(`.${requested}`)
+    || requested.endsWith(`.${filer}`);
+}
+
+function normalizeHost(value: string): string {
+  const raw = (value ?? '').trim().toLowerCase();
+  if (!raw) return '';
+  try {
+    const url = new URL(raw.includes('://') ? raw : `https://${raw}`);
+    return url.hostname.replace(/^www\./, '');
+  } catch {
+    return '';
+  }
+}
+
 export const __testing__ = { matchByName };
 
-function matchByName(map: CikMap, needle: string, opts: { requireUnique: boolean }): ResolvedCompany | null {
+function matchByName(
+  map: CikMap,
+  needle: string,
+  opts: { requireUnique: boolean; matchedBy: 'name' | 'domain' },
+): ResolvedCompany | null {
   let exact: ResolvedCompany | null = null;
   const prefix: ResolvedCompany[] = [];
+  // Counted separately from `prefix`, which is capped: a 26th distinct filer
+  // must still make the match ambiguous rather than fall outside the check.
+  const distinctCiks = new Set<string>();
   for (const [ticker, entry] of Object.entries(map)) {
     const title = entry.name.toLowerCase();
     if (title === needle) {
-      exact = { cik: padCik(entry.cik), ticker, name: entry.name };
+      exact = { cik: padCik(entry.cik), ticker, name: entry.name, matchedBy: opts.matchedBy };
       break;
     }
-    if (title.startsWith(needle) && prefix.length < 25) {
-      prefix.push({ cik: padCik(entry.cik), ticker, name: entry.name });
+    if (title.startsWith(needle)) {
+      distinctCiks.add(padCik(entry.cik));
+      if (prefix.length < 25) {
+        prefix.push({ cik: padCik(entry.cik), ticker, name: entry.name, matchedBy: opts.matchedBy });
+      }
     }
   }
   if (exact) return exact;
   if (prefix.length === 0) return null;
   // Distinct tickers of the same filer (share classes) still count as one company.
-  const distinctCiks = new Set(prefix.map(p => p.cik));
   if (opts.requireUnique && distinctCiks.size > 1) return null;
   prefix.sort((a, b) => a.name.length - b.name.length);
   return prefix[0] ?? null;
@@ -256,7 +341,8 @@ export async function fetchSecSubmissions(cik10: string): Promise<SecCompanyProf
   if (!/^\d{10}$/.test(cik10)) return null;
   try {
     return await cachedFetchJson<SecCompanyProfile>(
-      `intel:company:sec-submissions:${cik10}`,
+      // v2: payloads cached under v1 hold the pre-filter chronological slice.
+      `intel:company:sec-submissions:v2:${cik10}`,
       SUBMISSIONS_TTL,
       async () => {
         try {
@@ -270,6 +356,7 @@ export async function fetchSecSubmissions(cik10: string): Promise<SecCompanyProf
           const total = recent?.form?.length ?? 0;
           const filings: SlimSecFiling[] = [];
           for (let i = 0; i < total && filings.length < MAX_SLIM_FILINGS; i++) {
+            if (!isRelevantForm(recent?.form?.[i] ?? '')) continue;
             filings.push({
               form: recent?.form?.[i] ?? '',
               filingDate: recent?.filingDate?.[i] ?? '',
@@ -323,10 +410,17 @@ interface EftsResponse {
 export interface EdgarSearchResult {
   total: number;
   results: EdgarSearchHit[];
+  // When EDGAR was actually queried. Persisted inside the cached value so a
+  // cache hit reports real upstream freshness instead of the current time.
+  fetchedAtMs: number;
 }
 
-const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-const FORMS_RE = /^[A-Za-z0-9/, .\-]{1,40}$/;
+// Exported so handlers reject malformed filters up front instead of silently
+// dropping them (a dropped filter widens the result set).
+export const EDGAR_ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+export const EDGAR_FORMS_RE = /^[A-Za-z0-9/, .\-]{1,40}$/;
+const ISO_DATE_RE = EDGAR_ISO_DATE_RE;
+const FORMS_RE = EDGAR_FORMS_RE;
 
 export async function searchEdgarFullText(params: {
   query: string;
@@ -380,7 +474,7 @@ export async function searchEdgarFullText(params: {
               accession,
             };
           });
-          return { total: raw.hits.total?.value ?? results.length, results };
+          return { total: raw.hits.total?.value ?? results.length, results, fetchedAtMs: Date.now() };
         } catch {
           return null;
         }

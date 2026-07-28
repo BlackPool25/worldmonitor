@@ -11,6 +11,7 @@ import {
   MATERIAL_8K_ITEMS,
   __resetCikMapMemoForTests,
   __testing__ as secEdgarTesting,
+  filerWebsiteMatchesDomain,
   filingDocumentUrl,
   filingIndexUrl,
   materialItemCodes,
@@ -21,6 +22,7 @@ import {
 import {
   MATERIAL_ITEM_CODES,
   filterMaterialEvents,
+  isSecGovUrl,
   mergeEventWindow,
   parse8kAtomFeed,
 } from '../scripts/seed-sec-8k-stream.mjs';
@@ -86,6 +88,19 @@ describe('sec-edgar pure helpers', () => {
       filingDocumentUrl('0001889450', '0001493152-26-032525', 'form8-k.htm'),
       'https://www.sec.gov/Archives/edgar/data/1889450/000149315226032525/form8-k.htm',
     );
+    // EDGAR filenames legitimately carry one XSL subdirectory.
+    assert.equal(
+      filingDocumentUrl('320193', '0001140361-26-025622', 'xslF345X06/form4.xml'),
+      'https://www.sec.gov/Archives/edgar/data/320193/000114036126025622/xslF345X06/form4.xml',
+    );
+  });
+
+  it('never lets a filing document URL escape its filing directory', () => {
+    const escaped = filingDocumentUrl('320193', '0001-26-000001', '../../../../secret.htm');
+    assert.equal(escaped, 'https://www.sec.gov/Archives/edgar/data/320193/000126000001/secret.htm');
+    assert.doesNotMatch(escaped, /\.\./);
+    assert.equal(filingDocumentUrl('320193', '0001-26-000001', '../..'), '');
+    assert.equal(filingDocumentUrl('320193', '', 'form8-k.htm'), '');
   });
 
   it('parses submissions item-code strings', () => {
@@ -101,16 +116,39 @@ describe('sec-edgar pure helpers', () => {
       FMNB: { cik: 709337, name: 'Farmers National Banc Corp' },
       FARM: { cik: 34563, name: 'Farmer Bros Co' },
     };
-    const exact = secEdgarTesting.matchByName(map, 'apple inc.', { requireUnique: false });
+    const exact = secEdgarTesting.matchByName(map, 'apple inc.', { requireUnique: false, matchedBy: 'name' });
     assert.equal(exact?.cik, '0000320193');
+    assert.equal(exact?.matchedBy, 'name');
     // Unique prefix resolves.
-    const prefix = secEdgarTesting.matchByName(map, 'apple', { requireUnique: true });
+    const prefix = secEdgarTesting.matchByName(map, 'apple', { requireUnique: true, matchedBy: 'domain' });
     assert.equal(prefix?.ticker, 'AAPL');
-    // Ambiguous prefix across two distinct filers must NOT resolve for domains.
-    assert.equal(secEdgarTesting.matchByName(map, 'farm', { requireUnique: true }), null);
-    // ...but a name query picks the shortest (most canonical) title.
-    const loose = secEdgarTesting.matchByName(map, 'farm', { requireUnique: false });
-    assert.equal(loose?.ticker, 'FARM');
+    assert.equal(prefix?.matchedBy, 'domain');
+    // Ambiguous prefix across two distinct filers must NOT resolve — for names
+    // or domains. Picking the shortest title would be a coin flip between two
+    // real companies.
+    assert.equal(secEdgarTesting.matchByName(map, 'farm', { requireUnique: true, matchedBy: 'domain' }), null);
+    assert.equal(secEdgarTesting.matchByName(map, 'farm', { requireUnique: true, matchedBy: 'name' }), null);
+    // Share classes of one filer are still a single company, so they resolve.
+    const shareClasses = {
+      GOOGL: { cik: 1652044, name: 'Alphabet Inc.' },
+      GOOG: { cik: 1652044, name: 'Alphabet Inc. Class C' },
+    };
+    assert.equal(
+      secEdgarTesting.matchByName(shareClasses, 'alphabet', { requireUnique: true, matchedBy: 'name' })?.cik,
+      '0001652044',
+    );
+  });
+
+  it('confirms a domain only against the filer registered website, failing closed', () => {
+    assert.equal(filerWebsiteMatchesDomain('apple.com', 'https://www.apple.com/'), true);
+    assert.equal(filerWebsiteMatchesDomain('www.apple.com', 'apple.com'), true);
+    assert.equal(filerWebsiteMatchesDomain('apple.com', 'https://investor.apple.com'), true);
+    // Wrong company with a coincidentally-unique name prefix.
+    assert.equal(filerWebsiteMatchesDomain('delta.com', 'https://www.deltaapparel.com'), false);
+    // Cannot confirm -> refuse, never "close enough".
+    assert.equal(filerWebsiteMatchesDomain('apple.com', ''), false);
+    assert.equal(filerWebsiteMatchesDomain('', 'https://apple.com'), false);
+    assert.equal(filerWebsiteMatchesDomain('apple.com', 'not a url at all'), false);
   });
 });
 
@@ -170,6 +208,19 @@ describe('seed-sec-8k-stream pure functions', () => {
     assert.equal(rtb.form, '8-K/A');
   });
 
+  it('stores only sec.gov filing links', () => {
+    assert.equal(isSecGovUrl('https://www.sec.gov/Archives/edgar/data/1/2/3-index.htm'), true);
+    assert.equal(isSecGovUrl('https://sec.gov/x'), true);
+    assert.equal(isSecGovUrl('https://evil.example/x'), false);
+    assert.equal(isSecGovUrl('javascript:alert(1)'), false);
+    assert.equal(isSecGovUrl('http://www.sec.gov/x'), false);
+    assert.equal(isSecGovUrl(''), false);
+    // A feed entry carrying a foreign host yields an empty url, never the host.
+    const poisoned = ATOM_FIXTURE.replace('https://www.sec.gov/Archives/edgar/data/1289848/000162828026049857/0001628280-26-049857-index.htm', 'https://evil.example/pwn');
+    const events = parse8kAtomFeed(poisoned);
+    assert.equal(events[0].url, '');
+  });
+
   it('filters routine-only filings out of the material stream', () => {
     const material = filterMaterialEvents(parse8kAtomFeed(ATOM_FIXTURE));
     assert.equal(material.length, 1);
@@ -186,6 +237,15 @@ describe('seed-sec-8k-stream pure functions', () => {
     const merged = mergeEventWindow([old, kept, updated], [fresh], now);
     assert.deepEqual(merged.map((e: { accession: string }) => e.accession), ['A-dup', 'A-kept']);
     assert.equal(merged[0].company, 'Updated v2');
+  });
+
+  it('drops far-future events so clock skew cannot pin the top of the stream', () => {
+    const now = Date.parse('2026-07-27T22:00:00Z');
+    const day = 24 * 3600 * 1000;
+    const real = { company: 'Real', cik: '1', form: '8-K', accession: 'A-real', filedAtMs: now - day, items: [{ code: '5.02', description: 'x' }], url: '' };
+    const future = { company: 'Skewed', cik: '2', form: '8-K', accession: 'A-future', filedAtMs: now + 5 * day, items: [{ code: '5.02', description: 'x' }], url: '' };
+    const merged = mergeEventWindow([future], [real], now);
+    assert.deepEqual(merged.map((e: { accession: string }) => e.accession), ['A-real']);
   });
 });
 
@@ -242,6 +302,7 @@ const CIK_MAP_VALUE = envelope({
   tickers: {
     TSTA: { cik: 111222, name: 'Testable Alpha Inc.' },
     TSTB: { cik: 333444, name: 'Testable Beta Corp' },
+    TSTC: { cik: 555666, name: 'Zebrafields Corp' },
   },
 });
 
@@ -251,6 +312,8 @@ interface MockRoutes {
   earnings?: unknown | 'fail';
   stream?: unknown;
   efts?: unknown | 'fail';
+  // Set null to simulate the ticker registry being unreadable.
+  cikMap?: unknown | null;
 }
 
 function installFetchMock(routes: MockRoutes) {
@@ -258,7 +321,9 @@ function installFetchMock(routes: MockRoutes) {
     const url = String(input instanceof Request ? input.url : input);
     if (url.startsWith('https://redis.example.test/get/')) {
       const key = decodeURIComponent(url.slice('https://redis.example.test/get/'.length));
-      if (key === 'intelligence:sec-cik-map:v1') return upstashGet(CIK_MAP_VALUE);
+      if (key === 'intelligence:sec-cik-map:v1') {
+        return upstashGet('cikMap' in routes ? routes.cikMap : CIK_MAP_VALUE);
+      }
       if (key === 'intelligence:sec-8k-stream:v1') return upstashGet(routes.stream ?? null);
       return upstashGet(null); // every cachedFetchJson read misses → fetcher runs
     }
@@ -376,6 +441,116 @@ describe('getCompanyEnrichment', () => {
     assert.equal(resp.secFilings, undefined);
     assert.deepEqual(resp.earningsSurprises, []);
   });
+
+  it('reports a registry outage as unavailable, not as "no such company"', async () => {
+    configureRedis();
+    installFetchMock({ cikMap: null });
+    const resp = await getCompanyEnrichment(ctx, { ticker: 'TSTA', name: '', domain: '' });
+    assert.equal(resp.unavailable, true, 'an unreadable registry must not read as an authoritative miss');
+    assert.deepEqual(resp.sources, []);
+
+    __resetCikMapMemoForTests();
+    const signals = await listCompanySignals(ctx, { ticker: 'TSTA', company: '', domain: '' });
+    assert.equal(signals.unavailable, true);
+  });
+
+  it('marks a genuine miss as available so it stays cacheable', async () => {
+    configureRedis();
+    installFetchMock({});
+    const resp = await getCompanyEnrichment(ctx, { ticker: 'ZZZZ', name: '', domain: '' });
+    assert.equal(resp.unavailable, false, 'a real "not in the registry" answer is cacheable');
+  });
+
+  it('keeps relevant filings for a filer whose recent window is mostly ownership forms', async () => {
+    configureRedis();
+    // 250 Form 4s ahead of the only 10-K: a chronological cap would drop it.
+    const noise = Array.from({ length: 250 }, (_, i) => i);
+    installFetchMock({
+      submissions: {
+        ...SUBMISSIONS_FIXTURE,
+        filings: {
+          recent: {
+            form: [...noise.map(() => '4'), '10-K'],
+            filingDate: [...noise.map(() => '2026-07-01'), '2026-06-01'],
+            accessionNumber: [...noise.map((i) => `0001-26-0000${i}`), '0001-26-999999'],
+            primaryDocument: [...noise.map(() => 'f4.xml'), 'tenk.htm'],
+            items: [...noise.map(() => ''), ''],
+            acceptanceDateTime: [...noise.map(() => '2026-07-01T12:00:00.000Z'), '2026-06-01T12:00:00.000Z'],
+          },
+        },
+      },
+    });
+    const resp = await getCompanyEnrichment(ctx, { ticker: 'TSTA', name: '', domain: '' });
+    assert.deepEqual(resp.secFilings?.recentFilings.map(f => f.form), ['10-K']);
+    assert.equal(resp.secFilings?.totalFilings, 251, 'the reported total still counts every filing');
+  });
+
+  it('refuses an ambiguous company name instead of picking one (#3754/#3755)', async () => {
+    configureRedis();
+    installFetchMock({ submissions: SUBMISSIONS_FIXTURE });
+    // "Testable" prefix-matches two distinct filers — neither may be returned.
+    const resp = await getCompanyEnrichment(ctx, { ticker: '', name: 'Testable', domain: '' });
+    assert.deepEqual(resp.sources, []);
+    assert.equal(resp.company?.cik, '');
+  });
+
+  it('echoes the caller domain only when it belongs to the resolved filer', async () => {
+    configureRedis();
+    installFetchMock({ submissions: SUBMISSIONS_FIXTURE });
+    // Ticker wins resolution; the conflicting domain must not be stamped onto
+    // this filer's record.
+    const resp = await getCompanyEnrichment(ctx, { ticker: 'TSTA', name: '', domain: 'unrelated-company.example' });
+    assert.equal(resp.company?.cik, '0000111222');
+    assert.equal(resp.company?.domain, 'testable-alpha.example', 'reports the filer own domain, not the conflicting request value');
+  });
+
+  it('refuses an ambiguous domain instead of guessing an identity (#3754/#3755)', async () => {
+    configureRedis();
+    installFetchMock({ submissions: SUBMISSIONS_FIXTURE });
+    // Label "testable" prefix-matches two distinct filers (Alpha + Beta) —
+    // the domain path must resolve NEITHER rather than attribute one.
+    const resp = await getCompanyEnrichment(ctx, { ticker: '', name: '', domain: 'testable.example' });
+    assert.deepEqual(resp.sources, []);
+    assert.equal(resp.company?.cik, '');
+  });
+
+  it('resolves an unambiguous domain confirmed by the filer registered website', async () => {
+    configureRedis();
+    installFetchMock({
+      submissions: { ...SUBMISSIONS_FIXTURE, name: 'Zebrafields Corp', website: 'https://www.zebrafields.example' },
+    });
+    const resp = await getCompanyEnrichment(ctx, { ticker: '', name: '', domain: 'zebrafields.example' });
+    assert.equal(resp.company?.cik, '0000555666');
+    assert.equal(resp.company?.ticker, 'TSTC');
+    assert.equal(resp.sources.includes('sec_edgar'), true);
+  });
+
+  it('refuses a unique-but-unconfirmed domain match (wrong-company attribution guard)', async () => {
+    configureRedis();
+    process.env.FINNHUB_API_KEY = 'test-finnhub';
+    // "zebrafields" uniquely prefix-matches Zebrafields Corp in the registry,
+    // but that filer's registered website is a different company — the exact
+    // wrong-attribution shape from #3754/#3755. Must resolve to nothing.
+    installFetchMock({
+      submissions: { ...SUBMISSIONS_FIXTURE, name: 'Zebrafields Corp', website: 'https://www.someone-else.example' },
+      profile: { name: 'Zebrafields Corp', exchange: 'NYSE' },
+    });
+    const resp = await getCompanyEnrichment(ctx, { ticker: '', name: '', domain: 'zebrafields.example' });
+    assert.deepEqual(resp.sources, [], 'no source may be attributed on an unconfirmed domain match');
+    assert.equal(resp.company?.cik, '');
+    assert.equal(resp.secFilings, undefined);
+    assert.deepEqual(resp.earningsSurprises, []);
+  });
+
+  it('refuses an unconfirmed domain match for signals too', async () => {
+    configureRedis();
+    installFetchMock({
+      submissions: { ...SUBMISSIONS_FIXTURE, name: 'Zebrafields Corp', website: 'https://www.someone-else.example' },
+    });
+    const resp = await listCompanySignals(ctx, { ticker: '', company: '', domain: 'zebrafields.example' });
+    assert.deepEqual(resp.signals, []);
+    assert.equal(resp.summary?.totalSignals, 0);
+  });
 });
 
 describe('listCompanySignals', () => {
@@ -435,6 +610,46 @@ describe('listCompanySignals', () => {
     assert.equal(resp.summary?.signalDiversity, 2);
   });
 
+  it('headlines a multi-item 8-K by its most material item, not the lowest code', async () => {
+    configureRedis();
+    const recentIso = new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString();
+    installFetchMock({
+      submissions: {
+        ...SUBMISSIONS_FIXTURE,
+        filings: {
+          recent: {
+            form: ['8-K'],
+            filingDate: [recentIso.slice(0, 10)],
+            accessionNumber: ['0001-26-000020'],
+            primaryDocument: ['a.htm'],
+            // 2.02 (medium, earnings exhibit) sorts first; 5.02 is the news.
+            items: ['2.02,5.02'],
+            acceptanceDateTime: [recentIso],
+          },
+        },
+      },
+      earnings: [],
+    });
+    const resp = await listCompanySignals(ctx, { ticker: 'TSTA', company: '', domain: '' });
+    assert.equal(resp.signals[0]?.type, 'Executive Change');
+    assert.equal(resp.signals[0]?.strength, 'Strong');
+  });
+
+  it('drops unreported earnings periods instead of rendering them as a beat', async () => {
+    configureRedis();
+    process.env.FINNHUB_API_KEY = 'test-finnhub';
+    installFetchMock({
+      submissions: { ...SUBMISSIONS_FIXTURE, filings: { recent: { form: [], filingDate: [], accessionNumber: [], primaryDocument: [], items: [], acceptanceDateTime: [] } } },
+      earnings: [
+        // Not yet reported: Finnhub sends nulls. Coercing to 0 would publish a
+        // "0.00 vs 1.50 est" Earnings Beat for a quarter nobody has reported.
+        { period: '2026-12-31', actual: null, estimate: 1.5, surprise: null, surprisePercent: null, year: 2026, quarter: 4 },
+      ],
+    });
+    const resp = await listCompanySignals(ctx, { ticker: 'TSTA', company: '', domain: '' });
+    assert.deepEqual(resp.signals.filter(s => s.type.startsWith('Earnings')), []);
+  });
+
   it('returns a zeroed summary for a company absent from the SEC registry', async () => {
     configureRedis();
     installFetchMock({});
@@ -442,6 +657,33 @@ describe('listCompanySignals', () => {
     assert.deepEqual(resp.signals, []);
     assert.equal(resp.summary?.totalSignals, 0);
     assert.equal(resp.summary?.signalDiversity, 0);
+    assert.equal(resp.cik, '', 'an empty CIK marks an unresolved company');
+  });
+
+  it('distinguishes a resolved-but-quiet company from an unresolved one via cik', async () => {
+    configureRedis();
+    // Resolves, but every filing is older than the 90-day signal window and
+    // there are no earnings or news — zero signals with a real CIK.
+    installFetchMock({
+      submissions: {
+        ...SUBMISSIONS_FIXTURE,
+        filings: {
+          recent: {
+            form: ['8-K'],
+            filingDate: ['2020-01-02'],
+            accessionNumber: ['0001-20-000001'],
+            primaryDocument: ['a.htm'],
+            items: ['4.02'],
+            acceptanceDateTime: ['2020-01-02T12:00:00.000Z'],
+          },
+        },
+      },
+      earnings: [],
+    });
+    const resp = await listCompanySignals(ctx, { ticker: 'TSTA', company: '', domain: '' });
+    assert.deepEqual(resp.signals, []);
+    assert.equal(resp.summary?.totalSignals, 0);
+    assert.equal(resp.cik, '0000111222', 'a resolved company keeps its CIK even with zero signals');
   });
 });
 
@@ -488,12 +730,81 @@ describe('searchSecFilings', () => {
     assert.equal(first.url, 'https://www.sec.gov/Archives/edgar/data/1889450/000149315226032525/form8-k.htm');
   });
 
+  it('rejects malformed filters instead of silently widening the search', async () => {
+    configureRedis();
+    installFetchMock({});
+    await assert.rejects(
+      () => searchSecFilings(ctx, { query: 'merger', forms: '', startDate: 'last-tuesday', endDate: '', limit: 0 }),
+      ValidationError,
+    );
+    await assert.rejects(
+      () => searchSecFilings(ctx, { query: 'merger', forms: '8-K"; DROP', startDate: '', endDate: '', limit: 0 }),
+      ValidationError,
+    );
+  });
+
   it('reports unavailable when EDGAR search is down', async () => {
     configureRedis();
     installFetchMock({ efts: 'fail' });
     const resp = await searchSecFilings(ctx, { query: 'no-cache-here-' + Math.random(), forms: '', startDate: '', endDate: '', limit: 0 });
     assert.equal(resp.unavailable, true);
     assert.deepEqual(resp.results, []);
+  });
+});
+
+describe('get_company_intelligence MCP tool view dispatch', () => {
+  const toolContext = { kind: 'env_key', apiKey: 'wm-test-key' } as never;
+
+  async function getTool() {
+    const { TOOL_REGISTRY } = await import('../api/mcp/registry/index');
+    const tool = TOOL_REGISTRY.find(entry => entry.name === 'get_company_intelligence');
+    assert.ok(tool && '_execute' in tool && tool._execute, 'tool must exist with _execute');
+    return tool as { _execute: (params: Record<string, unknown>, base: string, context: unknown) => Promise<Record<string, unknown>> };
+  }
+
+  function captureFetch(payload: unknown) {
+    const urls: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      urls.push(String(input instanceof Request ? input.url : input));
+      return new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }) as typeof fetch;
+    return urls;
+  }
+
+  it('requires ticker or name for enrichment and signals views', async () => {
+    const tool = await getTool();
+    captureFetch({});
+    assert.deepEqual(await tool._execute({}, 'https://x.test', toolContext), { view: 'enrichment', error: 'ticker_or_name_required' });
+    assert.deepEqual(await tool._execute({ view: 'signals' }, 'https://x.test', toolContext), { view: 'signals', error: 'ticker_or_name_required' });
+  });
+
+  it('requires query for filings-search', async () => {
+    const tool = await getTool();
+    captureFetch({});
+    assert.deepEqual(
+      await tool._execute({ view: 'filings-search', query: '  ' }, 'https://x.test', toolContext),
+      { view: 'filings-search', error: 'query_required' },
+    );
+  });
+
+  it('falls back to the enrichment view for unknown view values', async () => {
+    const tool = await getTool();
+    const urls = captureFetch({ company: {} });
+    const result = await tool._execute({ view: 'bogus', ticker: 'AAPL' }, 'https://x.test', toolContext);
+    assert.equal(result.view, 'enrichment');
+    assert.match(urls[0] ?? '', /\/api\/intelligence\/v1\/get-company-enrichment\?ticker=AAPL/);
+  });
+
+  it('routes each view to its REST path and clamps limits', async () => {
+    const tool = await getTool();
+    const urls = captureFetch({ results: [], events: [], signals: [] });
+    await tool._execute({ view: 'signals', ticker: 'AAPL' }, 'https://x.test', toolContext);
+    await tool._execute({ view: 'filings-search', query: 'merger', limit: 999 }, 'https://x.test', toolContext);
+    await tool._execute({ view: 'material-events', item_code: '5.02', limit: 999 }, 'https://x.test', toolContext);
+    assert.match(urls[0] ?? '', /\/api\/intelligence\/v1\/list-company-signals\?ticker=AAPL/);
+    assert.match(urls[1] ?? '', /\/api\/intelligence\/v1\/search-sec-filings\?.*limit=25/);
+    assert.match(urls[2] ?? '', /\/api\/intelligence\/v1\/list-material-events\?.*limit=100/);
+    assert.match(urls[2] ?? '', /item_code=5\.02/);
   });
 });
 
@@ -520,6 +831,15 @@ describe('listMaterialEvents', () => {
     installFetchMock({ stream: STREAM_VALUE });
     const resp = await listMaterialEvents(ctx, { itemCode: '2.01', limit: 0 });
     assert.deepEqual(resp.events.map(event => event.accession), ['acc-2']);
+  });
+
+  it('rejects a malformed item code instead of returning the whole stream', async () => {
+    configureRedis();
+    installFetchMock({ stream: STREAM_VALUE });
+    await assert.rejects(
+      () => listMaterialEvents(ctx, { itemCode: 'executive changes', limit: 0 }),
+      ValidationError,
+    );
   });
 
   it('reports unavailable when the seed is missing', async () => {

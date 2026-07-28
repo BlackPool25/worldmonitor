@@ -15,6 +15,12 @@ export const SEC_8K_STREAM_TTL_SECONDS = 7 * 24 * 3600;
 export const SEC_8K_STREAM_MAX_STALE_MIN = 120;
 export const MAX_STREAM_EVENTS = 200;
 export const STREAM_WINDOW_MS = 7 * 24 * 3600 * 1000;
+// Tolerates ordinary clock skew between the SEC feed and this runner; anything
+// further into the future is malformed, not early.
+export const FUTURE_SKEW_TOLERANCE_MS = 60 * 60 * 1000;
+// A market-wide 7-day window that falls below this is decaying, not quiet: one
+// feed page alone yields ~75 material events.
+export const MIN_STREAM_EVENTS = 20;
 
 // SEC requires a declared User-Agent identifying the requester (no browser
 // spoofing) — same convention as scripts/seed-regulatory-actions.mjs.
@@ -44,6 +50,15 @@ function unescapeXml(text) {
     .replace(/&amp;/g, '&');
 }
 
+export function isSecGovUrl(value) {
+  try {
+    const url = new URL(String(value ?? ''));
+    return url.protocol === 'https:' && (url.hostname === 'www.sec.gov' || url.hostname === 'sec.gov');
+  } catch {
+    return false;
+  }
+}
+
 // Parses one EDGAR getcurrent Atom feed document into raw filing entries.
 // Entry shape in the feed:
 //   <title>8-K - Company Name (0001289848) (Filer)</title>
@@ -64,8 +79,10 @@ export function parse8kAtomFeed(xml) {
     const company = titleMatch[2].trim();
     const cik = titleMatch[3].padStart(10, '0');
 
+    // Only sec.gov links are stored: the stream is rendered to API/MCP
+    // consumers, so an unexpected host in the feed must not ride through.
     const linkMatch = block.match(/<link[^>]*href=["']([^"']+)["']/i);
-    const url = linkMatch ? unescapeXml(linkMatch[1]) : '';
+    const url = linkMatch && isSecGovUrl(unescapeXml(linkMatch[1])) ? unescapeXml(linkMatch[1]) : '';
 
     const summary = unescapeXml((block.match(/<summary[^>]*>([\s\S]*?)<\/summary>/i) || [])[1] || '');
     const accession = (summary.match(/AccNo:<\/b>\s*([0-9-]+)/) || [])[1] || '';
@@ -105,7 +122,11 @@ export function mergeEventWindow(previousEvents, freshEvents, nowMs) {
     byAccession.set(event.accession, event);
   }
   return [...byAccession.values()]
-    .filter(event => nowMs - event.filedAtMs < STREAM_WINDOW_MS)
+    // Bounded on BOTH sides: a malformed <updated> or clock skew would
+    // otherwise pin a future-dated event at the top of the stream forever,
+    // re-merged on every run and unclearable without deleting the key.
+    .filter(event => nowMs - event.filedAtMs < STREAM_WINDOW_MS
+      && event.filedAtMs - nowMs < FUTURE_SKEW_TOLERANCE_MS)
     .sort((a, b) => b.filedAtMs - a.filedAtMs)
     .slice(0, MAX_STREAM_EVENTS);
 }
@@ -133,10 +154,22 @@ async function fetchFeedXml() {
 
 export async function fetch8kStream() {
   const [previous, xml] = await Promise.all([
-    readSeedSnapshot(SEC_8K_STREAM_KEY),
+    // strict: the rolling window IS the product. A transient Redis read failure
+    // must abort the run (runSeed preserves last-good) rather than silently
+    // republish a window truncated to whatever this one feed page returned.
+    readSeedSnapshot(SEC_8K_STREAM_KEY, { strict: true }),
     fetchFeedXml(),
   ]);
-  const fresh = filterMaterialEvents(parse8kAtomFeed(xml));
+
+  const parsed = parse8kAtomFeed(xml);
+  // A feed that still carries <entry> elements but parses to nothing means the
+  // Atom shape drifted. Publishing that as an empty-but-fresh window would keep
+  // health green while the stream silently decayed, so fail instead.
+  if (parsed.length === 0 && /<entry[\s>]/i.test(String(xml ?? ''))) {
+    throw new Error('SEC 8-K feed contains entries but none parsed — Atom shape drift');
+  }
+
+  const fresh = filterMaterialEvents(parsed);
   const events = mergeEventWindow(previous?.events, fresh, Date.now());
   return { events, fetchedAt: new Date().toISOString() };
 }
@@ -144,12 +177,10 @@ export async function fetch8kStream() {
 if (process.argv[1]?.endsWith('seed-sec-8k-stream.mjs')) {
   runSeed('intelligence', 'sec-8k-stream', SEC_8K_STREAM_KEY, fetch8kStream, {
     ttlSeconds: SEC_8K_STREAM_TTL_SECONDS,
-    validateFn: (data) => Array.isArray(data?.events) && typeof data?.fetchedAt === 'string',
+    validateFn: (data) => Array.isArray(data?.events)
+      && typeof data?.fetchedAt === 'string'
+      && data.events.length >= MIN_STREAM_EVENTS,
     declareRecords: (data) => data.events.length,
-    // Weekend/overnight stretches legitimately produce zero *new* filings; the
-    // rolling merge usually keeps the window non-empty, but an empty window
-    // after a quiet week is still a valid publish.
-    zeroIsValid: true,
     sourceVersion: 'sec-edgar-getcurrent-atom-v1',
     schemaVersion: 1,
     maxStaleMin: SEC_8K_STREAM_MAX_STALE_MIN,

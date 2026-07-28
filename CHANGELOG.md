@@ -6,6 +6,29 @@ All notable changes to World Monitor are documented here.
 
 ### Changed
 
+- **Corporate intelligence is live; `get-company-enrichment` and
+  `list-company-signals` are no longer deprecated** (#5695). Both
+  `/api/intelligence/v1/get-company-enrichment` and
+  `/api/intelligence/v1/list-company-signals` previously returned an empty stub
+  (disabled in #3777 because the old domain-slug attribution heuristic
+  fabricated company intelligence — issues #3754/#3755). They now aggregate real
+  data behind authoritative SEC ticker→CIK resolution: EDGAR identity and recent
+  filings, Finnhub market profile and earnings surprises, and recent news
+  mentions. A company that does not resolve in the SEC registry returns an empty
+  envelope with `sources: []` rather than a guess, and a `domain` lookup is
+  accepted only when it matches one filer unambiguously **and** that filer
+  registered the same website. **Removed response fields:** `github`,
+  `techStack`, `hackerNewsMentions`, and `company.founded` — all of which were
+  permanently empty under the stub and are now `reserved` in the proto.
+  **Added:** `market`, `earningsSurprises`, `newsMentions`, `company.cik`,
+  `company.ticker`, filing `url`/`items` on enrichment; `cik` on signals (empty
+  CIK distinguishes "no such company" from "resolved but quiet"); a `ticker`
+  query param on both. Two new endpoints ship alongside:
+  `/api/intelligence/v1/search-sec-filings` (EDGAR full-text search) and
+  `/api/intelligence/v1/list-material-events` (market-wide 8-K material-event
+  stream). All four are exposed through the new `get_company_intelligence` MCP
+  tool.
+
 - **CII formula `v8`** — fixed dead UCDP conflict-floor attribution. The server
   scorer read non-existent `intensity_level` / `type_of_violence` fields from the
   cached `conflict:ucdp-events:v1` feed (whose rows actually carry `violenceType`,

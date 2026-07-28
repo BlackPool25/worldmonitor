@@ -10633,7 +10633,9 @@ paths:
             parameters:
                 - name: domain
                   in: query
-                  description: Company domain, such as "apple.com".
+                  description: |-
+                    Company domain, such as "apple.com". Accepted only when it matches one SEC
+                     filer unambiguously and that filer registered the same website.
                   required: false
                   example: "example"
                   schema:
@@ -10765,7 +10767,9 @@ paths:
                     type: string
                 - name: domain
                   in: query
-                  description: Company domain to discover signals for.
+                  description: |-
+                    Company domain to discover signals for. Accepted only when it matches one
+                     SEC filer unambiguously and that filer registered the same website.
                   required: false
                   example: "example"
                   schema:
@@ -10791,6 +10795,7 @@ paths:
                     content:
                         application/json:
                             example:
+                                "cik": "example"
                                 "company": "example"
                                 "discoveredAtMs": 1
                                 "domain": "example"
@@ -10805,22 +10810,6 @@ paths:
                                       "sourceTier": 1
                                       "strength": "example"
                                       "timestampMs": 1717200000000
-                                "summary":
-                                    "byType":
-                                        "exampleKey": 1
-                                    "signalDiversity": 1
-                                    "strongestSignal":
-                                        "engagement":
-                                            "comments": 1
-                                            "forks": 1
-                                            "mentions": 1
-                                            "points": 1
-                                            "stars": 1
-                                        "source": "example"
-                                        "sourceTier": 1
-                                        "strength": "example"
-                                        "timestampMs": 1717200000000
-                                    "totalSignals": 1
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_intelligence_v1_ListCompanySignalsResponse'
                 "400":
@@ -32899,7 +32888,9 @@ components:
             properties:
                 domain:
                     type: string
-                    description: Company domain, such as "apple.com".
+                    description: |-
+                        Company domain, such as "apple.com". Accepted only when it matches one SEC
+                         filer unambiguously and that filer registered the same website.
                 name:
                     type: string
                     description: Company name, such as "Apple Inc".
@@ -32937,6 +32928,12 @@ components:
                     type: array
                     items:
                         $ref: '#/components/schemas/worldmonitor_intelligence_v1_CompanyNewsMention'
+                unavailable:
+                    type: boolean
+                    description: |-
+                        True when the SEC ticker registry could not be read at all, so this empty
+                         envelope means "could not look up", not "no such company". Responses with
+                         this set are never cached.
             description: |-
                 Company enrichment composite aggregated from SEC EDGAR (identity + filings),
                  Finnhub (market profile + earnings surprises), and the news corpus (mentions).
@@ -33057,7 +33054,9 @@ components:
                     description: Company name to discover signals for.
                 domain:
                     type: string
-                    description: Company domain to discover signals for.
+                    description: |-
+                        Company domain to discover signals for. Accepted only when it matches one
+                         SEC filer unambiguously and that filer registered the same website.
                 ticker:
                     type: string
                     description: Exchange ticker symbol, such as "AAPL". Preferred lookup key.
@@ -33082,6 +33081,18 @@ components:
                     type: integer
                     format: int64
                     description: 'Unix timestamp in milliseconds when signals were discovered.. Warning: Values > 2^53 may lose precision in JavaScript'
+                cik:
+                    type: string
+                    description: |-
+                        SEC Central Index Key of the resolved filer (zero-padded 10 digits). Empty
+                         when the company did not resolve — this is what distinguishes "no such
+                         company" from "resolved company with no recent signals".
+                unavailable:
+                    type: boolean
+                    description: |-
+                        True when the SEC ticker registry could not be read at all, so this empty
+                         envelope means "could not look up", not "no such company". Responses with
+                         this set are never cached.
             description: Discovered company signals with classification and engagement metrics.
         worldmonitor_intelligence_v1_CompanySignal:
             type: object
