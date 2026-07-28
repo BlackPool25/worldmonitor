@@ -279,10 +279,6 @@ export const UNUSABLE_SUCCESS_BODY_MESSAGE: Record<
   'non-object': 'Server returned 200 with a JSON body that is not an object',
 };
 
-/** Reported when the 200 arrived but its body could not be read at all. */
-export const UNREADABLE_SUCCESS_BODY_MESSAGE =
-  'Server returned 200 but the response body could not be read';
-
 /**
  * Masks the `anonymous_claim_token` value in a raw body string.
  *

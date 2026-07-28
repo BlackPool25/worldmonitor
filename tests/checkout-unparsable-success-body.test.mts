@@ -362,18 +362,19 @@ describe('create-checkout 200 with an unparsable body (WORLDMONITOR-XV)', () => 
     );
   });
 
-  it('reports an unreadable body distinctly from an empty one', async () => {
-    // A response whose stream dies mid-read is a different fault from a
-    // server that sent zero bytes, and `.catch(() => "")` collapsed them.
+  it('preserves the original exception when the response body cannot be read', async () => {
+    // A response whose stream dies mid-read is not an empty response. The
+    // original error, stack, and cause must reach the exception reporter.
     resetHarness('');
     globalThis.__xvHarness.failBodyRead = true;
     const checkout = await loadCheckoutModule();
 
     assert.equal(await checkout.startCheckout('prod_monthly'), false);
-    assert.equal(
-      soleReport().extra?.serverMessage,
-      'Server returned 200 but the response body could not be read',
-    );
+    const report = soleReport();
+    assert.equal(report.tags?.action, 'exception');
+    assert.equal(report.message, 'network error');
+    assert.equal(report.extra?.serverMessage, 'network error');
+    assert.equal(report.extra?.upstream, undefined);
   });
 
   it('a valid success payload still navigates and reports nothing', async () => {

@@ -31,7 +31,6 @@ import {
   parseCheckoutSuccessBody,
   snapshotUpstreamBodyKeys,
   snapshotUpstreamResponse,
-  UNREADABLE_SUCCESS_BODY_MESSAGE,
   UNUSABLE_SUCCESS_BODY_MESSAGE,
   type CheckoutError,
   type CheckoutErrorCode,
@@ -979,16 +978,10 @@ export async function startCheckout(
     // which skipped the contract-violation reporter below, discarded the
     // upstream snapshot that would name the emitter, and split one bug
     // across a Sentry fingerprint per browser engine. WORLDMONITOR-XV.
-    // A body that fails to READ is a distinct upstream cause from one that
-    // arrives empty (a died-mid-stream response vs. a server that sent zero
-    // bytes), so the two must not collapse into the same Sentry signature.
-    let rawSuccessText = '';
-    let successBodyRead = true;
-    try {
-      rawSuccessText = await resp.text();
-    } catch {
-      successBodyRead = false;
-    }
+    // Let body-stream failures reach the outer exception path. Replacing a
+    // rejected read with an empty string discards the original error, stack,
+    // and cause, and falsely reports that the server sent an empty body.
+    const rawSuccessText = await resp.text();
     const parsedSuccess = parseCheckoutSuccessBody(rawSuccessText);
     if (parsedSuccess.kind !== 'object') {
       // A 200 we cannot use is a different contract violation from a
@@ -1000,9 +993,7 @@ export async function startCheckout(
       const unparsableBodyError: CheckoutError = {
         code: 'service_unavailable',
         userMessage: 'Checkout is temporarily unavailable. Please try again in a moment.',
-        serverMessage: successBodyRead
-          ? UNUSABLE_SUCCESS_BODY_MESSAGE[parsedSuccess.kind]
-          : UNREADABLE_SUCCESS_BODY_MESSAGE,
+        serverMessage: UNUSABLE_SUCCESS_BODY_MESSAGE[parsedSuccess.kind],
         httpStatus: resp.status,
         retryable: true,
       };
