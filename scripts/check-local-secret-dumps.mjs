@@ -1,6 +1,5 @@
 #!/usr/bin/env node
-import { lstatSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readdirSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 export const FORBIDDEN_LOCAL_ENV_DUMPS = [
@@ -8,23 +7,31 @@ export const FORBIDDEN_LOCAL_ENV_DUMPS = [
   '.env.vercel-export',
 ];
 
+export const FORBIDDEN_LOCAL_ENV_DUMP_PATTERN =
+  /^\.env(?:[.-].*)?[.-](?:bak|backup|export)[^/]*$/i;
+
 export function findLocalSecretDumps(rootDir = process.cwd()) {
-  return FORBIDDEN_LOCAL_ENV_DUMPS.filter((fileName) => {
-    try {
-      lstatSync(resolve(rootDir, fileName));
-      return true;
-    } catch (error) {
-      if (error?.code === 'ENOENT') {
-        return false;
-      }
-      throw error;
+  let fileNames;
+  try {
+    fileNames = readdirSync(rootDir);
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return [];
     }
-  });
+    throw error;
+  }
+
+  const forbiddenNames = new Set(FORBIDDEN_LOCAL_ENV_DUMPS);
+  return fileNames
+    .filter((fileName) =>
+      forbiddenNames.has(fileName) || FORBIDDEN_LOCAL_ENV_DUMP_PATTERN.test(fileName),
+    )
+    .sort();
 }
 
 export function formatLocalSecretDumpError(found) {
   return [
-    'ERROR: local Vercel env dump files are present in the repository root.',
+    'ERROR: local environment dump files are present in the repository root.',
     '',
     ...found.map((fileName) => `  - ${fileName}`),
     '',

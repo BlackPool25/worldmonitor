@@ -11,7 +11,7 @@ import {
 
 const makeTempRepo = () => mkdtempSync(join(tmpdir(), 'wm-env-dump-check-'));
 
-describe('local Vercel env dump guard', () => {
+describe('local env dump guard', () => {
   it('passes when forbidden root env dumps are absent', () => {
     const root = makeTempRepo();
 
@@ -26,8 +26,27 @@ describe('local Vercel env dump guard', () => {
     assert.deepEqual(findLocalSecretDumps(root), ['.env.vercel-backup']);
     assert.throws(
       () => runLocalSecretDumpCheck(root),
-      /local Vercel env dump files are present/,
+      /local environment dump files are present/,
     );
+  });
+
+  it('fails for renamed local env backups', () => {
+    const root = makeTempRepo();
+    writeFileSync(join(root, '.env.local.bak-strix-20260711'), 'do-not-read-this');
+
+    assert.deepEqual(findLocalSecretDumps(root), ['.env.local.bak-strix-20260711']);
+    assert.throws(
+      () => runLocalSecretDumpCheck(root),
+      /local environment dump files are present/,
+    );
+  });
+
+  it('allows documented env templates', () => {
+    const root = makeTempRepo();
+    writeFileSync(join(root, '.env.example'), 'PLACEHOLDER=value');
+
+    assert.deepEqual(findLocalSecretDumps(root), []);
+    assert.doesNotThrow(() => runLocalSecretDumpCheck(root));
   });
 
   it('fails when .env.vercel-export is a symlink', (t) => {
@@ -45,7 +64,7 @@ describe('local Vercel env dump guard', () => {
     assert.deepEqual(findLocalSecretDumps(root), ['.env.vercel-export']);
     assert.throws(
       () => runLocalSecretDumpCheck(root),
-      /local Vercel env dump files are present/,
+      /local environment dump files are present/,
     );
   });
 });
