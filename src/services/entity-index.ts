@@ -7,9 +7,6 @@ export type { EntityIndex, EntityMatch } from '../../shared/entity-extraction-co
 export {
   buildEntityIndex,
   getEntityIndex,
-  lookupEntityByAlias,
-  lookupEntitiesByKeyword,
-  lookupEntitiesBySector,
   findRelatedEntities,
   findEntitiesInText,
   getEntityDisplayName,

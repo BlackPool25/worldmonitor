@@ -394,6 +394,18 @@ describe('#5697 NLP MCP tools', () => {
       );
     });
 
+    it('treats an unreadable accumulator payload as degraded, not as a quiet window', async () => {
+      // Non-empty reply whose pairs are all unparseable: without the guard this
+      // computes over zero stories and caches a note-less empty result.
+      const now = Date.now();
+      upstashState.zrangeFlat = ['', String(now), '', String(now - 60_000)];
+
+      const { result } = await callTool('get_keyword_spikes', {});
+      assert.deepEqual(result.spikes, []);
+      assert.match(result.note, /unreadable payload/);
+      assert.equal(upstashState.storedPayloads.size, 0, 'a malformed read must not be cached');
+    });
+
     it('returns an explicit note when the accumulator is empty', async () => {
       const { result } = await callTool('get_keyword_spikes', {});
       assert.deepEqual(result.spikes, []);
@@ -476,22 +488,28 @@ describe('#5697 NLP MCP tools', () => {
 // forever, with every other test still green.
 describe('#5697 spike-tool Redis key drift', () => {
   it('keeps the hardcoded key literals aligned with server/_shared/cache-keys.ts', async () => {
-    const { readFileSync } = await import('node:fs');
+    const { readFileSync, readdirSync } = await import('node:fs');
     const { STORY_TRACK_KEY_PREFIX, STORY_SOURCES_KEY_PREFIX, DIGEST_ACCUMULATOR_KEY } =
       await import('../server/_shared/cache-keys.ts');
 
-    const src = readFileSync(new URL('../api/mcp/registry/rpc-tools.ts', import.meta.url), 'utf8');
+    // Read the whole registry dir: pinning one filename is how a static guard
+    // silently loses reach when the code it guards moves to a sibling module.
+    const registryDir = new URL('../api/mcp/registry/', import.meta.url);
+    const src = readdirSync(registryDir)
+      .filter((f) => f.endsWith('.ts') && f !== 'index.ts')
+      .map((f) => readFileSync(new URL(f, registryDir), 'utf8'))
+      .join('\n');
     assert.ok(
       src.includes(`'${DIGEST_ACCUMULATOR_KEY('full', 'en')}'`),
-      `rpc-tools.ts must read the canonical accumulator key ${DIGEST_ACCUMULATOR_KEY('full', 'en')}`,
+      `the MCP registry must read the canonical accumulator key ${DIGEST_ACCUMULATOR_KEY('full', 'en')}`,
     );
     assert.ok(
       src.includes(`\`${STORY_TRACK_KEY_PREFIX}\${`),
-      `rpc-tools.ts must build story-track keys from ${STORY_TRACK_KEY_PREFIX}`,
+      `the MCP registry must build story-track keys from ${STORY_TRACK_KEY_PREFIX}`,
     );
     assert.ok(
       src.includes(`\`${STORY_SOURCES_KEY_PREFIX}\${`),
-      `rpc-tools.ts must build story-sources keys from ${STORY_SOURCES_KEY_PREFIX}`,
+      `the MCP registry must build story-sources keys from ${STORY_SOURCES_KEY_PREFIX}`,
     );
   });
 });

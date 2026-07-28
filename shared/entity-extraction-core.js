@@ -11,6 +11,13 @@
  * iteration order match the original exactly; lastIndex is reset before every
  * scan because the compiled 'g' regexes are shared across calls.
  *
+ * INVARIANT: findEntitiesInText must stay fully synchronous. The compiled
+ * regexes are module-level shared state carrying mutable `lastIndex`, and
+ * sharing is safe only because no two scans can interleave. Introducing an
+ * await anywhere inside the matcher loop (ML enrichment is the tempting one)
+ * would let concurrent callers clobber each other's scan position, producing
+ * silently missed matches that the sequential idempotency test cannot catch.
+ *
  * Dependency-free ESM apart from ./entity-registry.js. Types in
  * entity-extraction-core.d.ts.
  */
@@ -72,30 +79,6 @@ export function getEntityIndex() {
     cachedIndex = buildEntityIndex(ENTITY_REGISTRY);
   }
   return cachedIndex;
-}
-
-export function lookupEntityByAlias(alias) {
-  const index = getEntityIndex();
-  const id = index.byAlias.get(alias.toLowerCase());
-  return id ? index.byId.get(id) : undefined;
-}
-
-export function lookupEntitiesByKeyword(keyword) {
-  const index = getEntityIndex();
-  const ids = index.byKeyword.get(keyword.toLowerCase());
-  if (!ids) return [];
-  return Array.from(ids)
-    .map(id => index.byId.get(id))
-    .filter(e => e !== undefined);
-}
-
-export function lookupEntitiesBySector(sector) {
-  const index = getEntityIndex();
-  const ids = index.bySector.get(sector.toLowerCase());
-  if (!ids) return [];
-  return Array.from(ids)
-    .map(id => index.byId.get(id))
-    .filter(e => e !== undefined);
 }
 
 export function findRelatedEntities(entityId) {

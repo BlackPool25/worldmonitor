@@ -2,12 +2,12 @@
 title: "get_keyword_spikes advertised a 48-hour baseline while its capped fetch sampled ~2 hours"
 date: 2026-07-28
 category: logic-errors
-module: api/mcp/registry/rpc-tools.ts
+module: api/mcp/registry/nlp-tools.ts
 problem_type: logic_error
 component: assistant
 severity: high
 symptoms:
-  - "get_keyword_spikes (api/mcp/registry/rpc-tools.ts) divided per-keyword story counts by a hardcoded KEYWORD_SPIKE_BASELINE_MS (48h) while the ZRANGE feeding it was capped at LIMIT 0 800 over digest:accumulator:v1:full:en"
+  - "get_keyword_spikes (api/mcp/registry/nlp-tools.ts, extracted from rpc-tools.ts) divided per-keyword story counts by a hardcoded KEYWORD_SPIKE_BASELINE_MS (48h) while the ZRANGE feeding it was capped at LIMIT 0 800 over digest:accumulator:v1:full:en"
   - "At real production volume (~350-440 stories/hour per scripts/lib/story-track-batch-reader.mjs) the newest 800 entries span only ~2 hours, so almost every term's baseline count computed to ~0 and the spike decision fell through to the cold-start rule"
   - "Multipliers inflated by roughly the ratio of the assumed 48h span to the ~2h actually sampled (~23x), while the tool response's baseline_hours field still reported a flat 48"
   - "Nothing failed loudly: the cap (KEYWORD_SPIKE_MAX_STORIES) and the window constant (KEYWORD_SPIKE_BASELINE_MS) each looked correct read in isolation, and the mismatch only surfaced by joining the cap against the accumulator's real fill rate"
@@ -22,7 +22,7 @@ tags: [mcp, keyword-spikes, baseline-window, capped-fetch, redis-zrange, digest-
 
 ## Problem
 
-`get_keyword_spikes` — the MCP tool added in [PR #5734](https://github.com/koala73/worldmonitor/pull/5734) for issue #5697 — reports trending keyword, CVE, and APT/FIN spikes by comparing a recent-window story count against a per-window baseline rate. It reads the story corpus out of the 48-hour digest accumulator with a single capped, newest-first range query (`api/mcp/registry/rpc-tools.ts:609-612`):
+`get_keyword_spikes` — the MCP tool added in [PR #5734](https://github.com/koala73/worldmonitor/pull/5734) for issue #5697 — reports trending keyword, CVE, and APT/FIN spikes by comparing a recent-window story count against a per-window baseline rate. It reads the story corpus out of the 48-hour digest accumulator with a single capped, newest-first range query (`api/mcp/registry/nlp-tools.ts:443-447` — the tool was later extracted from `rpc-tools.ts` into its own registry module, so line references here point at that module):
 
 ```ts
 const zres = await redisPipeline([[
@@ -32,7 +32,7 @@ const zres = await redisPipeline([[
 ]]) as Array<{ result?: unknown }> | null;
 ```
 
-`KEYWORD_SPIKE_MAX_STORIES` is 800 (`api/mcp/registry/rpc-tools.ts:214`) and `KEYWORD_SPIKE_BASELINE_MS` is 48h, annotated `// digest:accumulator retention` (`api/mcp/registry/rpc-tools.ts:212`). As originally written — in the commit that first added the tool, before the review fix later in the same PR — that 48h constant was handed to the spike math as the baseline span and echoed back to the caller as the tool's `baseline_hours`:
+`KEYWORD_SPIKE_MAX_STORIES` is 800 (`api/mcp/registry/nlp-tools.ts:42`) and `KEYWORD_SPIKE_BASELINE_MS` is 48h, annotated `// digest:accumulator retention` (`api/mcp/registry/nlp-tools.ts:40`). As originally written — in the commit that first added the tool, before the review fix later in the same PR — that 48h constant was handed to the spike math as the baseline span and echoed back to the caller as the tool's `baseline_hours`:
 
 ```ts
 const spikes = computeKeywordSpikesFromStories(stories, {
@@ -69,7 +69,7 @@ None were loud. That is the whole point of the class.
 This never shipped — it was caught in code review on the PR branch, by three independent reviewers including a cross-model adversarial pass run through a different model family. So the honest "what didn't work" is about **what failed to detect it**, and that list is more useful than a debugging narrative.
 
 - **Reading either constant on its own.** `KEYWORD_SPIKE_MAX_STORIES = 800` is a defensible per-call bound for an edge function with a 16KB output budget. `KEYWORD_SPIKE_BASELINE_MS = 48h` is a factually accurate statement about accumulator retention. Review that inspects the cap in the query and the span in the math *separately* signs off on both. The bug exists only in the join.
-- **The unit tests, all of them.** The `get_keyword_spikes` fixture seeded 35 stories — 5 recent plus 30 baseline (`tests/mcp-nlp-tools.test.mjs:351-368`). The chunk-boundary test seeded 450 (`tests/mcp-nlp-tools.test.mjs:435-449`). Both sit under the 800 cap, so **the cap never engaged in any test**, and with a 32h-deep fixture the assumed 48h divisor produced results close enough to right that nothing looked off. A cap that is never hit is a code path that is never tested, no matter how green the suite is.
+- **The unit tests, all of them.** The `get_keyword_spikes` fixture seeded 35 stories — 5 recent plus 30 baseline (`tests/mcp-nlp-tools.test.mjs:351-368`). The chunk-boundary test seeded 450 (`tests/mcp-nlp-tools.test.mjs:447-461`). Both sit under the 800 cap, so **the cap never engaged in any test**, and with a 32h-deep fixture the assumed 48h divisor produced results close enough to right that nothing looked off. A cap that is never hit is a code path that is never tested, no matter how green the suite is.
 - **Trusting the response field as documentation.** `baseline_hours: 48` read like a description of behavior. It was actually a restatement of the same unverified assumption, so it corroborated nothing.
 - **Runtime observation would not have helped either.** There is no assertion the tool could have failed. Correct-shaped output with a wrong denominator produces no error signal at any layer.
 
@@ -77,7 +77,7 @@ What *did* work: joining the per-call cap against the **real cardinality of the 
 
 ## Solution
 
-Derive the baseline span from the data actually fetched, and disclose the truncation. `api/mcp/registry/rpc-tools.ts:626-635`:
+Derive the baseline span from the data actually fetched, and disclose the truncation. `api/mcp/registry/nlp-tools.ts:468-477`:
 
 ```ts
 // The ZRANGE is REV (newest first) and capped, so on a high-volume feed
@@ -92,7 +92,7 @@ const sampledSpanMs = Math.min(
 );
 ```
 
-The measured span replaces the constant in the math (`api/mcp/registry/rpc-tools.ts:690-695`) and in the response (`api/mcp/registry/rpc-tools.ts:705-711`):
+The measured span replaces the constant in the math (`api/mcp/registry/nlp-tools.ts:532-538`) and in the response (`api/mcp/registry/nlp-tools.ts:547-553`):
 
 ```ts
 const spikes = computeKeywordSpikesFromStories(stories, {
@@ -112,7 +112,7 @@ const payload = {
 };
 ```
 
-`sample_truncated` is a new, declared output field so the caller can see the sample was capped (`api/mcp/registry/rpc-tools.ts:571-573`), and the schema descriptions now say the quiet part out loud:
+`sample_truncated` is a new, declared output field so the caller can see the sample was capped (`api/mcp/registry/nlp-tools.ts:405-407`), and the schema descriptions now say the quiet part out loud:
 
 ```ts
 baseline_hours: { type: 'number', description: 'Hours of history the baseline was ACTUALLY computed over — the accumulator retains 48h, but a high-volume feed can fill the per-call story cap with a shorter, more recent span. Always read this rather than assuming 48.' },
@@ -120,9 +120,9 @@ story_count: { type: 'number', description: 'Stories this computation saw (cappe
 sample_truncated: { type: 'boolean', description: 'True when the per-call story cap was hit, so baseline_hours is narrower than the accumulator retention.' },
 ```
 
-The same correction is mirrored in the public tool reference (`docs/mcp-tools-reference.mdx:757` and the zh mirror), so an agent reading the docs is told to read `baseline_hours` rather than assume 48. The only place a flat 48 still appears in a response is the accumulator-unavailable path (`api/mcp/registry/rpc-tools.ts:600-607`), where `spikes` is empty and `story_count` is 0, so nothing is derived from it.
+The same correction is mirrored in the public tool reference (`docs/mcp-tools-reference.mdx:757` and the zh mirror), so an agent reading the docs is told to read `baseline_hours` rather than assume 48. A flat 48 still appears in exactly two responses — the accumulator-unavailable path (`api/mcp/registry/nlp-tools.ts:449-452`) and the unreadable-payload guard added alongside it — and in both `spikes` is empty and `story_count` is 0, so nothing is ever derived from that number.
 
-Regression test — "reports the sampled baseline span instead of assuming the full retention window" (`tests/mcp-nlp-tools.test.mjs:414-433`):
+Regression test — "reports the sampled baseline span instead of assuming the full retention window" (`tests/mcp-nlp-tools.test.mjs:426-445`):
 
 ```js
 // 900 stories inside ~3h: the per-call cap truncates the sample, so a
