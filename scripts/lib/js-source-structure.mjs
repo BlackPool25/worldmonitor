@@ -54,7 +54,9 @@ export function stripJsComments(source) {
   // character), so `typeof/foo/` with no space still resolves `typeof` before
   // the regex check runs.
   let prevToken = '';
+  let prevTokenIsMemberProperty = false;
   let wordBuf = '';
+  let wordStartsAfterMemberAccess = false;
   let i = 0;
 
   const blank = (from, to) => {
@@ -64,7 +66,12 @@ export function stripJsComments(source) {
   };
 
   const finalizeWord = () => {
-    if (wordBuf) { prevToken = wordBuf; wordBuf = ''; }
+    if (wordBuf) {
+      prevToken = wordBuf;
+      prevTokenIsMemberProperty = wordStartsAfterMemberAccess;
+      wordBuf = '';
+      wordStartsAfterMemberAccess = false;
+    }
   };
 
   while (i < length) {
@@ -107,7 +114,13 @@ export function stripJsComments(source) {
       continue;
     }
 
-    if (ch === '/' && (REGEX_PRECEDING.has(prevToken) || REGEX_PRECEDING_KEYWORDS.has(prevToken))) {
+    if (
+      ch === '/'
+      && (
+        REGEX_PRECEDING.has(prevToken)
+        || (REGEX_PRECEDING_KEYWORDS.has(prevToken) && !prevTokenIsMemberProperty)
+      )
+    ) {
       i += 1;
       let inClass = false;
       while (i < length) {
@@ -129,9 +142,11 @@ export function stripJsComments(source) {
     if (ch === '}' && (mode === 'brace' || mode === 'interp')) { stack.pop(); }
 
     if (WORD_CHAR.test(ch)) {
+      if (!wordBuf) wordStartsAfterMemberAccess = prevToken === '.';
       wordBuf += ch;
     } else if (!/\s/.test(ch)) {
       prevToken = ch;
+      prevTokenIsMemberProperty = false;
     }
     i += 1;
   }
@@ -200,6 +215,9 @@ export function extractDelimitedBlock(source, anchor, open = '{', close = '}') {
   let anchorEnd = -1;
   walkCode(text, 0, (_ch, index) => {
     if (!text.startsWith(anchor, index)) return true;
+    const before = text[index - 1] ?? '';
+    const after = text[index + anchor.length] ?? '';
+    if ((before && WORD_CHAR.test(before)) || (after && WORD_CHAR.test(after))) return true;
     anchorEnd = index + anchor.length;
     return false;
   });

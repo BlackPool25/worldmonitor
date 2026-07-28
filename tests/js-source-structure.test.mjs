@@ -125,6 +125,17 @@ describe('stripJsComments', () => {
     assert.ok(stripped.includes('const ratio = of / total;'));
     assert.doesNotMatch(stripped, /note/);
   });
+
+  it('does not treat reserved words used as property names as regex-permitting', () => {
+    const source = [
+      'const inRatio = obj.in / total; // first',
+      'const defaultRatio = obj?.default / total; // second',
+    ].join('\n');
+    const stripped = stripJsComments(source);
+    assert.ok(stripped.includes('obj.in / total;'));
+    assert.ok(stripped.includes('obj?.default / total;'));
+    assert.doesNotMatch(stripped, /first|second/);
+  });
 });
 
 describe('extractDelimitedBlock', () => {
@@ -153,6 +164,14 @@ describe('extractDelimitedBlock', () => {
 
   it('fails closed when the anchor is absent', () => {
     assert.equal(extractDelimitedBlock(source, 'const RENAMED_MAP'), null);
+  });
+
+  it('ignores a longer identifier that only starts with the anchor', () => {
+    const prefixed = [
+      "const MAP_LEGACY = { 'a': 'wrong' };",
+      "const MAP = { 'a': 'right' };",
+    ].join('\n');
+    assert.equal(extractDelimitedBlock(prefixed, 'const MAP'), " 'a': 'right' ");
   });
 
   it('fails closed when the anchor only appears inside a comment', () => {
