@@ -11,7 +11,9 @@ import { loadEnvFile, runSeed, withRetry, resolveProxy, curlFetch } from './_see
 loadEnvFile(import.meta.url);
 
 export const SEC_CIK_MAP_KEY = 'intelligence:sec-cik-map:v1';
-export const SEC_CIK_MAP_TTL_SECONDS = 48 * 3600;
+// 72h = 3× the daily bundle cadence (tests/seeder-canonical-ttl-vs-cron.test.mjs):
+// cron drift must never TTL-out the canonical while seed-meta survives.
+export const SEC_CIK_MAP_TTL_SECONDS = 72 * 3600;
 export const SEC_CIK_MAP_MAX_STALE_MIN = 2880;
 // The registry carries ~10k listed companies; a response an order of magnitude
 // smaller means SEC served an error page or a truncated body — refuse to publish.
