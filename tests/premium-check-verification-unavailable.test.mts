@@ -248,7 +248,12 @@ describe('resolvePremiumCallerIdentity marks an unverifiable entitlement (#5622)
 
     const identity = await resolvePremiumCallerIdentity(req);
     assert.equal(identity.isPremium, false);
-    assert.equal(identity.verificationUnavailable, undefined);
+    // `verificationUnavailable` was the field name an earlier draft of #5622
+    // used; asserting it here could never fail. The identity carries
+    // `billingDenial`, and a denial with no lookup behind it carries none —
+    // it is a credential denial (#5619).
+    assert.equal(identity.billingDenial, undefined);
+    assert.equal(identity.unauthenticated, true);
   });
 });
 
