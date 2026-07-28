@@ -10,9 +10,11 @@
  *   - Redis miss + Convex failure -> 403 (unable to verify entitlements)
  *   - Endpoint not in ENDPOINT_ENTITLEMENTS -> allow (unrestricted)
  *
- * Transient Redis/Convex failures return a verificationUnavailable marker so
- * callers can answer with a retryable 503 instead of a misleading hard denial.
- * A null means the backend is unconfigured or returned no usable entitlement.
+ * A lookup that was attempted but produced no answer — Redis/Convex failure,
+ * Convex 5xx, or a Convex 4xx that means our own credential is wrong — returns a
+ * verificationUnavailable marker so callers answer with a retryable 503 instead
+ * of a misleading hard denial. A null means either that no lookup was attempted
+ * (backend unconfigured) or that Convex confirmed the user has no entitlement.
  * The user-key gateway fails closed on null when the backend is configured and
  * retains a logged fail-open exception only when lookup is wholly unconfigured.
  *
@@ -95,17 +97,23 @@ export interface CachedEntitlements {
     status: 'not_applicable';
     checkedAt: number;
   };
-  // Synthesized by getEntitlements() when the backend lookup failed
-  // TRANSIENTLY (fetch abort at the 3s budget — which the #4770 on-demand
-  // provider re-check can consume — network error, Convex 5xx): a free-shaped,
-  // deny-side value that getBillingVerificationDenial turns into the retryable
+  // Synthesized by getEntitlements() when a lookup was ATTEMPTED and produced
+  // no answer about this user: a fetch abort at the 3s budget (which the #4770
+  // on-demand provider re-check can consume), a network error, a Convex 5xx, or
+  // a Convex 4xx (#5619 — our own shared secret or contract is wrong, which
+  // says nothing about the caller's plan). A free-shaped, deny-side value that
+  // getBillingVerificationDenial turns into the retryable
   // entitlement_verification_unavailable 503 instead of a hard "upgrade
   // required"/401. Never originates from Convex and is never written to the
   // Redis cache (it IS held for a few seconds in the in-process negative cache
   // below, which bounds outage amplification without making the state durable
-  // or visible to another isolate). A null return now means the backend is
-  // unconfigured or gave a confirmed/malformed answer — callers keep their
-  // fail-closed posture there.
+  // or visible to another isolate).
+  //
+  // A null return therefore means one of exactly two things: the backend is
+  // unconfigured so no lookup was attempted (server/gateway.ts detects that
+  // with isEntitlementBackendConfigured() and keeps its wm_-key fail-open
+  // exception), or Convex answered and this user has no entitlement row — a
+  // confirmed free account, which is the one state that may honestly upsell.
   verificationUnavailable?: true;
 }
 
@@ -517,10 +525,22 @@ async function _getEntitlementsImpl(userId: string): Promise<CachedEntitlements 
       signal: AbortSignal.timeout(3_000),
     });
     if (!response.ok) {
-      // 5xx = Convex/platform blip -> retryable-503 posture at the gates.
-      // 4xx (bad shared secret, contract rejection) = deploy defect, not a
-      // transient: keep the fail-closed null so callers hold the hard posture.
-      return response.status >= 500 ? unavailableEntitlements() : null;
+      // Neither a 5xx (Convex/platform blip) nor a 4xx (bad shared secret,
+      // contract rejection) produced an answer about this user, so neither may
+      // reach the wire as one.
+      //
+      // #5661 split them — 4xx returned the fail-closed null on the reasoning
+      // that a deploy defect is not transient. True, but "not transient" and
+      // "is a verdict about this account's plan" are different axes, and the
+      // gates only read the second: a null renders as `pro_required` /
+      // INSUFFICIENT_TIER, i.e. an upsell shown to a paying customer because
+      // OUR credential is wrong (#5619, the #5600 failure mode). The marker
+      // denies exactly as hard — tier 0, nothing granted — and only changes the
+      // wording to the retryable contract, which is already what
+      // server/gateway.ts answers for this state on wm_-key traffic. A client
+      // that keeps retrying spends its transient budget and lands on `give_up`:
+      // still terminal, still not an upsell.
+      return unavailableEntitlements();
     }
     const result = await response.json() as CachedEntitlements | null;
 

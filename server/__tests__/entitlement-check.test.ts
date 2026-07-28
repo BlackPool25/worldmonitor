@@ -175,7 +175,7 @@ describe("gateway entitlement check", () => {
     );
   });
 
-  test("Convex 5xx returns the verificationUnavailable marker; 4xx stays a fail-closed null", async () => {
+  test("neither a Convex 5xx nor a 4xx can be mistaken for a confirmed answer", async () => {
     await withConvexEntitlementFetch(
       () => Promise.resolve(new Response("upstream error", { status: 503 })),
       async () => {
@@ -186,12 +186,49 @@ describe("gateway entitlement check", () => {
     await withConvexEntitlementFetch(
       () => Promise.resolve(new Response("forbidden", { status: 403 })),
       async () => {
-        // A 4xx (bad shared secret / contract rejection) is a deploy defect,
-        // not a transient — the hard fail-closed null posture must hold.
+        // #5619: a 4xx (bad shared secret / contract rejection) IS a deploy
+        // defect rather than a blip, and #5661 kept it a fail-closed null on
+        // that reasoning. But "not transient" and "is a verdict about this
+        // user's plan" are different axes: the lookup did not happen, so
+        // rendering it as `pro_required` sells a subscription to a paying
+        // customer — the #5600 failure mode. The marker denies just as hard
+        // (tier 0, nothing granted) and only changes the wording to the
+        // retryable contract, which is already what server/gateway.ts answers
+        // for this exact state on wm_-key traffic. A client that keeps
+        // retrying spends its transient budget and lands on `give_up` — still
+        // terminal, still not an upsell.
         const ent = await getEntitlements("user-config-4xx");
-        expect(ent).toBeNull();
+        expect(ent?.verificationUnavailable).toBe(true);
+        expect(ent?.features.tier).toBe(0);
+        expect(ent?.features.apiAccess).toBe(false);
+        expect(ent?.validUntil).toBe(0);
       },
     );
+  });
+
+  test("an unconfigured backend still returns null — the gateway's fail-open exception depends on it", async () => {
+    // The one null that survives #5619. server/gateway.ts distinguishes it with
+    // isEntitlementBackendConfigured() and serves wm_-key traffic fail-open,
+    // because 503ing a missing env var turns a config regression into a
+    // fleet-wide API outage. Returning a marker here would silently delete that
+    // exception (the gateway would answer the billing 503 first).
+    const site = process.env.CONVEX_SITE_URL;
+    const secret = process.env.CONVEX_SERVER_SHARED_SECRET;
+    delete process.env.CONVEX_SITE_URL;
+    delete process.env.CONVEX_SERVER_SHARED_SECRET;
+    vi.mocked(getCachedJson).mockResolvedValueOnce(null);
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    try {
+      expect(await getEntitlements("user-unconfigured")).toBeNull();
+      // Not merely null — null WITHOUT attempting a lookup, which is what
+      // separates this state from the 4xx above.
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+      if (site !== undefined) process.env.CONVEX_SITE_URL = site;
+      if (secret !== undefined) process.env.CONVEX_SERVER_SHARED_SECRET = secret;
+    }
   });
 
   test("checkEntitlement answers a transient lookup failure with the retryable 503 contract, not a hard 403", async () => {
@@ -966,7 +1003,7 @@ describe("transient-failure negative cache (#5622)", () => {
     __resetEntitlementNegativeCacheForTests();
   });
 
-  test("a fail-closed null is never negative-cached (a 4xx deploy defect keeps its hard posture)", async () => {
+  test("a 4xx is negative-cached like any other unanswered lookup — and still never upsells", async () => {
     __resetEntitlementNegativeCacheForTests();
     const originalSiteUrl = process.env.CONVEX_SITE_URL;
     const originalSecret = process.env.CONVEX_SERVER_SHARED_SECRET;
@@ -978,9 +1015,16 @@ describe("transient-failure negative cache (#5622)", () => {
       .mockResolvedValue(new Response("forbidden", { status: 403 }));
     vi.stubGlobal("fetch", fetchMock);
     try {
-      expect(await getEntitlements("user-negcache-4xx")).toBeNull();
-      expect(await getEntitlements("user-negcache-4xx")).toBeNull();
-      expect(fetchMock).toHaveBeenCalledTimes(2);
+      // #5619: the 4xx now answers with the marker, so the same amplification
+      // bound applies to it — one lookup per user per 3s window instead of one
+      // per request while a bad shared secret is live. Recovery after the fix
+      // deploys is bounded by that same window.
+      expect((await getEntitlements("user-negcache-4xx"))?.verificationUnavailable).toBe(true);
+      const cached = await getEntitlements("user-negcache-4xx");
+      expect(cached?.verificationUnavailable).toBe(true);
+      expect(cached?.features.tier).toBe(0);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(__negativeCacheSizeForTests()).toBe(1);
     } finally {
       if (originalSiteUrl === undefined) delete process.env.CONVEX_SITE_URL;
       else process.env.CONVEX_SITE_URL = originalSiteUrl;

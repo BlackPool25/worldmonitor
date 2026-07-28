@@ -535,6 +535,43 @@ describe('grantContextHandler', () => {
     assert.equal(json.error, 'INSUFFICIENT_TIER');
   });
 
+  /**
+   * #5619 — the consent card is the one Pro gate with no client-side
+   * entitlement subscription to contradict it, so a lookup failure rendered as
+   * "buy Pro" is unanswerable from the page. A Convex 4xx (our own shared
+   * secret / contract, not the user's plan) now arrives here as the
+   * verification marker, and it must keep the retryable vocabulary.
+   */
+  it('#5619: an unverifiable entitlement is 503 TIER_VERIFICATION_UNAVAILABLE, not the upsell', async () => {
+    const { deps } = makeContextDeps({
+      getEntitlements: async () => ({
+        features: { tier: 0, mcpAccess: false },
+        validUntil: 0,
+        verificationUnavailable: true,
+      }),
+    });
+    const res = await grantContextHandler(makeGetReq('nonce_xyz'), deps);
+    assert.equal(res.status, 503);
+    const json = await res.json();
+    assert.equal(json.error, 'TIER_VERIFICATION_UNAVAILABLE');
+    assert.equal(res.headers.get('X-Billing-Verification'), 'entitlement_verification_unavailable');
+    assert.ok(Number(res.headers.get('Retry-After')) > 0);
+    // Still leaks nothing — a caller we cannot verify is not a Pro caller.
+    assert.equal(json.client_name, undefined);
+    assert.equal(json.redirect_host, undefined);
+  });
+
+  it('#5619: a CONFIRMED absent entitlement keeps the honest 403 upsell', async () => {
+    // After #5619 a null reaching this gate means Convex answered and the user
+    // has no row — the one state where "subscribe" is the correct answer.
+    const { deps } = makeContextDeps({ getEntitlements: async () => null });
+    const res = await grantContextHandler(makeGetReq('nonce_xyz'), deps);
+    assert.equal(res.status, 403);
+    const json = await res.json();
+    assert.equal(json.error, 'INSUFFICIENT_TIER');
+    assert.equal(res.headers.get('X-Billing-Verification'), null);
+  });
+
   it('returns 400 INVALID_NONCE when nonce row is missing', async () => {
     const { deps } = makeContextDeps({ redisGet: async () => null });
     const res = await grantContextHandler(makeGetReq('absent'), deps);
