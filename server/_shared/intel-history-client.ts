@@ -35,6 +35,8 @@ import {
 } from '../../scripts/lib/brief-dedup-consts.mjs';
 import { stripSourceSuffix } from '../../scripts/lib/brief-dedup-jaccard.mjs';
 import { getCachedJson, setCachedJson } from './redis';
+// @ts-expect-error — JS module, no declaration file
+import { captureSilentError } from '../../api/_sentry-edge.js';
 
 const CONVEX_INTERNAL_SEARCH_PATH = '/api/internal-intel-search';
 const CONVEX_INTERNAL_TIMELINE_PATH = '/api/internal-intel-timeline';
@@ -201,8 +203,15 @@ export async function embedQueryText(text: string): Promise<number[] | null> {
     await setCachedJson(cacheKey, vector, EMBED_CACHE_TTL_SECONDS);
     return vector as number[];
   } catch (err) {
+    // Degrades to upstreamUnavailable rather than a 5xx, so the caller sees a
+    // 200 with no records — report it, or a provider outage is indistinguishable
+    // from an empty history in every dashboard we have.
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[intel-history] embeddings call failed: ${msg}`);
+    captureSilentError(err, {
+      tags: { surface: 'server', component: 'intel-history', stage: 'embed' },
+      fingerprint: ['intel-history', 'embed-error'],
+    });
     return null;
   }
 }
@@ -365,8 +374,14 @@ async function readIntelHistory(
         .map(toIntelHistoryRecord),
     };
   } catch (err) {
+    // Same reasoning as the embed path: a Convex outage surfaces to the caller
+    // as an empty 200, so it has to reach Sentry to be distinguishable.
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[intel-history] ${path} failed: ${msg}`);
+    captureSilentError(err, {
+      tags: { surface: 'server', component: 'intel-history', stage: 'convex-read' },
+      fingerprint: ['intel-history', 'convex-read-error', path],
+    });
     return null;
   }
 }
