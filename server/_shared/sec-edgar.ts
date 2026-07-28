@@ -7,6 +7,7 @@
 
 import { sha256Hex } from './hash';
 import { cachedFetchJson, getCachedJson } from './redis';
+import { unwrapEnvelope } from './seed-envelope';
 
 // SEC requires a declared User-Agent identifying the requester and rejects
 // browser-spoofing UAs on data.sec.gov/efts.sec.gov. Matches the precedent in
@@ -24,6 +25,7 @@ const NEGATIVE_TTL = 300;
 const SEARCH_NEGATIVE_TTL = 120;
 const UPSTREAM_TIMEOUT = 10_000;
 const CIK_MAP_MEMO_MS = 60 * 60 * 1_000;
+const CIK_MAP_READ_TIMEOUT_MS = 6_000;
 const MAX_SLIM_FILINGS = 200;
 
 // Forms worth keeping from a filer's recent-submissions window. A high-volume
@@ -193,18 +195,42 @@ export function isCikRegistryUnavailable(): boolean {
   return registryUnavailable;
 }
 
+/**
+ * Reads the ticker registry with a longer deadline than the shared 1.5s Redis
+ * op timeout. That budget protects per-request hot paths; this ~650KB value is
+ * measured at ~0.8-1.6s and is loaded at most once per instance per hour
+ * (see the memo below), so reading it through the shared helper would fail
+ * most cold starts and report a healthy registry as unavailable.
+ */
+async function readCikRegistry(): Promise<unknown | null> {
+  const url = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  // No Upstash configured (local/dev or the sidecar runtime): fall back to the
+  // shared reader, which knows about those modes.
+  if (!url || !token) return getCachedJson(SEC_CIK_MAP_KEY, true);
+  try {
+    const resp = await fetch(`${url}/get/${encodeURIComponent(SEC_CIK_MAP_KEY)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(CIK_MAP_READ_TIMEOUT_MS),
+    });
+    if (!resp.ok) return null;
+    const data = (await resp.json()) as { result?: string | null };
+    if (typeof data.result !== 'string' || !data.result) return null;
+    return unwrapEnvelope(JSON.parse(data.result)).data;
+  } catch (err) {
+    const isTimeout = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
+    if (isTimeout) console.error(`[REDIS-TIMEOUT] readCikRegistry key=${SEC_CIK_MAP_KEY} timeoutMs=${CIK_MAP_READ_TIMEOUT_MS}`);
+    else console.warn('[sec-edgar] CIK registry read failed:', err instanceof Error ? err.message : String(err));
+    return null;
+  }
+}
+
 async function loadCikMap(): Promise<CikMap | null> {
   if (cikMapMemo && Date.now() - cikMapMemo.loadedAt < CIK_MAP_MEMO_MS) {
     registryUnavailable = false;
     return cikMapMemo.map;
   }
-  // The map is ~580KB; a cold read can trip the 1.5s Redis op timeout, so one
-  // failed read gets a single retry. After the first success the module-level
-  // memo serves every request on this instance for an hour.
-  let raw = await getCachedJson(SEC_CIK_MAP_KEY, true);
-  if (!raw || typeof raw !== 'object') {
-    raw = await getCachedJson(SEC_CIK_MAP_KEY, true);
-  }
+  const raw = await readCikRegistry();
   if (!raw || typeof raw !== 'object') return staleFallback();
   const map = (raw as { tickers?: CikMap }).tickers ?? null;
   if (!map || typeof map !== 'object') return staleFallback();
