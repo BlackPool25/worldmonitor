@@ -769,11 +769,23 @@ describe('gateway wiring', () => {
       assert.match(premiumPathsSrc, new RegExp(`'${path}'`));
       assert.match(entitlementSrc, new RegExp(`'${path}': 1`));
     });
-
-    it(`assigns ${path} the slow cache tier`, () => {
-      assert.match(gatewaySrc, new RegExp(`'${path}':\\s*'slow'`));
-    });
   }
+
+  it('assigns the GET timeline route a slow gateway cache tier', () => {
+    assert.match(
+      gatewaySrc,
+      /'\/api\/intelligence\/v1\/get-intel-timeline':\s*'slow'/,
+    );
+  });
+
+  it('does not register POST semantic reads in the GET-only gateway cache tier map', () => {
+    for (const path of [
+      '/api/intelligence/v1/search-intel-history',
+      '/api/intelligence/v1/get-similar-events',
+    ]) {
+      assert.doesNotMatch(gatewaySrc, new RegExp(`'${path}':\\s*'slow'`));
+    }
+  });
 
   it('fails closed on the two embedding-backed routes', () => {
     for (const path of [
