@@ -51,6 +51,10 @@ export interface ClusteredEventCore {
 
 export declare const MAX_CLUSTER_NEWS_ITEMS: number;
 
+export declare const PROTO_TO_THREAT_LEVEL: Record<string, ThreatLevel>;
+
+export declare function protoThreatLevelToLabel(value: string | undefined): ThreatLevel;
+
 export declare function effectivePubDateMs(item: {
   pubDate: Date | string | number;
   pubDateMissing?: boolean;

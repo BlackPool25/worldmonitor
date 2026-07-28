@@ -23,10 +23,19 @@ describe('news clustering caps unbounded input work', () => {
     assert.ok(capIdx !== -1, 'clusterNewsCore must build a bounded input set');
     assert.ok(worksetIdx !== -1, 'clusterNewsCore must cluster from boundedItems');
     assert.ok(capIdx < worksetIdx, 'clusterNewsCore must cap input before tokenization/dedupe work starts');
+    // [^}] cannot cross the closing brace, so this matches ONE export
+    // statement — a proximity window spanning a local fork plus an unrelated
+    // shared import elsewhere in the file passes the loose [\s\S]*? form
+    // (verified by executing both shapes against it).
     assert.match(
       analysisCoreSrc,
-      /MAX_CLUSTER_NEWS_ITEMS,[\s\S]*?clusterNewsCore,[\s\S]*?\} from '\.\.\/\.\.\/shared\/news-clustering-core\.js';/,
-      'analysis-core must re-export the shared clustering implementation, not fork it',
+      /export \{[^}]*\bMAX_CLUSTER_NEWS_ITEMS\b[^}]*\bclusterNewsCore\b[^}]*\} from '\.\.\/\.\.\/shared\/news-clustering-core\.js';/,
+      'analysis-core must re-export the shared clustering implementation in one statement, not fork it',
+    );
+    assert.doesNotMatch(
+      analysisCoreSrc,
+      /function\s+clusterNewsCore\b|\bclusterNewsCore\s*=/,
+      'analysis-core must not define its own clusterNewsCore alongside the re-export',
     );
     assert.match(workerSrc, /const clusters = clusterNewsCore\(items, getSourceTier\);/);
   });

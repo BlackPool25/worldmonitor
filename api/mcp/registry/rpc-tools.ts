@@ -16,8 +16,8 @@ import {
   computeKeywordSpikesFromStories,
   extractEntities as extractPatternEntities,
 } from '../../../shared/keyword-spike-core.js';
-import { clusterNewsCore, topClusterKeywords } from '../../../shared/news-clustering-core.js';
-import type { NewsItemCore, ThreatLevel } from '../../../shared/news-clustering-core.js';
+import { clusterNewsCore, protoThreatLevelToLabel, topClusterKeywords } from '../../../shared/news-clustering-core.js';
+import type { NewsItemCore } from '../../../shared/news-clustering-core.js';
 import { buildAuthHeaders } from '../auth';
 import { assertToolFetchOk, BillingDenialError, throwIfBillingDenial } from '../billing-denial';
 import { SUPPORTED_CONSUMER_PRICES_COUNTRIES } from '../constants';
@@ -210,19 +210,10 @@ const EXTRACT_TEXT_MAX_CHARS = 2048; // issue #5697's 2 KB arbitrary-text cap
 const NLP_DIGEST_TIMEOUT_MS = 6_000;
 const NLP_UA = 'worldmonitor-mcp-edge/1.0';
 const KEYWORD_SPIKE_BASELINE_MS = 48 * 60 * 60 * 1000; // digest:accumulator retention
-const KEYWORD_SPIKE_BASELINE_HOURS = 48;
 const KEYWORD_SPIKE_CACHE_TTL_S = 600;
 const KEYWORD_SPIKE_MAX_STORIES = 800;
 const KEYWORD_SPIKE_MAX_STORED = 25;
 const DIGEST_ACCUMULATOR_KEY_MCP = 'digest:accumulator:v1:full:en';
-
-const PROTO_TO_THREAT_LEVEL: Record<string, ThreatLevel> = {
-  THREAT_LEVEL_CRITICAL: 'critical',
-  THREAT_LEVEL_HIGH: 'high',
-  THREAT_LEVEL_MEDIUM: 'medium',
-  THREAT_LEVEL_LOW: 'low',
-  THREAT_LEVEL_UNSPECIFIED: 'info',
-};
 
 function nlpClampInt(value: unknown, min: number, max: number, fallback: number): number {
   return Number.isInteger(value)
@@ -281,7 +272,7 @@ async function fetchNlpDigestItems(
         isAlert: raw.isAlert === true,
         tier: 3,
         threat: raw.threat ? {
-          level: PROTO_TO_THREAT_LEVEL[raw.threat.level ?? ''] ?? 'info',
+          level: protoThreatLevelToLabel(raw.threat.level),
           category: (raw.threat.category ?? 'general') as NonNullable<NewsItemCore['threat']>['category'],
           confidence: typeof raw.threat.confidence === 'number' ? raw.threat.confidence : 0.5,
           source: raw.threat.source === 'ml' || raw.threat.source === 'llm' ? raw.threat.source : 'keyword',
@@ -365,7 +356,10 @@ export const RPC_TOOLS: ToolDef[] = [
       const auth = await buildAuthHeaders(context, 'GET', url, null);
       const res = await fetch(url, {
         headers: { ...auth, 'User-Agent': NLP_UA },
-        signal: AbortSignal.timeout(12_000),
+        // Matches the classify-event handler's own UPSTREAM_TIMEOUT_MS (25s)
+        // and the sibling LLM tools below. A shorter client budget would abort
+        // slow-but-successful cache-miss classifications the handler completes.
+        signal: AbortSignal.timeout(25_000),
       });
       assertToolFetchOk(res, 'classify-event');
       const result = await res.json() as {
@@ -425,12 +419,16 @@ export const RPC_TOOLS: ToolDef[] = [
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     _execute: async (params, base, context) => {
+      // Validation failures keep every outputSchema-required member present so
+      // schema-validating clients can parse the envelope (classify_event does
+      // the same with `classification: null`).
+      const invalid = (error: string) => ({ mode: 'text', entities: [], patternEntities: [], error });
       if (params.text !== undefined && typeof params.text !== 'string') {
-        return { error: 'text must be a string when provided' };
+        return invalid('text must be a string when provided');
       }
       const text = typeof params.text === 'string' ? params.text.trim() : '';
       if (text.length > EXTRACT_TEXT_MAX_CHARS) {
-        return { error: `text exceeds the ${EXTRACT_TEXT_MAX_CHARS}-character limit` };
+        return invalid(`text exceeds the ${EXTRACT_TEXT_MAX_CHARS}-character limit`);
       }
       const limit = nlpClampInt(params.limit, 1, 50, 20);
 
@@ -474,7 +472,7 @@ export const RPC_TOOLS: ToolDef[] = [
       type: 'object',
       properties: {
         limit: { type: 'integer', minimum: 1, maximum: 25, description: 'Maximum clusters returned. Defaults to 10.' },
-        min_sources: { type: 'integer', minimum: 1, maximum: 10, description: 'Only return clusters with at least this many member headlines. Defaults to 1.' },
+        min_sources: { type: 'integer', minimum: 1, maximum: 10, description: 'Only return clusters carrying at least this many DISTINCT sources (outlets), not merely this many member headlines. Defaults to 1.' },
       },
       required: [],
     },
@@ -488,7 +486,8 @@ export const RPC_TOOLS: ToolDef[] = [
             id: { type: 'string' },
             title: { type: 'string', description: 'Primary headline. Server-side primary selection is recency-based: digest items carry no per-source tier.' },
             primarySource: { type: 'string' }, link: { type: 'string' },
-            memberCount: { type: 'number', description: 'Headlines in this cluster.' },
+            memberCount: { type: 'number', description: 'Headlines in this cluster (one outlet can contribute several).' },
+            distinctSourceCount: { type: 'number', description: 'Distinct outlets covering the cluster — the corroboration signal min_sources filters on.' },
             sources: { type: 'array', items: { type: 'string' }, description: 'Distinct source names (up to 8).' },
             topKeywords: { type: 'array', items: { type: 'string' } },
             isAlert: { type: 'boolean' },
@@ -507,24 +506,30 @@ export const RPC_TOOLS: ToolDef[] = [
       const minSources = nlpClampInt(params.min_sources, 1, 10, 1);
       const { items, generatedAt } = await fetchNlpDigestItems(base, context);
       const clusters = clusterNewsCore(items, () => 3);
+      const projected = clusters.map(cluster => {
+        const sources = [...new Set(cluster.allItems.map(item => item.source))];
+        return {
+          id: cluster.id,
+          title: cluster.primaryTitle,
+          primarySource: cluster.primarySource,
+          link: cluster.primaryLink,
+          memberCount: cluster.sourceCount,
+          // Corroboration is distinct outlets, not headline count — one outlet
+          // can file several near-identical headlines into the same cluster.
+          distinctSourceCount: sources.length,
+          sources: sources.slice(0, 8),
+          topKeywords: topClusterKeywords(cluster, 5),
+          isAlert: cluster.isAlert,
+          threatLevel: cluster.threat?.level ?? 'info',
+          threatCategory: cluster.threat?.category ?? 'general',
+          firstSeen: cluster.firstSeen.toISOString(),
+          lastUpdated: cluster.lastUpdated.toISOString(),
+        };
+      });
       return {
-        clusters: clusters
-          .filter(cluster => cluster.sourceCount >= minSources)
-          .slice(0, limit)
-          .map(cluster => ({
-            id: cluster.id,
-            title: cluster.primaryTitle,
-            primarySource: cluster.primarySource,
-            link: cluster.primaryLink,
-            memberCount: cluster.sourceCount,
-            sources: [...new Set(cluster.allItems.map(item => item.source))].slice(0, 8),
-            topKeywords: topClusterKeywords(cluster, 5),
-            isAlert: cluster.isAlert,
-            threatLevel: cluster.threat?.level ?? 'info',
-            threatCategory: cluster.threat?.category ?? 'general',
-            firstSeen: cluster.firstSeen.toISOString(),
-            lastUpdated: cluster.lastUpdated.toISOString(),
-          })),
+        clusters: projected
+          .filter(cluster => cluster.distinctSourceCount >= minSources)
+          .slice(0, limit),
         totalClusters: clusters.length,
         headlineCount: items.length,
         generatedAt,
@@ -556,17 +561,18 @@ export const RPC_TOOLS: ToolDef[] = [
           items: { type: 'object', properties: {
             term: { type: 'string' },
             count: { type: 'number', description: 'Distinct stories mentioning the term inside the recent window.' },
-            baseline: { type: 'number', description: 'Per-window story rate over the pre-window remainder of the 48h span. 0 means cold start.' },
+            baseline: { type: 'number', description: 'Per-window story rate over the pre-window remainder of the sampled span (see baseline_hours). 0 means cold start.' },
             multiplier: { type: 'number', description: 'count / baseline; 0 on cold start.' },
             uniqueSources: { type: 'number' },
             sampleHeadlines: { type: 'array', items: { type: 'string' } },
           } },
         },
         window_hours: { type: 'number' },
-        baseline_hours: { type: 'number' },
-        story_count: { type: 'number', description: 'Stories in the 48h accumulator sample this computation saw.' },
+        baseline_hours: { type: 'number', description: 'Hours of history the baseline was ACTUALLY computed over — the accumulator retains 48h, but a high-volume feed can fill the per-call story cap with a shorter, more recent span. Always read this rather than assuming 48.' },
+        story_count: { type: 'number', description: 'Stories this computation saw (capped per call; see sample_truncated).' },
+        sample_truncated: { type: 'boolean', description: 'True when the per-call story cap was hit, so baseline_hours is narrower than the accumulator retention.' },
         generatedAt: { type: 'string' },
-        note: { type: 'string', description: 'Present when the accumulator was unavailable or empty.' },
+        note: { type: 'string', description: 'Present when the accumulator was unavailable/empty or the story store was only partially readable.' },
       },
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -576,7 +582,15 @@ export const RPC_TOOLS: ToolDef[] = [
       const limit = nlpClampInt(params.limit, 1, 25, 10);
 
       const cacheKey = `intelligence:keyword-spikes:mcp:v1:${windowHours}h:${minCount}`;
-      const cached = await readJsonFromUpstash(cacheKey) as { spikes?: unknown[] } | null;
+      // A cache-read failure must degrade to live computation, not surface as a
+      // tool error: readJsonFromUpstash throws on network failure (unlike
+      // redisPipeline, which returns null).
+      let cached: { spikes?: unknown[] } | null = null;
+      try {
+        cached = await readJsonFromUpstash(cacheKey) as { spikes?: unknown[] } | null;
+      } catch {
+        cached = null;
+      }
       if (cached && Array.isArray(cached.spikes)) {
         return { ...cached, spikes: cached.spikes.slice(0, limit) };
       }
@@ -584,10 +598,11 @@ export const RPC_TOOLS: ToolDef[] = [
       const nowMs = Date.now();
       const windowMs = windowHours * 60 * 60 * 1000;
       const emptyResult = {
-        spikes: [],
+        spikes: [] as unknown[],
         window_hours: windowHours,
-        baseline_hours: KEYWORD_SPIKE_BASELINE_HOURS,
+        baseline_hours: KEYWORD_SPIKE_BASELINE_MS / 3_600_000,
         story_count: 0,
+        sample_truncated: false,
         generatedAt: new Date(nowMs).toISOString(),
       };
 
@@ -608,20 +623,42 @@ export const RPC_TOOLS: ToolDef[] = [
         if (hash && Number.isFinite(lastSeenMs)) entries.push({ hash, lastSeenMs });
       }
 
+      // The ZRANGE is REV (newest first) and capped, so on a high-volume feed
+      // the sample spans far less than the accumulator's 48h retention. The
+      // baseline must be divided by the span actually sampled — assuming 48h
+      // would drive baselines toward zero and inflate every multiplier.
+      const sampleTruncated = entries.length >= KEYWORD_SPIKE_MAX_STORIES;
+      const oldestMs = entries[entries.length - 1]?.lastSeenMs ?? nowMs;
+      const sampledSpanMs = Math.min(
+        KEYWORD_SPIKE_BASELINE_MS,
+        Math.max(windowMs * 2, nowMs - oldestMs),
+      );
+
+      // Any chunk failure means the corpus is incomplete: spikes computed from
+      // it can be both false (missing baseline stories) and missing (dropped
+      // recent stories), so the result is reported with a note and never cached.
+      let degraded = false;
+      const chunkInto = <T,>(items: T[], size: number): T[][] => {
+        const chunks: T[][] = [];
+        for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
+        return chunks;
+      };
+
       const titles = new Map<string, string>();
       const HMGET_CHUNK = 200;
-      for (let i = 0; i < entries.length; i += HMGET_CHUNK) {
-        const chunk = entries.slice(i, i + HMGET_CHUNK);
-        const res = await redisPipeline(
-          chunk.map(entry => ['HMGET', `story:track:v1:${entry.hash}`, 'title']),
-        ) as Array<{ result?: unknown }> | null;
-        if (!res) continue;
+      const hmgetChunks = chunkInto(entries, HMGET_CHUNK);
+      const hmgetResults = await Promise.all(hmgetChunks.map(chunk => redisPipeline(
+        chunk.map(entry => ['HMGET', `story:track:v1:${entry.hash}`, 'title']),
+      ) as Promise<Array<{ result?: unknown }> | null>));
+      hmgetChunks.forEach((chunk, chunkIdx) => {
+        const res = hmgetResults[chunkIdx];
+        if (!res) { degraded = true; return; }
         chunk.forEach((entry, idx) => {
           const fields = res[idx]?.result;
           const title = Array.isArray(fields) ? fields[0] : null;
           if (typeof title === 'string' && title) titles.set(entry.hash, title);
         });
-      }
+      });
 
       const windowStart = nowMs - windowMs;
       const recentHashes = entries
@@ -629,17 +666,18 @@ export const RPC_TOOLS: ToolDef[] = [
         .map(entry => entry.hash);
       const sourcesByHash = new Map<string, string[]>();
       const SMEMBERS_CHUNK = 200;
-      for (let i = 0; i < recentHashes.length; i += SMEMBERS_CHUNK) {
-        const chunk = recentHashes.slice(i, i + SMEMBERS_CHUNK);
-        const res = await redisPipeline(
-          chunk.map(hash => ['SMEMBERS', `story:sources:v1:${hash}`]),
-        ) as Array<{ result?: unknown }> | null;
-        if (!res) continue;
+      const smembersChunks = chunkInto(recentHashes, SMEMBERS_CHUNK);
+      const smembersResults = await Promise.all(smembersChunks.map(chunk => redisPipeline(
+        chunk.map(hash => ['SMEMBERS', `story:sources:v1:${hash}`]),
+      ) as Promise<Array<{ result?: unknown }> | null>));
+      smembersChunks.forEach((chunk, chunkIdx) => {
+        const res = smembersResults[chunkIdx];
+        if (!res) { degraded = true; return; }
         chunk.forEach((hash, idx) => {
           const members = res[idx]?.result;
           sourcesByHash.set(hash, Array.isArray(members) ? members.map(String) : []);
         });
-      }
+      });
 
       const stories = entries
         .filter(entry => titles.has(entry.hash))
@@ -652,7 +690,7 @@ export const RPC_TOOLS: ToolDef[] = [
       const spikes = computeKeywordSpikesFromStories(stories, {
         nowMs,
         windowMs,
-        baselineSpanMs: KEYWORD_SPIKE_BASELINE_MS,
+        baselineSpanMs: sampledSpanMs,
         minSpikeCount: minCount,
         spikeMultiplier: DEFAULT_SPIKE_MULTIPLIER,
       }).slice(0, KEYWORD_SPIKE_MAX_STORED).map(spike => ({
@@ -664,7 +702,20 @@ export const RPC_TOOLS: ToolDef[] = [
         sampleHeadlines: spike.sampleHeadlines,
       }));
 
-      const payload = { ...emptyResult, spikes, story_count: stories.length };
+      const payload = {
+        ...emptyResult,
+        spikes,
+        story_count: stories.length,
+        baseline_hours: Math.round((sampledSpanMs / 3_600_000) * 10) / 10,
+        sample_truncated: sampleTruncated,
+      };
+      if (degraded) {
+        return {
+          ...payload,
+          spikes: payload.spikes.slice(0, limit),
+          note: 'partial story-store read; spikes may be incomplete and were not cached',
+        };
+      }
       await setCachedData(cacheKey, payload, KEYWORD_SPIKE_CACHE_TTL_S);
       return { ...payload, spikes: payload.spikes.slice(0, limit) };
     },

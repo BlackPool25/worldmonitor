@@ -674,8 +674,8 @@ Classify a supplied news headline or short text into a threat category and sever
 | `text` | string (required) | Headline or short excerpt to classify, 1-500 characters. Longer input is rejected with an `error`, not truncated. |
 
 - **API endpoint:** `GET /api/intelligence/v1/classify-event`
-- **Kind:** bounded canonical-route proxy over an LLM classifier. This op was previously parity-excluded as `llm-passthrough`; exposing it behind the standard MCP daily quota (50 quota-consuming calls/UTC day for OAuth contexts) bounds its per-call LLM cost, and the 24h per-title cache absorbs repeats.
-- **Quota:** standard — every call consumes the MCP daily reservation.
+- **Kind:** bounded canonical-route proxy over an LLM classifier. This op was previously parity-excluded as `llm-passthrough`; the 24h per-title cache absorbs repeats and the classifier is capped at 50 output tokens.
+- **Quota:** standard — every call consumes the MCP daily reservation for OAuth (Pro) and dashboard-key contexts (50/UTC day). Environment API-key (`wm_…`) callers are not subject to that daily reservation; they remain bounded by the 60 requests/minute/key limiter, as with every other MCP tool.
 
 <CodeGroup>
 
@@ -724,14 +724,14 @@ curl -s https://worldmonitor.app/mcp \
 
 ### `get_news_clusters`
 
-Current topic clusters computed over the live headline digest with the same Jaccard clustering (0.5 title-token similarity) the dashboard uses, so agents see the same story groupings as the UI. Each cluster reports its primary headline, member count, distinct sources, top keywords (stop-word and generic-term filtered), aggregated threat level/category, and time span. Server-side primary selection is recency-based because digest items carry no per-source tier.
+Current topic clusters computed over the live headline digest with the same Jaccard clustering (0.5 title-token similarity) the dashboard uses, so agents see the same story groupings as the UI. Each cluster reports its primary headline, member count, `distinctSourceCount` (the corroboration signal `min_sources` filters on), source names, top keywords (stop-word and generic-term filtered), aggregated threat level/category, and time span. Server-side primary selection is recency-based because digest items carry no per-source tier.
 
 **Parameters (tool-specific):**
 
 | Name | Type | Description |
 |------|------|-------------|
 | `limit` | integer | Maximum clusters returned (1-25). Defaults to 10. |
-| `min_sources` | integer | Only return clusters with at least this many member headlines (1-10). Defaults to 1. |
+| `min_sources` | integer | Only return clusters carrying at least this many **distinct outlets** (1-10) — real corroboration, not one outlet filing twice. Defaults to 1. |
 
 - **API endpoint:** `GET /api/news/v1/list-feed-digest`
 - **Kind:** deterministic local compute — clustering runs per call over the ~150-200 digest headlines (CDN/Redis-cached upstream, 15-min cadence).
@@ -754,7 +754,7 @@ curl -s https://worldmonitor.app/mcp \
 
 ### `get_keyword_spikes`
 
-Trending keyword, CVE, and APT/FIN threat-group spikes versus baseline, using the same term-candidacy and spike-decision math as the dashboard's trending-keywords engine (minimum recent count, strict baseline multiplier, source-diversity gate). The baseline derives from the 48-hour story accumulator as a per-window story rate — not the dashboard's incremental 7-day client-side history — and the tool description says so honestly. Results are cached for 10 minutes per `(window_hours, min_count)` combination.
+Trending keyword, CVE, and APT/FIN threat-group spikes versus baseline, using the same term-candidacy and spike-decision math as the dashboard's trending-keywords engine (minimum recent count, strict baseline multiplier, source-diversity gate). The baseline derives from the story accumulator as a per-window story rate — not the dashboard's incremental 7-day client-side history. The accumulator retains 48 hours, but a high-volume feed can fill the per-call story cap with a shorter, more recent span, so the response reports the hours actually sampled in `baseline_hours` and sets `sample_truncated: true` when the cap bounded the read. Read those fields rather than assuming 48. Results are cached for 10 minutes per `(window_hours, min_count)` combination.
 
 **Parameters (tool-specific):**
 
@@ -765,7 +765,7 @@ Trending keyword, CVE, and APT/FIN threat-group spikes versus baseline, using th
 | `limit` | integer | Maximum spikes returned (1-25). Defaults to 10. |
 
 - **API endpoint:** none — reads the story accumulator and story-track keys from Redis directly; no HTTP endpoint is proxied.
-- **Kind:** deterministic local compute with a 10-minute Redis result cache. `note` is present when the accumulator is unavailable or empty.
+- **Kind:** deterministic local compute with a 10-minute Redis result cache. `note` is present when the accumulator is unavailable/empty or the story store was only partially readable — a partial read is never cached, so a transient Redis fault cannot serve wrong spikes for the rest of the TTL.
 - **Quota:** standard — every call consumes the MCP daily reservation.
 
 <CodeGroup>

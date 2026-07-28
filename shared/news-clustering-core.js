@@ -26,6 +26,25 @@ const THREAT_PRIORITY = {
 };
 
 /**
+ * Proto threat-level enum -> the ThreatLevel labels this module's clustering
+ * works in. Single source of truth for both the client digest loader and the
+ * server-side MCP tools; a second hand-maintained copy is exactly the drift
+ * this module exists to prevent.
+ */
+export const PROTO_TO_THREAT_LEVEL = {
+  THREAT_LEVEL_UNSPECIFIED: 'info',
+  THREAT_LEVEL_LOW: 'low',
+  THREAT_LEVEL_MEDIUM: 'medium',
+  THREAT_LEVEL_HIGH: 'high',
+  THREAT_LEVEL_CRITICAL: 'critical',
+};
+
+/** Proto threat level -> label, falling back to 'info' for unknown values. */
+export function protoThreatLevelToLabel(value) {
+  return PROTO_TO_THREAT_LEVEL[value] ?? 'info';
+}
+
+/**
  * Returns the timestamp a ranking/recency comparator should use for this
  * item. Items flagged `pubDateMissing: true` get 0 — they sort last in
  * "newest first" comparators and fail every positive-duration recency gate.

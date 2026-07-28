@@ -33,6 +33,12 @@ const repoRoot = resolve(__dirname, '..');
 
 const SCAN_DIRS = ['src/services', 'src/app'];
 
+// Individual files outside SCAN_DIRS that host ranking/recency comparators.
+// shared/news-clustering-core.js holds clusterNewsCore + effectivePubDateMs
+// after the #5697 port; without this the guardrail silently lost reach over
+// the very comparators it was written to protect.
+const SCAN_FILES = ['shared/news-clustering-core.js'];
+
 // Files (path, line number) that legitimately use raw .pubDate.getTime()
 // for NON-ranking purposes — metadata storage, identity key generation,
 // embedding index timestamps. Each entry MUST carry a reason. The audit
@@ -69,6 +75,31 @@ const ALLOW_LIST: AllowEntry[] = [
   // routes its ranking comparators through effectivePubDateMs (pinned by
   // tests/clustering-cap.test.mjs asserting the re-export, and the port was
   // characterized behavior-identical).
+  {
+    file: 'shared/news-clustering-core.js',
+    line: 55,
+    reason: 'effectivePubDateMs implementation — the helper itself necessarily calls .getTime() on the underlying Date.',
+  },
+  {
+    file: 'shared/news-clustering-core.js',
+    line: 66,
+    reason: 'effectivePubDateMs implementation — string-input branch reconstructs Date and reads getTime; covered by the finite guard on the same line.',
+  },
+  {
+    file: 'shared/news-clustering-core.js',
+    line: 107,
+    reason: 'generateClusterId sort produces a stable identity string from earliest pubDate; not a freshness comparator.',
+  },
+  {
+    file: 'shared/news-clustering-core.js',
+    line: 109,
+    reason: 'generateClusterId uses earliest pubDate.getTime() in the identity string prefix.',
+  },
+  {
+    file: 'shared/news-clustering-core.js',
+    line: 205,
+    reason: 'cluster date aggregation for firstSeen/lastUpdated metadata; not a per-item ranking comparator.',
+  },
   {
     file: 'src/services/clustering.ts',
     line: 138,
@@ -142,11 +173,15 @@ describe('feed-date freshness guardrail — effectivePubDateMs usage', () => {
     );
   });
 
-  it('every .pubDate.getTime() in src/services + src/app is helper-routed or explicitly allow-listed', () => {
+  it('every .pubDate.getTime() in src/services + src/app + shared ranking modules is helper-routed or explicitly allow-listed', () => {
     const violations: Array<{ file: string; line: number; text: string }> = [];
 
-    for (const dir of SCAN_DIRS) {
-      for (const file of listTsFiles(dir)) {
+    const scanTargets = [
+      ...SCAN_DIRS.flatMap((dir) => listTsFiles(dir)),
+      ...SCAN_FILES,
+    ];
+    {
+      for (const file of scanTargets) {
         const src = readFileSync(resolve(repoRoot, file), 'utf8');
         const lines = src.split(/\r?\n/);
         for (let i = 0; i < lines.length; i++) {
