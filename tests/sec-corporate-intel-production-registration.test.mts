@@ -9,6 +9,7 @@ import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
 
 import {
+  MIN_STREAM_EVENTS,
   SEC_8K_STREAM_MAX_STALE_MIN,
   SEC_8K_STREAM_KEY,
 } from '../scripts/seed-sec-8k-stream.mjs';
@@ -51,17 +52,21 @@ describe('SEC corporate-intelligence production registration (#5695)', () => {
     );
     assert.match(
       health,
-      /sec8kStream:\s*\{ key: 'seed-meta:intelligence:sec-8k-stream',\s*maxStaleMin: 120 \}/,
+      /sec8kStream:\s*\{ key: 'seed-meta:intelligence:sec-8k-stream',\s*maxStaleMin: 120, minRecordCount: 20 \}/,
     );
     assert.equal(SEC_CIK_MAP_MAX_STALE_MIN, 2880, 'seeder and /api/health must publish the same CIK-map budget');
     assert.equal(SEC_8K_STREAM_MAX_STALE_MIN, 120, 'seeder and /api/health must publish the same 8-K budget');
     assert.equal(MIN_CIK_ENTRIES, 5000, 'health minRecordCount mirrors the seeder validation floor');
   });
 
-  it('lets the 8-K window drain to zero without alarming, but never the CIK map', () => {
-    assert.equal(healthTesting.ZERO_RECORD_DATA_OK_KEYS.has('sec8kStream'), true);
+  it('treats a drained 8-K window as decay, not as a quiet market', () => {
+    // A market-wide 7-day window that empties means the Atom parse decayed —
+    // one feed page alone yields ~75 material events — so neither key may be
+    // exempt from the zero-record alarm.
+    assert.equal(healthTesting.ZERO_RECORD_DATA_OK_KEYS.has('sec8kStream'), false);
     assert.equal(healthTesting.ZERO_RECORD_DATA_OK_KEYS.has('secCikMap'), false);
     assert.equal(healthTesting.EMPTY_DATA_OK_KEYS.has('secCikMap'), false);
+    assert.equal(MIN_STREAM_EVENTS, 20, 'health minRecordCount mirrors the seeder floor');
   });
 
   it('keeps the seed-health sibling classifier in agreement (intervalMin = maxStaleMin / 2)', () => {
@@ -72,7 +77,7 @@ describe('SEC corporate-intelligence production registration (#5695)', () => {
     );
     assert.match(
       seedHealth,
-      /'intelligence:sec-8k-stream':\s*\{ key: 'seed-meta:intelligence:sec-8k-stream', intervalMin: 60 \}/,
+      /'intelligence:sec-8k-stream':\s*\{ key: 'seed-meta:intelligence:sec-8k-stream', intervalMin: 60, minRecordCount: 20 \}/,
     );
   });
 
