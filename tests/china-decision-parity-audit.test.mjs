@@ -5,12 +5,16 @@ import { join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
+import { readChinaDecisionSignalWireContract } from '../scripts/lib/openapi-codegen.mjs';
+import { validateChinaDecisionSignalSnapshot } from '../scripts/seed-china-decision-signals.mjs';
+import { CHINA_DECISION_SIGNAL_GROUP_MANIFEST } from '../shared/china-decision-signal-manifest.ts';
 import {
   CHINA_DECISION_PARITY_MANIFEST,
   CHINA_DECISION_PARITY_USER_AGENT,
   CHINA_DECISION_STRUCTURAL_CHECKS,
   auditChinaDecisionAccessGating,
   auditChinaDecisionStaticRegistrations,
+  canonicalAccessSnapshot,
   isMainModule,
   parseChinaParityAuditArgs,
   probeChinaDecisionParity,
@@ -35,7 +39,10 @@ describe('China decision-signal static and staging audit (#5580)', () => {
     assert.equal(result.seedMetaKey, 'seed-meta:intelligence:china-decision-signals');
     assert.deepEqual(result.findings, []);
     assert.equal(result.ok, true);
-    assert.equal(CHINA_DECISION_PARITY_MANIFEST.length, 6);
+    assert.deepEqual(
+      CHINA_DECISION_PARITY_MANIFEST,
+      CHINA_DECISION_SIGNAL_GROUP_MANIFEST,
+    );
     assert.deepEqual(result.structuralCheckIds, [
       'gateway-cache-tier',
       'gateway-public-no-auth',
@@ -314,6 +321,30 @@ describe('China decision-signal structural wiring checks (#5643)', () => {
   it('proves the published-snapshot validator rejects every downgraded access tier', () => {
     assert.deepEqual(auditChinaDecisionAccessGating(), []);
   });
+
+  it('reports a finding when the validator has not learned a bumped schema version', () => {
+    // Both sides of that truth table used to hardcode 1: the fixture and
+    // validateChinaDecisionSignalSnapshot's own `schemaVersion === 1`. Bumping
+    // CHINA_DECISION_SIGNAL_SCHEMA_VERSION without teaching the validator would
+    // then leave it rejecting every real published snapshot while this audit,
+    // testing a fixture pinned to the old version, still reported a clean
+    // table — a silent production break.
+    //
+    // Today's contract version and the validator's literal are both 1, so
+    // reading the default proves nothing; building the fixture one version
+    // ahead reproduces the post-bump world. This row goes red if the fixture is
+    // ever re-hardcoded, because the stale validator would then accept it.
+    const { schemaVersion } = readChinaDecisionSignalWireContract();
+    assert.ok(Number.isInteger(schemaVersion) && schemaVersion >= 1);
+    assert.equal(canonicalAccessSnapshot().schemaVersion, schemaVersion);
+
+    assert.deepEqual(auditChinaDecisionAccessGating(schemaVersion), []);
+    assert.deepEqual(
+      auditChinaDecisionAccessGating(schemaVersion + 1),
+      ['the published-snapshot validator rejects the canonical access block'],
+      'a contract version the validator does not accept must read as a finding',
+    );
+  });
 });
 
 describe('China decision-signal audit CLI (#5643)', () => {
@@ -329,6 +360,33 @@ describe('China decision-signal audit CLI (#5643)', () => {
       error: null,
     });
     assert.deepEqual(parseChinaParityAuditArgs([]), { url: null, requireLive: false, error: null });
+  });
+
+  it('refuses probe targets that are not public https endpoints', () => {
+    for (const url of [
+      'http://www.worldmonitor.app',
+      'https://localhost/api',
+      'https://127.0.0.1',
+      'https://[::1]',
+      'https://169.254.169.254',
+      'https://10.0.0.5',
+      'https://172.16.4.2',
+      'https://192.168.1.1',
+      'https://metadata.google.internal',
+      'not-a-url',
+    ]) {
+      const parsed = parseChinaParityAuditArgs(['--url', url]);
+      assert.ok(parsed.error, `expected ${url} to be rejected`);
+      assert.equal(parsed.url, null);
+    }
+  });
+
+  it('accepts ordinary public probe targets', () => {
+    for (const url of ['https://www.worldmonitor.app', 'https://api-staging.example', 'https://staging.example:8443/base']) {
+      const parsed = parseChinaParityAuditArgs(['--url', url]);
+      assert.equal(parsed.error, null, `expected ${url} to be accepted`);
+      assert.equal(parsed.url, url);
+    }
   });
 
   it('refuses argument shapes that would silently skip the live probe', () => {
@@ -367,6 +425,16 @@ describe('China decision-signal audit CLI (#5643)', () => {
     assert.equal(isMainModule(moduleUrl, join(realDir, 'other.mjs')), false);
     assert.equal(isMainModule(moduleUrl, undefined), false);
     assert.equal(isMainModule(moduleUrl, ''), false);
+  });
+
+  it('degrades to a plain path comparison instead of skipping main on error', () => {
+    // realpathSync throws on a path that does not resolve. Answering `false`
+    // there would put the audit right back where it started: exit 0, no
+    // output, indistinguishable from a clean run.
+    const unresolvable = join(realpathSync(tmpdir()), 'wm-parity-does-not-exist', 'audit.mjs');
+    const moduleUrl = pathToFileURL(unresolvable).href;
+    assert.equal(isMainModule(moduleUrl, unresolvable), true, 'identical unresolvable paths must still run main');
+    assert.equal(isMainModule(moduleUrl, join(realpathSync(tmpdir()), 'wm-parity-does-not-exist', 'other.mjs')), false);
   });
 
   it('resolves exit codes so a missing live probe fails the gate', () => {

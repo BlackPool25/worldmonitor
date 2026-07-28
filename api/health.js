@@ -207,6 +207,10 @@ const STANDALONE_KEYS = {
   minerals:              'supply_chain:minerals:v2',
   giving:                'giving:summary:v2',
   gpsjam:                'intelligence:gpsjam:v2',
+  // Corporate intelligence (issue #5695): SEC ticker→CIK registry + 8-K
+  // material-events stream. Health-monitored, not bootstrap-hydrated.
+  secCikMap:             'intelligence:sec-cik-map:v1',
+  sec8kStream:           'intelligence:sec-8k-stream:v1',
   theaterPosture:        'theater_posture:sebuf:stale:v1',
   theaterPostureLive:    'theater-posture:sebuf:v1',
   theaterPostureBackup:  'theater-posture:sebuf:backup:v1',
@@ -275,7 +279,7 @@ const STANDALONE_KEYS = {
   resilienceStaticIndex:    'resilience:static:index:v1',
   resilienceStaticFao:      'resilience:static:fao',
   resilienceRanking:        'resilience:ranking:v25',
-  productCatalog:           'product-catalog:v2',
+  productCatalog:           'product-catalog:v3',
   energySpineCountries:     'energy:spine:v1:_countries',
   energyExposure:           'energy:exposure:v1:index',
   energyMixAll:             'energy:mix:v1:_all',
@@ -486,9 +490,11 @@ const SEED_META = {
   transitSummaries:    { key: 'seed-meta:supply_chain:transit-summaries',    maxStaleMin: 30 }, // relay every 10min; 30min = 3x interval,
   usniFleet:           { key: 'seed-meta:military:usni-fleet',               maxStaleMin: 720 }, // relay loop every 6h; 720 = 2× interval (was 480 = 1.3×, too tight)
   securityAdvisories:  { key: 'seed-meta:intelligence:advisories',           maxStaleMin: 120 },
+  secCikMap:           { key: 'seed-meta:intelligence:sec-cik-map',          maxStaleMin: 2880, minRecordCount: 5000 }, // daily bundle section; 2880min = 48h = 2x interval. minRecordCount mirrors MIN_CIK_ENTRIES in scripts/seed-sec-cik-map.mjs.
+  sec8kStream:         { key: 'seed-meta:intelligence:sec-8k-stream',        maxStaleMin: 120, minRecordCount: 50 }, // 30min bundle section; 120min = 4x interval. minRecordCount mirrors MIN_STREAM_EVENTS in scripts/seed-sec-8k-stream.mjs — a drained window means Atom-parse decay, not a quiet market.
   customsRevenue:      { key: 'seed-meta:trade:customs-revenue',              maxStaleMin: 1440 },
   comtradeFlows:       { key: 'seed-meta:trade:comtrade-flows',               maxStaleMin: 2880 }, // 24h cron; 2880min = 48h = 2x interval
-  comtradeBilateralHs4: { key: 'seed-meta:comtrade:bilateral-hs4',             maxStaleMin: 34560 }, // 24d freshness gate + 25d meta TTL; meta-only aggregate over sharded country keys
+  comtradeBilateralHs4: { key: 'seed-meta:comtrade:bilateral-hs4',             maxStaleMin: 50400, minRecordCount: 110 }, // 35d health budget for monthly seed; 40d payload/meta TTL leaves a 5d stale-but-queryable warning window. minRecordCount mirrors MIN_COUNTRY_COVERAGE in scripts/seed-comtrade-bilateral-hs4.mjs (110 of 197 clusters) so a shrunken run reads COVERAGE_PARTIAL, not OK — without it 3-of-197 and 197-of-197 were indistinguishable for the full 35d window.
   blsSeries:           { key: 'seed-meta:economic:bls-series',                maxStaleMin: 2880 }, // daily seed; 2880min = 48h = 2x interval
   sanctionsPressure:   { key: 'seed-meta:sanctions:pressure',                 maxStaleMin: 720 },
   crossSourceSignals:  { key: 'seed-meta:intelligence:cross-source-signals',  maxStaleMin: 30 }, // 15min cron; 30min = 2x interval
@@ -761,6 +767,11 @@ const EMPTY_DATA_OK_KEYS = new Set([
 // EMPTY_DATA_OK_KEYS so a pre-first-publish absence remains STALE_SEED rather
 // than a false-critical EMPTY; tests/health-empty-data-ok.test.mjs enforces it.
 const MISSING_DATA_IS_FAILURE_KEYS = new Set([
+  // These sparse feeds publish an explicit canonical payload on every
+  // successful cycle, including valid zero-record cycles. Fresh metadata
+  // therefore cannot excuse a vanished data key.
+  'cableHealth',
+  'notamClosures',
   'thermalEscalationBootstrap',
   'ucdpEventsBootstrap',
   'wildfiresBootstrap',
@@ -850,12 +861,12 @@ function keyHasData(redisKey, len) {
 
 function readSeedMeta(seedCfg, keyMetaValues, keyMetaErrors, now) {
   if (!seedCfg) {
-    return { hasMeta: false, seedAge: null, seedStale: null, seedError: false, sourceUnavailable: false, metaReadFailed: false, metaCount: null, contentAge: null };
+    return { hasMeta: false, seedAge: null, seedStale: null, seedError: false, sourceUnavailable: false, sourceBlocked: false, metaReadFailed: false, metaCount: null, contentAge: null };
   }
   // Per-command Redis errors on the GET seed-meta half of the pipeline must
   // not silently fall through to STALE_SEED — promote to REDIS_PARTIAL.
   if (keyMetaErrors.get(seedCfg.key)) {
-    return { hasMeta: false, seedAge: null, seedStale: null, seedError: false, sourceUnavailable: false, metaReadFailed: true, metaCount: null, contentAge: null };
+    return { hasMeta: false, seedAge: null, seedStale: null, seedError: false, sourceUnavailable: false, sourceBlocked: false, metaReadFailed: true, metaCount: null, contentAge: null };
   }
   // Unwrap through the envelope helper. Legacy seed-meta is a bare
   // `{ fetchedAt, recordCount, sourceVersion, status? }` object with no `_seed`
@@ -864,12 +875,13 @@ function readSeedMeta(seedCfg, keyMetaValues, keyMetaErrors, now) {
   // the dependency so behavior stays byte-identical in PR 1.
   const meta = unwrapEnvelope(parseRedisValue(keyMetaValues.get(seedCfg.key))).data;
   if (meta?.status === 'error') {
-    return { hasMeta: true, seedAge: null, seedStale: true, seedError: true, sourceUnavailable: false, metaReadFailed: false, metaCount: null, contentAge: null };
+    return { hasMeta: true, seedAge: null, seedStale: true, seedError: true, sourceUnavailable: false, sourceBlocked: false, metaReadFailed: false, metaCount: null, contentAge: null };
   }
   let seedAge = null;
   let seedStale = true;
-  if (meta?.fetchedAt) {
-    seedAge = Math.round((now - meta.fetchedAt) / 60_000);
+  const fetchedAt = Number(meta?.fetchedAt);
+  if (Number.isFinite(fetchedAt) && fetchedAt > 0) {
+    seedAge = Math.round((now - fetchedAt) / 60_000);
     seedStale = seedAge > seedCfg.maxStaleMin;
   }
   const metaCount = meta?.count ?? meta?.recordCount ?? null;
@@ -879,12 +891,17 @@ function readSeedMeta(seedCfg, keyMetaValues, keyMetaErrors, now) {
   // same makes an optional, deliberately-unconfigured source an eternal warn that
   // no amount of operator work can clear — so it is classified separately below.
   const sourceUnavailable = meta?.sourceState === 'unavailable';
+  // A current, bounded upstream classification can prove that every admitted
+  // transport path is externally blocked. Keep that state visible without
+  // treating it as a broken producer that can be repaired by another retry.
+  const sourceBlocked = meta?.sourceState === 'blocked';
   // Source-specific producers can preserve usable last-good records while a
   // current upstream attempt is degraded. Surface that state immediately as a
   // warning without discarding the retained record count from health output.
   const sourceDegraded = typeof meta?.sourceState === 'string'
     && meta.sourceState !== 'ok'
-    && !sourceUnavailable;
+    && !sourceUnavailable
+    && !sourceBlocked;
   // Content-age trio (2026-05-04 health-readiness plan). Presence of
   // maxContentAgeMin is the opt-in signal — legacy seeders without it
   // get contentAge: null and skip the STALE_CONTENT branch in classifyKey.
@@ -912,7 +929,7 @@ function readSeedMeta(seedCfg, keyMetaValues, keyMetaErrors, now) {
       contentStale: contentAgeMin == null || isFutureDated || contentAgeMin > meta.maxContentAgeMin,
     };
   }
-  return { hasMeta: meta != null, seedAge, seedStale, seedError: sourceDegraded, sourceUnavailable, metaReadFailed: false, metaCount, contentAge };
+  return { hasMeta: meta != null, seedAge, seedStale, seedError: sourceDegraded, sourceUnavailable, sourceBlocked, metaReadFailed: false, metaCount, contentAge };
 }
 
 function isCascadeCovered(name, hasData, keyStrens, keyErrors) {
@@ -947,7 +964,7 @@ function classifyKey(name, redisKey, opts, ctx) {
 
   const strlen = keyStrens.get(redisKey) ?? 0;
   const hasData = keyHasData(redisKey, strlen);
-  const { hasMeta, seedAge, seedStale, seedError, sourceUnavailable, metaCount, contentAge } = meta;
+  const { hasMeta, seedAge, seedStale, seedError, sourceUnavailable, sourceBlocked, metaCount, contentAge } = meta;
 
   // When the data key is gone the meta count is meaningless; force records=0
   // so we never display the contradictory "EMPTY records=N>0" pair (item 1).
@@ -961,6 +978,12 @@ function classifyKey(name, redisKey, opts, ctx) {
   // the moment the credential lands the next run reports sourceState 'ok' and this
   // flips to OK on its own — no health-config change needed.
   if (sourceUnavailable) status = 'NOT_CONFIGURED';
+  else if (sourceBlocked && name !== 'crossStraitActivityJapanMod') {
+    // Keep the fleet-wide escape hatch narrow: only the Japan MOD adapter has
+    // a reviewed-data contract and explicit two-path proof for this state.
+    status = 'SEED_ERROR';
+  }
+  else if (sourceBlocked && hasData && records > 0 && seedStale !== true) status = 'SOURCE_BLOCKED';
   else if (seedError) status = 'SEED_ERROR';
   else if (!hasData) {
     if (cascadeCovered) status = 'OK_CASCADE';
@@ -994,6 +1017,17 @@ function classifyKey(name, redisKey, opts, ctx) {
   else status = 'OK';
 
   const entry = { status, records };
+  // Source-level on-demand marker: "this key is RPC-populated or awaiting its
+  // first producer run", NOT "any failure here is acceptable". The status suffix
+  // (`EMPTY_ON_DEMAND`) cannot carry that, because it only covers the
+  // absent/zero-record branches — an on-demand key that HAS data and goes stale
+  // falls through to plain STALE_SEED. Emitted for every status so a consumer
+  // can combine source and status; deciding WHICH statuses the marker excuses is
+  // the consumer's call, and scripts/check-seed-freshness.mjs deliberately
+  // excuses only the empty/absent ones (see ON_DEMAND_SOFT_STATUSES there —
+  // softening SEED_ERROR/STALE_SEED is the marketImplications blind spot the
+  // ON_DEMAND_KEYS policy block above exists to prevent).
+  if (isOnDemand) entry.onDemand = true;
   if (seedAge !== null) entry.seedAgeMin = seedAge;
   if (seedCfg) entry.maxStaleMin = seedCfg.maxStaleMin;
   if (seedCfg?.minRecordCount != null) entry.minRecordCount = seedCfg.minRecordCount;
@@ -1016,6 +1050,11 @@ const STATUS_COUNTS = {
   // Must stay registered here: the summary does `STATUS_COUNTS[status] ?? 'warn'`,
   // so an unlisted status would silently re-become the warn this exists to stop.
   NOT_CONFIGURED: 'ok',
+  // The producer ran and classified an external transport refusal with a
+  // documented reason. Retained reviewed data remains usable, and retrying the
+  // same bounded paths cannot clear it, so this is informational rather than a
+  // fleet-health warning.
+  SOURCE_BLOCKED: 'ok',
   STALE_SEED: 'warn',
   SEED_ERROR: 'warn',
   EMPTY_ON_DEMAND: 'warn',

@@ -1,47 +1,23 @@
 #!/usr/bin/env node
 
-import { readFileSync, realpathSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import {
   arrayLiteralHasStringMember,
   extractDelimitedBlock,
   objectLiteralEntryValue,
 } from './lib/js-source-structure.mjs';
+import { isMainModule } from './lib/main-module.mjs';
+import { readChinaDecisionSignalWireContract } from './lib/openapi-codegen.mjs';
 import { validateChinaDecisionSignalSnapshot } from './seed-china-decision-signals.mjs';
 
-export const CHINA_DECISION_PARITY_MANIFEST = Object.freeze([
-  Object.freeze({
-    groupId: 'macro',
-    provenanceFamily: 'china_macro_official_numeric_observation',
-    sourceKey: 'economic:china:macro:v2',
-  }),
-  Object.freeze({
-    groupId: 'policy-enforcement',
-    provenanceFamily: 'typed_document_event',
-    sourceKey: 'china:policy-events:v1',
-  }),
-  Object.freeze({
-    groupId: 'cross-strait-activity',
-    provenanceFamily: 'operational_activity_record',
-    sourceKey: 'military:cross-strait-activity:v1',
-  }),
-  Object.freeze({
-    groupId: 'corporate-disclosures',
-    provenanceFamily: 'exchange_disclosure',
-    sourceKey: 'market:china:corporate-disclosures:v1',
-  }),
-  Object.freeze({
-    groupId: 'corridor-conditions',
-    provenanceFamily: 'composed_corridor_condition',
-    sourceKey: 'supply-chain:china-corridor-control-towers',
-  }),
-  Object.freeze({
-    groupId: 'activity-nowcast',
-    provenanceFamily: 'derived_comparison',
-    sourceKey: 'economic:china-activity-nowcast',
-  }),
-]);
+export { isMainModule } from './lib/main-module.mjs';
+
+const wireContract = readChinaDecisionSignalWireContract();
+export const CHINA_DECISION_PARITY_MANIFEST = Object.freeze(
+  wireContract.groupManifest.map((entry) => Object.freeze(entry)),
+);
 
 const ROUTE = '/api/intelligence/v1/get-china-decision-signals';
 const BOOTSTRAP_ROUTE = '/api/bootstrap?keys=chinaDecisionSignals&public=1';
@@ -165,9 +141,28 @@ function read(repoRoot, relativePath) {
   return readFileSync(resolve(repoRoot, relativePath), 'utf8');
 }
 
-function canonicalAccessSnapshot() {
+/**
+ * Build the canonical snapshot the access-gating truth table is anchored on.
+ *
+ * `schemaVersion` defaults to the wire contract rather than a literal. Both
+ * sides of this comparison used to hardcode 1 — the fixture here and
+ * `validateChinaDecisionSignalSnapshot`'s own `schemaVersion === 1` — so a bump
+ * to CHINA_DECISION_SIGNAL_SCHEMA_VERSION would have left the validator
+ * rejecting every *real* published snapshot while this audit, testing a fixture
+ * pinned to the old version, still reported a clean access-gating table.
+ * Deriving it turns that silent production break into a finding at PR time.
+ *
+ * It is a parameter and not a closed-over constant so that mismatch stays
+ * testable: today's contract version and the validator's literal are both 1, so
+ * reading the default cannot tell derivation from a hardcode. Passing a bumped
+ * version reproduces the post-bump world, where the validator must reject.
+ *
+ * @param {number} [schemaVersion] version to stamp; defaults to the contract's
+ * @returns {object} a snapshot the validator is expected to accept
+ */
+export function canonicalAccessSnapshot(schemaVersion = wireContract.schemaVersion) {
   return {
-    schemaVersion: 1,
+    schemaVersion,
     generatedAt: '2026-01-01T00:00:00.000Z',
     groups: CHINA_DECISION_PARITY_MANIFEST.map(({ groupId }) => ({
       id: groupId,
@@ -186,15 +181,16 @@ function canonicalAccessSnapshot() {
  * must be rejected. This is the one access-gating claim the audit can prove by
  * execution rather than by reading source text.
  *
+ * @param {number} [schemaVersion] version to build the fixture at
  * @returns {string[]} one finding per broken row of the truth table
  */
-export function auditChinaDecisionAccessGating() {
+export function auditChinaDecisionAccessGating(schemaVersion = wireContract.schemaVersion) {
   const findings = [];
-  if (!validateChinaDecisionSignalSnapshot(canonicalAccessSnapshot())) {
+  if (!validateChinaDecisionSignalSnapshot(canonicalAccessSnapshot(schemaVersion))) {
     findings.push('the published-snapshot validator rejects the canonical access block');
   }
   for (const [tier] of ACCESS_TIERS) {
-    const mutated = canonicalAccessSnapshot();
+    const mutated = canonicalAccessSnapshot(schemaVersion);
     mutated.access[tier] = 'unrestricted';
     if (validateChinaDecisionSignalSnapshot(mutated)) {
       findings.push(`the published-snapshot validator accepts a downgraded access.${tier}`);
@@ -206,21 +202,28 @@ export function auditChinaDecisionAccessGating() {
 export function auditChinaDecisionStaticRegistrations(repoRoot) {
   const findings = [];
   const sources = new Map();
+  const failures = new Map();
   const load = (relativePath) => {
     if (!sources.has(relativePath)) {
       try {
         sources.set(relativePath, read(repoRoot, relativePath));
-      } catch {
+      } catch (error) {
+        // Keep the reason: "missing" and "present but unreadable" (EACCES, a
+        // dangling symlink, EISDIR) need different fixes, and this only ever
+        // surfaces in a CI log where nobody can re-run it interactively.
+        const code = error?.code ?? 'UNKNOWN';
+        failures.set(relativePath, code === 'ENOENT' ? 'the file is missing' : `the file is unreadable (${code})`);
         sources.set(relativePath, null);
       }
     }
     return sources.get(relativePath);
   };
+  const unreadable = (relativePath) => failures.get(relativePath) ?? 'the file is missing';
 
   for (const [relativePath, ...needles] of REQUIRED_REGISTRATIONS) {
     const source = load(relativePath);
     if (source === null) {
-      findings.push({ file: relativePath, check: 'registration', detail: 'the file is missing' });
+      findings.push({ file: relativePath, check: 'registration', detail: unreadable(relativePath) });
       continue;
     }
     for (const needle of needles) {
@@ -233,7 +236,7 @@ export function auditChinaDecisionStaticRegistrations(repoRoot) {
   for (const check of CHINA_DECISION_STRUCTURAL_CHECKS) {
     const source = load(check.file);
     if (source === null) {
-      findings.push({ file: check.file, check: check.id, detail: 'the file is missing' });
+      findings.push({ file: check.file, check: check.id, detail: unreadable(check.file) });
       continue;
     }
     const failure = check.verify(source);
@@ -398,6 +401,49 @@ export async function probeChinaDecisionParity(baseUrl, {
  * @param {string[]} args argv without the node binary and script path
  * @returns {{ url: string | null, requireLive: boolean, error: string | null }}
  */
+// Hosts that must never be probe targets. The probe reports HTTP status and
+// latency, so an operator-supplied URL is a (weak) oracle against whatever it
+// can reach; the workflow exposes the base URL as a dispatch input. This blocks
+// the obvious internal targets by literal host. It deliberately does NOT claim
+// to be SSRF-proof: a public hostname that resolves to a private address still
+// passes, because that needs resolution-time checking this tool has no reason
+// to carry.
+const PRIVATE_HOST_PATTERNS = [
+  /^localhost$/i,
+  /\.localhost$/i,
+  /\.internal$/i,
+  /\.local$/i,
+  /^127\./,
+  /^10\./,
+  /^192\.168\./,
+  /^169\.254\./,
+  /^172\.(1[6-9]|2\d|3[01])\./,
+  /^\[?::1\]?$/,
+  /^\[?f[cd][0-9a-f]{2}:/i,
+];
+
+/**
+ * Validate a probe base URL, returning an error string or null.
+ *
+ * @param {string} value
+ * @returns {string | null}
+ */
+export function validateProbeBaseUrl(value) {
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return `--url must be an absolute URL, got ${value}`;
+  }
+  if (parsed.protocol !== 'https:') {
+    return `--url must use https, got ${parsed.protocol.replace(':', '') || '<none>'}`;
+  }
+  if (PRIVATE_HOST_PATTERNS.some((pattern) => pattern.test(parsed.hostname))) {
+    return `--url must target a public host, got ${parsed.hostname}`;
+  }
+  return null;
+}
+
 export function parseChinaParityAuditArgs(args) {
   let url = null;
   let requireLive = false;
@@ -408,6 +454,8 @@ export function parseChinaParityAuditArgs(args) {
     if (arg === '--url') {
       const value = args[i + 1];
       if (!value || value.startsWith('--')) return fail('--url requires a base URL value');
+      const invalid = validateProbeBaseUrl(value);
+      if (invalid !== null) return fail(invalid);
       url = value;
       i += 1;
       continue;
@@ -459,30 +507,6 @@ async function main() {
   const result = { static: staticAudit, ...(live ? { live } : {}) };
   console.log(JSON.stringify(result, null, 2));
   process.exitCode = resolveChinaParityExitCode({ staticOk: staticAudit.ok, live, requireLive });
-}
-
-/**
- * Report whether `moduleUrl` is the entrypoint the process was started with.
- *
- * Both sides are resolved through `realpathSync` first. Node sets
- * `import.meta.url` to the real path while `process.argv[1]` keeps whatever
- * path the caller typed, so the naive comparison silently no-ops — exit 0, zero
- * output — whenever the checkout is reached through a symlink (`/tmp` ->
- * `/private/tmp` on macOS is the common one). For an audit that is the worst
- * possible failure: it looks exactly like a clean run.
- *
- * @param {string} moduleUrl
- * @param {string | undefined} argv1
- * @returns {boolean}
- */
-export function isMainModule(moduleUrl, argv1) {
-  if (!argv1) return false;
-  try {
-    return pathToFileURL(realpathSync(fileURLToPath(moduleUrl))).href
-      === pathToFileURL(realpathSync(argv1)).href;
-  } catch {
-    return false;
-  }
 }
 
 if (isMainModule(import.meta.url, process.argv[1])) {

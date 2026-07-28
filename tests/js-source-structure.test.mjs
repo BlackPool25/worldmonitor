@@ -69,72 +69,33 @@ describe('stripJsComments', () => {
     assert.doesNotMatch(strippedRegex, /gone/);
   });
 
+  it('keeps offsets aligned when the source contains astral characters', () => {
+    // The output buffer must be indexed the same way `source[n]` and
+    // `indexOf` are — by UTF-16 code unit. A code-point-indexed buffer
+    // desynchronizes on the first surrogate pair and blanks the wrong range,
+    // which can leave a comment intact (a false pass for any caller relying
+    // on comments being gone) while eating real code.
+    const source = "const flag = '\u{1F1E8}\u{1F1F3}'; // strip me\nconst after = 1;\n";
+    const stripped = stripJsComments(source);
+    assert.equal(stripped.length, source.length);
+    assert.doesNotMatch(stripped, /strip me/);
+    assert.doesNotMatch(stripped, /\/\//, 'the comment marker itself must be blanked');
+    assert.ok(stripped.includes('const after = 1;'), 'code after an astral char must survive intact');
+    assert.ok(stripped.includes("'\u{1F1E8}\u{1F1F3}'"), 'the astral literal must survive');
+  });
+
+  it('finds an anchor that begins with a quote', () => {
+    // extractDelimitedBlock matches anchors only at code-level positions, so a
+    // quote-initial anchor is unfindable unless the opening quote is reported.
+    const source = "const MAP = {\n  'a': { tier: 'fast' },\n};\n";
+    const body = extractDelimitedBlock(source, "'a':");
+    assert.ok(body !== null, 'a quote-initial anchor must be findable');
+    assert.ok(body.includes("tier: 'fast'"));
+  });
+
   it('is idempotent', () => {
     const source = 'const a = 1; // x\n/* y */\n';
     assert.equal(stripJsComments(stripJsComments(source)), stripJsComments(source));
-  });
-
-  it('recognises a regex literal preceded by a keyword operand, not just punctuation', () => {
-    // Before this fix, only punctuation like `(` or `=` was regex-permitting.
-    // `return` ends in `n`, which is not in REGEX_PRECEDING, so the audit used
-    // to misread this `/` as division. It would then hit the escaped `\/\/`
-    // inside the regex body and misread that as a `//` line comment, blanking
-    // the real code that follows it.
-    const source = [
-      'function f(url) {',
-      '  return /https:\\/\\//.test(url); // real',
-      '}',
-      'const kept = 1;',
-    ].join('\n');
-    const stripped = stripJsComments(source);
-    assert.ok(stripped.includes('/https:\\/\\//.test(url);'), 'the regex literal and the call after it must survive');
-    assert.doesNotMatch(stripped, /real/, 'the actual trailing comment must still be stripped');
-  });
-
-  it('recognises a keyword-preceded regex with no separating whitespace', () => {
-    const source = [
-      'function g(url) {',
-      '  if (typeof/https:\\/\\//.exec(url) !== "object") return; // real',
-      '}',
-      'const kept = 1;',
-    ].join('\n');
-    const stripped = stripJsComments(source);
-    assert.ok(stripped.includes('/https:\\/\\//.exec(url)'), 'the regex literal and the call after it must survive');
-    assert.doesNotMatch(stripped, /real/, 'the actual trailing comment must still be stripped');
-  });
-
-  it('recognises a regex literal in a switch case', () => {
-    const source = [
-      'switch (kind) {',
-      '  case /https:\\/\\//.test(url) ? "secure" : "plain":',
-      '    handle(); // real',
-      '    break;',
-      '}',
-    ].join('\n');
-    const stripped = stripJsComments(source);
-    assert.ok(stripped.includes('/https:\\/\\//.test(url)'), 'the regex literal must survive');
-    assert.doesNotMatch(stripped, /real/, 'the actual trailing comment must still be stripped');
-  });
-
-  it('does not treat a non-reserved contextual keyword as regex-permitting', () => {
-    // `of` (unlike `in`, `return`, `typeof`, ...) is not a reserved word in
-    // JS/TS and can be a real identifier, so it must not flip a following `/`
-    // into regex mode.
-    const source = 'const of = computeWidth();\nconst ratio = of / total; // note\n';
-    const stripped = stripJsComments(source);
-    assert.ok(stripped.includes('const ratio = of / total;'));
-    assert.doesNotMatch(stripped, /note/);
-  });
-
-  it('does not treat reserved words used as property names as regex-permitting', () => {
-    const source = [
-      'const inRatio = obj.in / total; // first',
-      'const defaultRatio = obj?.default / total; // second',
-    ].join('\n');
-    const stripped = stripJsComments(source);
-    assert.ok(stripped.includes('obj.in / total;'));
-    assert.ok(stripped.includes('obj?.default / total;'));
-    assert.doesNotMatch(stripped, /first|second/);
   });
 });
 
@@ -166,12 +127,17 @@ describe('extractDelimitedBlock', () => {
     assert.equal(extractDelimitedBlock(source, 'const RENAMED_MAP'), null);
   });
 
-  it('ignores a longer identifier that only starts with the anchor', () => {
-    const prefixed = [
-      "const MAP_LEGACY = { 'a': 'wrong' };",
-      "const MAP = { 'a': 'right' };",
-    ].join('\n');
-    assert.equal(extractDelimitedBlock(prefixed, 'const MAP'), " 'a': 'right' ");
+  it('does not match an anchor in the middle of a longer identifier', () => {
+    const widened = source.replace('const MAP', 'const MAP_V2');
+    assert.equal(
+      extractDelimitedBlock(widened, 'const MAP'),
+      null,
+      'MAP_V2 is a different container — matching it would audit the wrong object',
+    );
+    const prefixed = 'const OTHER_MAP = { skip: 1 };\nconst MAP = {\n  ok: 1,\n};\n';
+    const body = extractDelimitedBlock(prefixed, 'const MAP');
+    assert.ok(body !== null && body.includes('ok: 1'), 'a real declaration must still match');
+    assert.doesNotMatch(body, /skip/);
   });
 
   it('fails closed when the anchor only appears inside a comment', () => {
@@ -253,5 +219,93 @@ describe('arrayLiteralHasStringMember', () => {
   it('requires an exact match, not a prefix', () => {
     assert.equal(arrayLiteralHasStringMember(body, '/'), false);
     assert.equal(arrayLiteralHasStringMember(body, '/a/b'), false);
+  });
+
+  it('decodes standard escape sequences rather than dropping the backslash', () => {
+    assert.equal(arrayLiteralHasStringMember("  'a\\nb',", 'a\nb'), true);
+    assert.equal(arrayLiteralHasStringMember("  'a\\nb',", 'anb'), false);
+    assert.equal(arrayLiteralHasStringMember("  'it\\'s',", "it's"), true);
+    assert.equal(arrayLiteralHasStringMember("  'back\\\\slash',", 'back\\slash'), true);
+    assert.equal(arrayLiteralHasStringMember('  "tab\\there",', 'tab\there'), true);
+  });
+});
+
+describe('keyword-preceded regex literals', () => {
+  // `return /x/` ends in an identifier char, so a preceding-character-only
+  // classifier reads the `/` as division and then scans the regex body as code.
+  // A quote in that body is bounded by the newline guard, but a backtick opens
+  // template mode — which has no newline guard — and swallows every container
+  // after it. Both scanners have to agree, because extractDelimitedBlock strips
+  // comments with one and then re-walks the result with the other.
+  // Kept on ONE line with the regex. A stray quote opened by a misread regex is
+  // bounded by the newline guard, so a container on a later line would be found
+  // even with the bug present — the row would pass either way and prove
+  // nothing. Same-line placement is what gives every row below teeth.
+  const container = "const RPC_CACHE_TIER = { '/api/x': 'fast' };";
+
+  for (const [name, guard] of [
+    ['an apostrophe', "function m(s) { return /it's/.test(s); } "],
+    ['a backtick', 'function m(s) { return /a`b/.test(s); } '],
+    ['a double quote', 'function m(s) { return /a"b/.test(s); } '],
+    ['a keyword other than return', 'const t = typeof /a\'b/; '],
+    ['a case label', "switch (x) { case /a'b/.source: break; } "],
+  ]) {
+    it(`finds a same-line container past a regex containing ${name}`, () => {
+      const body = extractDelimitedBlock(guard + container, 'const RPC_CACHE_TIER');
+      assert.notEqual(body, null, 'the container must still be locatable');
+      assert.equal(objectLiteralEntryValue(body, '/api/x'), "'fast'");
+    });
+  }
+
+  it('reads a container whose own body contains a keyword-preceded regex', () => {
+    // The regex sits INSIDE the container, so a misread body desynchronizes the
+    // balanced-delimiter walk itself rather than just the text before it.
+    const source = 'const RPC_CACHE_TIER = {\n'
+      + "  '/api/x': 'fast',\n"
+      + '  match: (s) => { return /a`{/.test(s); },\n'
+      + '};\n';
+    const body = extractDelimitedBlock(source, 'const RPC_CACHE_TIER');
+    assert.notEqual(body, null, 'the container must still close');
+    assert.equal(objectLiteralEntryValue(body, '/api/x'), "'fast'");
+  });
+
+  it('still reads a genuine division as division, not as a regex', () => {
+    // The dangerous direction: misreading division as a regex skips real code,
+    // which could carry the scanner past a closing delimiter.
+    const source = 'const ratio = total / count;\nconst SIZES = {\n  small: 1,\n};\n';
+    const body = extractDelimitedBlock(source, 'const SIZES');
+    assert.notEqual(body, null);
+    assert.equal(objectLiteralEntryValue(body, 'small'), '1');
+  });
+
+  it('keeps identifiers and properties named like keywords in division context', () => {
+    const source = [
+      'const of = width;',
+      'const first = of / total; // drop first',
+      'const second = obj.in / total; // drop second',
+      'const third = obj?.default / total; // drop third',
+    ].join('\n');
+    const stripped = stripJsComments(source);
+    assert.ok(stripped.includes('of / total;'));
+    assert.ok(stripped.includes('obj.in / total;'));
+    assert.ok(stripped.includes('obj?.default / total;'));
+    assert.doesNotMatch(stripped, /drop first|drop second|drop third/);
+  });
+
+  it('treats an unterminated slash as division rather than eating the line', () => {
+    const source = 'const half = value / 2;\nconst SIZES = { small: 1 };\n';
+    const body = extractDelimitedBlock(source, 'const SIZES');
+    assert.equal(objectLiteralEntryValue(body, 'small'), '1');
+  });
+
+  it('does not let a regex body hide a member from the real container', () => {
+    // A commented-out or drifted member must stay invisible even when a regex
+    // earlier in the file contains delimiter-looking text.
+    const source = 'const re = /\\[\'\\/api\\/x\'\\]/;\n'
+      + "export const PUBLIC = [\n  '/api/y',\n];\n";
+    const body = extractDelimitedBlock(source, 'export const PUBLIC', '[', ']');
+    assert.notEqual(body, null);
+    assert.equal(arrayLiteralHasStringMember(body, '/api/y'), true);
+    assert.equal(arrayLiteralHasStringMember(body, '/api/x'), false);
   });
 });
