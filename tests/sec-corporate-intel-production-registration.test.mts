@@ -21,6 +21,7 @@ import {
 import {
   SEC_8K_STREAM_KEY as SERVER_8K_KEY,
   SEC_CIK_MAP_KEY as SERVER_CIK_KEY,
+  SEC_CIK_MAP_MAX_STALE_MIN as SERVER_CIK_MAX_STALE_MIN,
 } from '../server/_shared/sec-edgar';
 import { __testing__ as healthTesting } from '../api/health.js';
 
@@ -55,6 +56,7 @@ describe('SEC corporate-intelligence production registration (#5695)', () => {
       /sec8kStream:\s*\{ key: 'seed-meta:intelligence:sec-8k-stream',\s*maxStaleMin: 120, minRecordCount: 50 \}/,
     );
     assert.equal(SEC_CIK_MAP_MAX_STALE_MIN, 2880, 'seeder and /api/health must publish the same CIK-map budget');
+    assert.equal(SERVER_CIK_MAX_STALE_MIN, SEC_CIK_MAP_MAX_STALE_MIN, 'request-time CIK freshness must match seed health');
     assert.equal(SEC_8K_STREAM_MAX_STALE_MIN, 120, 'seeder and /api/health must publish the same 8-K budget');
     assert.equal(MIN_CIK_ENTRIES, 5000, 'health minRecordCount mirrors the seeder validation floor');
   });

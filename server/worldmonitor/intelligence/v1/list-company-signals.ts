@@ -1,7 +1,8 @@
 /**
  * RPC: listCompanySignals — classified company signals from authoritative
- * sources (issue #5695): SEC 8-K material events (tier 1), earnings surprises
- * (tier 2), and recent news mentions (tier 3).
+ * sources (issue #5695): SEC 8-K material events (tier 1) and recent news
+ * mentions (tier 3). Finnhub fiscal period ends remain enrichment facts; the
+ * endpoint does not misstate them as event timestamps.
  *
  * Identity resolves exclusively through the SEC ticker/name registry
  * (server/_shared/sec-edgar) — no keyword or domain-slug guessing (the unsound
@@ -24,7 +25,7 @@ import {
   filingIndexUrl,
   resolveCompany,
 } from '../../../_shared/sec-edgar';
-import { fetchCompanyNewsMentions, fetchEarningsSurprises } from './_company-shared';
+import { fetchCompanyNewsMentions } from './_company-shared';
 
 const FILING_SIGNAL_WINDOW_MS = 90 * 24 * 3600 * 1000;
 const MAX_SIGNALS = 30;
@@ -52,7 +53,12 @@ export async function listCompanySignals(
   req: ListCompanySignalsRequest,
 ): Promise<ListCompanySignalsResponse> {
   const company = req.company?.trim();
+  const domain = req.domain?.trim().toLowerCase();
   const ticker = req.ticker?.trim();
+
+  // Preserve the disabled v1 domain contract. Domain-derived attribution is
+  // still forbidden; callers using that deprecated field get an empty stub.
+  if (domain) return emptyResponse(company || '', false, domain);
 
   if (!company && !ticker) {
     throw new ValidationError([{ field: 'company', description: 'Provide ticker or company' }]);
@@ -69,9 +75,8 @@ export async function listCompanySignals(
   }
   const resolved = resolution.company;
 
-  const [submissions, earnings, mentions] = await Promise.all([
+  const [submissions, news] = await Promise.all([
     fetchSecSubmissions(resolved.cik),
-    fetchEarningsSurprises(resolved.ticker),
     fetchCompanyNewsMentions(resolved.ticker, resolved.name),
   ]);
 
@@ -104,25 +109,7 @@ export async function listCompanySignals(
     });
   }
 
-  for (const surprise of earnings ?? []) {
-    if (!surprise.period || (surprise.actualEps === 0 && surprise.estimateEps === 0)) continue;
-    const timestampMs = Date.parse(surprise.period) || 0;
-    if (timestampMs === 0) continue;
-    const beat = surprise.surprise >= 0;
-    const magnitude = Math.abs(surprise.surprisePercent);
-    signals.push({
-      type: beat ? 'Earnings Beat' : 'Earnings Miss',
-      title: `Q${surprise.quarter} ${surprise.year}: EPS ${surprise.actualEps} vs ${surprise.estimateEps} est (${surprise.surprisePercent >= 0 ? '+' : ''}${surprise.surprisePercent.toFixed(2)}%)`,
-      url: '',
-      source: 'finnhub',
-      sourceTier: 2,
-      timestampMs,
-      strength: magnitude >= 5 ? 'Strong' : magnitude >= 1 ? 'Moderate' : 'Marginal',
-      engagement: undefined,
-    });
-  }
-
-  for (const mention of mentions ?? []) {
+  for (const mention of news?.mentions ?? []) {
     signals.push({
       type: 'News Mention',
       title: mention.title,
@@ -140,45 +127,50 @@ export async function listCompanySignals(
 
   return {
     company: resolved.name,
+    domain: '',
     signals: bounded,
     summary: summarize(bounded),
     discoveredAtMs: now,
     cik: resolved.cik,
-    unavailable: false,
+    // A resolved identity does not make the authoritative filing leg healthy.
+    // Keep partial news results, but tell the gateway/consumer that the answer
+    // cannot prove the SEC window is quiet (and therefore must not be cached).
+    unavailable: submissions == null,
   };
 }
 
 function summarize(signals: CompanySignal[]): SignalSummary {
   const byType: Record<string, number> = {};
+  const sources = new Set<string>();
+  const strengthRank: Record<string, number> = { Strong: 3, Moderate: 2, Emerging: 1, Marginal: 1 };
+  let strongest: CompanySignal | undefined;
+
   for (const signal of signals) {
     byType[signal.type] = (byType[signal.type] ?? 0) + 1;
+    sources.add(signal.source);
+    if (!strongest
+      || (strengthRank[signal.strength] ?? 0) > (strengthRank[strongest.strength] ?? 0)
+      || ((strengthRank[signal.strength] ?? 0) === (strengthRank[strongest.strength] ?? 0)
+        && (signal.sourceTier < strongest.sourceTier
+          || (signal.sourceTier === strongest.sourceTier && signal.timestampMs > strongest.timestampMs)))) {
+      strongest = signal;
+    }
   }
-  const strengthRank: Record<string, number> = { Strong: 3, Moderate: 2, Emerging: 1, Marginal: 1 };
-  const strongest = [...signals].sort((a, b) => {
-    const rank = (strengthRank[b.strength] ?? 0) - (strengthRank[a.strength] ?? 0);
-    if (rank !== 0) return rank;
-    const tier = a.sourceTier - b.sourceTier;
-    if (tier !== 0) return tier;
-    return b.timestampMs - a.timestampMs;
-  })[0];
+
   return {
     totalSignals: signals.length,
     byType,
     strongestSignal: strongest,
-    signalDiversity: new Set(signals.map(signal => signal.source)).size,
+    signalDiversity: sources.size,
   };
 }
 
-function emptyResponse(company: string, unavailable = false): ListCompanySignalsResponse {
+function emptyResponse(company: string, unavailable = false, domain = ''): ListCompanySignalsResponse {
   return {
     company,
+    domain,
     signals: [],
-    summary: {
-      totalSignals: 0,
-      byType: {},
-      strongestSignal: undefined,
-      signalDiversity: 0,
-    },
+    summary: summarize([]),
     discoveredAtMs: Date.now(),
     // Empty CIK is the "did not resolve" discriminator; a resolved company with
     // a quiet 90-day window returns its real CIK alongside zero signals.

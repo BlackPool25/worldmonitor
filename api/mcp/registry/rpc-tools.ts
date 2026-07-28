@@ -16,6 +16,7 @@ import { evaluateFreshness } from '../freshness';
 import type { FreshnessCheck, ToolDef } from '../types';
 import { COUNTRY_BRIEF_UI_URI, COUNTRY_RISK_UI_URI, WORLD_BRIEF_UI_URI } from '../ui/registry';
 import { buildPublicTool, TOOL_REGISTRY } from './index';
+import { COMPANY_INTEL_TOOL } from './company-intel-tools';
 
 type McpBriefSource = {
   title: string;
@@ -142,7 +143,10 @@ type ProcurementRouteResponse = {
   countryCoverage?: string;
 };
 
-function addProcurementStringParam(query: URLSearchParams, name: string, value: unknown): void {
+/** Copy a text filter onto the query string. Blank means "no filter", which is
+ *  what the routes already do with an absent parameter, so blanks are dropped
+ *  rather than sent. */
+function addStringParam(query: URLSearchParams, name: string, value: unknown): void {
   if (typeof value === 'string' && value.trim()) query.set(name, value.trim());
 }
 
@@ -190,9 +194,51 @@ function compactProcurementOpportunity(tender: ProcurementRouteTender) {
   };
 }
 
-// The four views of get_company_intelligence (#5695) — single source for the
-// input enum, output enum, and runtime guard so they can never drift apart.
-const COMPANY_INTEL_VIEWS = ['enrichment', 'signals', 'filings-search', 'material-events'] as const;
+// ---------------------------------------------------------------------------
+// Durable intelligence-history tools (#5694). The three Pro-gated routes share
+// one record projection and one filter vocabulary, so the query builders and
+// the record schema live here instead of being re-declared per tool.
+// ---------------------------------------------------------------------------
+
+/** Domains the history writers populate today (proto `intel_history_record`). */
+const INTEL_HISTORY_DOMAINS = ['conflict', 'military', 'energy'];
+const MCP_HISTORY_SEARCH_MAX_LIMIT = 16;
+const MCP_HISTORY_TIMELINE_MAX_LIMIT = 40;
+const MCP_HISTORY_PRECEDENT_MAX_LIMIT = 8;
+/**
+ * Copy a numeric filter onto the query string. Absent and non-numeric values
+ * are dropped; every finite number — including 0 and negatives — is forwarded
+ * verbatim so the route stays the sole authority on bounds. The handlers read
+ * 0 as "no bound" for from/to and as "use the server default" for limit
+ * (server/_shared/intel-history-client.ts), and buf.validate rejects negatives
+ * at the gateway, so a caller sees the real error instead of a silent no-op.
+ */
+function addIntelHistoryNumber(query: URLSearchParams, name: string, value: unknown): void {
+  if (value === undefined || value === null || value === '') return;
+  const parsed = Number(value);
+  if (Number.isFinite(parsed)) query.set(name, String(Math.trunc(parsed)));
+}
+
+/** One stored event, exactly as the three routes project it. Every field is
+ *  always present; the empty string / 0 carry the "producer had none" meaning
+ *  documented per field. */
+const INTEL_HISTORY_RECORD_SCHEMA = {
+  type: 'object',
+  required: ['id', 'domain', 'resource', 'country', 'category', 'title', 'summary', 'sourceUrl', 'occurredAt', 'ingestedAt', 'score'],
+  properties: {
+    id: { type: 'string', description: 'Opaque stable handle for the stored event — useful for de-duplicating across calls, not resolvable through any public route.' },
+    domain: { type: 'string', description: 'Producing domain: conflict, military, or energy.' },
+    resource: { type: 'string', description: 'Seeder-level resource that produced the event, e.g. "acled-events". Finer-grained than domain and not a request filter.' },
+    country: { type: 'string', description: 'ISO 3166-1 alpha-2 code. Empty when the event is not attributable to a single country.' },
+    category: { type: 'string', description: 'Producer-supplied category, e.g. "battle". Empty when the producer did not classify the event.' },
+    title: { type: 'string', description: 'Event headline. Always present.' },
+    summary: { type: 'string', description: 'Longer description. Empty when the producer had none.' },
+    sourceUrl: { type: 'string', description: 'Canonical link to the underlying report. Empty when the producer had none.' },
+    occurredAt: { type: 'number', description: 'When the event happened, Unix epoch milliseconds. The field from/to bound and the timeline orders by.' },
+    ingestedAt: { type: 'number', description: 'When WorldMonitor stored the event, Unix epoch milliseconds. Differs from occurredAt for backfills.' },
+    score: { type: 'number', description: 'Cosine similarity against the query vector, in [-1, 1]; higher is closer. Always 0 on get_intel_timeline, which ranks by time and has no query vector.' },
+  },
+};
 
 export const RPC_TOOLS: ToolDef[] = [
   {
@@ -339,7 +385,7 @@ export const RPC_TOOLS: ToolDef[] = [
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     _execute: async (params, base, context) => {
       const query = new URLSearchParams();
-      addProcurementStringParam(query, 'country', params.country);
+      addStringParam(query, 'country', params.country);
       if (Array.isArray(params.countries)) {
         for (const country of params.countries) {
           if (typeof country === 'string' && country.trim()) query.append('countries', country.trim());
@@ -353,7 +399,7 @@ export const RPC_TOOLS: ToolDef[] = [
         deadline_to: params.deadline_to,
         sort: params.sort,
         cursor: params.cursor,
-      })) addProcurementStringParam(query, name, value);
+      })) addStringParam(query, name, value);
       query.set('page_size', String(procurementPageSize(params.page_size)));
       const threshold = procurementAutomationThreshold(params.min_automation_score);
       if (threshold !== null) query.set('min_automation_score', String(threshold));
@@ -1319,135 +1365,164 @@ export const RPC_TOOLS: ToolDef[] = [
     _apiPaths: [],
   },
   {
-    // get_company_intelligence (#5695) — per-company corporate intelligence on
-    // top of the four intelligence/v1 REST routes. Identity always resolves
-    // through the SEC ticker/name registry to a CIK (never domain-slug or
-    // keyword guessing — the unsound heuristics removed in #3754/#3755).
-    // COMPANY_INTEL_VIEWS is declared just above RPC_TOOLS.
-    name: 'get_company_intelligence',
-    _outputBudgetBytes: 65536,
-    description: 'Per-company corporate intelligence from SEC EDGAR and market data. Views: enrichment (SEC identity, recent filings, market profile, earnings surprises, news mentions), signals (classified 8-K material events + earnings surprises + news), filings-search (EDGAR full-text search with form/date filters), material-events (market-wide stream of recent material 8-K filings). Company identity resolves through the SEC ticker registry — unresolvable companies return empty envelopes, never guessed attribution.',
+    name: 'search_intel_history',
+    // 16 full records fit this tool's 128 KiB output ceiling with headroom.
+    _outputBudgetBytes: 131072,
+    description: "Semantic search over WorldMonitor's accumulating store of past intelligence events (Pro), ranked by similarity. Records are appended as the conflict, military, and energy seeders publish, so the store starts at activation and deepens from there: a thin or empty result means that window is not covered yet, not that nothing happened. Optional domain, country, and occurredAt bounds are applied to the ranked candidate window, so a narrow filter over a broad store can return fewer than the limit even when older matches exist — widen the window or drop a filter before concluding the history is thin. The route embeds your query on every call, so it is rate-limited fail-closed — prefer one well-phrased query over several near-duplicates.",
     inputSchema: {
       type: 'object',
       properties: {
-        view: { type: 'string', enum: [...COMPANY_INTEL_VIEWS], description: 'Defaults to enrichment.' },
-        ticker: { type: 'string', description: 'Exchange ticker symbol, such as AAPL. Preferred company key for enrichment and signals.' },
-        name: { type: 'string', description: 'Company name fallback when no ticker is known; case-insensitive exact SEC title match only, and only when that title maps to a single CIK. Prefer ticker.' },
-        query: { type: 'string', description: 'filings-search only: full-text query. Required for that view.' },
-        forms: { type: 'string', description: 'filings-search only: comma-separated form filter, such as "8-K" or "10-K,10-Q".' },
-        start_date: { type: 'string', description: 'filings-search only: earliest filing date (YYYY-MM-DD).' },
-        end_date: { type: 'string', description: 'filings-search only: latest filing date (YYYY-MM-DD).' },
-        item_code: { type: 'string', description: 'material-events only: filter to one 8-K item code, such as "5.02".' },
-        limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Result cap. Honored up to 25 for filings-search and up to 100 for material-events; a value above the view\'s own maximum is rejected rather than silently clamped. Ignored by the enrichment and signals views.' },
+        query: { type: 'string', minLength: 2, maxLength: 500, description: 'Free-text search phrase, e.g. "artillery strikes near Kharkiv". Embedded with the same model the stored vectors were written under, so phrasing close to how an analyst would describe the event ranks best.' },
+        domain: { type: 'string', enum: INTEL_HISTORY_DOMAINS, description: 'Restrict to one producing domain. Omit to search every domain.' },
+        country: { type: 'string', description: 'ISO 3166-1 alpha-2 country code, uppercase, e.g. "UA". Omit to search every country. Events not attributable to a single country are excluded when this is set.' },
+        from: { type: 'number', description: 'Earliest occurredAt to consider, Unix epoch milliseconds, inclusive. Omit for no lower bound.' },
+        to: { type: 'number', description: 'Latest occurredAt to consider, Unix epoch milliseconds, inclusive. Omit for no upper bound.' },
+        limit: { type: 'integer', minimum: 1, maximum: MCP_HISTORY_SEARCH_MAX_LIMIT, description: 'Maximum matches to return. The route returns 16 when this is omitted and caps MCP responses at 16 to stay within the output budget.' },
       },
-      required: [],
+      required: ['query'],
     },
-    // One envelope per view; exactly one of the view payload keys is present.
     outputSchema: {
       type: 'object',
-      required: ['view'],
+      required: ['records', 'query', 'partial', 'upstreamUnavailable'],
       properties: {
-        view: { type: 'string', enum: [...COMPANY_INTEL_VIEWS] },
-        error: { type: 'string', enum: ['ticker_or_name_required', 'query_required', 'limit_out_of_range'], description: 'Present only on user-input failure.' },
-        enrichment: { type: 'object', properties: {
-          company: { type: 'object', properties: { name: { type: 'string' }, domain: { type: 'string' }, description: { type: 'string' }, location: { type: 'string' }, website: { type: 'string' }, cik: { type: 'string' }, ticker: { type: 'string' } } },
-          secFilings: { type: 'object', properties: { totalFilings: { type: 'number' }, recentFilings: { type: 'array', items: { type: 'object' } } } },
-          market: { type: 'object', properties: { exchange: { type: 'string' }, industry: { type: 'string' }, marketCapMusd: { type: 'number' }, ipoDate: { type: 'string' }, logoUrl: { type: 'string' }, country: { type: 'string' }, currency: { type: 'string' } } },
-          earningsSurprises: { type: 'array', items: { type: 'object' } },
-          newsMentions: { type: 'array', items: { type: 'object' } },
-          sources: { type: 'array', items: { type: 'string' }, description: 'Sources that returned data. Empty is not an identity signal — combine with company.cik and unavailable: empty cik + unavailable false = no such filer; unavailable true = CIK registry could not be read.' },
-          enrichedAtMs: { type: 'number' },
-          unavailable: { type: 'boolean', description: 'True when the SEC CIK registry could not be read (not cacheable). False with empty sources/cik means the company is not in the registry.' },
-        } },
-        signals: { type: 'object', properties: {
-          company: { type: 'string' },
-          cik: { type: 'string', description: 'Resolved SEC filer CIK. Empty + unavailable false = not in registry; empty + unavailable true = registry down; non-empty with zero signals = resolved but quiet.' },
-          signals: { type: 'array', items: { type: 'object', properties: { type: { type: 'string' }, title: { type: 'string' }, url: { type: 'string' }, source: { type: 'string' }, sourceTier: { type: 'number' }, timestampMs: { type: 'number' }, strength: { type: 'string' } } } },
-          summary: { type: 'object' },
-          discoveredAtMs: { type: 'number' },
-          unavailable: { type: 'boolean', description: 'True when the SEC CIK registry could not be read. Distinguishes registry outage from not-found or a quiet window.' },
-        } },
-        search: { type: 'object', properties: {
-          results: { type: 'array', items: { type: 'object' } }, total: { type: 'number' }, unavailable: { type: 'boolean' }, fetchedAtMs: { type: 'number' },
-        } },
-        events: { type: 'object', properties: {
-          events: { type: 'array', items: { type: 'object' } }, unavailable: { type: 'boolean' }, fetchedAtMs: { type: 'number' },
-        } },
+        records: { type: 'array', description: 'Matching events, most similar first.', items: INTEL_HISTORY_RECORD_SCHEMA },
+        query: { type: 'string', description: 'Echo of the submitted query, so a caller running several searches can pair each response back to its input.' },
+        partial: { type: 'boolean', description: 'True when the bounded candidate window may omit further matches; do not treat the result as exhaustive.' },
+        upstreamUnavailable: { type: 'boolean', description: 'True when the embedding provider or the history store could not be reached. `records` is then empty because the lookup failed — never read that as "no event matched".' },
       },
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    _execute: async (params, base, context) => {
-      const view = typeof params.view === 'string' && (COMPANY_INTEL_VIEWS as readonly string[]).includes(params.view)
-        ? params.view
-        : 'enrichment';
-      const str = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
-      const limit = Number.isInteger(params.limit) && (params.limit as number) > 0 ? (params.limit as number) : 0;
-
-      const call = async (path: string, query: URLSearchParams, timeoutMs: number) => {
-        const url = `${base}${path}?${query}`;
-        const auth = await buildAuthHeaders(context, 'GET', url, null);
-        const response = await fetch(url, {
-          headers: { ...auth, 'User-Agent': 'worldmonitor-mcp-edge/1.0' },
-          signal: AbortSignal.timeout(timeoutMs),
-        });
-        assertToolFetchOk(response, path.split('/').pop() ?? path);
-        return response.json();
-      };
-
-      // Reject a limit above the view's own maximum rather than clamping it:
-      // one numeric bound in the schema cannot express a per-view cap, so
-      // silently returning 25 of a requested 100 would read as "only 25 exist".
-      const limitWithinRange = (max: number) => !limit || limit <= max;
-
-      if (view === 'filings-search') {
-        const query = str(params.query);
-        if (!query) return { view, error: 'query_required' };
-        if (!limitWithinRange(25)) return { view, error: 'limit_out_of_range' };
-        const search = new URLSearchParams({ query });
-        if (str(params.forms)) search.set('forms', str(params.forms));
-        if (str(params.start_date)) search.set('start_date', str(params.start_date));
-        if (str(params.end_date)) search.set('end_date', str(params.end_date));
-        if (limit) search.set('limit', String(limit));
-        return { view, search: await call('/api/intelligence/v1/search-sec-filings', search, 10_000) };
-      }
-
-      if (view === 'material-events') {
-        if (!limitWithinRange(100)) return { view, error: 'limit_out_of_range' };
-        const search = new URLSearchParams();
-        if (str(params.item_code)) search.set('item_code', str(params.item_code));
-        if (limit) search.set('limit', String(limit));
-        return { view, events: await call('/api/intelligence/v1/list-material-events', search, 8_000) };
-      }
-
-      const ticker = str(params.ticker);
-      const name = str(params.name);
-      if (!ticker && !name) return { view, error: 'ticker_or_name_required' };
-
-      if (view === 'signals') {
-        const search = new URLSearchParams();
-        if (ticker) search.set('ticker', ticker);
-        if (name) search.set('company', name);
-        // 20s: CIK registry read ≤6s + SEC/Finnhub ≤10s + slack (news leg is internally 6s).
-        return { view, signals: await call('/api/intelligence/v1/list-company-signals', search, 20_000) };
-      }
-
-      const search = new URLSearchParams();
-      if (ticker) search.set('ticker', ticker);
-      if (name) search.set('name', name);
-      return { view, enrichment: await call('/api/intelligence/v1/get-company-enrichment', search, 20_000) };
+    _execute: async (params, base, context, execution) => {
+      const url = `${base}/api/intelligence/v1/search-intel-history`;
+      const body = JSON.stringify({ query: params.query, domain: params.domain, country: params.country, from: params.from, to: params.to, limit: Math.min(Number(params.limit ?? MCP_HISTORY_SEARCH_MAX_LIMIT), MCP_HISTORY_SEARCH_MAX_LIMIT) });
+      const auth = await buildAuthHeaders(context, 'POST', url, body);
+      // Budget covers one embeddings round-trip (4 s) plus the store read (5 s).
+      const response = await fetch(url, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...auth, 'User-Agent': 'worldmonitor-mcp-edge/1.0' }, body,
+        signal: AbortSignal.timeout(12_000),
+      });
+      await assertMcpToolFetchOk(response, {
+        operation: 'search-intel-history',
+        tool: 'search_intel_history',
+        auth: context,
+        execution,
+      });
+      return response.json();
     },
-    // The seeded corporate-intelligence keys this tool's REST routes read.
-    _coverageKeys: [
-      'intelligence:sec-cik-map:v1',
-      'intelligence:sec-8k-stream:v1',
-    ],
     _apiPaths: [
-      'GET /api/intelligence/v1/get-company-enrichment',
-      'GET /api/intelligence/v1/list-company-signals',
-      'GET /api/intelligence/v1/search-sec-filings',
-      'GET /api/intelligence/v1/list-material-events',
+      'POST /api/intelligence/v1/search-intel-history',
     ],
   },
+  {
+    name: 'get_intel_timeline',
+    // 40 full records fit this tool's 256 KiB output ceiling with headroom.
+    _outputBudgetBytes: 262144,
+    description: "Reverse-chronological read of WorldMonitor's accumulating intelligence-event history for one domain or country (Pro). At least one of domain or country is required — they are the two indexed scopes on the store, and an unscoped read is rejected rather than served as a table scan. Pure index read: no embedding and no ranking, so every record scores 0 and ordering is by occurredAt alone. Records are appended as the conflict, military, and energy seeders publish, so a window before capture was activated is empty by construction rather than quiet.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        domain: { type: 'string', enum: INTEL_HISTORY_DOMAINS, description: 'Restrict to one producing domain. Required unless country is set.' },
+        country: { type: 'string', description: 'ISO 3166-1 alpha-2 country code, uppercase, e.g. "UA". Required unless domain is set. Supplying both narrows to their intersection.' },
+        from: { type: 'number', description: 'Earliest occurredAt to return, Unix epoch milliseconds, inclusive. Omit for no lower bound.' },
+        to: { type: 'number', description: 'Latest occurredAt to return, Unix epoch milliseconds, inclusive. Omit for no upper bound.' },
+        limit: { type: 'integer', minimum: 1, maximum: MCP_HISTORY_TIMELINE_MAX_LIMIT, description: 'Maximum events to return. The route returns 40 when this is omitted and caps MCP responses at 40 to stay within the output budget.' },
+      },
+      required: [],
+    },
+    outputSchema: {
+      type: 'object',
+      required: ['records', 'partial', 'upstreamUnavailable'],
+      properties: {
+        records: { type: 'array', description: 'Scoped history, newest first.', items: INTEL_HISTORY_RECORD_SCHEMA },
+        partial: { type: 'boolean', description: 'True when the bounded post-filter window may omit older matching events.' },
+        upstreamUnavailable: { type: 'boolean', description: 'True when the history store could not be reached. `records` is then empty because the read failed — never read that as "nothing happened in this window".' },
+      },
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    _execute: async (params, base, context, execution) => {
+      // Scope is mandatory server-side (a 400 from the handler). Checking it
+      // here turns an opaque downstream failure into an actionable message and
+      // saves the round-trip; the handler stays the enforcing authority.
+      const domain = typeof params.domain === 'string' ? params.domain.trim() : '';
+      const country = typeof params.country === 'string' ? params.country.trim() : '';
+      if (!domain && !country) {
+        throw new Error('get_intel_timeline requires at least one of domain ("conflict", "military", or "energy") or country (ISO 3166-1 alpha-2) — those are the two indexed scopes on the history store.');
+      }
+
+      const query = new URLSearchParams();
+      addStringParam(query, 'domain', domain);
+      addStringParam(query, 'country', country);
+      addIntelHistoryNumber(query, 'from', params.from);
+      addIntelHistoryNumber(query, 'to', params.to);
+      addIntelHistoryNumber(query, 'limit', Math.min(Number(params.limit ?? MCP_HISTORY_TIMELINE_MAX_LIMIT), MCP_HISTORY_TIMELINE_MAX_LIMIT));
+
+      const url = `${base}/api/intelligence/v1/get-intel-timeline?${query}`;
+      const auth = await buildAuthHeaders(context, 'GET', url, null);
+      // No embedding on this path — one store read, so the tighter budget.
+      const response = await fetch(url, {
+        headers: { ...auth, 'User-Agent': 'worldmonitor-mcp-edge/1.0' },
+        signal: AbortSignal.timeout(8_000),
+      });
+      await assertMcpToolFetchOk(response, {
+        operation: 'get-intel-timeline',
+        tool: 'get_intel_timeline',
+        auth: context,
+        execution,
+      });
+      return response.json();
+    },
+    _apiPaths: [
+      'GET /api/intelligence/v1/get-intel-timeline',
+    ],
+  },
+  {
+    name: 'get_similar_events',
+    // Eight full records fit this tool's 64 KiB output ceiling with headroom.
+    _outputBudgetBytes: 65536,
+    description: "Historical precedents for a situation you describe, drawn from WorldMonitor's accumulating event store (Pro). Same vector search as search_intel_history over a longer input: a sentence or two of context ranks better than a keyword. Optional domain and country narrow the candidates. The store holds only what the conflict, military, and energy seeders have published since capture was activated, so an empty precedent list is weak evidence of a novel situation, not proof of one. The route embeds your text on every call and is rate-limited fail-closed.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        situation: { type: 'string', minLength: 10, maxLength: 1000, description: 'Description of the situation to find precedents for, e.g. "a naval blockade closes a major grain export corridor for weeks". Longer than a search phrase on purpose — more context ranks better.' },
+        domain: { type: 'string', enum: INTEL_HISTORY_DOMAINS, description: 'Restrict precedents to one producing domain. Omit to search every domain.' },
+        country: { type: 'string', description: 'ISO 3166-1 alpha-2 country code, uppercase, e.g. "EG". Omit to search every country — usually the right choice, since a precedent elsewhere is still a precedent.' },
+        limit: { type: 'integer', minimum: 1, maximum: MCP_HISTORY_PRECEDENT_MAX_LIMIT, description: 'Maximum precedents to return. The route returns 8 when this is omitted and caps MCP responses at 8 to stay within the output budget.' },
+      },
+      required: ['situation'],
+    },
+    outputSchema: {
+      type: 'object',
+      required: ['records', 'situation', 'partial', 'upstreamUnavailable'],
+      properties: {
+        records: { type: 'array', description: 'Precedents, most similar first.', items: INTEL_HISTORY_RECORD_SCHEMA },
+        situation: { type: 'string', description: 'Echo of the submitted situation text, so a caller running several lookups can pair each response back to its input.' },
+        partial: { type: 'boolean', description: 'True when the bounded candidate window may omit further precedents; do not treat an empty result as proof of novelty.' },
+        upstreamUnavailable: { type: 'boolean', description: 'True when the embedding provider or the history store could not be reached. `records` is then empty because the lookup failed — never read that as "no precedent exists".' },
+      },
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    _execute: async (params, base, context, execution) => {
+      const url = `${base}/api/intelligence/v1/get-similar-events`;
+      const body = JSON.stringify({ situation: params.situation, domain: params.domain, country: params.country, limit: Math.min(Number(params.limit ?? MCP_HISTORY_PRECEDENT_MAX_LIMIT), MCP_HISTORY_PRECEDENT_MAX_LIMIT) });
+      const auth = await buildAuthHeaders(context, 'POST', url, body);
+      // Budget covers one embeddings round-trip (4 s) plus the store read (5 s).
+      const response = await fetch(url, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...auth, 'User-Agent': 'worldmonitor-mcp-edge/1.0' }, body,
+        signal: AbortSignal.timeout(12_000),
+      });
+      await assertMcpToolFetchOk(response, {
+        operation: 'get-similar-events',
+        tool: 'get_similar_events',
+        auth: context,
+        execution,
+      });
+      return response.json();
+    },
+    _apiPaths: [
+      'POST /api/intelligence/v1/get-similar-events',
+    ],
+  },
+  COMPANY_INTEL_TOOL,
   {
     // describe_tool (v1.5.0) — on-demand escape hatch for the full
     // uncompressed tool definition. tools/list (default) emits each tool's

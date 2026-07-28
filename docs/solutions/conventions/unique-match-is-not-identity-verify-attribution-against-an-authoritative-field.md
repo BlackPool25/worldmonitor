@@ -104,8 +104,10 @@ Two things hid it:
   live upstream. Reviewing the guard's logic can only tell you the guard is correct — not
   that its input is always empty.
 
-The fix was to remove the domain path entirely (proto fields `reserved`, MCP param dropped),
-which is what rule 3 above prescribes. A near-miss worth recording: it is tempting to
+The fix was to remove the domain path from active use (the v1 proto fields remain deprecated
+at their original field numbers, handlers preserve the safe empty compatibility stub, and
+the MCP param is dropped), which is what rule 3 above prescribes. A near-miss worth recording:
+it is tempting to
 re-source confirmation to a third-party profile's URL, which *is* populated — but that
 confirms the *provider's* opinion of the pairing, not the authority's, and it quietly
 reintroduces a dependency the attribution model was built to avoid.

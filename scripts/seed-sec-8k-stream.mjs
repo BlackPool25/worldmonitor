@@ -11,13 +11,13 @@ import { loadEnvFile, readSeedSnapshot, runSeed, withRetry, resolveProxy, curlFe
 loadEnvFile(import.meta.url);
 
 export const SEC_8K_STREAM_KEY = 'intelligence:sec-8k-stream:v1';
-export const SEC_8K_STREAM_TTL_SECONDS = 7 * 24 * 3600;
+const SEC_8K_STREAM_TTL_SECONDS = 7 * 24 * 3600;
 export const SEC_8K_STREAM_MAX_STALE_MIN = 120;
-export const MAX_STREAM_EVENTS = 200;
-export const STREAM_WINDOW_MS = 7 * 24 * 3600 * 1000;
+const MAX_STREAM_EVENTS = 200;
+const STREAM_WINDOW_MS = 7 * 24 * 3600 * 1000;
 // Tolerates ordinary clock skew between the SEC feed and this runner; anything
 // further into the future is malformed, not early.
-export const FUTURE_SKEW_TOLERANCE_MS = 60 * 60 * 1000;
+const FUTURE_SKEW_TOLERANCE_MS = 60 * 60 * 1000;
 // A market-wide 7-day window that falls below this is decaying, not quiet: one
 // feed page alone yields ~75 material events. Floor is well below healthy
 // yield so quiet weekends still publish, but high enough that partial Atom
@@ -26,7 +26,7 @@ export const MIN_STREAM_EVENTS = 50;
 
 // SEC requires a declared User-Agent identifying the requester (no browser
 // spoofing) — same convention as scripts/seed-regulatory-actions.mjs.
-export const SEC_USER_AGENT = 'WorldMonitor/2.0 (monitor@worldmonitor.app)';
+const SEC_USER_AGENT = 'WorldMonitor/2.0 (monitor@worldmonitor.app)';
 
 // Material 8-K item codes — must equal the high+medium materiality codes in
 // server/_shared/sec-edgar.ts MATERIAL_8K_ITEMS (asserted by
@@ -133,6 +133,34 @@ export function mergeEventWindow(previousEvents, freshEvents, nowMs) {
     .slice(0, MAX_STREAM_EVENTS);
 }
 
+export function build8kStreamSnapshot(previous, xml, nowMs = Date.now()) {
+  const parsed = parse8kAtomFeed(xml);
+  if (parsed.length === 0) {
+    const detail = /<entry[\s>]/i.test(String(xml ?? ''))
+      ? 'contains entries but none parsed — Atom shape drift'
+      : 'returned no entries';
+    throw new Error(`SEC 8-K feed ${detail}`);
+  }
+
+  const fresh = filterMaterialEvents(parsed);
+  if (fresh.length === 0) {
+    // A syntactically valid page containing only routine disclosures does not
+    // prove the market-wide material-event stream was freshly observed. Keep
+    // the last-good snapshot and its original freshness instead.
+    throw new Error('SEC 8-K feed contained no material events');
+  }
+  return {
+    events: mergeEventWindow(previous?.events, fresh, nowMs),
+    fetchedAt: new Date(nowMs).toISOString(),
+  };
+}
+
+export function validate8kStream(data) {
+  return Array.isArray(data?.events)
+    && typeof data?.fetchedAt === 'string'
+    && data.events.length >= MIN_STREAM_EVENTS;
+}
+
 async function fetchFeedXml() {
   try {
     return await withRetry(async () => {
@@ -154,7 +182,7 @@ async function fetchFeedXml() {
   }
 }
 
-export async function fetch8kStream() {
+async function fetch8kStream() {
   const [previous, xml] = await Promise.all([
     // strict: the rolling window IS the product. A transient Redis read failure
     // must abort the run (runSeed preserves last-good) rather than silently
@@ -163,25 +191,16 @@ export async function fetch8kStream() {
     fetchFeedXml(),
   ]);
 
-  const parsed = parse8kAtomFeed(xml);
-  // A feed that still carries <entry> elements but parses to nothing means the
-  // Atom shape drifted. Publishing that as an empty-but-fresh window would keep
-  // health green while the stream silently decayed, so fail instead.
-  if (parsed.length === 0 && /<entry[\s>]/i.test(String(xml ?? ''))) {
-    throw new Error('SEC 8-K feed contains entries but none parsed — Atom shape drift');
-  }
-
-  const fresh = filterMaterialEvents(parsed);
-  const events = mergeEventWindow(previous?.events, fresh, Date.now());
-  return { events, fetchedAt: new Date().toISOString() };
+  // A successful-but-empty response is not proof of a quiet market. Failing the
+  // run preserves the prior seed metadata instead of relabeling old events as a
+  // freshly observed window.
+  return build8kStreamSnapshot(previous, xml);
 }
 
 if (process.argv[1]?.endsWith('seed-sec-8k-stream.mjs')) {
   runSeed('intelligence', 'sec-8k-stream', SEC_8K_STREAM_KEY, fetch8kStream, {
     ttlSeconds: SEC_8K_STREAM_TTL_SECONDS,
-    validateFn: (data) => Array.isArray(data?.events)
-      && typeof data?.fetchedAt === 'string'
-      && data.events.length >= MIN_STREAM_EVENTS,
+    validateFn: validate8kStream,
     declareRecords: (data) => data.events.length,
     sourceVersion: 'sec-edgar-getcurrent-atom-v1',
     schemaVersion: 1,

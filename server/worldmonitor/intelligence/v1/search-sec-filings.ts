@@ -10,7 +10,7 @@ import type {
   SearchSecFilingsResponse,
 } from '../../../../src/generated/server/worldmonitor/intelligence/v1/service_server';
 import { ValidationError } from '../../../../src/generated/server/worldmonitor/intelligence/v1/service_server';
-import { EDGAR_ISO_DATE_RE, normalizeEdgarForms, searchEdgarFullText } from '../../../_shared/sec-edgar';
+import { isEdgarIsoDate, normalizeEdgarForms, searchEdgarFullText } from '../../../_shared/sec-edgar';
 
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 25;
@@ -28,15 +28,22 @@ export async function searchSecFilings(
   // set, so a typo'd date range would return unrelated filings while the caller
   // believes the range was applied.
   const formsNormalized = normalizeEdgarForms(req.forms);
+  const startDateValid = !req.startDate || isEdgarIsoDate(req.startDate);
+  const endDateValid = !req.endDate || isEdgarIsoDate(req.endDate);
   const violations = [
     ...(formsNormalized === null
       ? [{ field: 'forms', description: 'forms must be a comma-separated form list such as "8-K" or "10-K,10-Q"' }]
       : []),
-    ...(req.startDate && !EDGAR_ISO_DATE_RE.test(req.startDate)
+    ...(!startDateValid
       ? [{ field: 'start_date', description: 'start_date must be YYYY-MM-DD' }]
       : []),
-    ...(req.endDate && !EDGAR_ISO_DATE_RE.test(req.endDate)
+    ...(!endDateValid
       ? [{ field: 'end_date', description: 'end_date must be YYYY-MM-DD' }]
+      : []),
+    ...(req.startDate && req.endDate
+      && startDateValid && endDateValid
+      && req.startDate > req.endDate
+      ? [{ field: 'start_date', description: 'start_date must not be after end_date' }]
       : []),
   ];
   if (violations.length > 0) throw new ValidationError(violations);

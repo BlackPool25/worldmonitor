@@ -2,12 +2,17 @@ syntax = "proto3";
 
 package worldmonitor.intelligence.v1;
 
+import "buf/validate/validate.proto";
 import "sebuf/http/annotations.proto";
 
 // Request for a full-text search over SEC EDGAR filings.
 message SearchSecFilingsRequest {
   // Full-text query, such as "material weakness" or a company name. Required.
-  string query = 1 [(sebuf.http.query) = {name: "query"}];
+  string query = 1 [
+    (buf.validate.field).required = true,
+    (buf.validate.field).string.min_len = 1,
+    (sebuf.http.query) = {name: "query", required: true}
+  ];
   // Comma-separated form-type filter, such as "8-K" or "10-K,10-Q".
   string forms = 2 [(sebuf.http.query) = {name: "forms"}];
   // Earliest filing date to include (YYYY-MM-DD).

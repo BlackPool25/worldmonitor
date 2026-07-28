@@ -65,10 +65,14 @@ export async function fetchCikMap({ fetchImpl = fetchDirect } = {}) {
   return { tickers: slimCikMap(raw) };
 }
 
+export function validateCikMap(data) {
+  return !!data?.tickers && Object.keys(data.tickers).length >= MIN_CIK_ENTRIES;
+}
+
 if (process.argv[1]?.endsWith('seed-sec-cik-map.mjs')) {
   runSeed('intelligence', 'sec-cik-map', SEC_CIK_MAP_KEY, fetchCikMap, {
     ttlSeconds: SEC_CIK_MAP_TTL_SECONDS,
-    validateFn: (data) => !!data?.tickers && Object.keys(data.tickers).length >= MIN_CIK_ENTRIES,
+    validateFn: validateCikMap,
     declareRecords: (data) => Object.keys(data?.tickers ?? {}).length,
     sourceVersion: 'sec-company-tickers-v1',
     schemaVersion: 1,

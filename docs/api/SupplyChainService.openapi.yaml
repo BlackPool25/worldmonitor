@@ -3718,6 +3718,7 @@ components:
                     items:
                         type: string
                 directionalDwt:
+                    deprecated: true
                     type: array
                     items:
                         $ref: '#/components/schemas/DirectionalDwt'

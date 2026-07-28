@@ -25,8 +25,13 @@ const SUBMISSIONS_TTL = 21_600; // 6h — recent-filings freshness vs. SEC load
 const SEARCH_TTL = 900;
 const NEGATIVE_TTL = 300;
 const SEARCH_NEGATIVE_TTL = 120;
-const UPSTREAM_TIMEOUT = 10_000;
+export const EDGAR_UPSTREAM_TIMEOUT_MS = 10_000;
 const CIK_MAP_MEMO_MS = 60 * 60 * 1_000;
+// The source-health contract for the daily registry. Redis TTL is deliberately
+// longer (72h) for operational recovery, but request-time identity resolution
+// must not treat that buffer as authoritative freshness.
+export const SEC_CIK_MAP_MAX_STALE_MIN = 2880;
+const CIK_MAP_SOURCE_MAX_STALE_MS = SEC_CIK_MAP_MAX_STALE_MIN * 60_000;
 // Last-good serve after a failed refresh is capped so warm isolates cannot
 // resolve against a ghost registry forever while cold isolates report unavailable.
 const CIK_MAP_STALE_MAX_MS = 6 * 60 * 60 * 1_000;
@@ -39,8 +44,7 @@ const EDGAR_SEARCH_SIZE = 25;
 // filer's newest 200 filings are mostly ownership forms (Apple's most recent
 // page is nearly all Form 4), so keeping the first 200 chronologically can
 // push every 10-K/10-Q/8-K out of the slice entirely. Filter first, then cap.
-// Exported so enrichment reuses the same predicate (no second allowlist to drift).
-export const RELEVANT_FORM_PREFIXES = ['10-K', '10-Q', '8-K', '20-F', '6-K', 'S-1', 'DEF 14A', '40-F'];
+const RELEVANT_FORM_PREFIXES = ['10-K', '10-Q', '8-K', '20-F', '6-K', 'S-1', 'DEF 14A', '40-F'];
 
 export function isRelevantForm(form: string): boolean {
   return RELEVANT_FORM_PREFIXES.some(prefix => form === prefix || form.startsWith(`${prefix}/`));
@@ -142,6 +146,8 @@ export interface SecCompanyProfile {
   stateOrCountry: string;
   totalRecentFilings: number;
   filings: SlimSecFiling[];
+  /** When data.sec.gov actually returned this cached profile. */
+  fetchedAtMs: number;
 }
 
 export interface EdgarSearchHit {
@@ -200,7 +206,7 @@ export function parseItemCodes(items: string | undefined): string[] {
 
 // --- ticker/name → CIK resolution against the seeded SEC registry ------------
 
-let cikMapMemo: { map: CikMap; loadedAt: number } | null = null;
+let cikMapMemo: { map: CikMap; loadedAt: number; sourceFetchedAt: number } | null = null;
 // Single-flight: concurrent cold requests share one 650KB read instead of each
 // issuing their own (the shared cachedFetchJson helper coalesces; this
 // purpose-built reader has to do it itself).
@@ -216,6 +222,14 @@ export function __resetCikMapMemoForTests(): void {
   cikMapRetryAfter = 0;
 }
 
+export function __setCikMapMemoForTests(
+  map: CikMap,
+  loadedAt: number,
+  sourceFetchedAt = loadedAt,
+): void {
+  cikMapMemo = { map, loadedAt, sourceFetchedAt };
+}
+
 /**
  * Reads the ticker registry with a longer deadline than the shared 1.5s Redis
  * op timeout. That budget protects per-request hot paths; this ~650KB value is
@@ -223,21 +237,35 @@ export function __resetCikMapMemoForTests(): void {
  * (see the memo below), so reading it through the shared helper would fail
  * most cold starts and report a healthy registry as unavailable.
  */
-async function readCikRegistry(): Promise<unknown | null> {
+async function readCikRegistry(): Promise<{ data: unknown; sourceFetchedAt: number } | null> {
   const url = process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.UPSTASH_REDIS_REST_TOKEN;
   // No Upstash configured (local/dev or the sidecar runtime): fall back to the
   // shared reader, which knows about those modes.
-  if (!url || !token) return getCachedJson(SEC_CIK_MAP_KEY, true);
+  if (!url || !token) {
+    const data = await getCachedJson(SEC_CIK_MAP_KEY, true);
+    return data == null ? null : { data, sourceFetchedAt: Date.now() };
+  }
   try {
     const resp = await fetch(`${url}/get/${encodeURIComponent(SEC_CIK_MAP_KEY)}`, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'User-Agent': SEC_USER_AGENT,
+      },
       signal: AbortSignal.timeout(CIK_MAP_READ_TIMEOUT_MS),
     });
     if (!resp.ok) return null;
     const data = (await resp.json()) as { result?: string | null };
     if (typeof data.result !== 'string' || !data.result) return null;
-    return unwrapEnvelope(JSON.parse(data.result)).data;
+    const unwrapped = unwrapEnvelope(JSON.parse(data.result));
+    const sourceFetchedAt = unwrapped._seed?.fetchedAt ?? 0;
+    if (!Number.isFinite(sourceFetchedAt)
+      || sourceFetchedAt <= 0
+      || Date.now() - sourceFetchedAt >= CIK_MAP_SOURCE_MAX_STALE_MS) {
+      console.warn('[sec-edgar] CIK registry source snapshot is missing freshness or stale');
+      return null;
+    }
+    return { data: unwrapped.data, sourceFetchedAt };
   } catch (err) {
     const isTimeout = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
     if (isTimeout) console.error(`[REDIS-TIMEOUT] readCikRegistry key=${SEC_CIK_MAP_KEY} timeoutMs=${CIK_MAP_READ_TIMEOUT_MS}`);
@@ -255,7 +283,8 @@ async function readCikRegistry(): Promise<unknown | null> {
 
 function serveStaleMemo(now: number): CikMap | null {
   if (!cikMapMemo) return null;
-  if (now - cikMapMemo.loadedAt >= CIK_MAP_STALE_MAX_MS) {
+  if (now - cikMapMemo.loadedAt >= CIK_MAP_STALE_MAX_MS
+    || now - cikMapMemo.sourceFetchedAt >= CIK_MAP_SOURCE_MAX_STALE_MS) {
     cikMapMemo = null;
     return null;
   }
@@ -264,6 +293,9 @@ function serveStaleMemo(now: number): CikMap | null {
 
 async function loadCikMap(): Promise<CikMap | null> {
   const now = Date.now();
+  if (cikMapMemo && now - cikMapMemo.sourceFetchedAt >= CIK_MAP_SOURCE_MAX_STALE_MS) {
+    cikMapMemo = null;
+  }
   if (cikMapMemo && now - cikMapMemo.loadedAt < CIK_MAP_MEMO_MS) return cikMapMemo.map;
   // During backoff after a failed refresh, keep serving last-good only while it
   // is younger than CIK_MAP_STALE_MAX_MS. Past that, all isolates converge on
@@ -272,15 +304,16 @@ async function loadCikMap(): Promise<CikMap | null> {
   if (cikMapInFlight) return cikMapInFlight;
 
   cikMapInFlight = (async () => {
-    const raw = await readCikRegistry();
+    const snapshot = await readCikRegistry();
+    const raw = snapshot?.data;
     const map = raw && typeof raw === 'object'
       ? ((raw as { tickers?: CikMap }).tickers ?? null)
       : null;
-    if (!map || typeof map !== 'object') {
+    if (!snapshot || !map || typeof map !== 'object') {
       cikMapRetryAfter = Date.now() + CIK_MAP_RETRY_BACKOFF_MS;
       return serveStaleMemo(Date.now());
     }
-    cikMapMemo = { map, loadedAt: Date.now() };
+    cikMapMemo = { map, loadedAt: Date.now(), sourceFetchedAt: snapshot.sourceFetchedAt };
     cikMapRetryAfter = 0;
     return map;
   })().finally(() => { cikMapInFlight = null; });
@@ -324,24 +357,27 @@ export async function resolveCompany(query: { ticker?: string; name?: string }):
   return { status: 'not_found' };
 }
 
-export const __testing__ = { matchByName, serveStaleMemo, CIK_MAP_STALE_MAX_MS, CIK_MAP_MEMO_MS };
+export const __testing__ = {
+  matchByName,
+  serveStaleMemo,
+  CIK_MAP_STALE_MAX_MS,
+  CIK_MAP_MEMO_MS,
+  CIK_MAP_SOURCE_MAX_STALE_MS,
+};
 
 /**
  * Exact title match only. If two distinct CIKs share the same lowercased legal
  * title, refuse rather than returning the first Object.entries hit.
  */
 function matchByName(map: CikMap, needle: string): ResolvedCompany | null {
-  const exactHits: ResolvedCompany[] = [];
-  const exactCiks = new Set<string>();
+  let exactHit: ResolvedCompany | null = null;
   for (const [ticker, entry] of Object.entries(map)) {
     if (entry.name.toLowerCase() !== needle) continue;
     const cik = padCik(entry.cik);
-    if (exactCiks.has(cik)) continue;
-    exactCiks.add(cik);
-    exactHits.push({ cik, ticker, name: entry.name, matchedBy: 'name' });
+    if (exactHit && exactHit.cik !== cik) return null;
+    exactHit ??= { cik, ticker, name: entry.name, matchedBy: 'name' };
   }
-  if (exactHits.length === 1) return exactHits[0] ?? null;
-  return null;
+  return exactHit;
 }
 
 // --- per-CIK submissions (profile + recent filings) --------------------------
@@ -370,14 +406,14 @@ export async function fetchSecSubmissions(cik10: string): Promise<SecCompanyProf
   if (!/^\d{10}$/.test(cik10)) return null;
   try {
     return await cachedFetchJson<SecCompanyProfile>(
-      // v2: payloads cached under v1 hold the pre-filter chronological slice.
-      `intel:company:sec-submissions:v2:${cik10}`,
+      // v3 adds fetchedAtMs; older payloads cannot truthfully report freshness.
+      `intel:company:sec-submissions:v3:${cik10}`,
       SUBMISSIONS_TTL,
       async () => {
         try {
           const resp = await fetch(`https://data.sec.gov/submissions/CIK${cik10}.json`, {
             headers: { 'User-Agent': SEC_USER_AGENT, Accept: 'application/json' },
-            signal: AbortSignal.timeout(UPSTREAM_TIMEOUT),
+            signal: AbortSignal.timeout(EDGAR_UPSTREAM_TIMEOUT_MS),
           });
           if (!resp.ok) return null;
           const raw = (await resp.json()) as RawSubmissions;
@@ -406,6 +442,7 @@ export async function fetchSecSubmissions(cik10: string): Promise<SecCompanyProf
             stateOrCountry: raw.addresses?.business?.stateOrCountryDescription ?? '',
             totalRecentFilings: total,
             filings,
+            fetchedAtMs: Date.now(),
           };
         } catch {
           return null;
@@ -448,8 +485,20 @@ export interface EdgarSearchResult {
 // dropping them (a dropped filter widens the result set).
 // Requires at least one alphanumeric form token so "," / spaces-only cannot
 // pass the regex then normalize to an empty (unfiltered) query.
-export const EDGAR_ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const EDGAR_ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 export const EDGAR_FORMS_RE = /^(?=[A-Za-z0-9/, .\-]{1,40}$)(?=.*[A-Za-z0-9])[A-Za-z0-9/, .\-]+$/;
+
+/** Shape plus calendar validity; Date.parse alone would normalize invalid days. */
+export function isEdgarIsoDate(value: string): boolean {
+  if (!EDGAR_ISO_DATE_RE.test(value)) return false;
+  const year = Number(value.slice(0, 4));
+  const month = Number(value.slice(5, 7));
+  const day = Number(value.slice(8, 10));
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year
+    && date.getUTCMonth() === month - 1
+    && date.getUTCDate() === day;
+}
 
 /** Normalize a forms filter; returns null when the input is present but empty after parse. */
 export function normalizeEdgarForms(raw: string | undefined): string | null | '' {
@@ -474,8 +523,8 @@ export async function searchEdgarFullText(params: {
   const formsNormalized = normalizeEdgarForms(params.forms);
   // Caller should have rejected null; treat as unfiltered only when forms omitted.
   const forms = formsNormalized === null ? '' : formsNormalized;
-  const startDate = params.startDate && EDGAR_ISO_DATE_RE.test(params.startDate) ? params.startDate : '';
-  const endDate = params.endDate && EDGAR_ISO_DATE_RE.test(params.endDate) ? params.endDate : '';
+  const startDate = params.startDate && isEdgarIsoDate(params.startDate) ? params.startDate : '';
+  const endDate = params.endDate && isEdgarIsoDate(params.endDate) ? params.endDate : '';
   const size = Math.max(1, Math.min(params.size ?? EDGAR_SEARCH_SIZE, EDGAR_SEARCH_SIZE));
 
   const search = new URLSearchParams({ q: `"${query.replace(/"/g, '')}"` });
@@ -495,7 +544,7 @@ export async function searchEdgarFullText(params: {
         try {
           const resp = await fetch(`https://efts.sec.gov/LATEST/search-index?${search.toString()}`, {
             headers: { 'User-Agent': SEC_USER_AGENT, Accept: 'application/json' },
-            signal: AbortSignal.timeout(UPSTREAM_TIMEOUT),
+            signal: AbortSignal.timeout(EDGAR_UPSTREAM_TIMEOUT_MS),
           });
           if (!resp.ok) return null;
           const raw = (await resp.json()) as EftsResponse;
