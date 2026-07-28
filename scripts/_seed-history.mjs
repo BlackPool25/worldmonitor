@@ -24,7 +24,7 @@
  * See tests/scripts-railway-nixpacks-no-escape-import.test.mts.
  */
 
-import { httpRetryError, withRetry } from './_seed-utils.mjs';
+import { httpRetryError } from './_seed-utils.mjs';
 import { embedBatch, normalizeForEmbedding } from './lib/brief-embedding.mjs';
 
 // Per-run cap. A seed tick that suddenly emits thousands of "historic"
@@ -81,11 +81,12 @@ const HISTORY_TOTAL_BUDGET_MS = 30_000;
  * contract), so an exported type nothing imports would be speculative surface.
  */
 class SeedHistoryError extends Error {
-  constructor(message, { status, cause } = {}) {
+  constructor(message, { status, cause, budgetExhausted } = {}) {
     super(message);
     this.name = 'SeedHistoryError';
     if (status !== undefined) this.status = status;
     if (cause !== undefined) this.cause = cause;
+    if (budgetExhausted !== undefined) this.budgetExhausted = budgetExhausted;
   }
 }
 
@@ -231,17 +232,34 @@ function resolveRelayConfig(env) {
 }
 
 /**
- * POST one chunk, with retry. Retry semantics come from `httpRetryError`,
- * the convention every other retrying POST in scripts/ uses: permanent
+ * POST one chunk, with deadline-aware retry. HTTP classification comes from
+ * `httpRetryError`, the convention every other retrying POST in scripts/ uses: permanent
  * statuses (4xx that aren't 408/429) are tagged `nonRetryable` so a
  * misconfigured secret fails in ~10ms instead of burning 3s of the
  * seeder's budget, and a `Retry-After` header is honored rather than
  * overridden by bare exponential backoff. The cap keeps a long
  * server-suggested delay from eating the run's remaining budget.
  */
-async function postHistoryChunk({ fetchImpl, url, secret, payload }) {
-  return withRetry(
-    async () => {
+async function postHistoryChunk({
+  fetchImpl,
+  url,
+  secret,
+  payload,
+  deadline,
+  now,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+}) {
+  let lastError;
+  for (let attempt = 0; attempt <= RELAY_MAX_RETRIES; attempt++) {
+    const remainingMs = deadline - now();
+    if (remainingMs <= 0) {
+      throw new SeedHistoryError('intel-history relay budget exhausted', {
+        cause: lastError,
+        budgetExhausted: true,
+      });
+    }
+
+    try {
       const response = await fetchImpl(url, {
         method: 'POST',
         headers: {
@@ -249,7 +267,7 @@ async function postHistoryChunk({ fetchImpl, url, secret, payload }) {
           Authorization: `Bearer ${secret}`,
         },
         body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(RELAY_TIMEOUT_MS),
+        signal: AbortSignal.timeout(Math.max(1, Math.min(RELAY_TIMEOUT_MS, remainingMs))),
       });
 
       if (!response.ok) {
@@ -265,10 +283,28 @@ async function postHistoryChunk({ fetchImpl, url, secret, payload }) {
       }
 
       return await response.json();
-    },
-    RELAY_MAX_RETRIES,
-    RELAY_RETRY_DELAY_MS,
-  );
+    } catch (err) {
+      lastError = err;
+      if (err?.nonRetryable || attempt >= RELAY_MAX_RETRIES) throw err;
+
+      const baseWait = RELAY_RETRY_DELAY_MS * 2 ** attempt;
+      const requestedWait = err?.retryAfterMs
+        ? Math.max(baseWait, err.retryAfterMs)
+        : baseWait;
+      const wait = Math.min(requestedWait, Math.max(0, deadline - now()));
+      if (wait <= 0) {
+        throw new SeedHistoryError('intel-history relay budget exhausted before retry', {
+          cause: err,
+          budgetExhausted: true,
+        });
+      }
+      console.warn(
+        `  Retry ${attempt + 1}/${RELAY_MAX_RETRIES} in ${wait}ms: ${err?.message || err}`,
+      );
+      await sleep(wait);
+    }
+  }
+  throw lastError;
 }
 
 /**
@@ -319,9 +355,11 @@ export function makeSeedHistoryAfterPublish({ domain, resource, buildRecords }) 
  * @param {unknown[]} args.records candidate records (see normalizeHistoryRecords)
  * @param {object} [deps]
  * @param {typeof fetch} [deps.fetchImpl]
- * @param {(texts: string[]) => Promise<number[][]>} [deps.embed]
+ * @param {(texts: string[], budget: {deadline: number, now: () => number,
+ *   wallClockMs: number}) => Promise<number[][]>} [deps.embed]
  * @param {Record<string, string | undefined>} [deps.env]
  * @param {() => number} [deps.now]        clock seam for the budget
+ * @param {(ms: number) => Promise<void>} [deps.sleep] retry-delay seam
  * @param {number} [deps.budgetMs]         aggregate wall-clock budget override
  * @returns {Promise<{inserted: number, skipped: number, chunks: number, abandoned: number,
  *   failedChunks: number} | {skipped: 'unconfigured'}>}
@@ -353,13 +391,26 @@ export async function appendSeedHistory({ domain, resource, runId, records }, de
     return { inserted: 0, skipped: 0, chunks: 0, abandoned: 0, failedChunks: 0 };
   }
 
+  const now = deps.now ?? (() => Date.now());
+  const deadline = now() + (deps.budgetMs ?? HISTORY_TOTAL_BUDGET_MS);
+
   // Wrap rather than capture: a bare `fetch` default would bind the
   // global at module load and miss later instrumentation shims.
   const fetchImpl = deps.fetchImpl ?? ((...args) => globalThis.fetch(...args));
   const embed =
-    deps.embed ?? ((texts) => embedBatch(texts, { _apiKey: config.openrouterKey }));
+    deps.embed ??
+    ((texts, options) =>
+      embedBatch(texts, {
+        _apiKey: config.openrouterKey,
+        now,
+        wallClockMs: options.wallClockMs,
+      }));
 
-  const vectors = await embed(sanitized.map(buildHistoryEmbeddingText));
+  const vectors = await embed(sanitized.map(buildHistoryEmbeddingText), {
+    deadline,
+    now,
+    wallClockMs: Math.max(1, deadline - now()),
+  });
   if (!Array.isArray(vectors) || vectors.length !== sanitized.length) {
     throw new SeedHistoryError(
       `appendSeedHistory: expected ${sanitized.length} embeddings, got ${
@@ -368,9 +419,20 @@ export async function appendSeedHistory({ domain, resource, runId, records }, de
     );
   }
 
+  if (now() >= deadline) {
+    console.warn(
+      `[seed-history] budget exhausted during embedding; abandoning ${sanitized.length} record(s)`,
+    );
+    return {
+      inserted: 0,
+      skipped: 0,
+      chunks: 0,
+      abandoned: sanitized.length,
+      failedChunks: 0,
+    };
+  }
+
   const url = `${config.siteUrl}${RELAY_PATH}`;
-  const now = deps.now ?? (() => Date.now());
-  const deadline = now() + (deps.budgetMs ?? HISTORY_TOTAL_BUDGET_MS);
   let inserted = 0;
   let skipped = 0;
   let chunks = 0;
@@ -402,11 +464,21 @@ export async function appendSeedHistory({ domain, resource, runId, records }, de
         url,
         secret: config.secret,
         payload: { domain, resource, runId, records: chunk },
+        deadline,
+        now,
+        sleep: deps.sleep,
       });
       inserted += Number(body?.inserted) || 0;
       skipped += Number(body?.skipped) || 0;
       chunks += 1;
     } catch (err) {
+      if (err?.budgetExhausted || now() >= deadline) {
+        abandoned = sanitized.length - start;
+        console.warn(
+          `[seed-history] budget exhausted during relay; abandoning ${abandoned} record(s)`,
+        );
+        break;
+      }
       failedChunks += 1;
       lastError = err;
       console.warn(`[seed-history] chunk ${chunks + failedChunks} failed: ${err?.message || err}`);

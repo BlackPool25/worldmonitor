@@ -7,10 +7,9 @@ import type {
 import { ApiError } from '../../../../src/generated/server/worldmonitor/intelligence/v1/service_server';
 import {
   intelHistoryTimeline,
-  normalizeCountry,
-  normalizeDomain,
   resolveLimit,
 } from '../../../_shared/intel-history-client';
+import { cacheSuccessfulHistoryRead, validateHistoryScope } from '../../../_shared/intel-history-contract';
 
 /** Server-side default when the request omits `limit`. */
 const DEFAULT_LIMIT = 50;
@@ -43,22 +42,19 @@ export const getIntelTimeline: IntelligenceServiceHandler['getIntelTimeline'] = 
 ): Promise<GetIntelTimelineResponse> => {
   // Normalize BEFORE the scope check: a whitespace-only country would
   // otherwise satisfy "at least one scope" and then match nothing.
-  const domain = normalizeDomain(req.domain);
-  const country = normalizeCountry(req.country);
+  const scope = validateHistoryScope(req, MAX_LIMIT);
+  const { domain, country } = scope;
   if (!domain && !country) {
     throw new ApiError(400, 'At least one of domain or country is required', '');
   }
 
-  const result = await intelHistoryTimeline({
-    domain,
-    country,
-    from: req.from,
-    to: req.to,
-    limit: resolveLimit(req.limit, DEFAULT_LIMIT, MAX_LIMIT),
-  });
+  const limit = resolveLimit(scope.limit, DEFAULT_LIMIT, MAX_LIMIT);
+  const result = await cacheSuccessfulHistoryRead('timeline', {
+    domain, country, from: scope.from, to: scope.to, limit,
+  }, () => intelHistoryTimeline({ ...scope, limit }));
   if (!result) {
-    return { records: [], upstreamUnavailable: true };
+    return { records: [], partial: false, upstreamUnavailable: true };
   }
 
-  return { records: result.records, upstreamUnavailable: false };
+  return { records: result.records, partial: result.partial, upstreamUnavailable: false };
 };

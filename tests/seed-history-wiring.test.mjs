@@ -72,7 +72,26 @@ test('buildConflictHistoryRecords maps ACLED events with ISO2 country', () => {
   assert.equal(record.category, 'Battles');
   assert.equal(record.title, 'Battles — RSF vs SAF — in Khartoum, Sudan');
   assert.equal(record.summary, 'fatalities: 12; source: ACLED');
+  assert.equal(record.sourceUrl, undefined);
   assert.equal(record.occurredAt, ACLED_EVENT.occurredAt);
+});
+
+test('buildConflictHistoryRecords preserves GDELT article title and provenance URL', () => {
+  const [record] = buildConflictHistoryRecords({
+    events: [{
+      id: 'gdelt-SD-8b3e9d1a',
+      eventType: 'GDELT coverage',
+      country: 'Sudan',
+      occurredAt: Date.parse('2026-07-20T12:00:00Z'),
+      title: 'Sudan ceasefire talks resume after clashes',
+      source: 'reuters.com',
+      url: 'https://www.reuters.com/world/africa/sudan-ceasefire-talks/',
+    }],
+  });
+
+  assert.equal(record.title, 'Sudan ceasefire talks resume after clashes');
+  assert.equal(record.sourceUrl, 'https://www.reuters.com/world/africa/sudan-ceasefire-talks/');
+  assert.equal(record.summary, 'source: reuters.com');
 });
 
 test('buildConflictHistoryRecords drops events without id or timestamp', () => {

@@ -893,6 +893,7 @@ export interface SearchIntelHistoryRequest {
 export interface SearchIntelHistoryResponse {
   records: IntelHistoryRecord[];
   query: string;
+  partial: boolean;
   upstreamUnavailable: boolean;
 }
 
@@ -920,6 +921,7 @@ export interface GetIntelTimelineRequest {
 
 export interface GetIntelTimelineResponse {
   records: IntelHistoryRecord[];
+  partial: boolean;
   upstreamUnavailable: boolean;
 }
 
@@ -933,6 +935,7 @@ export interface GetSimilarEventsRequest {
 export interface GetSimilarEventsResponse {
   records: IntelHistoryRecord[];
   situation: string;
+  partial: boolean;
   upstreamUnavailable: boolean;
 }
 
@@ -2226,21 +2229,12 @@ export function createIntelligenceServiceRoutes(
       },
     },
     {
-      method: "GET",
+      method: "POST",
       path: "/api/intelligence/v1/search-intel-history",
       handler: async (req: Request): Promise<Response> => {
         try {
           const pathParams: Record<string, string> = {};
-          const url = new URL(req.url, "http://localhost");
-          const params = url.searchParams;
-          const body: SearchIntelHistoryRequest = {
-            query: params.get("query") ?? "",
-            domain: params.get("domain") ?? "",
-            country: params.get("country") ?? "",
-            from: Number(params.get("from") ?? "0"),
-            to: Number(params.get("to") ?? "0"),
-            limit: Number(params.get("limit") ?? "0"),
-          };
+          const body = await req.json() as SearchIntelHistoryRequest;
           if (options?.validateRequest) {
             const bodyViolations = options.validateRequest("searchIntelHistory", body);
             if (bodyViolations) {
@@ -2329,19 +2323,12 @@ export function createIntelligenceServiceRoutes(
       },
     },
     {
-      method: "GET",
+      method: "POST",
       path: "/api/intelligence/v1/get-similar-events",
       handler: async (req: Request): Promise<Response> => {
         try {
           const pathParams: Record<string, string> = {};
-          const url = new URL(req.url, "http://localhost");
-          const params = url.searchParams;
-          const body: GetSimilarEventsRequest = {
-            situation: params.get("situation") ?? "",
-            domain: params.get("domain") ?? "",
-            country: params.get("country") ?? "",
-            limit: Number(params.get("limit") ?? "0"),
-          };
+          const body = await req.json() as GetSimilarEventsRequest;
           if (options?.validateRequest) {
             const bodyViolations = options.validateRequest("getSimilarEvents", body);
             if (bodyViolations) {

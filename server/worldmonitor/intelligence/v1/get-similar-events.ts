@@ -5,12 +5,15 @@ import type {
   GetSimilarEventsResponse,
 } from '../../../../src/generated/server/worldmonitor/intelligence/v1/service_server';
 import {
-  normalizeCountry,
-  normalizeDomain,
   intelHistorySearch,
   resolveLimit,
 } from '../../../_shared/intel-history-client';
-import { embedQueryText } from '../../../_shared/intel-history-embed';
+import { embedQueryText, normalizeQueryText } from '../../../_shared/intel-history-embed';
+import {
+  cacheSuccessfulHistoryRead,
+  validateHistoryScope,
+  validateHistoryText,
+} from '../../../_shared/intel-history-contract';
 
 /**
  * Server-side default when the request omits `limit`. Half of
@@ -30,6 +33,9 @@ const MAX_LIMIT = 32;
  */
 const MAX_SITUATION_LEN = 1000;
 
+/** Precedents must clear a similarity floor; broad search deliberately has none. */
+export const PRECEDENT_MIN_SCORE = 0.55;
+
 /**
  * GetSimilarEvents handler.
  *
@@ -46,24 +52,21 @@ export const getSimilarEvents: IntelligenceServiceHandler['getSimilarEvents'] = 
   _ctx: ServerContext,
   req: GetSimilarEventsRequest,
 ): Promise<GetSimilarEventsResponse> => {
-  const situation =
-    typeof req.situation === 'string' ? req.situation.slice(0, MAX_SITUATION_LEN) : '';
-  const limit = resolveLimit(req.limit, DEFAULT_LIMIT, MAX_LIMIT);
+  const situation = validateHistoryText(req.situation, 'situation', 10, MAX_SITUATION_LEN);
+  const scope = validateHistoryScope(req, MAX_LIMIT);
+  const limit = resolveLimit(scope.limit, DEFAULT_LIMIT, MAX_LIMIT);
 
-  const embedding = await embedQueryText(situation);
-  if (!embedding) {
-    return { records: [], situation, upstreamUnavailable: true };
-  }
-
-  const result = await intelHistorySearch({
-    embedding,
-    domain: normalizeDomain(req.domain),
-    country: normalizeCountry(req.country),
-    limit,
+  const result = await cacheSuccessfulHistoryRead('precedents', {
+    situation: normalizeQueryText(situation), domain: scope.domain, country: scope.country,
+    limit, minScore: PRECEDENT_MIN_SCORE,
+  }, async () => {
+    const embedding = await embedQueryText(situation);
+    if (!embedding) return null;
+    return intelHistorySearch({ embedding, ...scope, limit, minScore: PRECEDENT_MIN_SCORE });
   });
   if (!result) {
-    return { records: [], situation, upstreamUnavailable: true };
+    return { records: [], situation, partial: false, upstreamUnavailable: true };
   }
 
-  return { records: result.records, situation, upstreamUnavailable: false };
+  return { records: result.records, situation, partial: result.partial, upstreamUnavailable: false };
 };

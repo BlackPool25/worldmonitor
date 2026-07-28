@@ -416,10 +416,10 @@ describe('appendSeedHistory', () => {
     const records = [];
     for (let i = 0; i < 120; i++) records.push(record(i));
 
-    // now() is read once to set the deadline and once per chunk iteration.
-    // Stay inside the budget for the deadline + first check, then jump past it.
+    // Deadline, embed allowance, post-embed guard, first chunk guard, and the
+    // first request all stay inside the budget. The second chunk sees expiry.
     let ticks = 0;
-    const now = () => (ticks++ < 2 ? 0 : 999_999);
+    const now = () => (ticks++ < 5 ? 0 : 999_999);
 
     const result = await appendSeedHistory(
       { domain: 'conflict', resource: 'acled', runId: 'run-budget', records },
@@ -431,6 +431,83 @@ describe('appendSeedHistory', () => {
     assert.equal(result.inserted, 50, 'the committed chunk still counts');
     assert.equal(result.abandoned, 70, 'the untried remainder (120 - the 50 sent) is reported');
     assert.equal(result.failedChunks, 0);
+  });
+
+  it('includes embedding in the aggregate budget and sends no relay request after expiry', async () => {
+    const { fetchImpl, calls } = stubFetch({ body: { inserted: 1, skipped: 0 } });
+    let currentTime = 0;
+    let receivedOptions;
+    const embed = async (texts, options) => {
+      receivedOptions = options;
+      currentTime = 30_001;
+      return texts.map(() => [1, 0, 0, 0]);
+    };
+
+    const { result, warns } = await withCapturedWarn(() =>
+      appendSeedHistory(
+        { domain: 'conflict', resource: 'acled', runId: 'run-slow-embed', records: [record(1)] },
+        {
+          fetchImpl,
+          embed,
+          env: ENV,
+          now: () => currentTime,
+          budgetMs: 30_000,
+        },
+      ),
+    );
+
+    assert.equal(receivedOptions.wallClockMs, 30_000);
+    assert.equal(receivedOptions.deadline, 30_000);
+    assert.equal(calls.length, 0);
+    assert.deepEqual(result, {
+      inserted: 0,
+      skipped: 0,
+      chunks: 0,
+      abandoned: 1,
+      failedChunks: 0,
+    });
+    assert.ok(warns.some((w) => w.includes('budget exhausted during embedding')));
+  });
+
+  it('does not retry a relay failure after the shared deadline expires', async () => {
+    let currentTime = 0;
+    const calls = [];
+    const fetchImpl = async (url, init) => {
+      calls.push({ url, init });
+      currentTime = 501;
+      return {
+        ok: false,
+        status: 500,
+        headers: {},
+        json: async () => ({ error: 'slow failure' }),
+        text: async () => 'slow failure',
+      };
+    };
+    const { embed } = stubEmbed();
+
+    const { result, warns } = await withCapturedWarn(() =>
+      appendSeedHistory(
+        { domain: 'conflict', resource: 'acled', runId: 'run-relay-budget', records: [record(1)] },
+        {
+          fetchImpl,
+          embed,
+          env: ENV,
+          now: () => currentTime,
+          sleep: async () => assert.fail('retry sleep must not run after deadline'),
+          budgetMs: 500,
+        },
+      ),
+    );
+
+    assert.equal(calls.length, 1);
+    assert.deepEqual(result, {
+      inserted: 0,
+      skipped: 0,
+      chunks: 0,
+      abandoned: 1,
+      failedChunks: 0,
+    });
+    assert.ok(warns.some((w) => w.includes('budget exhausted during relay')));
   });
 
   // Chunks are independent POSTs over a newest-first slice, so letting one

@@ -893,6 +893,7 @@ export interface SearchIntelHistoryRequest {
 export interface SearchIntelHistoryResponse {
   records: IntelHistoryRecord[];
   query: string;
+  partial: boolean;
   upstreamUnavailable: boolean;
 }
 
@@ -920,6 +921,7 @@ export interface GetIntelTimelineRequest {
 
 export interface GetIntelTimelineResponse {
   records: IntelHistoryRecord[];
+  partial: boolean;
   upstreamUnavailable: boolean;
 }
 
@@ -933,6 +935,7 @@ export interface GetSimilarEventsRequest {
 export interface GetSimilarEventsResponse {
   records: IntelHistoryRecord[];
   situation: string;
+  partial: boolean;
   upstreamUnavailable: boolean;
 }
 
@@ -1657,14 +1660,7 @@ export class IntelligenceServiceClient {
 
   async searchIntelHistory(req: SearchIntelHistoryRequest, options?: IntelligenceServiceCallOptions): Promise<SearchIntelHistoryResponse> {
     let path = "/api/intelligence/v1/search-intel-history";
-    const params = new URLSearchParams();
-    if (req.query != null && req.query !== "") params.set("query", String(req.query));
-    if (req.domain != null && req.domain !== "") params.set("domain", String(req.domain));
-    if (req.country != null && req.country !== "") params.set("country", String(req.country));
-    if (req.from != null && req.from !== 0) params.set("from", String(req.from));
-    if (req.to != null && req.to !== 0) params.set("to", String(req.to));
-    if (req.limit != null && req.limit !== 0) params.set("limit", String(req.limit));
-    const url = this.baseURL + path + (params.toString() ? "?" + params.toString() : "");
+    const url = this.baseURL + path;
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -1673,8 +1669,9 @@ export class IntelligenceServiceClient {
     };
 
     const resp = await this.fetchFn(url, {
-      method: "GET",
+      method: "POST",
       headers,
+      body: JSON.stringify(req),
       signal: options?.signal,
     });
 
@@ -1716,12 +1713,7 @@ export class IntelligenceServiceClient {
 
   async getSimilarEvents(req: GetSimilarEventsRequest, options?: IntelligenceServiceCallOptions): Promise<GetSimilarEventsResponse> {
     let path = "/api/intelligence/v1/get-similar-events";
-    const params = new URLSearchParams();
-    if (req.situation != null && req.situation !== "") params.set("situation", String(req.situation));
-    if (req.domain != null && req.domain !== "") params.set("domain", String(req.domain));
-    if (req.country != null && req.country !== "") params.set("country", String(req.country));
-    if (req.limit != null && req.limit !== 0) params.set("limit", String(req.limit));
-    const url = this.baseURL + path + (params.toString() ? "?" + params.toString() : "");
+    const url = this.baseURL + path;
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -1730,8 +1722,9 @@ export class IntelligenceServiceClient {
     };
 
     const resp = await this.fetchFn(url, {
-      method: "GET",
+      method: "POST",
       headers,
+      body: JSON.stringify(req),
       signal: options?.signal,
     });
 

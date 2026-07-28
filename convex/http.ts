@@ -1970,11 +1970,22 @@ http.route({
     if (!parsed.ok) {
       return intelJson({ error: parsed.error }, 400);
     }
+    const minScore = body.minScore;
+    if (
+      minScore !== undefined &&
+      (typeof minScore !== "number" ||
+        !Number.isFinite(minScore) ||
+        minScore < -1 ||
+        minScore > 1)
+    ) {
+      return intelJson({ error: "INVALID_MIN_SCORE" }, 400);
+    }
 
     try {
       const result = await ctx.runAction(internal.intelHistory.search, {
         embedding: body.embedding,
         ...parsed.scope,
+        ...(typeof minScore === "number" ? { minScore } : {}),
       });
       return intelJson(result, 200);
     } catch (err) {

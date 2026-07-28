@@ -190,7 +190,7 @@ function scopeBody(scope: IntelHistoryScope): Record<string, unknown> {
 async function readIntelHistory(
   path: string,
   payload: Record<string, unknown>,
-): Promise<{ records: IntelHistoryRecordView[] } | null> {
+): Promise<{ records: IntelHistoryRecordView[]; partial: boolean } | null> {
   const siteUrl = getConvexSiteUrl();
   const sharedSecret = getConvexSharedSecret();
   if (!siteUrl || !sharedSecret) return null;
@@ -210,7 +210,7 @@ async function readIntelHistory(
       console.warn(`[intel-history] ${path} returned HTTP ${resp.status}`);
       return null;
     }
-    const body = (await resp.json()) as { records?: unknown };
+    const body = (await resp.json()) as { records?: unknown; partial?: unknown };
     if (!Array.isArray(body?.records)) {
       console.warn(`[intel-history] ${path} returned no records array`);
       return null;
@@ -219,6 +219,7 @@ async function readIntelHistory(
       records: (body.records as WireRecord[])
         .filter((rec): rec is WireRecord => rec !== null && typeof rec === 'object')
         .map(toIntelHistoryRecord),
+      partial: body.partial === true,
     };
   } catch (err) {
     // Same reasoning as the embed path: a Convex outage surfaces to the caller
@@ -235,10 +236,14 @@ async function readIntelHistory(
 
 /** Semantic read: rank stored history against a query vector. */
 export function intelHistorySearch(
-  params: IntelHistoryScope & { embedding: number[] },
-): Promise<{ records: IntelHistoryRecordView[] } | null> {
-  const { embedding, ...scope } = params;
-  return readIntelHistory(CONVEX_INTERNAL_SEARCH_PATH, { embedding, ...scopeBody(scope) });
+  params: IntelHistoryScope & { embedding: number[]; minScore?: number },
+): Promise<{ records: IntelHistoryRecordView[]; partial: boolean } | null> {
+  const { embedding, minScore, ...scope } = params;
+  return readIntelHistory(CONVEX_INTERNAL_SEARCH_PATH, {
+    embedding,
+    ...scopeBody(scope),
+    ...(typeof minScore === 'number' ? { minScore } : {}),
+  });
 }
 
 /**
@@ -248,6 +253,6 @@ export function intelHistorySearch(
  */
 export function intelHistoryTimeline(
   scope: IntelHistoryScope,
-): Promise<{ records: IntelHistoryRecordView[] } | null> {
+): Promise<{ records: IntelHistoryRecordView[]; partial: boolean } | null> {
   return readIntelHistory(CONVEX_INTERNAL_TIMELINE_PATH, scopeBody(scope));
 }

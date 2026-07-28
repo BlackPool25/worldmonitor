@@ -902,7 +902,7 @@ curl -s https://worldmonitor.app/mcp \
 | `to` | number | 否 | 最晚的 `occurredAt`，Unix 纪元毫秒，含边界。省略表示无上界 |
 | `limit` | integer | 否 | 最大匹配数。省略时路由返回 20 条，上限为 64 |
 
-- **API 端点：** `GET /api/intelligence/v1/search-intel-history`
+- **API 端点：** `POST /api/intelligence/v1/search-intel-history`
 - **类型：** 实时 RPC — 先嵌入查询，再对历史存储排序。Edge 运行时超时：**12.0s**。
 - **成本提示：** 每次调用消耗一次 embeddings 往返，因此该路由采用 fail-closed 限流。优先使用一个措辞良好的查询，而不是多个近似重复的查询。
 
@@ -970,7 +970,7 @@ curl -s https://worldmonitor.app/mcp \
 | `country` | string | 否 | ISO 3166-1 alpha-2 大写代码，例如 "EG"。省略则搜索全部国家 |
 | `limit` | integer | 否 | 最大先例数。省略时路由返回 10 条，上限为 32 |
 
-- **API 端点：** `GET /api/intelligence/v1/get-similar-events`
+- **API 端点：** `POST /api/intelligence/v1/get-similar-events`
 - **类型：** 实时 RPC — 先嵌入情境文本，再对历史存储排序。Edge 运行时超时：**12.0s**。
 - **成本提示：** 与 `search_intel_history` 一样由 embeddings 支撑，因此适用同样的 fail-closed 限流策略。
 

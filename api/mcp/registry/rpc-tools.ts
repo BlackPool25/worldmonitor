@@ -201,6 +201,9 @@ function compactProcurementOpportunity(tender: ProcurementRouteTender) {
 
 /** Domains the history writers populate today (proto `intel_history_record`). */
 const INTEL_HISTORY_DOMAINS = ['conflict', 'military', 'energy'];
+const MCP_HISTORY_SEARCH_MAX_LIMIT = 16;
+const MCP_HISTORY_TIMELINE_MAX_LIMIT = 40;
+const MCP_HISTORY_PRECEDENT_MAX_LIMIT = 8;
 
 /**
  * Copy a numeric filter onto the query string. Absent and non-numeric values
@@ -1363,8 +1366,7 @@ export const RPC_TOOLS: ToolDef[] = [
   },
   {
     name: 'search_intel_history',
-    // 64 records max, each carrying a title plus a free-text summary — sized
-    // one step below the timeline tool, which returns up to 200 of the same.
+    // 16 full records fit this tool's 128 KiB output ceiling with headroom.
     _outputBudgetBytes: 131072,
     description: "Semantic search over WorldMonitor's accumulating store of past intelligence events (Pro), ranked by similarity. Records are appended as the conflict, military, and energy seeders publish, so the store starts at activation and deepens from there: a thin or empty result means that window is not covered yet, not that nothing happened. Optional domain, country, and occurredAt bounds are applied to the ranked candidate window, so a narrow filter over a broad store can return fewer than the limit even when older matches exist — widen the window or drop a filter before concluding the history is thin. The route embeds your query on every call, so it is rate-limited fail-closed — prefer one well-phrased query over several near-duplicates.",
     inputSchema: {
@@ -1375,34 +1377,28 @@ export const RPC_TOOLS: ToolDef[] = [
         country: { type: 'string', description: 'ISO 3166-1 alpha-2 country code, uppercase, e.g. "UA". Omit to search every country. Events not attributable to a single country are excluded when this is set.' },
         from: { type: 'number', description: 'Earliest occurredAt to consider, Unix epoch milliseconds, inclusive. Omit for no lower bound.' },
         to: { type: 'number', description: 'Latest occurredAt to consider, Unix epoch milliseconds, inclusive. Omit for no upper bound.' },
-        limit: { type: 'integer', minimum: 1, maximum: 64, description: 'Maximum matches to return. The route returns 20 when this is omitted and caps the value at 64.' },
+        limit: { type: 'integer', minimum: 1, maximum: MCP_HISTORY_SEARCH_MAX_LIMIT, description: 'Maximum matches to return. The route returns 16 when this is omitted and caps MCP responses at 16 to stay within the output budget.' },
       },
       required: ['query'],
     },
     outputSchema: {
       type: 'object',
-      required: ['records', 'query', 'upstreamUnavailable'],
+      required: ['records', 'query', 'partial', 'upstreamUnavailable'],
       properties: {
         records: { type: 'array', description: 'Matching events, most similar first.', items: INTEL_HISTORY_RECORD_SCHEMA },
         query: { type: 'string', description: 'Echo of the submitted query, so a caller running several searches can pair each response back to its input.' },
+        partial: { type: 'boolean', description: 'True when the bounded candidate window may omit further matches; do not treat the result as exhaustive.' },
         upstreamUnavailable: { type: 'boolean', description: 'True when the embedding provider or the history store could not be reached. `records` is then empty because the lookup failed — never read that as "no event matched".' },
       },
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     _execute: async (params, base, context, execution) => {
-      const query = new URLSearchParams();
-      addStringParam(query, 'query', params.query);
-      addStringParam(query, 'domain', params.domain);
-      addStringParam(query, 'country', params.country);
-      addIntelHistoryNumber(query, 'from', params.from);
-      addIntelHistoryNumber(query, 'to', params.to);
-      addIntelHistoryNumber(query, 'limit', params.limit);
-
-      const url = `${base}/api/intelligence/v1/search-intel-history?${query}`;
-      const auth = await buildAuthHeaders(context, 'GET', url, null);
+      const url = `${base}/api/intelligence/v1/search-intel-history`;
+      const body = JSON.stringify({ query: params.query, domain: params.domain, country: params.country, from: params.from, to: params.to, limit: Math.min(Number(params.limit ?? MCP_HISTORY_SEARCH_MAX_LIMIT), MCP_HISTORY_SEARCH_MAX_LIMIT) });
+      const auth = await buildAuthHeaders(context, 'POST', url, body);
       // Budget covers one embeddings round-trip (4 s) plus the store read (5 s).
       const response = await fetch(url, {
-        headers: { ...auth, 'User-Agent': 'worldmonitor-mcp-edge/1.0' },
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...auth, 'User-Agent': 'worldmonitor-mcp-edge/1.0' }, body,
         signal: AbortSignal.timeout(12_000),
       });
       await assertMcpToolFetchOk(response, {
@@ -1414,13 +1410,12 @@ export const RPC_TOOLS: ToolDef[] = [
       return response.json();
     },
     _apiPaths: [
-      'GET /api/intelligence/v1/search-intel-history',
+      'POST /api/intelligence/v1/search-intel-history',
     ],
   },
   {
     name: 'get_intel_timeline',
-    // 200 records max, each with a title plus a free-text summary — the
-    // largest list any history tool returns, so it takes the top budget.
+    // 40 full records fit this tool's 256 KiB output ceiling with headroom.
     _outputBudgetBytes: 262144,
     description: "Reverse-chronological read of WorldMonitor's accumulating intelligence-event history for one domain or country (Pro). At least one of domain or country is required — they are the two indexed scopes on the store, and an unscoped read is rejected rather than served as a table scan. Pure index read: no embedding and no ranking, so every record scores 0 and ordering is by occurredAt alone. Records are appended as the conflict, military, and energy seeders publish, so a window before capture was activated is empty by construction rather than quiet.",
     inputSchema: {
@@ -1430,15 +1425,16 @@ export const RPC_TOOLS: ToolDef[] = [
         country: { type: 'string', description: 'ISO 3166-1 alpha-2 country code, uppercase, e.g. "UA". Required unless domain is set. Supplying both narrows to their intersection.' },
         from: { type: 'number', description: 'Earliest occurredAt to return, Unix epoch milliseconds, inclusive. Omit for no lower bound.' },
         to: { type: 'number', description: 'Latest occurredAt to return, Unix epoch milliseconds, inclusive. Omit for no upper bound.' },
-        limit: { type: 'integer', minimum: 1, maximum: 200, description: 'Maximum events to return. The route returns 50 when this is omitted and caps the value at 200.' },
+        limit: { type: 'integer', minimum: 1, maximum: MCP_HISTORY_TIMELINE_MAX_LIMIT, description: 'Maximum events to return. The route returns 40 when this is omitted and caps MCP responses at 40 to stay within the output budget.' },
       },
       required: [],
     },
     outputSchema: {
       type: 'object',
-      required: ['records', 'upstreamUnavailable'],
+      required: ['records', 'partial', 'upstreamUnavailable'],
       properties: {
         records: { type: 'array', description: 'Scoped history, newest first.', items: INTEL_HISTORY_RECORD_SCHEMA },
+        partial: { type: 'boolean', description: 'True when the bounded post-filter window may omit older matching events.' },
         upstreamUnavailable: { type: 'boolean', description: 'True when the history store could not be reached. `records` is then empty because the read failed — never read that as "nothing happened in this window".' },
       },
     },
@@ -1458,7 +1454,7 @@ export const RPC_TOOLS: ToolDef[] = [
       addStringParam(query, 'country', country);
       addIntelHistoryNumber(query, 'from', params.from);
       addIntelHistoryNumber(query, 'to', params.to);
-      addIntelHistoryNumber(query, 'limit', params.limit);
+      addIntelHistoryNumber(query, 'limit', Math.min(Number(params.limit ?? MCP_HISTORY_TIMELINE_MAX_LIMIT), MCP_HISTORY_TIMELINE_MAX_LIMIT));
 
       const url = `${base}/api/intelligence/v1/get-intel-timeline?${query}`;
       const auth = await buildAuthHeaders(context, 'GET', url, null);
@@ -1481,7 +1477,7 @@ export const RPC_TOOLS: ToolDef[] = [
   },
   {
     name: 'get_similar_events',
-    // 32 records max — the smallest of the three, read as a precedent list.
+    // Eight full records fit this tool's 64 KiB output ceiling with headroom.
     _outputBudgetBytes: 65536,
     description: "Historical precedents for a situation you describe, drawn from WorldMonitor's accumulating event store (Pro). Same vector search as search_intel_history over a longer input: a sentence or two of context ranks better than a keyword. Optional domain and country narrow the candidates. The store holds only what the conflict, military, and energy seeders have published since capture was activated, so an empty precedent list is weak evidence of a novel situation, not proof of one. The route embeds your text on every call and is rate-limited fail-closed.",
     inputSchema: {
@@ -1490,32 +1486,28 @@ export const RPC_TOOLS: ToolDef[] = [
         situation: { type: 'string', minLength: 10, maxLength: 1000, description: 'Description of the situation to find precedents for, e.g. "a naval blockade closes a major grain export corridor for weeks". Longer than a search phrase on purpose — more context ranks better.' },
         domain: { type: 'string', enum: INTEL_HISTORY_DOMAINS, description: 'Restrict precedents to one producing domain. Omit to search every domain.' },
         country: { type: 'string', description: 'ISO 3166-1 alpha-2 country code, uppercase, e.g. "EG". Omit to search every country — usually the right choice, since a precedent elsewhere is still a precedent.' },
-        limit: { type: 'integer', minimum: 1, maximum: 32, description: 'Maximum precedents to return. The route returns 10 when this is omitted and caps the value at 32.' },
+        limit: { type: 'integer', minimum: 1, maximum: MCP_HISTORY_PRECEDENT_MAX_LIMIT, description: 'Maximum precedents to return. The route returns 8 when this is omitted and caps MCP responses at 8 to stay within the output budget.' },
       },
       required: ['situation'],
     },
     outputSchema: {
       type: 'object',
-      required: ['records', 'situation', 'upstreamUnavailable'],
+      required: ['records', 'situation', 'partial', 'upstreamUnavailable'],
       properties: {
         records: { type: 'array', description: 'Precedents, most similar first.', items: INTEL_HISTORY_RECORD_SCHEMA },
         situation: { type: 'string', description: 'Echo of the submitted situation text, so a caller running several lookups can pair each response back to its input.' },
+        partial: { type: 'boolean', description: 'True when the bounded candidate window may omit further precedents; do not treat an empty result as proof of novelty.' },
         upstreamUnavailable: { type: 'boolean', description: 'True when the embedding provider or the history store could not be reached. `records` is then empty because the lookup failed — never read that as "no precedent exists".' },
       },
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     _execute: async (params, base, context, execution) => {
-      const query = new URLSearchParams();
-      addStringParam(query, 'situation', params.situation);
-      addStringParam(query, 'domain', params.domain);
-      addStringParam(query, 'country', params.country);
-      addIntelHistoryNumber(query, 'limit', params.limit);
-
-      const url = `${base}/api/intelligence/v1/get-similar-events?${query}`;
-      const auth = await buildAuthHeaders(context, 'GET', url, null);
+      const url = `${base}/api/intelligence/v1/get-similar-events`;
+      const body = JSON.stringify({ situation: params.situation, domain: params.domain, country: params.country, limit: Math.min(Number(params.limit ?? MCP_HISTORY_PRECEDENT_MAX_LIMIT), MCP_HISTORY_PRECEDENT_MAX_LIMIT) });
+      const auth = await buildAuthHeaders(context, 'POST', url, body);
       // Budget covers one embeddings round-trip (4 s) plus the store read (5 s).
       const response = await fetch(url, {
-        headers: { ...auth, 'User-Agent': 'worldmonitor-mcp-edge/1.0' },
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...auth, 'User-Agent': 'worldmonitor-mcp-edge/1.0' }, body,
         signal: AbortSignal.timeout(12_000),
       });
       await assertMcpToolFetchOk(response, {
@@ -1527,7 +1519,7 @@ export const RPC_TOOLS: ToolDef[] = [
       return response.json();
     },
     _apiPaths: [
-      'GET /api/intelligence/v1/get-similar-events',
+      'POST /api/intelligence/v1/get-similar-events',
     ],
   },
   {

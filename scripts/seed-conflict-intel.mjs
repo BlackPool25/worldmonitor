@@ -1091,11 +1091,16 @@ export function buildConflictHistoryRecords(data) {
     if (!event?.id || !Number.isFinite(event?.occurredAt)) return null;
     const place = [event.admin1, event.country].filter(Boolean).join(', ');
     const actors = Array.isArray(event.actors) ? event.actors.filter(Boolean).slice(0, 2) : [];
-    const title = [
+    const structuredTitle = [
       event.eventType || 'Conflict event',
       actors.length > 0 ? actors.join(' vs ') : null,
       place ? `in ${place}` : null,
     ].filter(Boolean).join(' — ');
+    // GDELT article events carry an upstream headline; retain it for a useful,
+    // searchable history record while ACLED keeps its structured fallback.
+    const title = typeof event.title === 'string' && event.title.trim()
+      ? event.title.trim()
+      : structuredTitle;
     const summaryBits = [];
     if (Number.isFinite(event.fatalities)) summaryBits.push(`fatalities: ${event.fatalities}`);
     if (event.source) summaryBits.push(`source: ${event.source}`);
@@ -1105,6 +1110,7 @@ export function buildConflictHistoryRecords(data) {
       category: event.eventType || undefined,
       title,
       summary: summaryBits.length > 0 ? summaryBits.join('; ') : undefined,
+      sourceUrl: event.url || undefined,
       occurredAt: event.occurredAt,
     };
   }).filter(Boolean);

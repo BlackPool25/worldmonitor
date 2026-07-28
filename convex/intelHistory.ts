@@ -1,7 +1,12 @@
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
-import { internalAction, internalMutation, internalQuery } from "./_generated/server";
+import {
+  internalAction,
+  internalMutation,
+  internalQuery,
+  type MutationCtx,
+} from "./_generated/server";
 
 /**
  * Append-only historical intelligence memory (#5694).
@@ -74,6 +79,34 @@ const TIMELINE_MAX_SCAN = 800;
 
 /** Convex's own ceiling on `vectorSearch` limit. */
 const VECTOR_SEARCH_MAX_LIMIT = 256;
+
+/** The single pre-seeded OCC document used to serialize low-frequency appends. */
+const APPEND_LOCK_KEY = "intel-history-append";
+
+/**
+ * Read the pre-seeded append lock or fail closed when deploy initialization
+ * was skipped. An empty dedupe-key index range is not a document-backed OCC
+ * dependency, so this document must be read and patched in every append
+ * transaction before dedupe checks begin.
+ */
+async function readAppendLockOrThrow(
+  ctx: MutationCtx,
+): Promise<Doc<"intelHistoryAppendLocks">> {
+  const lock = await ctx.db
+    .query("intelHistoryAppendLocks")
+    .withIndex("by_lockKey", (q) => q.eq("lockKey", APPEND_LOCK_KEY))
+    .first();
+  if (!lock) {
+    console.error(
+      JSON.stringify({
+        breadcrumb: "intel_history_append_lock_not_seeded",
+        lockKey: APPEND_LOCK_KEY,
+      }),
+    );
+    throw new ConvexError({ kind: "APPEND_LOCK_NOT_SEEDED" });
+  }
+  return lock;
+}
 
 function clamp(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
@@ -173,6 +206,12 @@ export const append = internalMutation({
       assertEmbedding(rec.embedding, "intelHistory.append");
     }
 
+    // Must precede all dedupe reads. Patching an already-existing document
+    // makes concurrent first-seen appends conflict and retry against the
+    // winning transaction's inserted rows.
+    const appendLock = await readAppendLockOrThrow(ctx);
+    await ctx.db.patch(appendLock._id, { lastTouchedAt: Date.now() });
+
     const ingestedAt = Date.now();
     let inserted = 0;
     let skipped = 0;
@@ -230,6 +269,28 @@ export const append = internalMutation({
 });
 
 /**
+ * Idempotently initialize the document-backed append lock after deployment.
+ * A missing lock is an operator/deploy failure, never a fallback to unsafe
+ * index-range-only idempotency; `append` throws APPEND_LOCK_NOT_SEEDED until
+ * this succeeds.
+ */
+export const _seedAppendLock = internalMutation({
+  args: {},
+  handler: async (ctx): Promise<{ seeded: number }> => {
+    const existing = await ctx.db
+      .query("intelHistoryAppendLocks")
+      .withIndex("by_lockKey", (q) => q.eq("lockKey", APPEND_LOCK_KEY))
+      .first();
+    if (existing) return { seeded: 0 };
+    await ctx.db.insert("intelHistoryAppendLocks", {
+      lockKey: APPEND_LOCK_KEY,
+      lastTouchedAt: Date.now(),
+    });
+    return { seeded: 1 };
+  },
+});
+
+/**
  * Chronological read. At least one of `domain` / `country` is required: the
  * only other option would be a table-wide scan ordered by `occurredAt`, which
  * has no index and no bounded cost. The REST layer rejects the unscoped case
@@ -237,14 +298,9 @@ export const append = internalMutation({
  *
  * `domain` wins the index when both are given, matching `search` below so the
  * two read paths agree; `country` is then post-filtered from a window
- * over-fetched by POST_FILTER_OVERFETCH.
- *
- * RECALL CAVEAT — `country` is the more selective of the two (~200 values vs.
- * a handful of domains), so a (broad domain, narrow country) query can exhaust
- * the over-fetch window and return fewer than `limit` rows even though more
- * matches exist further back. If that shows up in practice the fix is to pick
- * the index by which field is present *and* more selective, here and in
- * `search`, rather than to raise TIMELINE_MAX_SCAN.
+ * over-fetched by POST_FILTER_OVERFETCH. When that candidate window is full,
+ * `partial` tells callers it may contain more country matches beyond the
+ * bounded scan; they must not treat a short or empty page as exhaustive.
  */
 export const timeline = internalQuery({
   args: {
@@ -307,7 +363,10 @@ export const timeline = internalQuery({
       ? docs.filter((doc) => doc.country === args.country)
       : docs;
 
-    return { records: matched.slice(0, limit).map(projectRecord) };
+    return {
+      records: matched.slice(0, limit).map(projectRecord),
+      partial: needsPostFilter && docs.length === scanLimit,
+    };
   },
 });
 
@@ -345,8 +404,10 @@ export const getByIds = internalQuery({
  * read paths agree) and `country` is post-filtered, as is the `occurredAt`
  * range, which the vector index cannot express at all. Both post-filters run
  * after the top-k cut, so the query over-fetches by POST_FILTER_OVERFETCH
- * whenever one applies; a narrow country inside a broad domain can still
- * return fewer than `limit` rows. See the final note in convex/schema.ts.
+ * whenever one applies. If that bounded candidate window fills, `partial`
+ * marks the response as potentially incomplete rather than presenting a
+ * false-empty or short result as exhaustive. See the final note in
+ * convex/schema.ts.
  */
 export const search = internalAction({
   args: {
@@ -356,6 +417,7 @@ export const search = internalAction({
     from: v.optional(v.number()),
     to: v.optional(v.number()),
     limit: v.optional(v.number()),
+    minScore: v.optional(v.number()),
   },
   // The return type is annotated, not inferred. `getByIds` lives in THIS
   // module, so `internal.intelHistory.getByIds` resolves through the module's
@@ -363,7 +425,10 @@ export const search = internalAction({
   // and TypeScript resolves such cycles by degrading the whole `internal`
   // surface to `any`, which silently un-types every OTHER module's
   // self-referential `ctx.runQuery` too.
-  handler: async (ctx, args): Promise<{ records: IntelHistorySearchRecord[] }> => {
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ records: IntelHistorySearchRecord[]; partial: boolean }> => {
     assertEmbedding(args.embedding, "intelHistory.search");
 
     const limit = clamp(args.limit ?? SEARCH_DEFAULT_LIMIT, 1, SEARCH_MAX_LIMIT);
@@ -392,7 +457,7 @@ export const search = internalAction({
           : {}),
     });
 
-    if (hits.length === 0) return { records: [] };
+    if (hits.length === 0) return { records: [], partial: false };
 
     const scoreById = new Map(hits.map((hit) => [hit._id as string, hit._score]));
     const hydrated: IntelHistoryRecord[] = await ctx.runQuery(
@@ -409,10 +474,14 @@ export const search = internalAction({
         if (args.to !== undefined && rec.occurredAt > args.to) return false;
         return true;
       })
+      .filter((rec) => {
+        const score = scoreById.get(rec.id) ?? 0;
+        return args.minScore === undefined || score >= args.minScore;
+      })
       .slice(0, limit)
       .map((rec) => ({ ...rec, _score: scoreById.get(rec.id) ?? 0 }));
 
-    return { records };
+    return { records, partial: needsPostFilter && hits.length === vectorLimit };
   },
 });
 

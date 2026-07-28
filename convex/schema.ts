@@ -1061,6 +1061,21 @@ export default defineSchema({
     .index("by_webhookEventId", ["webhookEventId"])
     .index("by_broadcast_event", ["broadcastId", "eventType"]),
 
+  // Pre-seeded, document-backed serialization point for `intelHistory.append`.
+  //
+  // Convex does not treat an empty `by_dedupeKey` index range as a conflict
+  // dependency, so concurrent first-seen appends could both see no row and
+  // insert the same key. `intelHistory.append` reads and patches this
+  // always-existing singleton before checking dedupe keys, making the OCC
+  // dependency document-backed. The historical seeders are low-frequency,
+  // so one global serialization point is intentional and keeps the invariant
+  // simple. It is seeded by the deploy workflow; append fails loudly if it is
+  // absent rather than silently weakening idempotency.
+  intelHistoryAppendLocks: defineTable({
+    lockKey: v.string(),
+    lastTouchedAt: v.number(),
+  }).index("by_lockKey", ["lockKey"]),
+
   // Append-only historical intelligence memory (#5694). Seeders publish a
   // rolling live snapshot to Redis that overwrites itself every run; this
   // table is the durable long tail behind it — one row per distinct event,

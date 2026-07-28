@@ -218,7 +218,7 @@ service IntelligenceService {
   // The handler embeds the query, so each cache miss costs one embeddings
   // call — the route carries its own fail-closed rate policy. Premium-gated.
   rpc SearchIntelHistory(SearchIntelHistoryRequest) returns (SearchIntelHistoryResponse) {
-    option (sebuf.http.config) = {path: "/search-intel-history", method: HTTP_METHOD_GET};
+    option (sebuf.http.config) = {path: "/search-intel-history", method: HTTP_METHOD_POST};
   }
 
   // GetIntelTimeline returns the durable historical intelligence store
@@ -232,6 +232,6 @@ service IntelligenceService {
   // Same vector search as SearchIntelHistory over a longer free-text input,
   // so it is likewise embeddings-backed and rate-policied. Premium-gated.
   rpc GetSimilarEvents(GetSimilarEventsRequest) returns (GetSimilarEventsResponse) {
-    option (sebuf.http.config) = {path: "/get-similar-events", method: HTTP_METHOD_GET};
+    option (sebuf.http.config) = {path: "/get-similar-events", method: HTTP_METHOD_POST};
   }
 }

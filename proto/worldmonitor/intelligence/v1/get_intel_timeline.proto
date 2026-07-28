@@ -58,9 +58,11 @@ message GetIntelTimelineResponse {
   // Events ordered by descending occurred_at. Every record carries score = 0:
   // a chronological read has no query vector to rank against.
   repeated IntelHistoryRecord records = 1;
+  // True when the bounded post-filter candidate window may omit older events.
+  bool partial = 2;
   // True when the history store could not be reached. The gateway reads this
   // flag out of the body and switches the response to Cache-Control:
   // no-store, so a transient outage is never pinned as a false-empty timeline
   // for the tier's full TTL.
-  bool upstream_unavailable = 2;
+  bool upstream_unavailable = 3;
 }

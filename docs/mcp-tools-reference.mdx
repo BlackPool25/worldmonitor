@@ -904,9 +904,9 @@ Semantic search over the stored history, ranked by similarity to a free-text que
 | `country` | string | no | ISO 3166-1 alpha-2, uppercase, e.g. "UA". Omit to search every country |
 | `from` | number | no | Earliest `occurredAt`, Unix epoch milliseconds, inclusive. Omit for no lower bound |
 | `to` | number | no | Latest `occurredAt`, Unix epoch milliseconds, inclusive. Omit for no upper bound |
-| `limit` | integer | no | Maximum matches. The route returns 20 when omitted and caps at 64 |
+| `limit` | integer | no | Maximum matches. MCP returns 16 when omitted and caps at 16 to stay within its output budget |
 
-- **API endpoint:** `GET /api/intelligence/v1/search-intel-history`
+- **API endpoint:** `POST /api/intelligence/v1/search-intel-history`
 - **Kind:** live RPC — embeds the query, then ranks the history store. Edge-runtime timeout: **12.0s**.
 - **Cost note:** every call spends one embeddings round-trip, so the route is rate-limited fail-closed. Prefer one well-phrased query over several near-duplicates.
 
@@ -972,9 +972,9 @@ Leaving `country` unset is usually the right choice — a precedent elsewhere is
 | `situation` | string | **yes** | Description of the situation, 10-1000 characters, e.g. "a naval blockade closes a major grain export corridor for weeks" |
 | `domain` | string | no | One of `conflict`, `military`, `energy`. Omit to search every domain |
 | `country` | string | no | ISO 3166-1 alpha-2, uppercase, e.g. "EG". Omit to search every country |
-| `limit` | integer | no | Maximum precedents. The route returns 10 when omitted and caps at 32 |
+| `limit` | integer | no | Maximum precedents. MCP returns 8 when omitted and caps at 8 to stay within its output budget |
 
-- **API endpoint:** `GET /api/intelligence/v1/get-similar-events`
+- **API endpoint:** `POST /api/intelligence/v1/get-similar-events`
 - **Kind:** live RPC — embeds the situation text, then ranks the history store. Edge-runtime timeout: **12.0s**.
 - **Cost note:** embeddings-backed like `search_intel_history`, so the same fail-closed rate policy applies.
 

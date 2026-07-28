@@ -84,6 +84,13 @@ async function seed(
   });
 }
 
+/** Append intentionally fails closed unless deploy-style lock seeding ran. */
+async function intelHistoryAppendTest() {
+  const t = convexTest(schema, modules);
+  await t.mutation(internal.intelHistory._seedAppendLock, {});
+  return t;
+}
+
 describe("intelHistory.append", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -92,7 +99,7 @@ describe("intelHistory.append", () => {
   afterEach(() => vi.useRealTimers());
 
   test("inserts records stamped with the run-level fields and ingestedAt", async () => {
-    const t = convexTest(schema, modules);
+    const t = await intelHistoryAppendTest();
 
     const res = await t.mutation(
       internal.intelHistory.append,
@@ -131,7 +138,7 @@ describe("intelHistory.append", () => {
   });
 
   test("skips a dedupeKey that already exists from an earlier run", async () => {
-    const t = convexTest(schema, modules);
+    const t = await intelHistoryAppendTest();
 
     await t.mutation(
       internal.intelHistory.append,
@@ -155,7 +162,7 @@ describe("intelHistory.append", () => {
   });
 
   test("dedupes repeated keys inside a single batch", async () => {
-    const t = convexTest(schema, modules);
+    const t = await intelHistoryAppendTest();
 
     const res = await t.mutation(
       internal.intelHistory.append,
@@ -165,8 +172,33 @@ describe("intelHistory.append", () => {
     expect(res).toEqual({ inserted: 1, skipped: 1 });
   });
 
+  test("serializes simultaneous first-seen appends through the seeded lock", async () => {
+    const t = await intelHistoryAppendTest();
+
+    const results = await Promise.all([
+      t.mutation(
+        internal.intelHistory.append,
+        appendArgs([record({ dedupeKey: "simultaneous" })], { runId: "run-a" }),
+      ),
+      t.mutation(
+        internal.intelHistory.append,
+        appendArgs([record({ dedupeKey: "simultaneous" })], { runId: "run-b" }),
+      ),
+    ]);
+
+    expect(results).toContainEqual({ inserted: 1, skipped: 0 });
+    expect(results).toContainEqual({ inserted: 0, skipped: 1 });
+    const rows = await t.run((ctx) =>
+      ctx.db
+        .query("intelHistory")
+        .withIndex("by_dedupeKey", (q) => q.eq("dedupeKey", "simultaneous"))
+        .collect(),
+    );
+    expect(rows).toHaveLength(1);
+  });
+
   test("rejects a batch larger than the append cap", async () => {
-    const t = convexTest(schema, modules);
+    const t = await intelHistoryAppendTest();
     const oversized = Array.from(
       { length: INTEL_HISTORY_MAX_APPEND_RECORDS + 1 },
       (_, i) => record({ dedupeKey: `k-${i}` }),
@@ -181,7 +213,7 @@ describe("intelHistory.append", () => {
   });
 
   test("rejects a record whose embedding is not 512-dimensional", async () => {
-    const t = convexTest(schema, modules);
+    const t = await intelHistoryAppendTest();
 
     await expect(
       t.mutation(
@@ -199,7 +231,7 @@ describe("intelHistory.append", () => {
   });
 
   test("rejects a non-finite embedding component", async () => {
-    const t = convexTest(schema, modules);
+    const t = await intelHistoryAppendTest();
     const poisoned = unitVector(0);
     poisoned[3] = Number.NaN;
 
@@ -209,6 +241,32 @@ describe("intelHistory.append", () => {
         appendArgs([record({ dedupeKey: "nan", embedding: poisoned })]),
       ),
     ).rejects.toThrow(/finite/i);
+  });
+
+  test("fails closed when the deploy-seeded append lock is absent", async () => {
+    const t = convexTest(schema, modules);
+
+    await expect(
+      t.mutation(internal.intelHistory.append, appendArgs([record()])),
+    ).rejects.toThrow(/APPEND_LOCK_NOT_SEEDED/);
+
+    const rows = await t.run((ctx) => ctx.db.query("intelHistory").collect());
+    expect(rows).toHaveLength(0);
+  });
+
+  test("idempotently seeds the document-backed append lock", async () => {
+    const t = convexTest(schema, modules);
+
+    expect(await t.mutation(internal.intelHistory._seedAppendLock, {})).toEqual({
+      seeded: 1,
+    });
+    expect(await t.mutation(internal.intelHistory._seedAppendLock, {})).toEqual({
+      seeded: 0,
+    });
+    const locks = await t.run((ctx) =>
+      ctx.db.query("intelHistoryAppendLocks").collect(),
+    );
+    expect(locks).toHaveLength(1);
   });
 });
 
@@ -250,6 +308,27 @@ describe("intelHistory.timeline", () => {
     });
 
     expect(res.records.map((r) => r.title)).toEqual(["ua"]);
+    expect(res.partial).toBe(false);
+  });
+
+  test("marks a full post-filter candidate window as partial instead of false-empty", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t, [
+      { dedupeKey: "sd-1", country: "SD", occurredAt: NOW - DAY, title: "sd-1" },
+      { dedupeKey: "sd-2", country: "SD", occurredAt: NOW - 2 * DAY, title: "sd-2" },
+      { dedupeKey: "sd-3", country: "SD", occurredAt: NOW - 3 * DAY, title: "sd-3" },
+      { dedupeKey: "sd-4", country: "SD", occurredAt: NOW - 4 * DAY, title: "sd-4" },
+      { dedupeKey: "ua-after-window", country: "UA", occurredAt: NOW - 5 * DAY, title: "ua" },
+    ]);
+
+    const res = await t.query(internal.intelHistory.timeline, {
+      domain: "conflict",
+      country: "UA",
+      limit: 1,
+    });
+
+    expect(res.records).toEqual([]);
+    expect(res.partial).toBe(true);
   });
 
   test("serves a country-only query off the country index across domains", async () => {
@@ -403,6 +482,24 @@ describe("intelHistory.search", () => {
     expect(res.records[0]).not.toHaveProperty("embedding");
   });
 
+  test("optionally excludes zero and negative score matches without changing the default search", async () => {
+    const t = convexTest(schema, modules);
+    const opposite = unitVector(0).map((component) => -component);
+    await seed(t, [
+      { dedupeKey: "exact", title: "exact", occurredAt: NOW - DAY, embedding: unitVector(0) },
+      { dedupeKey: "zero", title: "zero", occurredAt: NOW - DAY, embedding: unitVector(7) },
+      { dedupeKey: "negative", title: "negative", occurredAt: NOW - DAY, embedding: opposite },
+    ]);
+
+    const res = await t.action(internal.intelHistory.search, {
+      embedding: unitVector(0),
+      limit: 3,
+      minScore: 0.1,
+    });
+
+    expect(res.records.map((r) => r.title)).toEqual(["exact"]);
+  });
+
   test("pushes the domain filter into the vector index", async () => {
     const t = convexTest(schema, modules);
     await seed(t, [
@@ -459,6 +556,28 @@ describe("intelHistory.search", () => {
     });
 
     expect(res.records.map((r) => r.title)).toEqual(["hit"]);
+    expect(res.partial).toBe(false);
+  });
+
+  test("marks a full vector candidate window as partial instead of false-empty", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t, [
+      { dedupeKey: "sd-1", country: "SD", title: "sd-1", occurredAt: NOW - DAY, embedding: unitVector(0) },
+      { dedupeKey: "sd-2", country: "SD", title: "sd-2", occurredAt: NOW - DAY, embedding: unitVector(0) },
+      { dedupeKey: "sd-3", country: "SD", title: "sd-3", occurredAt: NOW - DAY, embedding: unitVector(0) },
+      { dedupeKey: "sd-4", country: "SD", title: "sd-4", occurredAt: NOW - DAY, embedding: unitVector(0) },
+      { dedupeKey: "ua-after-window", country: "UA", title: "ua", occurredAt: NOW - DAY, embedding: unitVector(0, 0.5) },
+    ]);
+
+    const res = await t.action(internal.intelHistory.search, {
+      embedding: unitVector(0),
+      domain: "conflict",
+      country: "UA",
+      limit: 1,
+    });
+
+    expect(res.records).toEqual([]);
+    expect(res.partial).toBe(true);
   });
 
   test("clamps limit and rejects a wrong-dimension query vector", async () => {
@@ -657,7 +776,7 @@ describe("POST /relay/intel-history", () => {
   });
 
   test("ingests records and reports the dedupe split on replay", async () => {
-    const t = convexTest(schema, modules);
+    const t = await intelHistoryAppendTest();
     const body = ingestBody([
       record({ dedupeKey: "h1", country: "UA" }),
       record({ dedupeKey: "h2", occurredAt: NOW - 2 * DAY }),
@@ -769,5 +888,33 @@ describe("internal intel read routes", () => {
     };
     expect(body.records.map((r) => r.title)).toEqual(["exact", "far"]);
     expect(body.records[0]._score).toBeCloseTo(1, 6);
+  });
+
+  test("search forwards a valid score floor and rejects invalid values", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t, [
+      { dedupeKey: "v1", title: "exact", occurredAt: NOW - DAY, embedding: unitVector(0) },
+      { dedupeKey: "v2", title: "far", occurredAt: NOW - DAY, embedding: unitVector(9) },
+    ]);
+
+    const filtered = await t.fetch(
+      "/api/internal-intel-search",
+      post({ embedding: unitVector(0), domain: "conflict", limit: 5, minScore: 0.55 }),
+    );
+    expect(filtered.status).toBe(200);
+    expect(
+      ((await filtered.json()) as { records: Array<{ title: string }> }).records.map(
+        (record) => record.title,
+      ),
+    ).toEqual(["exact"]);
+
+    for (const minScore of [-1.1, 1.1, Number.NaN, "0.55"]) {
+      const rejected = await t.fetch(
+        "/api/internal-intel-search",
+        post({ embedding: unitVector(0), domain: "conflict", minScore }),
+      );
+      expect(rejected.status).toBe(400);
+      expect((await rejected.json()).error).toBe("INVALID_MIN_SCORE");
+    }
   });
 });

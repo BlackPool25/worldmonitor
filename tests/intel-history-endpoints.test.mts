@@ -1,7 +1,7 @@
 // Tests for the three Pro-gated historical-intelligence RPCs (#5694):
-//   GET /api/intelligence/v1/search-intel-history
+//   POST /api/intelligence/v1/search-intel-history
 //   GET /api/intelligence/v1/get-intel-timeline
-//   GET /api/intelligence/v1/get-similar-events
+//   POST /api/intelligence/v1/get-similar-events
 //
 // Two layers, mirroring the sibling suites:
 //   - behavioural handler tests (fetch stubbed) modelled on
@@ -83,6 +83,8 @@ function stubFetch(routes: Record<string, (call: RecordedCall) => Response>): vo
     const call: RecordedCall = { url, method: init?.method ?? 'GET', headers, body };
     calls.push(call);
     const route = routes[url];
+    if (!route && url.startsWith('https://fake-upstash.upstash.io/get/')) return jsonResponse({ result: null });
+    if (!route && url === 'https://fake-upstash.upstash.io/') return jsonResponse({ result: 'OK' });
     if (!route) throw new Error(`unstubbed fetch: ${url}`);
     return route(call);
   }) as typeof globalThis.fetch;
@@ -168,24 +170,16 @@ describe('scope normalization', () => {
     assert.equal(call?.body?.domain, 'conflict');
   });
 
-  // 0 means "no bound" per the published contract and is omitted, but any
-  // other finite value is forwarded verbatim — the MCP layer promises the
-  // route is the sole authority on bounds, so silently dropping a negative
-  // (a legitimate pre-1970 epoch) would break that promise.
-  it('omits a zero bound but forwards a negative one', async () => {
+  it('rejects negative bounds before contacting Convex', async () => {
     stubFetch({ [CONVEX_TIMELINE_URL]: () => jsonResponse({ records: [] }) });
-
-    await getIntelTimeline(ctx, {
+    await assert.rejects(getIntelTimeline(ctx, {
       domain: 'conflict',
       country: '',
       from: -86_400_000,
       to: 0,
       limit: 0,
-    });
-
-    const call = calls.find((c) => c.url === CONVEX_TIMELINE_URL);
-    assert.equal(call?.body?.from, -86_400_000, 'negative lower bound is forwarded');
-    assert.ok(!('to' in (call?.body ?? {})), 'zero upper bound is omitted as "no bound"');
+    }), /from must be an integer/i);
+    assert.equal(calls.length, 0);
   });
 
   // Whitespace must not satisfy the "at least one scope" requirement and then
@@ -197,6 +191,21 @@ describe('scope normalization', () => {
       /at least one of domain or country/i,
     );
     assert.equal(calls.length, 0, 'no upstream call for an unscoped read');
+  });
+
+  it('rejects invalid domains, countries, inverted bounds, and excessive limits', async () => {
+    stubFetch({});
+    const invalidRequests = [
+      { domain: 'cyber', country: '', from: 0, to: 0, limit: 0 },
+      { domain: 'conflict', country: 'U1', from: 0, to: 0, limit: 0 },
+      { domain: 'conflict', country: '', from: 2, to: 1, limit: 0 },
+      { domain: 'conflict', country: '', from: 0, to: 0, limit: 201 },
+    ];
+    for (const request of invalidRequests) {
+      await assert.rejects(getIntelTimeline(ctx, request), (err: unknown) =>
+        (err as { statusCode?: number }).statusCode === 400);
+    }
+    assert.equal(calls.length, 0);
   });
 });
 
@@ -299,8 +308,9 @@ describe('query-vector cache', () => {
     });
 
     assert.equal(res.upstreamUnavailable, false);
-    assert.equal(writes.length, 1, 'a miss must populate the cache');
-    const [verb, key, value, ex, ttl] = writes[0] as string[];
+    const embedWrites = writes.filter((write) => String(write[1]).startsWith('intel-history:embed:'));
+    assert.equal(embedWrites.length, 1, 'a miss must populate the embedding cache');
+    const [verb, key, value, ex, ttl] = embedWrites[0] as string[];
     assert.equal(verb, 'SET');
     assert.equal(key, await cacheKeyFor(query), 'key carries hashed query, model, dimension');
     assert.ok(!key.includes('rotterdam'), 'raw query text must never appear in the cache key');
@@ -339,6 +349,16 @@ describe('query-vector cache', () => {
 });
 
 describe('searchIntelHistory handler', () => {
+  it('rejects missing or oversized query text before invoking paid upstreams', async () => {
+    stubFetch({});
+    await assert.rejects(searchIntelHistory(ctx, {
+      query: '', domain: '', country: '', from: 0, to: 0, limit: 0,
+    }), /query must be between/i);
+    await assert.rejects(searchIntelHistory(ctx, {
+      query: 'x'.repeat(501), domain: '', country: '', from: 0, to: 0, limit: 0,
+    }), /query must be between/i);
+    assert.equal(calls.length, 0);
+  });
   it('embeds the query and maps Convex records onto the proto shape', async () => {
     stubFetch({
       [OPENROUTER_EMBEDDINGS_URL]: embeddingsOk,
@@ -401,7 +421,7 @@ describe('searchIntelHistory handler', () => {
     });
   });
 
-  it('defaults limit to 20 and caps it at 64', async () => {
+  it('defaults limit to 20 and rejects values above 64', async () => {
     stubFetch({
       [OPENROUTER_EMBEDDINGS_URL]: embeddingsOk,
       [CONVEX_SEARCH_URL]: () => jsonResponse({ records: [] }),
@@ -411,8 +431,10 @@ describe('searchIntelHistory handler', () => {
     assert.equal(calls.find((c) => c.url === CONVEX_SEARCH_URL)?.body?.limit, 20);
 
     calls = [];
-    await searchIntelHistory(ctx, { query: 'ab', domain: '', country: '', from: 0, to: 0, limit: 999 });
-    assert.equal(calls.find((c) => c.url === CONVEX_SEARCH_URL)?.body?.limit, 64);
+    await assert.rejects(
+      searchIntelHistory(ctx, { query: 'ab', domain: '', country: '', from: 0, to: 0, limit: 999 }),
+      /limit must be an integer/i,
+    );
   });
 
   it('omits empty optional scope fields from the Convex body', async () => {
@@ -534,10 +556,9 @@ describe('getIntelTimeline handler', () => {
     assert.equal(res.records.length, 1);
     // No similarity applies to a chronological read.
     assert.equal(res.records[0]?.score, 0);
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0]?.url, CONVEX_TIMELINE_URL);
-    assert.equal(calls[0]?.headers['x-convex-shared-secret'], 'test-shared-secret');
-    assert.deepEqual(calls[0]?.body, { domain: 'conflict', limit: 50 });
+    const convexCall = calls.find((call) => call.url === CONVEX_TIMELINE_URL);
+    assert.equal(convexCall?.headers['x-convex-shared-secret'], 'test-shared-secret');
+    assert.deepEqual(convexCall?.body, { domain: 'conflict', limit: 50 });
   });
 
   it('rejects an unscoped read with a 400-class ApiError before any upstream call', async () => {
@@ -558,18 +579,20 @@ describe('getIntelTimeline handler', () => {
     stubFetch({ [CONVEX_TIMELINE_URL]: () => jsonResponse({ records: [] }) });
 
     await getIntelTimeline(ctx, { domain: '', country: 'UA', from: 0, to: 0, limit: 0 });
-    assert.deepEqual(calls[0]?.body, { country: 'UA', limit: 50 });
+    assert.deepEqual(calls.find((call) => call.url === CONVEX_TIMELINE_URL)?.body, { country: 'UA', limit: 50 });
   });
 
-  it('defaults limit to 50 and caps it at 200', async () => {
+  it('defaults limit to 50 and rejects values above 200', async () => {
     stubFetch({ [CONVEX_TIMELINE_URL]: () => jsonResponse({ records: [] }) });
 
     await getIntelTimeline(ctx, { domain: 'energy', country: '', from: 0, to: 0, limit: 0 });
-    assert.equal(calls[0]?.body?.limit, 50);
+    assert.equal(calls.find((call) => call.url === CONVEX_TIMELINE_URL)?.body?.limit, 50);
 
     calls = [];
-    await getIntelTimeline(ctx, { domain: 'energy', country: '', from: 0, to: 0, limit: 5_000 });
-    assert.equal(calls[0]?.body?.limit, 200);
+    await assert.rejects(
+      getIntelTimeline(ctx, { domain: 'energy', country: '', from: 0, to: 0, limit: 5_000 }),
+      /limit must be an integer/i,
+    );
   });
 
   it('reports upstreamUnavailable when the Convex read is non-ok', async () => {
@@ -590,6 +613,16 @@ describe('getIntelTimeline handler', () => {
 // ── GetSimilarEvents ────────────────────────────────────────────────────────
 
 describe('getSimilarEvents handler', () => {
+  it('rejects missing or oversized situation text before invoking paid upstreams', async () => {
+    stubFetch({});
+    await assert.rejects(getSimilarEvents(ctx, {
+      situation: 'short', domain: '', country: '', limit: 0,
+    }), /situation must be between/i);
+    await assert.rejects(getSimilarEvents(ctx, {
+      situation: 'x'.repeat(1001), domain: '', country: '', limit: 0,
+    }), /situation must be between/i);
+    assert.equal(calls.length, 0);
+  });
   it('embeds the situation text and echoes it back with the matches', async () => {
     stubFetch({
       [OPENROUTER_EMBEDDINGS_URL]: embeddingsOk,
@@ -606,21 +639,21 @@ describe('getSimilarEvents handler', () => {
     // Default limit is 10 — half of search's default, since precedent lookups
     // are read by a human or an LLM rather than scrolled.
     assert.equal(calls.find((c) => c.url === CONVEX_SEARCH_URL)?.body?.limit, 10);
+    assert.equal(calls.find((c) => c.url === CONVEX_SEARCH_URL)?.body?.minScore, 0.55);
   });
 
-  it('caps limit at 32', async () => {
+  it('rejects limits above 32', async () => {
     stubFetch({
       [OPENROUTER_EMBEDDINGS_URL]: embeddingsOk,
       [CONVEX_SEARCH_URL]: () => jsonResponse({ records: [] }),
     });
 
-    await getSimilarEvents(ctx, {
+    await assert.rejects(getSimilarEvents(ctx, {
       situation: 'A naval blockade closes a grain export corridor.',
       domain: '',
       country: '',
       limit: 512,
-    });
-    assert.equal(calls.find((c) => c.url === CONVEX_SEARCH_URL)?.body?.limit, 32);
+    }), /limit must be an integer/i);
   });
 
   it('reports upstreamUnavailable when the embeddings provider fails', async () => {
@@ -692,7 +725,7 @@ describe('proto definitions', () => {
   });
 
   for (const { rpc, file } of RPCS) {
-    it(`declares ${rpc} in service.proto as a GET`, () => {
+  it(`declares ${rpc} in service.proto`, () => {
       assert.match(
         serviceProtoSrc,
         new RegExp(`rpc ${rpc}\\(${rpc}Request\\) returns \\(${rpc}Response\\)`),
@@ -757,9 +790,10 @@ describe('gateway wiring', () => {
 
 describe('generated OpenAPI', () => {
   for (const { path } of RPCS) {
-    it(`publishes GET ${path}`, () => {
+  it(`publishes the expected method for ${path}`, () => {
       assert.ok(openApiJson.paths[path], `${path} missing from IntelligenceService.openapi.json`);
-      assert.ok(openApiJson.paths[path]?.get, `${path} must be a GET operation`);
+      const method = path.includes('search-intel-history') || path.includes('get-similar-events') ? 'post' : 'get';
+      assert.ok(openApiJson.paths[path]?.[method], `${path} must be a ${method.toUpperCase()} operation`);
     });
   }
 });
