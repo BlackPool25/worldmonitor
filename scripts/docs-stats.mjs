@@ -344,20 +344,27 @@ function computeStats() {
     return acc;
   }, {});
 
-  const leaderBlock = read('src/services/trending-keywords.ts').match(
+  // LEADER_NAMES moved to shared/keyword-spike-core.js (issue #5697) so the
+  // server-side get_keyword_spikes MCP tool shares the tracked list.
+  const leaderBlock = read('shared/keyword-spike-core.js').match(
     /const\s+LEADER_NAMES\s*(?::[^=]*)?\s*=\s*\[([\s\S]*?)\];/,
   );
   if (!leaderBlock) {
-    throw new Error('docs-stats: could not find LEADER_NAMES array in src/services/trending-keywords.ts');
+    throw new Error('docs-stats: could not find LEADER_NAMES array in shared/keyword-spike-core.js');
   }
   const leaderNames = (leaderBlock[1].match(/'[^']+'/g) || []).length;
 
-  const populationBlock = read('src/services/population-exposure.ts').match(
+  // Table moved to the shared client/server core in #5696. Fail closed like
+  // LEADER_NAMES above: the previous `: 0` fallback silently zeroed the
+  // published claim when the file moved, turning a stale doc number into an
+  // unnoticed "code says 0".
+  const populationBlock = read('shared/analysis-population-exposure.ts').match(
     /const PRIORITY_COUNTRIES:[\s\S]*?=\s*\{([\s\S]*?)\n\};/,
   );
-  const populationPriorityCountries = populationBlock
-    ? (populationBlock[1].match(/^\s+[A-Z]{3}:\s*\{/gm) || []).length
-    : 0;
+  if (!populationBlock) {
+    throw new Error('docs-stats: could not find PRIORITY_COUNTRIES in shared/analysis-population-exposure.ts');
+  }
+  const populationPriorityCountries = (populationBlock[1].match(/^\s+[A-Z]{3}:\s*\{/gm) || []).length;
 
   return {
     _generated: 'scripts/docs-stats.mjs — do not edit by hand; run `npm run docs:stats`',

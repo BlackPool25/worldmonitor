@@ -29,9 +29,9 @@ test('decodeHtml does not double-decode escaped markup into live markup', async 
   assert.equal(description, 'XSS via &lt;script&gt; in Acme SDK');
 });
 
-test('decodeHtml drops out-of-range numeric references instead of keeping or throwing', async () => {
+test('decodeHtml preserves out-of-range numeric references instead of throwing or welding text', async () => {
   const description = await fetchOverview('a&amp;#999999999;b');
-  assert.equal(description, 'ab');
+  assert.equal(description, 'a&#999999999;b');
 });
 
 test('decodeHtml still decodes exactly one level of the predefined entities', async () => {

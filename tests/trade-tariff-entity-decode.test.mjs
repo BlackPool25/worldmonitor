@@ -53,9 +53,9 @@ describe('htmlToPlainText: one pass must decode exactly one level', () => {
     );
   });
 
-  it('drops out-of-range numeric references instead of throwing', () => {
-    assert.equal(htmlToPlainText('<p>a&#999999999;b</p>'), 'ab');
-    assert.equal(htmlToPlainText('<p>a&#x110000;b</p>'), 'ab');
+  it('preserves out-of-range numeric references instead of throwing or welding text', () => {
+    assert.equal(htmlToPlainText('<p>a&#999999999;b</p>'), 'a&#999999999;b');
+    assert.equal(htmlToPlainText('<p>a&#x110000;b</p>'), 'a&#x110000;b');
   });
 
   it('decodes a single level of numeric references, including above the BMP', () => {

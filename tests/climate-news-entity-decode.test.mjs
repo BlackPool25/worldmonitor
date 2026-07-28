@@ -72,9 +72,9 @@ describe('seed-climate-news entity decoding: one pass must decode exactly one le
     assert.equal(item.title, 'Record heat \u{1F525} in "the south"');
   });
 
-  it('drops out-of-range numeric references instead of throwing', () => {
+  it('preserves out-of-range numeric references instead of throwing or welding text', () => {
     const item = parseOne(rssItem({ title: 'a&#999999999;b' }));
-    assert.equal(item.title, 'ab');
+    assert.equal(item.title, 'a&#999999999;b');
   });
 
   it('decodes exactly one level in links', () => {

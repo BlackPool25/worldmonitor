@@ -56,9 +56,9 @@ describe('seed-energy-intelligence entity decoding: one pass decodes exactly one
     assert.equal(items[0].title, 'XSS via &lt;script&gt; in oil SDK');
   });
 
-  it('drops out-of-range numeric references instead of throwing', () => {
+  it('preserves out-of-range numeric references instead of throwing or welding text', () => {
     const items = parseRssItems(wrapInRss('Oil a&#999999999;b rally'), 'Test');
-    assert.equal(items[0].title, 'Oil ab rally');
+    assert.equal(items[0].title, 'Oil a&#999999999;b rally');
   });
 
   it('decodes numeric references above the BMP', () => {

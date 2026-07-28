@@ -46,8 +46,8 @@ describe('china-macro stripHtml: one pass must decode exactly one level', () => 
     assert.equal(parseEvent('Retail&nbsp;Sales&#160;Total'), 'Retail Sales Total');
   });
 
-  it('drops out-of-range numeric references instead of throwing', () => {
-    assert.equal(parseEvent('a&#999999999;b'), 'ab');
+  it('preserves out-of-range numeric references instead of throwing or welding text', () => {
+    assert.equal(parseEvent('a&#999999999;b'), 'a&#999999999;b');
   });
 
   it('decodes numeric references above the BMP', () => {

@@ -42,10 +42,10 @@ describe('decodeEntities: one pass must decode exactly one level', () => {
     assert.equal(decodeEntities('&#x1F600;'), '\u{1F600}');
   });
 
-  it('drops out-of-range numeric references instead of throwing', () => {
+  it('preserves out-of-range numeric references instead of throwing or welding text', () => {
     assert.doesNotThrow(() => decodeEntities('a&#999999999;b'));
-    assert.equal(decodeEntities('a&#999999999;b'), 'ab');
-    assert.equal(decodeEntities('a&#xFFFFFFFF;b'), 'ab');
+    assert.equal(decodeEntities('a&#999999999;b'), 'a&#999999999;b');
+    assert.equal(decodeEntities('a&#xFFFFFFFF;b'), 'a&#xFFFFFFFF;b');
   });
 
   it('still decodes a single level of the predefined entities', () => {

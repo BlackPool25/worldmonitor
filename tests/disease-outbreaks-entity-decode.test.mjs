@@ -5,8 +5,8 @@
 // The decode step MUST be single-pass: `&amp;` must not be decoded before the
 // other replaces, otherwise `&amp;lt;script&amp;gt;` becomes `<script>` and
 // the subsequent tag strip silently deletes the publisher's literal text
-// (#5436). Out-of-range numeric references (`&#999999999;`) must not throw
-// `String.fromCodePoint`'s RangeError.
+// (#5436). Out-of-range numeric references (`&#999999999;`) must be preserved
+// without throwing `String.fromCodePoint`'s RangeError or welding nearby text.
 //
 // The decode site lives inside the seeder's private fetchRssItems (network),
 // so the pure decode+strip step is exported as `cleanRssDescription` from
@@ -73,8 +73,8 @@ describe('cleanRssDescription: one pass must decode exactly one level', () => {
     assert.equal(cleanRssDescription('&#x1F600;'), '\u{1F600}');
   });
 
-  it('drops out-of-range numeric references instead of throwing', () => {
-    assert.equal(cleanRssDescription('a&#999999999;b'), 'ab');
+  it('preserves out-of-range numeric references instead of throwing or welding text', () => {
+    assert.equal(cleanRssDescription('a&#999999999;b'), 'a&#999999999;b');
   });
 
   it('strips real tags after decoding and truncates to 300 chars', () => {

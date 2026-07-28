@@ -37,9 +37,9 @@ describe('china-policy adapters entity decoding (#5436)', () => {
     assert.equal(stripHtml('<p>&#X1f600;</p>'), '\u{1F600}');
   });
 
-  it('drops out-of-range numeric references instead of throwing', () => {
-    assert.equal(stripHtml('<p>正文&#x110000;内容</p>'), '正文内容');
-    assert.equal(stripHtml('<p>a&#999999999;b</p>'), 'ab');
+  it('preserves out-of-range numeric references instead of throwing or welding text', () => {
+    assert.equal(stripHtml('<p>正文&#x110000;内容</p>'), '正文&#x110000;内容');
+    assert.equal(stripHtml('<p>a&#999999999;b</p>'), 'a&#999999999;b');
   });
 
   it('matches entities case-insensitively and keeps unknown entities as-is', () => {

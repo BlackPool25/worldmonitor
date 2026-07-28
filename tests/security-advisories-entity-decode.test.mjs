@@ -52,9 +52,9 @@ describe('security advisories stripHtml: one pass must decode exactly one level'
     assert.equal(item.description, 'Advisory &lt;b&gt;update&lt;/b&gt; issued');
   });
 
-  it('drops out-of-range numeric references instead of throwing', () => {
+  it('preserves out-of-range numeric references instead of throwing or welding text', () => {
     const [item] = parseRssItems(rssItem({ description: 'a&#999999999;b' }));
-    assert.equal(item.description, 'ab');
+    assert.equal(item.description, 'a&#999999999;b');
   });
 
   it('decodes numeric references used by advisory feeds', () => {

@@ -44,8 +44,8 @@ describe('extractListedCountries anchor-text decode: exactly one level', () => {
     assert.deepEqual(unmatchedFor('Tom &amp;amp; Jerry'), ['Tom &amp; Jerry']);
   });
 
-  it('drops out-of-range numeric references instead of throwing', () => {
-    assert.deepEqual(unmatchedFor('a&#999999999;b'), ['ab']);
+  it('preserves out-of-range numeric references instead of throwing or welding text', () => {
+    assert.deepEqual(unmatchedFor('a&#999999999;b'), ['a&#999999999;b']);
   });
 
   it('round-trips a real country with an escaped apostrophe into the lookup', () => {

@@ -77,7 +77,10 @@ describe('china-macro adapters decodeHtml: one pass must decode exactly one leve
     assert.equal(parseTitle('June 2026 Index &#128512; YoY'), 'June 2026 Index \u{1F600} YoY');
   });
 
-  it('drops out-of-range numeric references instead of throwing', () => {
-    assert.equal(parseTitle('June 2026 a&#999999999;b Output'), 'June 2026 ab Output');
+  it('preserves out-of-range numeric references instead of throwing or welding text', () => {
+    assert.equal(
+      parseTitle('June 2026 a&#999999999;b Output'),
+      'June 2026 a&#999999999;b Output',
+    );
   });
 });

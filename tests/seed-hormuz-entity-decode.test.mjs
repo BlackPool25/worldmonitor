@@ -51,8 +51,8 @@ describe('stripTags entity decoding: one pass must decode exactly one level', ()
     assert.equal(stripTags('&#x1F600;'), '\u{1F600}');
   });
 
-  it('drops out-of-range numeric references instead of throwing', () => {
-    assert.equal(stripTags('a&#999999999;b'), 'ab');
+  it('preserves out-of-range numeric references instead of throwing or welding text', () => {
+    assert.equal(stripTags('a&#999999999;b'), 'a&#999999999;b');
   });
 
   it('still decodes a single level of the entities the old decoder handled', () => {
