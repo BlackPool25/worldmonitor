@@ -7,10 +7,10 @@ import type {
 import {
   normalizeCountry,
   normalizeDomain,
-  embedQueryText,
   intelHistorySearch,
   resolveLimit,
 } from '../../../_shared/intel-history-client';
+import { embedQueryText } from '../../../_shared/intel-history-embed';
 
 /**
  * Server-side default when the request omits `limit`. Half of

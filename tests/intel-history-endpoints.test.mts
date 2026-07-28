@@ -31,7 +31,7 @@ import {
   EMBED_DIMS,
   OPENROUTER_EMBEDDINGS_URL,
 } from '../scripts/lib/brief-dedup-consts.mjs';
-import { normalizeQueryText } from '../server/_shared/intel-history-client';
+import { normalizeQueryText } from '../server/_shared/intel-history-embed';
 import { getIntelTimeline } from '../server/worldmonitor/intelligence/v1/get-intel-timeline';
 import { getSimilarEvents } from '../server/worldmonitor/intelligence/v1/get-similar-events';
 import { searchIntelHistory } from '../server/worldmonitor/intelligence/v1/search-intel-history';

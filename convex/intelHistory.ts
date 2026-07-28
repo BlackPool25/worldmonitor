@@ -439,7 +439,12 @@ export const prune = internalMutation({
   handler: async (ctx, args) => {
     const now = args.now ?? Date.now();
     const cutoff = now - (args.retentionMs ?? RETENTION_MS);
-    const batch = args.limit ?? PRUNE_BATCH;
+    // Floor of 1. A batch of 0 makes `take(0)` return [] and the
+    // `stale.length >= batch` check below read 0 >= 0 as "a full batch", so the
+    // mutation would reschedule itself forever, deleting nothing. The cron
+    // passes {}, but this is operator-callable and `limit: 0` is a natural
+    // thing to type when probing the drain.
+    const batch = Math.max(1, Math.floor(args.limit ?? PRUNE_BATCH));
 
     const stale = await ctx.db
       .query("intelHistory")

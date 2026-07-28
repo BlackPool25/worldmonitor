@@ -233,10 +233,19 @@ export const ENDPOINT_RATE_POLICIES: Record<string, EndpointRatePolicy> = {
   // follow-ups); lower than the LLM routes' 600/min because nothing here is
   // called in a page-load fan-out. The companion /get-intel-timeline is a
   // pure Convex index read with no provider leg and deliberately has no
-  // policy — it inherits the global availability-first fallback like the
-  // other read-only gateway routes.
+  // policy of its own until #5737's review measured its read amplification:
+  // Convex reads whole documents, and every intelHistory row carries a
+  // 512-float embedding that the projection immediately discards. One
+  // limit=200 request scoped by both domain and country scans
+  // TIMELINE_MAX_SCAN=800 rows (4x over-fetch for the post-filter), so ~3MB of
+  // Convex read budget per call. It spends no provider money — the reason it
+  // was originally left policy-less — but it does spend the resource that
+  // scales with retention, and the global 600/min fallback bounds neither.
+  // 120/min is generous for reading a timeline while capping the worst case
+  // well below the fallback.
   '/api/intelligence/v1/search-intel-history': { limit: 30, window: '60 s' },
   '/api/intelligence/v1/get-similar-events': { limit: 30, window: '60 s' },
+  '/api/intelligence/v1/get-intel-timeline': { limit: 120, window: '60 s' },
   // Batch humanitarian-summary fans out to the external HAPI (humdata) provider
   // on cache miss — up to 25 countries per request, 5 concurrent upstream
   // fetches. Batch aircraft-details fans out to the external Wingbits provider —

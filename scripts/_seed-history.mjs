@@ -74,8 +74,12 @@ const ERROR_SNIPPET_MAX_CHARS = 200;
  */
 const HISTORY_TOTAL_BUDGET_MS = 30_000;
 
-/** Typed error so callers can distinguish history failures from seed failures. */
-export class SeedHistoryError extends Error {
+/**
+ * Names this module's failures in the message and in any Sentry grouping.
+ * NOT exported: every caller catches generically (the hooks are fail-open by
+ * contract), so an exported type nothing imports would be speculative surface.
+ */
+class SeedHistoryError extends Error {
   constructor(message, { status, cause } = {}) {
     super(message);
     this.name = 'SeedHistoryError';

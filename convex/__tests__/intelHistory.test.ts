@@ -535,6 +535,27 @@ describe("intelHistory.prune", () => {
     const rows = await t.run((ctx) => ctx.db.query("intelHistory").collect());
     expect(rows).toHaveLength(0);
   });
+
+  // A batch of 0 makes take(0) return [], and an unguarded `length >= batch`
+  // reads 0 >= 0 as a full batch — rescheduling forever while deleting
+  // nothing. The cron passes {}, but prune is operator-callable.
+  test("does not reschedule itself forever when called with limit 0", async () => {
+    const t = convexTest(schema, modules);
+    const beyond = NOW - (INTEL_HISTORY_RETENTION_DAYS + 1) * DAY;
+    await seed(t, [
+      { dedupeKey: "aged-0", ingestedAt: beyond, occurredAt: beyond, title: "aged-0" },
+    ]);
+
+    const result = await t.mutation(internal.intelHistory.prune, { now: NOW, limit: 0 });
+
+    // Floors to 1: it makes progress instead of spinning on an empty batch.
+    expect(result.deleted).toBe(1);
+    expect(result.rescheduled).toBe(true);
+
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    const rows = await t.run((ctx) => ctx.db.query("intelHistory").collect());
+    expect(rows).toHaveLength(0);
+  });
 });
 
 describe("POST /relay/intel-history", () => {
