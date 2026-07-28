@@ -1699,6 +1699,16 @@ function isValidEmbedding(value: unknown): value is number[] {
   );
 }
 
+/** Only http(s) links may be stored; see the seeder-side twin in scripts/_seed-history.mjs. */
+function isHttpUrl(value: string): boolean {
+  try {
+    const scheme = new URL(value).protocol;
+    return scheme === "https:" || scheme === "http:";
+  } catch {
+    return false;
+  }
+}
+
 function validateIntelHistoryRecord(
   raw: unknown,
 ): { ok: true; record: IntelHistoryIngestRecord } | { ok: false; reason: string } {
@@ -1759,6 +1769,15 @@ function validateIntelHistoryRecord(
       ok: false,
       reason: `sourceUrl must be a string of at most ${INTEL_HISTORY_MAX_SOURCE_URL_LEN} chars`,
     };
+  }
+  // Re-checked here even though the seeder sanitizes: this is the trust
+  // boundary, and a compromised relay credential must not be able to store a
+  // `javascript:`/`data:` value in a field the MCP tools publish to agents as
+  // a canonical link. Rejected rather than silently dropped — unlike the
+  // seeder, which is projecting a whole run and should keep the row, a caller
+  // POSTing here has sent an explicitly bad field and should be told.
+  if (sourceUrl.value !== undefined && !isHttpUrl(sourceUrl.value)) {
+    return { ok: false, reason: "sourceUrl must be an http(s) URL" };
   }
 
   return {

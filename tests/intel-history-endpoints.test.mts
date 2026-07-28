@@ -168,6 +168,26 @@ describe('scope normalization', () => {
     assert.equal(call?.body?.domain, 'conflict');
   });
 
+  // 0 means "no bound" per the published contract and is omitted, but any
+  // other finite value is forwarded verbatim — the MCP layer promises the
+  // route is the sole authority on bounds, so silently dropping a negative
+  // (a legitimate pre-1970 epoch) would break that promise.
+  it('omits a zero bound but forwards a negative one', async () => {
+    stubFetch({ [CONVEX_TIMELINE_URL]: () => jsonResponse({ records: [] }) });
+
+    await getIntelTimeline(ctx, {
+      domain: 'conflict',
+      country: '',
+      from: -86_400_000,
+      to: 0,
+      limit: 0,
+    });
+
+    const call = calls.find((c) => c.url === CONVEX_TIMELINE_URL);
+    assert.equal(call?.body?.from, -86_400_000, 'negative lower bound is forwarded');
+    assert.ok(!('to' in (call?.body ?? {})), 'zero upper bound is omitted as "no bound"');
+  });
+
   // Whitespace must not satisfy the "at least one scope" requirement and then
   // match nothing downstream.
   it('rejects a whitespace-only scope as unscoped', async () => {

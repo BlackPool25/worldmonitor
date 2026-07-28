@@ -637,6 +637,12 @@ describe("POST /relay/intel-history", () => {
     ["oversized title", { title: "t".repeat(501) }],
     ["oversized summary", { summary: "s".repeat(2001) }],
     ["missing dedupeKey", { dedupeKey: "" }],
+    // The seeder already strips these, but this is the trust boundary: a
+    // compromised relay credential must not be able to store a scheme the MCP
+    // tools would publish to agents as a canonical link.
+    ["javascript: sourceUrl", { sourceUrl: "javascript:alert(1)" }],
+    ["data: sourceUrl", { sourceUrl: "data:text/html;base64,PHNjcmlwdD4=" }],
+    ["protocol-relative sourceUrl", { sourceUrl: "//evil.test/x" }],
   ])("rejects a record with a %s (400 INVALID_RECORD)", async (_label, patch) => {
     const t = convexTest(schema, modules);
     const res = await t.fetch(

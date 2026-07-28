@@ -44,6 +44,7 @@ export const HISTORY_CHUNK_SIZE = 50;
 const DEDUPE_KEY_MAX_CHARS = 256;
 const TITLE_MAX_CHARS = 500;
 const SUMMARY_MAX_CHARS = 2000;
+const SOURCE_URL_MAX_CHARS = 2048;
 
 // Embedding input budget. Long summaries add noise, not signal, to a
 // 512-dim vector — and the cache key is the text itself, so an
@@ -85,6 +86,29 @@ class SeedHistoryError extends Error {
     this.name = 'SeedHistoryError';
     if (status !== undefined) this.status = status;
     if (cause !== undefined) this.cause = cause;
+  }
+}
+
+/**
+ * Keep only http(s) links. The MCP outputSchema documents `sourceUrl` as a
+ * canonical link and the three retrieval tools hand it to agents and UIs, so a
+ * `javascript:` or `data:` value from a poisoned feed would be a stored XSS
+ * vector — and because history is durable it would persist for the full
+ * retention window rather than one seed cycle. Dropped, not rejected: a
+ * source-less history row is still worth keeping.
+ *
+ * Parsed rather than prefix-matched, so `\tjavascript:` and other
+ * whitespace/case tricks that fool a `startsWith` are normalized away first.
+ * A protocol-relative `//host/path` has no scheme and fails to parse, which is
+ * the outcome we want — it is not a usable absolute link either.
+ */
+function safeSourceUrl(value) {
+  if (!value) return '';
+  try {
+    const scheme = new URL(value).protocol;
+    return scheme === 'https:' || scheme === 'http:' ? value : '';
+  } catch {
+    return '';
   }
 }
 
@@ -136,7 +160,7 @@ export function normalizeHistoryRecords(records) {
     if (country) record.country = country;
     const category = trimmedString(raw.category, 64);
     if (category) record.category = category;
-    const sourceUrl = trimmedString(raw.sourceUrl, 2048);
+    const sourceUrl = safeSourceUrl(trimmedString(raw.sourceUrl, SOURCE_URL_MAX_CHARS));
     if (sourceUrl) record.sourceUrl = sourceUrl;
 
     sanitized.push(record);

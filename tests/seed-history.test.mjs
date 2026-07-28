@@ -137,6 +137,34 @@ describe('normalizeHistoryRecords', () => {
     assert.equal(out[0].dedupeKey.length, 256);
   });
 
+  // sourceUrl is published to agents as a canonical link and history is
+  // durable, so a poisoned feed's javascript:/data: value would persist for
+  // the full retention window. The field is dropped; the row is kept.
+  it('drops a non-http(s) sourceUrl but keeps the record', () => {
+    const hostile = [
+      'javascript:alert(1)',
+      '\tjavascript:alert(1)',
+      'JaVaScRiPt:alert(1)',
+      'data:text/html;base64,PHNjcmlwdD4=',
+      '//evil.test/path',
+      'not a url at all',
+    ];
+
+    for (const sourceUrl of hostile) {
+      const out = normalizeHistoryRecords([record(1, { sourceUrl })]);
+      assert.equal(out.length, 1, `${sourceUrl}: record must survive`);
+      assert.equal(out[0].sourceUrl, undefined, `${sourceUrl}: field must be dropped`);
+      assert.equal(out[0].title, 'Event 1');
+    }
+  });
+
+  it('keeps http and https sourceUrls', () => {
+    for (const sourceUrl of ['https://example.test/a', 'http://example.test/b']) {
+      const [out] = normalizeHistoryRecords([record(1, { sourceUrl })]);
+      assert.equal(out.sourceUrl, sourceUrl);
+    }
+  });
+
   it('keeps the newest HISTORY_MAX_RECORDS_PER_RUN by occurredAt desc', () => {
     const input = [];
     for (let i = 0; i < HISTORY_MAX_RECORDS_PER_RUN + 60; i++) input.push(record(i));

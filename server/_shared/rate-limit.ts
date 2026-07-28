@@ -225,24 +225,27 @@ export const ENDPOINT_RATE_POLICIES: Record<string, EndpointRatePolicy> = {
   // caller's free text through the OpenRouter embeddings API on every cache
   // miss, so they are provider-backed spend, not pure reads. They are also
   // premium-gated, which means the gateway serves them with no CDN cache — a
-  // Pro caller reaches the function on every request. These two spend the
-  // SAME embeddings budget, and the registry is keyed per path — so a caller
-  // alternating them gets the sum, not the cap. 30/min each keeps the
+  // The three intel-history reads. All are Pro-gated and reach the function on
+  // every request, but they spend two different budgets, so they are sized
+  // against two different ceilings.
+  //
+  // search + similar-events each embed their input on a paid provider. They
+  // share ONE budget while the registry is keyed per PATH, so a caller
+  // alternating them gets the sum, not the cap — 30/min each holds the
   // combined worst case at the 60/min per-principal embeddings bill this is
-  // sized for, while still covering interactive use (a search plus
-  // follow-ups); lower than the LLM routes' 600/min because nothing here is
-  // called in a page-load fan-out. The companion /get-intel-timeline is a
-  // pure Convex index read with no provider leg and deliberately has no
-  // policy of its own until #5737's review measured its read amplification:
-  // Convex reads whole documents, and every intelHistory row carries a
-  // 512-float embedding that the projection immediately discards. One
-  // limit=200 request scoped by both domain and country scans
-  // TIMELINE_MAX_SCAN=800 rows (4x over-fetch for the post-filter), so ~3MB of
-  // Convex read budget per call. It spends no provider money — the reason it
-  // was originally left policy-less — but it does spend the resource that
-  // scales with retention, and the global 600/min fallback bounds neither.
-  // 120/min is generous for reading a timeline while capping the worst case
-  // well below the fallback.
+  // sized for. Still generous for interactive use (a search plus follow-ups),
+  // and far under the LLM routes' 600/min because nothing here runs in a
+  // page-load fan-out.
+  //
+  // timeline embeds nothing, which is why it originally carried no policy at
+  // all. That reasoning was right about money and wrong about the resource
+  // that actually scales with retention: Convex reads whole documents, and
+  // every intelHistory row carries a 512-float embedding the projection
+  // immediately discards. One limit=200 call scoped by both domain and
+  // country scans TIMELINE_MAX_SCAN=800 rows (4x over-fetch for the
+  // post-filter) — roughly 3MB of Convex read budget, which the 600/min
+  // availability-first fallback did not bound. 120/min keeps a timeline read
+  // comfortable while capping that worst case.
   '/api/intelligence/v1/search-intel-history': { limit: 30, window: '60 s' },
   '/api/intelligence/v1/get-similar-events': { limit: 30, window: '60 s' },
   '/api/intelligence/v1/get-intel-timeline': { limit: 120, window: '60 s' },
