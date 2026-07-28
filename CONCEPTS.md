@@ -48,6 +48,18 @@ An Alert Rule's optional country restriction. Empty means unscoped — every eve
 
 The country identity a notification publisher attaches to an event at publish time, normalized to ISO-3166 alpha-2 through the shared country-name map. Attribution is the publisher's job, not the dispatcher's: a publisher that knows the country must attach it, because a missing or unresolvable attribution is indistinguishable downstream from a genuinely global event. A name-normalization miss that silently omits the attribution converts "lookup failed" into "field never existed" — the failure mode that lets scoped delivery leak. See also: Country Scope.
 
+## Company Attribution
+
+### Filer
+
+The company identity that a securities regulator publishes under a stable registry key, and the only unit that corporate intelligence attributes data to. A filer is not a brand, a website owner, or a market ticker: several tickers (share classes) can belong to one filer, and a familiar company name may sit under a legal title that shares its prefix with unrelated filers. Everything the product says about a company — filings, material events, market profile, news — hangs off a resolved filer, so resolving to the wrong one silently misattributes every downstream field at once. See also: Provisional Match.
+
+### Provisional Match
+
+A filer resolution produced by a low-precision key — a domain or a company name rather than an exact registry key — which is not usable until confirmed against a field the registry itself publishes about that filer. The distinction that makes this term necessary: uniqueness is not identity. A domain label can match exactly one filer and still match the wrong one, because "only one candidate" answers a question about the registry's contents, not about who owns the domain. Confirmation therefore compares the request against independent registry-published evidence, and fails closed — when the evidence is absent or unparseable the resolution yields nothing rather than the unconfirmed candidate.
+
+An ambiguous match resolves to nothing rather than to a tie-break; ranking candidates by title length or any similar proxy is a guess, not a resolution. Callers distinguish "no such company" from "could not look up" by separate signals, because an unreadable registry is an infrastructure failure and must never be cached as an authoritative negative answer. See also: Filer, Event Attribution.
+
 ## Panel Mounting & Layout Stability
 
 ### Immediate Tier
