@@ -211,6 +211,61 @@ export function parseCheckoutErrorBody(rawText: string): CheckoutErrorBody {
   return parsed as CheckoutErrorBody;
 }
 
+/** Body of a 200 response from POST /api/create-checkout. */
+export interface CheckoutSuccessBody {
+  checkout_url?: unknown;
+  anonymous_claim_token?: unknown;
+}
+
+/**
+ * Parse a 200 create-checkout body, returning `null` when the payload is
+ * not a JSON object.
+ *
+ * The success path used to call `resp.json()` directly. On a 200 whose
+ * body is not valid JSON that throws an engine-specific DOMException
+ * (Safari: `SyntaxError: The string did not match the expected pattern.`,
+ * code 12), which escaped past the "200 without a usable checkout_url"
+ * contract-violation reporter into the generic catch — losing the
+ * upstream snapshot and splitting one bug across a Sentry fingerprint per
+ * browser engine. WORLDMONITOR-XV.
+ *
+ * `null` (unparseable) is deliberately distinct from `{}` (well-formed
+ * but missing checkout_url): the former points at transport corruption or
+ * a middlebox, the latter at a relay payload bug. Same plain-object-only
+ * rule as parseCheckoutErrorBody — arrays and primitives cannot carry
+ * checkout_url, so accepting them would be a structural lie.
+ */
+export function parseCheckoutSuccessBody(rawText: string): CheckoutSuccessBody | null {
+  if (rawText.length === 0) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return null;
+  }
+  return parsed as CheckoutSuccessBody;
+}
+
+/**
+ * Masks the `anonymous_claim_token` value in a raw body string.
+ *
+ * A 200 create-checkout body carries that token, which the client
+ * persists to localStorage as claim proof for migrating protected payment
+ * rows — i.e. a bearer-like credential that must never reach Sentry. The
+ * trailing `"?` makes the match tolerate a body cut mid-token, since a
+ * leaked prefix is still a leak. Applied inside the snapshot builder
+ * rather than at the call site so no future caller can forget it; it is a
+ * no-op for error bodies, which never carry the field.
+ */
+const ANON_CLAIM_TOKEN_PATTERN = /("anonymous_claim_token"\s*:\s*")(?:\\.|[^"\\])*"?/g;
+
+function redactCheckoutSecrets(rawBody: string): string {
+  return rawBody.replace(ANON_CLAIM_TOKEN_PATTERN, '$1[redacted]"');
+}
+
 /**
  * Build an UpstreamSnapshot from a fetch Response (already-read text body
  * is passed in because Response bodies are single-use; the caller must
@@ -230,10 +285,13 @@ export function snapshotUpstreamResponse(
     vercelId: headers.get('x-vercel-id') ?? undefined,
     vercelCache: headers.get('x-vercel-cache') ?? undefined,
   };
-  if (rawBody.length > 0) {
-    snap.bodySnippet = rawBody.length > BODY_SNIPPET_MAX
-      ? rawBody.slice(0, BODY_SNIPPET_MAX)
-      : rawBody;
+  // Redact BEFORE truncating: the other order would emit the first 200
+  // chars verbatim, shipping any token that sits inside them in full.
+  const safeBody = redactCheckoutSecrets(rawBody);
+  if (safeBody.length > 0) {
+    snap.bodySnippet = safeBody.length > BODY_SNIPPET_MAX
+      ? safeBody.slice(0, BODY_SNIPPET_MAX)
+      : safeBody;
   }
   return snap;
 }

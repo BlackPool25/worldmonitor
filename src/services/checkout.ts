@@ -28,6 +28,7 @@ import {
   classifySyntheticCheckoutError,
   classifyThrownCheckoutError,
   parseCheckoutErrorBody,
+  parseCheckoutSuccessBody,
   snapshotUpstreamResponse,
   type CheckoutError,
   type CheckoutErrorCode,
@@ -967,8 +968,40 @@ export async function startCheckout(
       return false;
     }
 
-    const result = await resp.json();
-    if (typeof result?.anonymous_claim_token === 'string' && result.anonymous_claim_token.length > 0) {
+    // Read the success body as TEXT first, for the same reason the !ok
+    // branch above does: a 200 whose body is not valid JSON (edge
+    // interstitial, empty payload, mid-transit truncation) made the old
+    // bare `resp.json()` throw an engine-specific DOMException — Safari's
+    // is `SyntaxError: The string did not match the expected pattern.` —
+    // which skipped the contract-violation reporter below, discarded the
+    // upstream snapshot that would name the emitter, and split one bug
+    // across a Sentry fingerprint per browser engine. WORLDMONITOR-XV.
+    const rawSuccessText = await resp.text().catch(() => '');
+    const result = parseCheckoutSuccessBody(rawSuccessText);
+    if (result === null) {
+      // A 200 we cannot parse is a different contract violation from a
+      // well-formed payload missing checkout_url below: it points at
+      // transport corruption or a middlebox rather than a relay payload
+      // bug, so it carries its own action tag. The upstream snapshot is
+      // what makes the next one self-diagnosing — it says whether the
+      // body was HTML, empty, or truncated, and which layer emitted it.
+      const unparsableBodyError: CheckoutError = {
+        code: 'service_unavailable',
+        userMessage: 'Checkout is temporarily unavailable. Please try again in a moment.',
+        serverMessage: 'Server returned 200 with a non-JSON body',
+        httpStatus: resp.status,
+        retryable: true,
+      };
+      reportCheckoutError(
+        unparsableBodyError,
+        { productId, action: 'unparsable-success-body' },
+        undefined,
+        snapshotUpstreamResponse(resp, rawSuccessText),
+      );
+      renderCheckoutErrorSurface(unparsableBodyError, fallbackToPricingPage);
+      return false;
+    }
+    if (typeof result.anonymous_claim_token === 'string' && result.anonymous_claim_token.length > 0) {
       saveAnonClaimToken(result.anonymous_claim_token);
     }
     // #4449: navigate the top window to Dodo's HOSTED checkout instead of
@@ -981,7 +1014,7 @@ export async function startCheckout(
     // returns the customer to /dashboard?wm_checkout=return to reconcile. The
     // overlay machinery (openCheckout / ensureCheckoutOverlayInitialized / the
     // event handler / watchdog) is left dormant pending removal.
-    const hostedCheckoutUrl = safeHostedCheckoutUrl(result?.checkout_url);
+    const hostedCheckoutUrl = safeHostedCheckoutUrl(result.checkout_url);
     if (hostedCheckoutUrl) {
       window.location.assign(hostedCheckoutUrl);
       return true;
@@ -1002,7 +1035,15 @@ export async function startCheckout(
       httpStatus: resp.status,
       retryable: true,
     };
-    reportCheckoutError(missingUrlError, { productId, action: 'missing-checkout-url' });
+    reportCheckoutError(
+      missingUrlError,
+      { productId, action: 'missing-checkout-url' },
+      undefined,
+      // Names the emitter (cf-ray / server / x-vercel-id) and carries a
+      // redacted body snippet — the payload that was returned is the whole
+      // diagnostic for a relay contract violation.
+      snapshotUpstreamResponse(resp, rawSuccessText),
+    );
     renderCheckoutErrorSurface(missingUrlError, fallbackToPricingPage);
     return false;
   } catch (err) {

@@ -73,10 +73,16 @@ function installBrowserGlobals(): void {
     value: async (_input: string, init?: RequestInit) => {
       const body = typeof init?.body === 'string' ? JSON.parse(init.body) : init?.body;
       globalThis.__checkoutOverlayHarness.fetchBodies.push(body);
+      // Both json() and text() are modelled: a real Response exposes both,
+      // and the success path reads text() so a non-JSON 200 cannot throw an
+      // engine-specific DOMException (WORLDMONITOR-XV).
+      const successBody = { checkout_url: 'https://checkout.dodopayments.com/session/cks_redirecttest000000000' };
       return {
         ok: true,
         status: 200,
-        json: async () => ({ checkout_url: 'https://checkout.dodopayments.com/session/cks_redirecttest000000000' }),
+        json: async () => successBody,
+        text: async () => JSON.stringify(successBody),
+        headers: { get: () => null },
       };
     },
   });
@@ -178,6 +184,7 @@ const stubSources: Record<string, string> = {
     export const classifySyntheticCheckoutError = (code) => ({ code, userMessage: code, retryable: false });
     export const classifyThrownCheckoutError = () => ({ code: 'service_unavailable', userMessage: 'unavailable', retryable: true });
     export const parseCheckoutErrorBody = () => ({});
+    export const parseCheckoutSuccessBody = (raw) => { try { const v = JSON.parse(raw); return (typeof v === 'object' && v !== null && !Array.isArray(v)) ? v : null; } catch { return null; } };
     export const snapshotUpstreamResponse = () => ({});
   `,
   './checkout-error-toast': `
