@@ -280,7 +280,6 @@ export interface TelegramMessage {
 }
 
 export interface GetCompanyEnrichmentRequest {
-  domain: string;
   name: string;
   ticker: string;
 }
@@ -348,13 +347,11 @@ export interface CompanyNewsMention {
 
 export interface ListCompanySignalsRequest {
   company: string;
-  domain: string;
   ticker: string;
 }
 
 export interface ListCompanySignalsResponse {
   company: string;
-  domain: string;
   signals: CompanySignal[];
   summary?: SignalSummary;
   discoveredAtMs: number;
@@ -1296,7 +1293,6 @@ export class IntelligenceServiceClient {
   async getCompanyEnrichment(req: GetCompanyEnrichmentRequest, options?: IntelligenceServiceCallOptions): Promise<GetCompanyEnrichmentResponse> {
     let path = "/api/intelligence/v1/get-company-enrichment";
     const params = new URLSearchParams();
-    if (req.domain != null && req.domain !== "") params.set("domain", String(req.domain));
     if (req.name != null && req.name !== "") params.set("name", String(req.name));
     if (req.ticker != null && req.ticker !== "") params.set("ticker", String(req.ticker));
     const url = this.baseURL + path + (params.toString() ? "?" + params.toString() : "");
@@ -1324,7 +1320,6 @@ export class IntelligenceServiceClient {
     let path = "/api/intelligence/v1/list-company-signals";
     const params = new URLSearchParams();
     if (req.company != null && req.company !== "") params.set("company", String(req.company));
-    if (req.domain != null && req.domain !== "") params.set("domain", String(req.domain));
     if (req.ticker != null && req.ticker !== "") params.set("ticker", String(req.ticker));
     const url = this.baseURL + path + (params.toString() ? "?" + params.toString() : "");
 

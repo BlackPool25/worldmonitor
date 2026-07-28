@@ -21,9 +21,7 @@ import {
   MATERIAL_8K_ITEMS,
   describeItemCodes,
   fetchSecSubmissions,
-  filerWebsiteMatchesDomain,
   filingIndexUrl,
-  isCikRegistryUnavailable,
   resolveCompany,
 } from '../../../_shared/sec-edgar';
 import { fetchCompanyNewsMentions, fetchEarningsSurprises } from './_company-shared';
@@ -54,30 +52,28 @@ export async function listCompanySignals(
   req: ListCompanySignalsRequest,
 ): Promise<ListCompanySignalsResponse> {
   const company = req.company?.trim();
-  const domain = req.domain?.trim().toLowerCase();
   const ticker = req.ticker?.trim();
 
-  if (!company && !domain && !ticker) {
-    throw new ValidationError([{ field: 'company', description: 'Provide ticker, company, or domain' }]);
+  if (!company && !ticker) {
+    throw new ValidationError([{ field: 'company', description: 'Provide ticker or company' }]);
   }
 
-  const resolved = await resolveCompany({ ticker, name: company, domain });
-  if (!resolved) {
-    return emptyResponse(company || ticker?.toUpperCase() || '', domain || '', isCikRegistryUnavailable());
+  const resolution = await resolveCompany({ ticker, name: company });
+  if (resolution.status !== 'ok') {
+    // "not_found" is a real, cacheable answer; "registry_unavailable" is a
+    // lookup failure and must not be cached as one.
+    return emptyResponse(
+      company || ticker?.toUpperCase() || '',
+      resolution.status === 'registry_unavailable',
+    );
   }
+  const resolved = resolution.company;
 
   const [submissions, earnings, mentions] = await Promise.all([
     fetchSecSubmissions(resolved.cik),
     fetchEarningsSurprises(resolved.ticker),
     fetchCompanyNewsMentions(resolved.ticker, resolved.name),
   ]);
-
-  // A domain match is provisional: a unique name-prefix hit is not proof of
-  // identity. Confirm it against the filer's SEC-registered website, or emit no
-  // signals rather than attribute another company's events (#3754/#3755).
-  if (resolved.matchedBy === 'domain' && !filerWebsiteMatchesDomain(domain ?? '', submissions?.website ?? '')) {
-    return emptyResponse(company || ticker?.toUpperCase() || '', domain || '');
-  }
 
   const now = Date.now();
   const signals: CompanySignal[] = [];
@@ -144,7 +140,6 @@ export async function listCompanySignals(
 
   return {
     company: resolved.name,
-    domain: domain || '',
     signals: bounded,
     summary: summarize(bounded),
     discoveredAtMs: now,
@@ -174,10 +169,9 @@ function summarize(signals: CompanySignal[]): SignalSummary {
   };
 }
 
-function emptyResponse(company: string, domain: string, unavailable = false): ListCompanySignalsResponse {
+function emptyResponse(company: string, unavailable = false): ListCompanySignalsResponse {
   return {
     company,
-    domain,
     signals: [],
     summary: {
       totalSignals: 0,

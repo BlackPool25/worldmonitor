@@ -4,14 +4,16 @@ package worldmonitor.intelligence.v1;
 
 import "sebuf/http/annotations.proto";
 
-// Request to fetch enrichment data for a company. Provide at least one of ticker,
-// name, or domain. Ticker gives the strongest match (authoritative SEC CIK
-// resolution plus market data); name and domain are matched against the SEC
-// company registry.
+// Request to fetch enrichment data for a company. Provide a ticker (the
+// strongest match — an exact SEC registry key) or a name, which resolves only
+// when it identifies exactly one filer.
 message GetCompanyEnrichmentRequest {
-  // Company domain, such as "apple.com". Accepted only when it matches one SEC
-  // filer unambiguously and that filer registered the same website.
-  string domain = 1 [(sebuf.http.query) = {name: "domain"}];
+  // domain was removed: matching a domain label against filer names is a guess,
+  // and the only field that could confirm it (the SEC-registered website) is
+  // left empty by SEC in practice, so the lookup could never be confirmed.
+  reserved 1;
+  reserved "domain";
+
   // Company name, such as "Apple Inc".
   string name = 2 [(sebuf.http.query) = {name: "name"}];
   // Exchange ticker symbol, such as "AAPL". Preferred lookup key.

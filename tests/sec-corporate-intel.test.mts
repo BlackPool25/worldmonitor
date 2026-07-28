@@ -11,7 +11,6 @@ import {
   MATERIAL_8K_ITEMS,
   __resetCikMapMemoForTests,
   __testing__ as secEdgarTesting,
-  filerWebsiteMatchesDomain,
   filingDocumentUrl,
   filingIndexUrl,
   materialItemCodes,
@@ -110,7 +109,7 @@ describe('sec-edgar pure helpers', () => {
     assert.deepEqual(parseItemCodes(undefined), []);
   });
 
-  it('matches names exactly, by unique prefix, and refuses ambiguous domains', () => {
+  it('matches names exactly and by unique prefix, refusing ambiguous ones', () => {
     const map = {
       AAPL: { cik: 320193, name: 'Apple Inc.' },
       FMNB: { cik: 709337, name: 'Farmers National Banc Corp' },
@@ -120,13 +119,12 @@ describe('sec-edgar pure helpers', () => {
     assert.equal(exact?.cik, '0000320193');
     assert.equal(exact?.matchedBy, 'name');
     // Unique prefix resolves.
-    const prefix = secEdgarTesting.matchByName(map, 'apple', { requireUnique: true, matchedBy: 'domain' });
+    const prefix = secEdgarTesting.matchByName(map, 'apple', { requireUnique: true, matchedBy: 'name' });
     assert.equal(prefix?.ticker, 'AAPL');
-    assert.equal(prefix?.matchedBy, 'domain');
+    assert.equal(prefix?.matchedBy, 'name');
     // Ambiguous prefix across two distinct filers must NOT resolve — for names
-    // or domains. Picking the shortest title would be a coin flip between two
+    // Picking the shortest title would be a coin flip between two
     // real companies.
-    assert.equal(secEdgarTesting.matchByName(map, 'farm', { requireUnique: true, matchedBy: 'domain' }), null);
     assert.equal(secEdgarTesting.matchByName(map, 'farm', { requireUnique: true, matchedBy: 'name' }), null);
     // Share classes of one filer are still a single company, so they resolve.
     const shareClasses = {
@@ -139,17 +137,6 @@ describe('sec-edgar pure helpers', () => {
     );
   });
 
-  it('confirms a domain only against the filer registered website, failing closed', () => {
-    assert.equal(filerWebsiteMatchesDomain('apple.com', 'https://www.apple.com/'), true);
-    assert.equal(filerWebsiteMatchesDomain('www.apple.com', 'apple.com'), true);
-    assert.equal(filerWebsiteMatchesDomain('apple.com', 'https://investor.apple.com'), true);
-    // Wrong company with a coincidentally-unique name prefix.
-    assert.equal(filerWebsiteMatchesDomain('delta.com', 'https://www.deltaapparel.com'), false);
-    // Cannot confirm -> refuse, never "close enough".
-    assert.equal(filerWebsiteMatchesDomain('apple.com', ''), false);
-    assert.equal(filerWebsiteMatchesDomain('', 'https://apple.com'), false);
-    assert.equal(filerWebsiteMatchesDomain('apple.com', 'not a url at all'), false);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -357,7 +344,10 @@ function installFetchMock(routes: MockRoutes) {
 const SUBMISSIONS_FIXTURE = {
   name: 'Testable Alpha Inc.',
   sicDescription: 'Prepackaged Software',
-  website: 'https://www.testable-alpha.example',
+  // SEC publishes this field but leaves it EMPTY in practice — 0 of 15 sampled
+  // filers populate it, Apple and NVIDIA included. The fixture mirrors that, so
+  // nothing here can depend on a value the real upstream never sends.
+  website: '',
   tickers: ['TSTA'],
   exchanges: ['NASDAQ'],
   stateOfIncorporationDescription: 'DE',
@@ -379,7 +369,7 @@ describe('getCompanyEnrichment', () => {
     configureRedis();
     installFetchMock({});
     await assert.rejects(
-      () => getCompanyEnrichment(ctx, { ticker: '', name: '', domain: '' }),
+      () => getCompanyEnrichment(ctx, { ticker: '', name: '' }),
       ValidationError,
     );
   });
@@ -396,13 +386,16 @@ describe('getCompanyEnrichment', () => {
       ],
     });
 
-    const resp = await getCompanyEnrichment(ctx, { ticker: 'TSTA', name: '', domain: '' });
+    const resp = await getCompanyEnrichment(ctx, { ticker: 'TSTA', name: '' });
     assert.deepEqual(resp.sources, ['sec_edgar', 'finnhub']);
     assert.equal(resp.company?.cik, '0000111222');
     assert.equal(resp.company?.ticker, 'TSTA');
     assert.equal(resp.company?.name, 'Testable Alpha Inc.');
     assert.equal(resp.company?.description, 'Prepackaged Software');
     assert.equal(resp.company?.location, 'AUSTIN, TX');
+    // SEC leaves `website` empty, so the reported domain comes from the market
+    // profile — the fallback is the normal path, not an edge case.
+    assert.equal(resp.company?.website, 'https://www.testable-alpha.example');
     assert.equal(resp.company?.domain, 'testable-alpha.example');
     assert.equal(resp.market?.industry, 'Technology');
     assert.equal(resp.market?.marketCapMusd, 1234.5);
@@ -425,7 +418,7 @@ describe('getCompanyEnrichment', () => {
       profile: { name: 'Testable Beta Corp', exchange: 'NYSE', finnhubIndustry: 'Banking' },
       earnings: [],
     });
-    const resp = await getCompanyEnrichment(ctx, { ticker: 'TSTB', name: '', domain: '' });
+    const resp = await getCompanyEnrichment(ctx, { ticker: 'TSTB', name: '' });
     assert.equal(resp.sources.includes('sec_edgar'), false);
     assert.equal(resp.sources.includes('finnhub'), true);
     assert.equal(resp.secFilings, undefined);
@@ -435,7 +428,7 @@ describe('getCompanyEnrichment', () => {
   it('returns an empty envelope for a company absent from the SEC registry', async () => {
     configureRedis();
     installFetchMock({});
-    const resp = await getCompanyEnrichment(ctx, { ticker: 'ZZZZ', name: '', domain: '' });
+    const resp = await getCompanyEnrichment(ctx, { ticker: 'ZZZZ', name: '' });
     assert.deepEqual(resp.sources, []);
     assert.equal(resp.company?.cik, '');
     assert.equal(resp.secFilings, undefined);
@@ -445,19 +438,38 @@ describe('getCompanyEnrichment', () => {
   it('reports a registry outage as unavailable, not as "no such company"', async () => {
     configureRedis();
     installFetchMock({ cikMap: null });
-    const resp = await getCompanyEnrichment(ctx, { ticker: 'TSTA', name: '', domain: '' });
+    const resp = await getCompanyEnrichment(ctx, { ticker: 'TSTA', name: '' });
     assert.equal(resp.unavailable, true, 'an unreadable registry must not read as an authoritative miss');
     assert.deepEqual(resp.sources, []);
 
     __resetCikMapMemoForTests();
-    const signals = await listCompanySignals(ctx, { ticker: 'TSTA', company: '', domain: '' });
+    const signals = await listCompanySignals(ctx, { ticker: 'TSTA', company: '' });
     assert.equal(signals.unavailable, true);
+  });
+
+  it('shares one registry read across concurrent cold requests', async () => {
+    configureRedis();
+    let registryReads = 0;
+    installFetchMock({});
+    const inner = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes('sec-cik-map')) registryReads += 1;
+      return inner(input, init);
+    }) as typeof fetch;
+
+    await Promise.all([
+      getCompanyEnrichment(ctx, { ticker: 'TSTA', name: '' }),
+      getCompanyEnrichment(ctx, { ticker: 'TSTB', name: '' }),
+      getCompanyEnrichment(ctx, { ticker: 'TSTC', name: '' }),
+    ]);
+    assert.equal(registryReads, 1, 'three concurrent cold requests must not each pull the ~650KB registry');
   });
 
   it('marks a genuine miss as available so it stays cacheable', async () => {
     configureRedis();
     installFetchMock({});
-    const resp = await getCompanyEnrichment(ctx, { ticker: 'ZZZZ', name: '', domain: '' });
+    const resp = await getCompanyEnrichment(ctx, { ticker: 'ZZZZ', name: '' });
     assert.equal(resp.unavailable, false, 'a real "not in the registry" answer is cacheable');
   });
 
@@ -480,7 +492,7 @@ describe('getCompanyEnrichment', () => {
         },
       },
     });
-    const resp = await getCompanyEnrichment(ctx, { ticker: 'TSTA', name: '', domain: '' });
+    const resp = await getCompanyEnrichment(ctx, { ticker: 'TSTA', name: '' });
     assert.deepEqual(resp.secFilings?.recentFilings.map(f => f.form), ['10-K']);
     assert.equal(resp.secFilings?.totalFilings, 251, 'the reported total still counts every filing');
   });
@@ -489,68 +501,15 @@ describe('getCompanyEnrichment', () => {
     configureRedis();
     installFetchMock({ submissions: SUBMISSIONS_FIXTURE });
     // "Testable" prefix-matches two distinct filers — neither may be returned.
-    const resp = await getCompanyEnrichment(ctx, { ticker: '', name: 'Testable', domain: '' });
+    const resp = await getCompanyEnrichment(ctx, { ticker: '', name: 'Testable' });
     assert.deepEqual(resp.sources, []);
     assert.equal(resp.company?.cik, '');
   });
 
-  it('echoes the caller domain only when it belongs to the resolved filer', async () => {
-    configureRedis();
-    installFetchMock({ submissions: SUBMISSIONS_FIXTURE });
-    // Ticker wins resolution; the conflicting domain must not be stamped onto
-    // this filer's record.
-    const resp = await getCompanyEnrichment(ctx, { ticker: 'TSTA', name: '', domain: 'unrelated-company.example' });
-    assert.equal(resp.company?.cik, '0000111222');
-    assert.equal(resp.company?.domain, 'testable-alpha.example', 'reports the filer own domain, not the conflicting request value');
-  });
 
-  it('refuses an ambiguous domain instead of guessing an identity (#3754/#3755)', async () => {
-    configureRedis();
-    installFetchMock({ submissions: SUBMISSIONS_FIXTURE });
-    // Label "testable" prefix-matches two distinct filers (Alpha + Beta) —
-    // the domain path must resolve NEITHER rather than attribute one.
-    const resp = await getCompanyEnrichment(ctx, { ticker: '', name: '', domain: 'testable.example' });
-    assert.deepEqual(resp.sources, []);
-    assert.equal(resp.company?.cik, '');
-  });
 
-  it('resolves an unambiguous domain confirmed by the filer registered website', async () => {
-    configureRedis();
-    installFetchMock({
-      submissions: { ...SUBMISSIONS_FIXTURE, name: 'Zebrafields Corp', website: 'https://www.zebrafields.example' },
-    });
-    const resp = await getCompanyEnrichment(ctx, { ticker: '', name: '', domain: 'zebrafields.example' });
-    assert.equal(resp.company?.cik, '0000555666');
-    assert.equal(resp.company?.ticker, 'TSTC');
-    assert.equal(resp.sources.includes('sec_edgar'), true);
-  });
 
-  it('refuses a unique-but-unconfirmed domain match (wrong-company attribution guard)', async () => {
-    configureRedis();
-    process.env.FINNHUB_API_KEY = 'test-finnhub';
-    // "zebrafields" uniquely prefix-matches Zebrafields Corp in the registry,
-    // but that filer's registered website is a different company — the exact
-    // wrong-attribution shape from #3754/#3755. Must resolve to nothing.
-    installFetchMock({
-      submissions: { ...SUBMISSIONS_FIXTURE, name: 'Zebrafields Corp', website: 'https://www.someone-else.example' },
-      profile: { name: 'Zebrafields Corp', exchange: 'NYSE' },
-    });
-    const resp = await getCompanyEnrichment(ctx, { ticker: '', name: '', domain: 'zebrafields.example' });
-    assert.deepEqual(resp.sources, [], 'no source may be attributed on an unconfirmed domain match');
-    assert.equal(resp.company?.cik, '');
-    assert.equal(resp.secFilings, undefined);
-    assert.deepEqual(resp.earningsSurprises, []);
-  });
 
-  it('refuses an unconfirmed domain match for signals too', async () => {
-    configureRedis();
-    installFetchMock({
-      submissions: { ...SUBMISSIONS_FIXTURE, name: 'Zebrafields Corp', website: 'https://www.someone-else.example' },
-    });
-    const resp = await listCompanySignals(ctx, { ticker: '', company: '', domain: 'zebrafields.example' });
-    assert.deepEqual(resp.signals, []);
-    assert.equal(resp.summary?.totalSignals, 0);
-  });
 });
 
 describe('listCompanySignals', () => {
@@ -558,7 +517,7 @@ describe('listCompanySignals', () => {
     configureRedis();
     installFetchMock({});
     await assert.rejects(
-      () => listCompanySignals(ctx, { ticker: '', company: '', domain: '' }),
+      () => listCompanySignals(ctx, { ticker: '', company: '' }),
       ValidationError,
     );
   });
@@ -588,7 +547,7 @@ describe('listCompanySignals', () => {
       ],
     });
 
-    const resp = await listCompanySignals(ctx, { ticker: 'TSTA', company: '', domain: '' });
+    const resp = await listCompanySignals(ctx, { ticker: 'TSTA', company: '' });
     assert.equal(resp.company, 'Testable Alpha Inc.');
     const types = resp.signals.map(signal => signal.type).sort();
     assert.deepEqual(types, ['Earnings Beat', 'Restatement']);
@@ -630,7 +589,7 @@ describe('listCompanySignals', () => {
       },
       earnings: [],
     });
-    const resp = await listCompanySignals(ctx, { ticker: 'TSTA', company: '', domain: '' });
+    const resp = await listCompanySignals(ctx, { ticker: 'TSTA', company: '' });
     assert.equal(resp.signals[0]?.type, 'Executive Change');
     assert.equal(resp.signals[0]?.strength, 'Strong');
   });
@@ -646,14 +605,14 @@ describe('listCompanySignals', () => {
         { period: '2026-12-31', actual: null, estimate: 1.5, surprise: null, surprisePercent: null, year: 2026, quarter: 4 },
       ],
     });
-    const resp = await listCompanySignals(ctx, { ticker: 'TSTA', company: '', domain: '' });
+    const resp = await listCompanySignals(ctx, { ticker: 'TSTA', company: '' });
     assert.deepEqual(resp.signals.filter(s => s.type.startsWith('Earnings')), []);
   });
 
   it('returns a zeroed summary for a company absent from the SEC registry', async () => {
     configureRedis();
     installFetchMock({});
-    const resp = await listCompanySignals(ctx, { ticker: '', company: 'No Such Company Anywhere', domain: '' });
+    const resp = await listCompanySignals(ctx, { ticker: '', company: 'No Such Company Anywhere' });
     assert.deepEqual(resp.signals, []);
     assert.equal(resp.summary?.totalSignals, 0);
     assert.equal(resp.summary?.signalDiversity, 0);
@@ -680,7 +639,7 @@ describe('listCompanySignals', () => {
       },
       earnings: [],
     });
-    const resp = await listCompanySignals(ctx, { ticker: 'TSTA', company: '', domain: '' });
+    const resp = await listCompanySignals(ctx, { ticker: 'TSTA', company: '' });
     assert.deepEqual(resp.signals, []);
     assert.equal(resp.summary?.totalSignals, 0);
     assert.equal(resp.cik, '0000111222', 'a resolved company keeps its CIK even with zero signals');
@@ -795,16 +754,32 @@ describe('get_company_intelligence MCP tool view dispatch', () => {
     assert.match(urls[0] ?? '', /\/api\/intelligence\/v1\/get-company-enrichment\?ticker=AAPL/);
   });
 
-  it('routes each view to its REST path and clamps limits', async () => {
+  it('routes each view to its REST path and honors in-range limits', async () => {
     const tool = await getTool();
     const urls = captureFetch({ results: [], events: [], signals: [] });
     await tool._execute({ view: 'signals', ticker: 'AAPL' }, 'https://x.test', toolContext);
-    await tool._execute({ view: 'filings-search', query: 'merger', limit: 999 }, 'https://x.test', toolContext);
-    await tool._execute({ view: 'material-events', item_code: '5.02', limit: 999 }, 'https://x.test', toolContext);
+    await tool._execute({ view: 'filings-search', query: 'merger', limit: 25 }, 'https://x.test', toolContext);
+    await tool._execute({ view: 'material-events', item_code: '5.02', limit: 100 }, 'https://x.test', toolContext);
     assert.match(urls[0] ?? '', /\/api\/intelligence\/v1\/list-company-signals\?ticker=AAPL/);
     assert.match(urls[1] ?? '', /\/api\/intelligence\/v1\/search-sec-filings\?.*limit=25/);
     assert.match(urls[2] ?? '', /\/api\/intelligence\/v1\/list-material-events\?.*limit=100/);
     assert.match(urls[2] ?? '', /item_code=5\.02/);
+  });
+
+  it('rejects a limit above the view maximum instead of silently clamping it', async () => {
+    const tool = await getTool();
+    const urls = captureFetch({ results: [] });
+    // 100 is valid for material-events but not for filings-search; clamping to
+    // 25 would read to the caller as "only 25 filings matched".
+    assert.deepEqual(
+      await tool._execute({ view: 'filings-search', query: 'merger', limit: 100 }, 'https://x.test', toolContext),
+      { view: 'filings-search', error: 'limit_out_of_range' },
+    );
+    assert.deepEqual(
+      await tool._execute({ view: 'material-events', limit: 101 }, 'https://x.test', toolContext),
+      { view: 'material-events', error: 'limit_out_of_range' },
+    );
+    assert.deepEqual(urls, [], 'a rejected limit must not reach the REST route');
   });
 });
 

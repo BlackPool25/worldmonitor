@@ -267,7 +267,7 @@ curl -s https://worldmonitor.app/mcp \
 
 ### `get_company_intelligence`
 
-Per-company corporate intelligence from SEC EDGAR and market data (#5695). Company identity always resolves through the SEC's own ticker/name registry to a CIK; companies that do not resolve return empty envelopes with `sources: []` — never guessed attribution. Four views multiplex the four backing REST routes.
+Per-company corporate intelligence from SEC EDGAR and market data (#5695). Company identity resolves through the SEC's own ticker/name registry to a CIK — by exact ticker, or by a name that identifies exactly one filer. Companies that do not resolve return empty envelopes with `sources: []`; there is no domain lookup, because no field SEC publishes could confirm one. Four views multiplex the four backing REST routes.
 
 **Parameters (tool-specific):**
 
@@ -275,13 +275,12 @@ Per-company corporate intelligence from SEC EDGAR and market data (#5695). Compa
 |------|------|-------------|
 | `view` | `string: enrichment / signals / filings-search / material-events` | Defaults to `enrichment`. |
 | `ticker` | string | Exchange ticker symbol, such as `AAPL`. Preferred company key for `enrichment` and `signals`. |
-| `name` | string | Company name fallback when no ticker is known; matched against the SEC registry. |
-| `domain` | string | Company domain fallback, such as `apple.com`. Accepted only when it matches one SEC filer unambiguously AND that filer registered the same website; otherwise the company resolves to nothing rather than a guess. |
+| `name` | string | Company name fallback when no ticker is known; resolves only when it identifies exactly one SEC filer. |
 | `query` | string | `filings-search` only: full-text query. Required for that view. |
 | `forms` | string | `filings-search` only: comma-separated form filter, such as `8-K` or `10-K,10-Q`. |
 | `start_date` / `end_date` | string | `filings-search` only: filing-date range (YYYY-MM-DD). |
 | `item_code` | string | `material-events` only: filter to one 8-K item code, such as `5.02`. |
-| `limit` | integer | `filings-search` (max 25) and `material-events` (max 100) result cap. |
+| `limit` | integer | Result cap: up to 25 for `filings-search`, up to 100 for `material-events`. A value above the view's own maximum is rejected rather than silently clamped. Ignored by `enrichment` and `signals`. |
 
 - **API endpoints:** `GET /api/intelligence/v1/get-company-enrichment`, `GET /api/intelligence/v1/list-company-signals`, `GET /api/intelligence/v1/search-sec-filings`, `GET /api/intelligence/v1/list-material-events`
 - **Kind:** canonical-route proxy — `enrichment`/`signals` fan out per-company (SEC submissions, Finnhub profile + earnings surprises, news mentions) with per-upstream Redis caching; `filings-search` proxies EDGAR full-text search; `material-events` reads the seeded market-wide 8-K stream (30-minute cadence).

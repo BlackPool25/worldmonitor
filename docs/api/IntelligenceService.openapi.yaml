@@ -1224,15 +1224,6 @@ paths:
                  profile and earnings surprises from Finnhub, and recent news mentions.
             operationId: GetCompanyEnrichment
             parameters:
-                - name: domain
-                  in: query
-                  description: |-
-                    Company domain, such as "apple.com". Accepted only when it matches one SEC
-                     filer unambiguously and that filer registered the same website.
-                  required: false
-                  example: "example"
-                  schema:
-                    type: string
                 - name: name
                   in: query
                   description: Company name, such as "Apple Inc".
@@ -1358,15 +1349,6 @@ paths:
                   example: "example"
                   schema:
                     type: string
-                - name: domain
-                  in: query
-                  description: |-
-                    Company domain to discover signals for. Accepted only when it matches one
-                     SEC filer unambiguously and that filer registered the same website.
-                  required: false
-                  example: "example"
-                  schema:
-                    type: string
                 - name: ticker
                   in: query
                   description: Exchange ticker symbol, such as "AAPL". Preferred lookup key.
@@ -1391,7 +1373,6 @@ paths:
                                 "cik": "example"
                                 "company": "example"
                                 "discoveredAtMs": 1
-                                "domain": "example"
                                 "signals":
                                     - "engagement":
                                         "comments": 1
@@ -1403,6 +1384,22 @@ paths:
                                       "sourceTier": 1
                                       "strength": "example"
                                       "timestampMs": 1717200000000
+                                "summary":
+                                    "byType":
+                                        "exampleKey": 1
+                                    "signalDiversity": 1
+                                    "strongestSignal":
+                                        "engagement":
+                                            "comments": 1
+                                            "forks": 1
+                                            "mentions": 1
+                                            "points": 1
+                                            "stars": 1
+                                        "source": "example"
+                                        "sourceTier": 1
+                                        "strength": "example"
+                                        "timestampMs": 1717200000000
+                                    "totalSignals": 1
                             schema:
                                 $ref: '#/components/schemas/ListCompanySignalsResponse'
                 "400":
@@ -5853,11 +5850,6 @@ components:
         GetCompanyEnrichmentRequest:
             type: object
             properties:
-                domain:
-                    type: string
-                    description: |-
-                        Company domain, such as "apple.com". Accepted only when it matches one SEC
-                         filer unambiguously and that filer registered the same website.
                 name:
                     type: string
                     description: Company name, such as "Apple Inc".
@@ -5865,10 +5857,9 @@ components:
                     type: string
                     description: Exchange ticker symbol, such as "AAPL". Preferred lookup key.
             description: |-
-                Request to fetch enrichment data for a company. Provide at least one of ticker,
-                 name, or domain. Ticker gives the strongest match (authoritative SEC CIK
-                 resolution plus market data); name and domain are matched against the SEC
-                 company registry.
+                Request to fetch enrichment data for a company. Provide a ticker (the
+                 strongest match — an exact SEC registry key) or a name, which resolves only
+                 when it identifies exactly one filer.
         GetCompanyEnrichmentResponse:
             type: object
             properties:
@@ -6019,11 +6010,6 @@ components:
                 company:
                     type: string
                     description: Company name to discover signals for.
-                domain:
-                    type: string
-                    description: |-
-                        Company domain to discover signals for. Accepted only when it matches one
-                         SEC filer unambiguously and that filer registered the same website.
                 ticker:
                     type: string
                     description: Exchange ticker symbol, such as "AAPL". Preferred lookup key.
@@ -6035,8 +6021,6 @@ components:
             type: object
             properties:
                 company:
-                    type: string
-                domain:
                     type: string
                 signals:
                     type: array

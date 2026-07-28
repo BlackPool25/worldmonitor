@@ -280,7 +280,6 @@ export interface TelegramMessage {
 }
 
 export interface GetCompanyEnrichmentRequest {
-  domain: string;
   name: string;
   ticker: string;
 }
@@ -348,13 +347,11 @@ export interface CompanyNewsMention {
 
 export interface ListCompanySignalsRequest {
   company: string;
-  domain: string;
   ticker: string;
 }
 
 export interface ListCompanySignalsResponse {
   company: string;
-  domain: string;
   signals: CompanySignal[];
   summary?: SignalSummary;
   discoveredAtMs: number;
@@ -1573,7 +1570,6 @@ export function createIntelligenceServiceRoutes(
           const url = new URL(req.url, "http://localhost");
           const params = url.searchParams;
           const body: GetCompanyEnrichmentRequest = {
-            domain: params.get("domain") ?? "",
             name: params.get("name") ?? "",
             ticker: params.get("ticker") ?? "",
           };
@@ -1623,7 +1619,6 @@ export function createIntelligenceServiceRoutes(
           const params = url.searchParams;
           const body: ListCompanySignalsRequest = {
             company: params.get("company") ?? "",
-            domain: params.get("domain") ?? "",
             ticker: params.get("ticker") ?? "",
           };
           if (options?.validateRequest) {

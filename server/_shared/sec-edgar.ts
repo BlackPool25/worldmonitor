@@ -28,6 +28,7 @@ const SEARCH_NEGATIVE_TTL = 120;
 const UPSTREAM_TIMEOUT = 10_000;
 const CIK_MAP_MEMO_MS = 60 * 60 * 1_000;
 const CIK_MAP_READ_TIMEOUT_MS = 6_000;
+const CIK_MAP_RETRY_BACKOFF_MS = 30_000;
 const MAX_SLIM_FILINGS = 200;
 
 // Forms worth keeping from a filer's recent-submissions window. A high-volume
@@ -95,11 +96,26 @@ export interface ResolvedCompany {
   cik: string; // zero-padded 10 digits
   ticker: string;
   name: string;
-  // Which input produced the match. A 'domain' match is provisional until
-  // confirmed against the filer's SEC-registered website — see
-  // filerWebsiteMatchesDomain.
-  matchedBy: 'ticker' | 'name' | 'domain';
+  // Which input produced the match. Both are authoritative: a ticker is an
+  // exact registry key, and a name resolves only when it identifies exactly one
+  // filer. There is deliberately no low-precision variant — see resolveCompany.
+  matchedBy: 'ticker' | 'name';
 }
+
+/**
+ * Resolution outcome. "Could not read the registry" and "no such company" are
+ * different answers and must not share a representation: the first is an
+ * infrastructure failure that callers surface as `unavailable` (and the gateway
+ * refuses to cache), the second is a real, cacheable answer about the company.
+ *
+ * Returned by value rather than read from module state, because a serverless
+ * instance serves concurrent requests and a shared status flag would let one
+ * request's outcome overwrite another's.
+ */
+export type CompanyResolution =
+  | { status: 'ok'; company: ResolvedCompany }
+  | { status: 'not_found' }
+  | { status: 'registry_unavailable' };
 
 export interface SlimSecFiling {
   form: string;
@@ -180,21 +196,19 @@ export function parseItemCodes(items: string | undefined): string[] {
 // --- ticker/name → CIK resolution against the seeded SEC registry ------------
 
 let cikMapMemo: { map: CikMap; loadedAt: number } | null = null;
-let registryUnavailable = false;
+// Single-flight: concurrent cold requests share one 650KB read instead of each
+// issuing their own (the shared cachedFetchJson helper coalesces; this
+// purpose-built reader has to do it itself).
+let cikMapInFlight: Promise<CikMap | null> | null = null;
+// After a failed read, stop re-attempting for a beat. Without this every
+// request during a registry outage burns the full read timeout, and those
+// seconds come out of the same budget as the SEC and Finnhub legs.
+let cikMapRetryAfter = 0;
 
 export function __resetCikMapMemoForTests(): void {
   cikMapMemo = null;
-  registryUnavailable = false;
-}
-
-/**
- * True when the last resolution attempt could not read the ticker registry at
- * all. Callers must surface this as `unavailable` rather than "no such
- * company": a Redis outage is not evidence that a company does not exist, and
- * an authoritative-looking empty answer would otherwise be CDN-cached.
- */
-export function isCikRegistryUnavailable(): boolean {
-  return registryUnavailable;
+  cikMapInFlight = null;
+  cikMapRetryAfter = 0;
 }
 
 /**
@@ -235,25 +249,28 @@ async function readCikRegistry(): Promise<unknown | null> {
 }
 
 async function loadCikMap(): Promise<CikMap | null> {
-  if (cikMapMemo && Date.now() - cikMapMemo.loadedAt < CIK_MAP_MEMO_MS) {
-    registryUnavailable = false;
-    return cikMapMemo.map;
-  }
-  const raw = await readCikRegistry();
-  if (!raw || typeof raw !== 'object') return staleFallback();
-  const map = (raw as { tickers?: CikMap }).tickers ?? null;
-  if (!map || typeof map !== 'object') return staleFallback();
-  cikMapMemo = { map, loadedAt: Date.now() };
-  registryUnavailable = false;
-  return map;
-}
+  const now = Date.now();
+  if (cikMapMemo && now - cikMapMemo.loadedAt < CIK_MAP_MEMO_MS) return cikMapMemo.map;
+  // A failed refresh keeps serving the last good map — stale tickers beat no
+  // answers — but with nothing cached there is no registry at all.
+  if (now < cikMapRetryAfter) return cikMapMemo?.map ?? null;
+  if (cikMapInFlight) return cikMapInFlight;
 
-// A failed refresh keeps serving the last good map (better than no answers),
-// but with nothing cached there is no registry at all — that must be reported
-// as unavailable, never as "company not found".
-function staleFallback(): CikMap | null {
-  registryUnavailable = !cikMapMemo;
-  return cikMapMemo?.map ?? null;
+  cikMapInFlight = (async () => {
+    const raw = await readCikRegistry();
+    const map = raw && typeof raw === 'object'
+      ? ((raw as { tickers?: CikMap }).tickers ?? null)
+      : null;
+    if (!map || typeof map !== 'object') {
+      cikMapRetryAfter = Date.now() + CIK_MAP_RETRY_BACKOFF_MS;
+      return cikMapMemo?.map ?? null;
+    }
+    cikMapMemo = { map, loadedAt: Date.now() };
+    cikMapRetryAfter = 0;
+    return map;
+  })().finally(() => { cikMapInFlight = null; });
+
+  return cikMapInFlight;
 }
 
 /**
@@ -261,60 +278,35 @@ function staleFallback(): CikMap | null {
  * - ticker: exact match (authoritative).
  * - name: exact match, else a prefix match that is unique across filers. An
  *   ambiguous prefix resolves to NOTHING — picking the "most canonical" title
- *   would be a coin flip between real companies ("Delta" matches both Delta Air
- *   Lines and Delta Apparel), which is the guessed-identity failure that
- *   disabled these endpoints (#3754/#3755).
- * - domain: the leading label is matched the same way, and the result is
- *   PROVISIONAL — callers must confirm it with filerWebsiteMatchesDomain
- *   against the filer's SEC-registered website before attributing any data.
- *   Uniqueness alone does not establish ownership of a domain.
+ *   would be a coin flip between real companies, which is the guessed-identity
+ *   failure that disabled these endpoints (#3754/#3755).
+ *
+ * There is deliberately NO domain path. Matching a domain label against filer
+ * names is a guess, and confirming that guess needs a domain the authority
+ * publishes about the filer — but SEC submissions leave `website` empty in
+ * practice (0 of 15 sampled filers populate it, Apple and NVIDIA included), so
+ * no confirmation is available. Rather than ship an unconfirmable guess or a
+ * guard that always refuses, the lookup key is not offered at all.
  */
-export async function resolveCompany(query: { ticker?: string; name?: string; domain?: string }): Promise<ResolvedCompany | null> {
+export async function resolveCompany(query: { ticker?: string; name?: string }): Promise<CompanyResolution> {
   const map = await loadCikMap();
-  if (!map) return null;
+  if (!map) return { status: 'registry_unavailable' };
 
   const ticker = sanitizeTicker(query.ticker ?? '');
   if (ticker) {
     const entry = map[ticker];
-    return entry ? { cik: padCik(entry.cik), ticker, name: entry.name, matchedBy: 'ticker' } : null;
+    return entry
+      ? { status: 'ok', company: { cik: padCik(entry.cik), ticker, name: entry.name, matchedBy: 'ticker' } }
+      : { status: 'not_found' };
   }
 
   const name = (query.name ?? '').trim().toLowerCase();
-  if (name) return matchByName(map, name, { requireUnique: true, matchedBy: 'name' });
-
-  const domain = (query.domain ?? '').trim().toLowerCase();
-  if (domain) {
-    const label = domain.replace(/^www\./, '').split('.')[0] ?? '';
-    if (label.length < 3) return null;
-    return matchByName(map, label, { requireUnique: true, matchedBy: 'domain' });
+  if (name) {
+    const company = matchByName(map, name, { requireUnique: true, matchedBy: 'name' });
+    return company ? { status: 'ok', company } : { status: 'not_found' };
   }
 
-  return null;
-}
-
-/**
- * Confirms a provisional domain match: the filer's SEC-registered website must
- * be the same registrable host as the requested domain. Fails closed — an
- * absent or unparseable website means "cannot confirm", never "close enough".
- */
-export function filerWebsiteMatchesDomain(requestedDomain: string, filerWebsite: string): boolean {
-  const requested = normalizeHost(requestedDomain);
-  const filer = normalizeHost(filerWebsite);
-  if (!requested || !filer) return false;
-  return requested === filer
-    || filer.endsWith(`.${requested}`)
-    || requested.endsWith(`.${filer}`);
-}
-
-function normalizeHost(value: string): string {
-  const raw = (value ?? '').trim().toLowerCase();
-  if (!raw) return '';
-  try {
-    const url = new URL(raw.includes('://') ? raw : `https://${raw}`);
-    return url.hostname.replace(/^www\./, '');
-  } catch {
-    return '';
-  }
+  return { status: 'not_found' };
 }
 
 export const __testing__ = { matchByName };
@@ -322,7 +314,7 @@ export const __testing__ = { matchByName };
 function matchByName(
   map: CikMap,
   needle: string,
-  opts: { requireUnique: boolean; matchedBy: 'name' | 'domain' },
+  opts: { requireUnique: boolean; matchedBy: 'name' },
 ): ResolvedCompany | null {
   let exact: ResolvedCompany | null = null;
   const prefix: ResolvedCompany[] = [];
@@ -454,8 +446,6 @@ export interface EdgarSearchResult {
 // dropping them (a dropped filter widens the result set).
 export const EDGAR_ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 export const EDGAR_FORMS_RE = /^[A-Za-z0-9/, .\-]{1,40}$/;
-const ISO_DATE_RE = EDGAR_ISO_DATE_RE;
-const FORMS_RE = EDGAR_FORMS_RE;
 
 export async function searchEdgarFullText(params: {
   query: string;
@@ -465,11 +455,11 @@ export async function searchEdgarFullText(params: {
 }): Promise<EdgarSearchResult | null> {
   const query = params.query.trim().slice(0, 160);
   if (!query) return null;
-  const forms = params.forms && FORMS_RE.test(params.forms)
+  const forms = params.forms && EDGAR_FORMS_RE.test(params.forms)
     ? params.forms.split(',').map(f => f.trim().toUpperCase()).filter(Boolean).join(',')
     : '';
-  const startDate = params.startDate && ISO_DATE_RE.test(params.startDate) ? params.startDate : '';
-  const endDate = params.endDate && ISO_DATE_RE.test(params.endDate) ? params.endDate : '';
+  const startDate = params.startDate && EDGAR_ISO_DATE_RE.test(params.startDate) ? params.startDate : '';
+  const endDate = params.endDate && EDGAR_ISO_DATE_RE.test(params.endDate) ? params.endDate : '';
 
   const search = new URLSearchParams({ q: `"${query.replace(/"/g, '')}"` });
   if (forms) search.set('forms', forms);

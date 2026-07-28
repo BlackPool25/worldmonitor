@@ -47,67 +47,84 @@ When resolving a user-supplied identifier to an entity, **uniqueness of the matc
 evidence that the match is correct.** Treat a non-exact match as *provisional* until it is
 confirmed against a field the authoritative source itself publishes about that entity.
 
+**Then check that the confirming field actually exists before building on it.** This
+learning's own first implementation failed that check — see "What Didn't Work" below.
+
 Concretely, the resolution ladder that shipped:
 
 ```ts
 // ticker: exact key in the SEC registry — authoritative, done.
-if (ticker) return map[ticker] ? { ...entry, matchedBy: 'ticker' } : null;
+if (ticker) { ... return { status: 'ok', company: { ...entry, matchedBy: 'ticker' } }; }
 
 // name: exact title, else a prefix match that is UNIQUE ACROSS FILERS.
 // An ambiguous prefix resolves to NOTHING — picking the "most canonical"
 // title is a coin flip between two real companies.
-if (name) return matchByName(map, name, { requireUnique: true, matchedBy: 'name' });
+if (name) { const company = matchByName(map, name, { requireUnique: true, matchedBy: 'name' });
+            return company ? { status: 'ok', company } : { status: 'not_found' }; }
 
-// domain: matched the same way, but the result is PROVISIONAL.
-if (domain) return matchByName(map, label, { requireUnique: true, matchedBy: 'domain' });
-```
-
-and then, in each handler, the confirmation step that makes the domain path safe:
-
-```ts
-// A domain match is provisional: a unique name-prefix hit is not proof of
-// identity. Confirm it against the filer's SEC-registered website, or return
-// nothing rather than attribute another company's filings (#3754/#3755).
-if (resolved.matchedBy === 'domain'
-    && !filerWebsiteMatchesDomain(domain ?? '', submissions?.website ?? '')) {
-  return unresolved(ticker, name, domain);
-}
-```
-
-The confirmation helper **fails closed** — an absent or unparseable website means "cannot
-confirm", never "close enough":
-
-```ts
-export function filerWebsiteMatchesDomain(requestedDomain: string, filerWebsite: string): boolean {
-  const requested = normalizeHost(requestedDomain);
-  const filer = normalizeHost(filerWebsite);
-  if (!requested || !filer) return false;          // cannot confirm -> refuse
-  return requested === filer
-    || filer.endsWith(`.${requested}`)
-    || requested.endsWith(`.${filer}`);
-}
+// There is deliberately NO domain path — see below.
 ```
 
 Three rules generalize out of this:
 
-1. **Rank match strength and carry it in the return value.** `matchedBy: 'ticker' | 'name' |
-   'domain'` lets the caller apply confirmation only where it is needed, instead of every
-   caller re-deriving how the match was made (or forgetting to).
-2. **Ambiguity resolves to nothing, never to a tie-break.** Sorting candidates by title
+1. **Ambiguity resolves to nothing, never to a tie-break.** Sorting candidates by title
    length and taking the first is a guess wearing a heuristic's clothing.
-3. **Confirm against a field the authority publishes about the entity**, not against a
-   restatement of the input. The SEC registry supplies the candidate; the SEC *submissions*
-   record supplies the independent website used to confirm it.
+2. **Confirm a low-precision match against a field the authority publishes about the
+   entity** — not against a restatement of the input.
+3. **If that field does not exist, do not offer the lookup key at all.** A guard that can
+   never pass is not safety; it is a feature that silently never works.
+
+Rule 3 is the one that cost the most to learn, and it has a cheap precondition: before
+designing a confirmation step, *fetch the confirming field from the real upstream* and see
+whether it is populated.
+
+## What Didn't Work
+
+**A confirmation step built on a field the authority does not populate.** The first
+implementation kept a `domain` lookup, marked it provisional, and confirmed it against the
+filer's SEC-registered `website` from the submissions record. The guard was correct, the
+tests were green, and the feature was dead: SEC publishes that field but leaves it empty.
+Sampling 15 filers found **0 populated**, Apple and NVIDIA included:
+
+```
+DELTA AIR LINES  website=''    Apple Inc.  website=''    NVIDIA CORP  website=''
+FEAM ''   SBH ''   RDHL ''   TRU ''   MAAS ''   XE ''   VNRX ''   ... (0 of 15)
+```
+
+Because the helper fails closed, every domain request returned the empty envelope. The
+`domain` parameter was documented in the OpenAPI surface and exposed to agents through MCP,
+and it could not succeed for any input.
+
+Two things hid it:
+
+- **The test fixture supplied a website the real upstream never sends.** It was hand-written
+  from the submissions *schema* rather than a captured payload, so it asserted against a
+  shape that does not occur. Green tests were evidence about the fixture, not the feature.
+- **Eleven reviewers, including two adversarial models, all read code.** None queried the
+  live upstream. Reviewing the guard's logic can only tell you the guard is correct — not
+  that its input is always empty.
+
+The fix was to remove the domain path entirely (proto fields `reserved`, MCP param dropped),
+which is what rule 3 above prescribes. A near-miss worth recording: it is tempting to
+re-source confirmation to a third-party profile's URL, which *is* populated — but that
+confirms the *provider's* opinion of the pairing, not the authority's, and it quietly
+reintroduces a dependency the attribution model was built to avoid.
 
 ## Why This Matters
 
 `requireUnique: true` alone feels like it closes the hole, and it closes the *ambiguous*
 case — but not the **wrong single match**, which is the one that actually ships bad data:
 
-- `delta.com` prefix-matches exactly one filer named `Delta Apparel Inc` (Delta Air Lines
-  files under a different name). Unique. Confidently wrong.
-- The caller receives a well-formed envelope with a real CIK, real filings, and a real
-  market cap — all belonging to a company the user never asked about.
+A domain label carries no relationship to a filer's legal title, so "exactly one filer's name
+starts with this label" answers a question about the *registry's contents*, not about who
+owns the domain. Whether any given label lands on the right company is luck: measured
+against the live registry, `delta` happens to match one filer and it is the right one
+(DELTA AIR LINES, INC.), while `apple` matches three distinct filers and `com` matches 36.
+Uniqueness is a property of the label's collision rate, not evidence of ownership — so the
+one-match case is exactly as unjustified as the three-match case, it just looks confident.
+
+When it lands wrong, the caller receives a well-formed envelope with a real CIK, real
+filings, and a real market cap — all belonging to a company they never asked about.
 
 That is indistinguishable, from the outside, from the fabrication that got these endpoints
 disabled in the first place. A resolver that returns *nothing* is a visible gap a caller can
@@ -123,7 +140,7 @@ This is the same failure shape already documented in this repo:
 
 ## When to Apply
 
-Apply the provisional-match-plus-confirmation shape when **all** of these hold:
+Ask the confirmation question whenever **all** of these hold:
 
 - The input is user-supplied and low-precision (a domain, a display name, a slug)
 - The lookup can succeed with a single candidate without that candidate being right
@@ -132,47 +149,63 @@ Apply the provisional-match-plus-confirmation shape when **all** of these hold:
 Skip it when the identifier is an exact key in the authority's own namespace (a ticker, a
 CIK, a UUID) — there is nothing to confirm.
 
-If no authoritative confirmation field exists at all, the honest options are to drop the
-lookup path or to return the candidate **clearly marked as unconfirmed**. Do not ship an
-unmarked guess.
+Then check whether a confirming field is actually available, **by fetching it**, before
+building on it:
+
+- **Available and populated** → provisional match plus confirmation, failing closed.
+- **Absent, or published-but-empty** → drop the lookup key, or return the candidate
+  *clearly marked unconfirmed*. Do not ship an unmarked guess, and do not ship a guard that
+  can never pass — it reads as safety while delivering nothing.
 
 ## Examples
 
-Prove the guard with mutation, not with a passing test. A test that passes both with and
-without the guard is not coverage — and this class of guard is especially easy to write
-tests around that never exercise it. Neutering the condition must turn the tests red:
+**Verify the field before designing around it.** One command would have prevented the
+dead-feature detour, and it is the same shape as the earlier registry probes:
 
 ```
-# guard neutered:  if (false && resolved.matchedBy === 'domain' && !filerWebsiteMatchesDomain(...))
-✖ refuses a unique-but-unconfirmed domain match (wrong-company attribution guard)
-✖ refuses an unconfirmed domain match for signals too
+$ curl -s -H "User-Agent: <declared>" https://data.sec.gov/submissions/CIK0000320193.json \
+    | python3 -c "import json,sys; print(repr(json.load(sys.stdin).get('website')))"
+''
+```
+
+**Prove any guard you do keep with mutation.** A test that passes both with and without the
+guard is not coverage, and this class of guard is especially easy to write tests around that
+never exercise it. Neutering the condition must turn exactly the intended tests red:
+
+```
+# guard neutered:  if (false && <guard condition>)
+✖ refuses a unique-but-unconfirmed match
+✖ refuses an unconfirmed match for signals too
 ℹ pass 31   ℹ fail 2
 
 # guard restored:
 ℹ pass 33   ℹ fail 0
 ```
 
-The behavioral test states the failure in terms of attribution, not mechanics:
+That mutation run is what proved the guard was wired correctly — and it is worth noting it
+proved *only* that. A guard can be correctly wired, correctly mutation-tested, and still
+never fire in production, which is why the field-availability probe above is a separate
+check and not a substitute.
+
+**Fixtures must mirror the payload, not the schema.** The fixture that hid this was written
+from the submissions schema and supplied a `website` value the upstream never sends. Pin
+fixtures to a captured real response, and when a field is documented but empty in practice,
+encode the emptiness:
 
 ```ts
-it('refuses a unique-but-unconfirmed domain match (wrong-company attribution guard)', async () => {
-  // "zebrafields" uniquely prefix-matches Zebrafields Corp in the registry,
-  // but that filer's registered website is a different company — the exact
-  // wrong-attribution shape from #3754/#3755. Must resolve to nothing.
-  installFetchMock({
-    submissions: { ...SUBMISSIONS_FIXTURE, name: 'Zebrafields Corp', website: 'https://www.someone-else.example' },
-    profile: { name: 'Zebrafields Corp', exchange: 'NYSE' },
-  });
-  const resp = await getCompanyEnrichment(ctx, { ticker: '', name: '', domain: 'zebrafields.example' });
-  assert.deepEqual(resp.sources, [], 'no source may be attributed on an unconfirmed domain match');
-  assert.equal(resp.company?.cik, '');
-});
+// SEC publishes this field but leaves it EMPTY in practice — 0 of 15 sampled
+// filers populate it, Apple and NVIDIA included. The fixture mirrors that, so
+// nothing here can depend on a value the real upstream never sends.
+website: '',
 ```
 
 Two independent adversarial reviewers on **different model families** (Codex and an Opus
-in-process reviewer) converged on this same finding — the strongest signal in an 11-reviewer
-pass, and worth more than agreement among reviewers sharing a model. Both phrased it the
-same way: uniqueness had been mistaken for proof.
+in-process reviewer) converged on the uniqueness-is-not-identity finding — the strongest
+signal in an 11-reviewer pass, and worth more than agreement among reviewers sharing a
+model. But all eleven read *code*; none queried the upstream, which is why the dead-field
+problem survived them and surfaced only when a later pass probed the live API. Model
+diversity buys independence of reasoning, not independence of *evidence* — if every
+reviewer reads the same artifact, they share its blind spots.
 
 Shipped in PR #5738 (issue #5695). See also
 [mutation-test every detection layer](verify-the-verifier-mutation-test-every-detection-layer.md)

@@ -23,9 +23,7 @@ import { ValidationError } from '../../../../src/generated/server/worldmonitor/i
 import {
   describeItemCodes,
   fetchSecSubmissions,
-  filerWebsiteMatchesDomain,
   filingIndexUrl,
-  isCikRegistryUnavailable,
   resolveCompany,
 } from '../../../_shared/sec-edgar';
 import {
@@ -43,20 +41,20 @@ export async function getCompanyEnrichment(
   _ctx: ServerContext,
   req: GetCompanyEnrichmentRequest,
 ): Promise<GetCompanyEnrichmentResponse> {
-  const domain = req.domain?.trim().toLowerCase();
   const name = req.name?.trim();
   const ticker = req.ticker?.trim();
 
-  if (!domain && !name && !ticker) {
-    throw new ValidationError([{ field: 'ticker', description: 'Provide ticker, name, or domain' }]);
+  if (!name && !ticker) {
+    throw new ValidationError([{ field: 'ticker', description: 'Provide ticker or name' }]);
   }
 
-  const resolved = await resolveCompany({ ticker, name, domain });
-  if (!resolved) {
-    // Not in the SEC registry — or the registry itself was unreadable, which is
-    // a lookup failure rather than an answer about this company.
-    return unresolved(ticker, name, domain, isCikRegistryUnavailable());
+  const resolution = await resolveCompany({ ticker, name });
+  if (resolution.status !== 'ok') {
+    // "not_found" is a real, cacheable answer; "registry_unavailable" is a
+    // lookup failure and must not be cached as one.
+    return unresolved(ticker, name, resolution.status === 'registry_unavailable');
   }
+  const resolved = resolution.company;
 
   const [submissions, profile, earnings, mentions] = await Promise.all([
     fetchSecSubmissions(resolved.cik),
@@ -64,13 +62,6 @@ export async function getCompanyEnrichment(
     fetchEarningsSurprises(resolved.ticker),
     fetchCompanyNewsMentions(resolved.ticker, resolved.name),
   ]);
-
-  // A domain match is provisional: a unique name-prefix hit is not proof of
-  // identity. Confirm it against the filer's SEC-registered website, or return
-  // nothing rather than attribute another company's filings (#3754/#3755).
-  if (resolved.matchedBy === 'domain' && !filerWebsiteMatchesDomain(domain ?? '', submissions?.website ?? '')) {
-    return unresolved(ticker, name, domain);
-  }
 
   const sources: string[] = [];
   if (submissions) sources.push('sec_edgar');
@@ -92,17 +83,15 @@ export async function getCompanyEnrichment(
 
   const city = submissions?.city ?? '';
   const region = submissions?.stateOrCountry ?? '';
+  // SEC submissions carry a `website` field but leave it empty in practice, so
+  // the reported domain comes from the market profile in almost every case.
   const website = submissions?.website || profile?.website || '';
-  // Echo the caller's domain only when it belongs to the resolved filer. A
-  // ticker+domain request whose two identifiers disagree must not label one
-  // company's filings with the other's domain — report the filer's own.
-  const domainIsVerified = !!domain
-    && (resolved.matchedBy === 'domain' || filerWebsiteMatchesDomain(domain, website));
 
   return {
     company: {
       name: submissions?.name || resolved.name,
-      domain: domainIsVerified ? domain : safeDomainFromWebsite(website),
+      // Always the resolved filer's own domain — never an echo of caller input.
+      domain: safeDomainFromWebsite(website),
       description: submissions?.sicDescription ?? '',
       location: city && region ? `${city}, ${region}` : city || region,
       website,
@@ -121,14 +110,14 @@ export async function getCompanyEnrichment(
   };
 }
 
-function unresolved(ticker?: string, name?: string, domain?: string, unavailable = false): GetCompanyEnrichmentResponse {
+function unresolved(ticker?: string, name?: string, unavailable = false): GetCompanyEnrichmentResponse {
   return {
     company: {
       name: name || '',
-      domain: domain || '',
+      domain: '',
       description: '',
       location: '',
-      website: domain ? `https://${domain}` : '',
+      website: '',
       cik: '',
       ticker: ticker?.toUpperCase() || '',
     },

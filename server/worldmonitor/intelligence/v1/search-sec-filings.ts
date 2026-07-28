@@ -14,8 +14,6 @@ import { EDGAR_FORMS_RE, EDGAR_ISO_DATE_RE, searchEdgarFullText } from '../../..
 
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 25;
-const ISO_DATE_RE = EDGAR_ISO_DATE_RE;
-const FORMS_RE = EDGAR_FORMS_RE;
 
 export async function searchSecFilings(
   _ctx: ServerContext,
@@ -30,13 +28,13 @@ export async function searchSecFilings(
   // set, so a typo'd date range would return unrelated filings while the caller
   // believes the range was applied.
   const violations = [
-    ...(req.forms && !FORMS_RE.test(req.forms)
+    ...(req.forms && !EDGAR_FORMS_RE.test(req.forms)
       ? [{ field: 'forms', description: 'forms must be a comma-separated form list such as "8-K" or "10-K,10-Q"' }]
       : []),
-    ...(req.startDate && !ISO_DATE_RE.test(req.startDate)
+    ...(req.startDate && !EDGAR_ISO_DATE_RE.test(req.startDate)
       ? [{ field: 'start_date', description: 'start_date must be YYYY-MM-DD' }]
       : []),
-    ...(req.endDate && !ISO_DATE_RE.test(req.endDate)
+    ...(req.endDate && !EDGAR_ISO_DATE_RE.test(req.endDate)
       ? [{ field: 'end_date', description: 'end_date must be YYYY-MM-DD' }]
       : []),
   ];

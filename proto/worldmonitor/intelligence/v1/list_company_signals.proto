@@ -8,19 +8,25 @@ import "sebuf/http/annotations.proto";
 // sources (SEC 8-K material events, earnings surprises, news mentions). Provide a
 // ticker for the strongest match, or a company name matched against the SEC registry.
 message ListCompanySignalsRequest {
+  // domain was removed: matching a domain label against filer names is a guess,
+  // and the only field that could confirm it (the SEC-registered website) is
+  // left empty by SEC in practice, so the lookup could never be confirmed.
+  reserved 2;
+  reserved "domain";
+
   // Company name to discover signals for.
   string company = 1 [(sebuf.http.query) = {name: "company"}];
-  // Company domain to discover signals for. Accepted only when it matches one
-  // SEC filer unambiguously and that filer registered the same website.
-  string domain = 2 [(sebuf.http.query) = {name: "domain"}];
   // Exchange ticker symbol, such as "AAPL". Preferred lookup key.
   string ticker = 3 [(sebuf.http.query) = {name: "ticker"}];
 }
 
 // Discovered company signals with classification and engagement metrics.
 message ListCompanySignalsResponse {
+  // domain only ever echoed the request field of the same name, which is gone.
+  reserved 2;
+  reserved "domain";
+
   string company = 1;
-  string domain = 2;
   repeated CompanySignal signals = 3;
   SignalSummary summary = 4;
   

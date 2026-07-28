@@ -15,9 +15,12 @@ All notable changes to World Monitor are documented here.
   data behind authoritative SEC ticker→CIK resolution: EDGAR identity and recent
   filings, Finnhub market profile and earnings surprises, and recent news
   mentions. A company that does not resolve in the SEC registry returns an empty
-  envelope with `sources: []` rather than a guess, and a `domain` lookup is
-  accepted only when it matches one filer unambiguously **and** that filer
-  registered the same website. **Removed response fields:** `github`,
+  envelope with `sources: []` rather than a guess. **Lookup keys are `ticker` and
+  `name` only** — a `name` resolves solely when it identifies exactly one filer.
+  There is no `domain` lookup: matching a domain label against filer names is a
+  guess, and the only field that could confirm it (the SEC-registered website) is
+  left empty by SEC in practice, so the `domain` request field on both endpoints
+  is `reserved`. **Removed response fields:** `github`,
   `techStack`, `hackerNewsMentions`, and `company.founded` — all of which were
   permanently empty under the stub and are now `reserved` in the proto.
   **Added:** `market`, `earningsSurprises`, `newsMentions`, `company.cik`,

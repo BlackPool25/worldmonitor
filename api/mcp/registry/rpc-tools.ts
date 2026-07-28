@@ -1332,14 +1332,13 @@ export const RPC_TOOLS: ToolDef[] = [
       properties: {
         view: { type: 'string', enum: [...COMPANY_INTEL_VIEWS], description: 'Defaults to enrichment.' },
         ticker: { type: 'string', description: 'Exchange ticker symbol, such as AAPL. Preferred company key for enrichment and signals.' },
-        name: { type: 'string', description: 'Company name fallback when no ticker is known; matched against the SEC registry.' },
-        domain: { type: 'string', description: 'Company domain fallback, such as apple.com. Accepted only when it matches one SEC filer unambiguously AND that filer registered the same website; otherwise the company resolves to nothing rather than a guess.' },
+        name: { type: 'string', description: 'Company name fallback when no ticker is known; resolves only when it identifies exactly one SEC filer.' },
         query: { type: 'string', description: 'filings-search only: full-text query. Required for that view.' },
         forms: { type: 'string', description: 'filings-search only: comma-separated form filter, such as "8-K" or "10-K,10-Q".' },
         start_date: { type: 'string', description: 'filings-search only: earliest filing date (YYYY-MM-DD).' },
         end_date: { type: 'string', description: 'filings-search only: latest filing date (YYYY-MM-DD).' },
         item_code: { type: 'string', description: 'material-events only: filter to one 8-K item code, such as "5.02".' },
-        limit: { type: 'integer', minimum: 1, maximum: 100, description: 'filings-search (max 25) and material-events (max 100) result cap.' },
+        limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Result cap. Honored up to 25 for filings-search and up to 100 for material-events; a value above the view\'s own maximum is rejected rather than silently clamped. Ignored by the enrichment and signals views.' },
       },
       required: [],
     },
@@ -1349,7 +1348,7 @@ export const RPC_TOOLS: ToolDef[] = [
       required: ['view'],
       properties: {
         view: { type: 'string', enum: [...COMPANY_INTEL_VIEWS] },
-        error: { type: 'string', enum: ['ticker_or_name_required', 'query_required'], description: 'Present only on user-input failure.' },
+        error: { type: 'string', enum: ['ticker_or_name_required', 'query_required', 'limit_out_of_range'], description: 'Present only on user-input failure.' },
         enrichment: { type: 'object', properties: {
           company: { type: 'object', properties: { name: { type: 'string' }, domain: { type: 'string' }, description: { type: 'string' }, location: { type: 'string' }, website: { type: 'string' }, cik: { type: 'string' }, ticker: { type: 'string' } } },
           secFilings: { type: 'object', properties: { totalFilings: { type: 'number' }, recentFilings: { type: 'array', items: { type: 'object' } } } },
@@ -1393,41 +1392,45 @@ export const RPC_TOOLS: ToolDef[] = [
         return response.json();
       };
 
+      // Reject a limit above the view's own maximum rather than clamping it:
+      // one numeric bound in the schema cannot express a per-view cap, so
+      // silently returning 25 of a requested 100 would read as "only 25 exist".
+      const limitWithinRange = (max: number) => !limit || limit <= max;
+
       if (view === 'filings-search') {
         const query = str(params.query);
         if (!query) return { view, error: 'query_required' };
+        if (!limitWithinRange(25)) return { view, error: 'limit_out_of_range' };
         const search = new URLSearchParams({ query });
         if (str(params.forms)) search.set('forms', str(params.forms));
         if (str(params.start_date)) search.set('start_date', str(params.start_date));
         if (str(params.end_date)) search.set('end_date', str(params.end_date));
-        if (limit) search.set('limit', String(Math.min(limit, 25)));
+        if (limit) search.set('limit', String(limit));
         return { view, search: await call('/api/intelligence/v1/search-sec-filings', search, 10_000) };
       }
 
       if (view === 'material-events') {
+        if (!limitWithinRange(100)) return { view, error: 'limit_out_of_range' };
         const search = new URLSearchParams();
         if (str(params.item_code)) search.set('item_code', str(params.item_code));
-        if (limit) search.set('limit', String(Math.min(limit, 100)));
+        if (limit) search.set('limit', String(limit));
         return { view, events: await call('/api/intelligence/v1/list-material-events', search, 8_000) };
       }
 
       const ticker = str(params.ticker);
       const name = str(params.name);
-      const domain = str(params.domain);
-      if (!ticker && !name && !domain) return { view, error: 'ticker_or_name_required' };
+      if (!ticker && !name) return { view, error: 'ticker_or_name_required' };
 
       if (view === 'signals') {
         const search = new URLSearchParams();
         if (ticker) search.set('ticker', ticker);
         if (name) search.set('company', name);
-        if (domain) search.set('domain', domain);
         return { view, signals: await call('/api/intelligence/v1/list-company-signals', search, 12_000) };
       }
 
       const search = new URLSearchParams();
       if (ticker) search.set('ticker', ticker);
       if (name) search.set('name', name);
-      if (domain) search.set('domain', domain);
       return { view, enrichment: await call('/api/intelligence/v1/get-company-enrichment', search, 12_000) };
     },
     // The seeded corporate-intelligence keys this tool's REST routes read.
