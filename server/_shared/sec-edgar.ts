@@ -5,6 +5,8 @@
 // filing data is fetched per-CIK from data.sec.gov. No domain-slug or keyword
 // guessing (the unsound heuristics removed in issues #3754/#3755).
 
+// @ts-expect-error — JS module, no declaration file
+import { captureSilentError } from '../../api/_sentry-edge.js';
 import { sha256Hex } from './hash';
 import { cachedFetchJson, getCachedJson } from './redis';
 import { unwrapEnvelope } from './seed-envelope';
@@ -221,6 +223,13 @@ async function readCikRegistry(): Promise<unknown | null> {
     const isTimeout = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError');
     if (isTimeout) console.error(`[REDIS-TIMEOUT] readCikRegistry key=${SEC_CIK_MAP_KEY} timeoutMs=${CIK_MAP_READ_TIMEOUT_MS}`);
     else console.warn('[sec-edgar] CIK registry read failed:', err instanceof Error ? err.message : String(err));
+    // A failure here degrades every company lookup to "unavailable", so it must
+    // reach Sentry rather than only the function log.
+    captureSilentError(err, {
+      tags: { surface: 'server', component: 'sec-edgar', stage: isTimeout ? 'cik-registry-timeout' : 'cik-registry-read' },
+      fingerprint: ['sec-edgar', 'cik-registry-read', isTimeout ? 'timeout' : 'error'],
+      level: 'warning',
+    });
     return null;
   }
 }
