@@ -55,21 +55,24 @@ const digestResponse = {
 function upstashPipelineResponder(commands, state) {
   const first = commands[0]?.[0];
   if (first === 'ZRANGE') {
-    const [, key, max, min, byscore, rev, withscores, limitKw, offset, count] = commands[0];
-    assert.equal(key, 'digest:accumulator:v1:full:en');
-    assert.deepEqual([byscore, rev, withscores, limitKw], ['BYSCORE', 'REV', 'WITHSCORES', 'LIMIT']);
-    assert.equal(offset, '0');
-    assert.ok(Number(max) >= Number(min), 'REV BYSCORE takes max before min; swapped bounds return empty on real Redis');
-    const maxScore = Number(max);
-    const minScore = Number(min);
-    const cap = Number(count);
-    const pairs = [];
-    for (let i = 0; i + 1 < state.zrangeFlat.length; i += 2) {
-      const score = Number(state.zrangeFlat[i + 1]);
-      if (score >= minScore && score <= maxScore) pairs.push([state.zrangeFlat[i], state.zrangeFlat[i + 1]]);
-    }
-    pairs.sort((a, b) => Number(b[1]) - Number(a[1])); // REV: newest first
-    return [{ result: pairs.slice(0, cap).flat() }];
+    return commands.map((command) => {
+      const [, key, max, min, byscore, rev, withscores, limitKw, offset, count] = command;
+      assert.equal(key, 'digest:accumulator:v1:full:en');
+      assert.deepEqual([byscore, rev, withscores, limitKw], ['BYSCORE', 'REV', 'WITHSCORES', 'LIMIT']);
+      assert.equal(offset, '0');
+      assert.equal(count, '800', 'each accumulator cohort must have an explicit fixed cap');
+      assert.ok(Number(max) >= Number(min), 'REV BYSCORE takes max before min; swapped bounds return empty on real Redis');
+      const maxScore = Number(max);
+      const minScore = Number(min);
+      const cap = Number(count);
+      const pairs = [];
+      for (let i = 0; i + 1 < state.zrangeFlat.length; i += 2) {
+        const score = Number(state.zrangeFlat[i + 1]);
+        if (score >= minScore && score <= maxScore) pairs.push([state.zrangeFlat[i], state.zrangeFlat[i + 1]]);
+      }
+      pairs.sort((a, b) => Number(b[1]) - Number(a[1])); // REV: newest first
+      return { result: pairs.slice(0, cap).flat() };
+    });
   }
   if (first === 'HMGET') {
     return commands.map((cmd) => {
@@ -111,6 +114,7 @@ describe('#5697 NLP MCP tools', () => {
       storedPayloads: new Map(),
       // Command verbs whose pipelines should fail (partial-outage simulation).
       failCommands: new Set(),
+      pipelineReplyTransforms: new Map(),
     };
 
     globalThis.fetch = async (input, init = {}) => {
@@ -126,7 +130,9 @@ describe('#5697 NLP MCP tools', () => {
           if (['ZRANGE', 'HMGET', 'SMEMBERS', 'SET'].includes(commands[0]?.[0])) {
             pipelineCalls += 1;
           }
-          return Response.json(upstashPipelineResponder(commands, upstashState));
+          const normalReply = upstashPipelineResponder(commands, upstashState);
+          const transform = upstashState.pipelineReplyTransforms.get(commands[0]?.[0]);
+          return Response.json(transform ? transform(normalReply) : normalReply);
         }
         // GET /get/<key>
         if (upstashState.failCacheRead) return new Response('upstash unavailable', { status: 500 });
@@ -176,6 +182,23 @@ describe('#5697 NLP MCP tools', () => {
     assert.equal(byName.get('extract_entities')?.inputSchema.properties.text.maxLength, 2048);
     assert.equal(byName.get('get_news_clusters')?.inputSchema.properties.limit.maximum, 25);
     assert.equal(byName.get('get_keyword_spikes')?.inputSchema.properties.window_hours.maximum, 12);
+    const classifyOutput = byName.get('classify_event')?.outputSchema;
+    assert.deepEqual(classifyOutput.properties.classification.required,
+      ['category', 'level', 'severity', 'confidence']);
+    assert.deepEqual(classifyOutput.properties.classification.properties.category.enum,
+      ['conflict', 'protest', 'disaster', 'diplomatic', 'economic', 'terrorism', 'cyber',
+        'health', 'environmental', 'military', 'crime', 'infrastructure', 'tech', 'general']);
+    assert.deepEqual(classifyOutput.properties.classification.properties.level.enum,
+      ['critical', 'high', 'medium', 'low', 'info']);
+    assert.deepEqual(classifyOutput.properties.classification.properties.severity.enum,
+      ['SEVERITY_LEVEL_HIGH', 'SEVERITY_LEVEL_MEDIUM', 'SEVERITY_LEVEL_LOW']);
+    const spikeOutput = byName.get('get_keyword_spikes')?.outputSchema;
+    assert.ok(
+      spikeOutput.required.includes('sample_truncated'),
+      'sample_truncated must be required on every get_keyword_spikes response',
+    );
+    assert.deepEqual(spikeOutput.properties.spikes.items.required,
+      ['term', 'count', 'baseline', 'multiplier', 'uniqueSources', 'sampleHeadlines']);
   });
 
   describe('classify_event', () => {
@@ -216,6 +239,30 @@ describe('#5697 NLP MCP tools', () => {
         const { result } = await callTool('classify_event', { text: 'Unclassifiable filler headline' });
         assert.equal(result.classification, null, 'the documented declined-classification contract');
         assert.equal('error' in result, false, 'a declined classification is not a tool error');
+      } finally {
+        globalThis.fetch = originalFetchImpl;
+      }
+    });
+
+    it('returns a null classification for invalid or incomplete upstream labels', async () => {
+      const originalFetchImpl = globalThis.fetch;
+      const upstreamPayloads = [
+        { classification: { ...classifyResponse.classification, category: 'unknown' } },
+        { classification: { category: 'conflict', subcategory: 'critical' } },
+      ];
+      globalThis.fetch = async (input, init = {}) => {
+        const url = String(input);
+        if (url.includes('/api/intelligence/v1/classify-event')) {
+          requests.push({ url, init });
+          return Response.json(upstreamPayloads.shift());
+        }
+        return originalFetchImpl(input, init);
+      };
+      try {
+        for (const text of ['Unknown category', 'Partial classifier payload']) {
+          const { result } = await callTool('classify_event', { text });
+          assert.equal(result.classification, null);
+        }
       } finally {
         globalThis.fetch = originalFetchImpl;
       }
@@ -372,9 +419,10 @@ describe('#5697 NLP MCP tools', () => {
       const first = await callTool('get_keyword_spikes', {});
       assert.equal(first.response.status, 200);
       assert.equal(first.result.story_count, 35);
-      // The fixture's oldest story sits 32h back, so the honest sampled span is
-      // 32h — asserting a flat 48 here is exactly the bug the span fix removed.
-      assert.equal(first.result.baseline_hours, 32);
+      // The oldest pre-window story sits 32h back, so the exact sampled
+      // PRE-WINDOW duration is 30h (32h total minus the 2h recent window).
+      assert.ok(Math.abs(first.result.baseline_hours - 30) < 0.01,
+        'baseline duration reflects the sampled 30h pre-window span');
       assert.equal(first.result.sample_truncated, false);
       const terms = first.result.spikes.map((s) => s.term);
       assert.ok(terms.includes('zaporizhzhia'), `expected zaporizhzhia, got: ${terms.join(', ')}`);
@@ -418,30 +466,77 @@ describe('#5697 NLP MCP tools', () => {
       assert.equal(result.window_hours, 2, 'non-integer window falls back to the default');
       // The cache key embeds the clamped minCount, so it proves the clamp
       // applied rather than the raw -3 reaching the spike math.
-      assert.deepEqual([...upstashState.storedPayloads.keys()], ['intelligence:keyword-spikes:mcp:v1:2h:2'],
+      assert.deepEqual([...upstashState.storedPayloads.keys()], ['intelligence:keyword-spikes:mcp:v2:2h:2'],
         'out-of-range integer min_count clamps to the schema minimum (2); the raw -3 must never reach the spike math');
       assert.ok(result.spikes.length <= 10, 'non-integer limit falls back to the default 10');
     });
 
-    it('reports the sampled baseline span instead of assuming the full retention window', async () => {
-      // 900 stories inside ~3h: the per-call cap truncates the sample, so a
-      // 48h baseline claim would divide by a span never actually read.
+    it('fetches a separately bounded baseline cohort when the newest 800 rows are all recent', async () => {
+      // 900 recent rows fill a newest-first cap before it can reach these
+      // pre-window rows. The second bounded cohort must still find the baseline.
       const now = Date.now();
       const flat = [];
       for (let i = 0; i < 900; i++) {
         const hash = `dense${i}`;
-        const lastSeen = now - Math.floor(i * 12_000); // 12s apart -> ~3h total
+        const lastSeen = now - Math.floor(i * 4_000); // all inside the 2h recent window
         flat.push(hash, String(lastSeen));
-        upstashState.titlesByHash.set(hash, `Routine market wrap number ${i}`);
+        upstashState.titlesByHash.set(hash, `Zaporizhzhia alert expands (${i})`);
         upstashState.sourcesByHash.set(hash, [`src-${i % 5}`]);
+      }
+      for (let i = 0; i < 4; i++) {
+        const hash = `dense-base${i}`;
+        const lastSeen = now - (2.5 + i * 0.5) * 60 * 60 * 1000;
+        flat.push(hash, String(lastSeen));
+        upstashState.titlesByHash.set(hash, `Zaporizhzhia monitoring continues (${i})`);
       }
       upstashState.zrangeFlat = flat;
 
       const { result } = await callTool('get_keyword_spikes', {});
       assert.equal(result.sample_truncated, true, 'hitting the story cap must be disclosed');
-      assert.ok(result.baseline_hours < 48, `baseline_hours must reflect the sampled span, got ${result.baseline_hours}`);
-      assert.ok(result.baseline_hours >= 4, `sampled span should cover the ~3h read, got ${result.baseline_hours}`);
-      assert.equal(result.story_count, 800, 'the cap bounds the corpus actually processed');
+      assert.ok(Math.abs(result.baseline_hours - 2) < 0.01,
+        'baseline duration is measured from the 4h-old row to the 2h boundary');
+      assert.equal(result.story_count, 804, 'recent and baseline cohorts are independently bounded and combined');
+      assert.ok(result.spikes.some((spike) => spike.term === 'zaporizhzhia'));
+      assert.equal(upstashState.storedPayloads.size, 1, 'a complete two-cohort result remains cacheable');
+    });
+
+    it('returns baseline-unavailable without spikes or caching when no pre-window rows exist', async () => {
+      const now = Date.now();
+      const flat = [];
+      for (let i = 0; i < 900; i++) {
+        const hash = `recent-only${i}`;
+        flat.push(hash, String(now - i * 4_000));
+        upstashState.titlesByHash.set(hash, `Zaporizhzhia alert expands (${i})`);
+        upstashState.sourcesByHash.set(hash, [`src-${i % 5}`]);
+      }
+      upstashState.zrangeFlat = flat;
+
+      const { result } = await callTool('get_keyword_spikes', {});
+      assert.deepEqual(result.spikes, []);
+      assert.equal(result.baseline_hours, 0);
+      assert.equal(result.sample_truncated, true);
+      assert.match(result.note, /baseline unavailable/i);
+      assert.equal(upstashState.storedPayloads.size, 0,
+        'a recent-only sample must not poison cache with cold-start spikes');
+    });
+
+    it('preserves a positive fractional baseline duration below one decimal hour', async () => {
+      const now = Date.now();
+      const windowMs = 2 * 60 * 60 * 1000;
+      upstashState.zrangeFlat = [
+        'fractional-recent', String(now - 1_000),
+        'fractional-baseline', String(now - windowMs - 60_000),
+      ];
+      upstashState.titlesByHash.set('fractional-recent', 'Fractional recent headline');
+      upstashState.titlesByHash.set('fractional-baseline', 'Fractional baseline headline');
+      upstashState.sourcesByHash.set('fractional-recent', ['Reuters']);
+
+      const { result } = await callTool('get_keyword_spikes', {});
+      assert.ok(result.baseline_hours > 0 && result.baseline_hours < 0.1,
+        'an available short baseline must stay distinguishable from the zero/unavailable sentinel');
+      assert.equal(result.story_count, 2);
+      assert.equal(upstashState.storedPayloads.size, 1,
+        'a complete fractional baseline remains cacheable');
     });
 
     it('exercises multi-chunk HMGET/SMEMBERS reassembly past the 200-item boundary', async () => {
@@ -453,10 +548,12 @@ describe('#5697 NLP MCP tools', () => {
         upstashState.titlesByHash.set(hash, `Chunk boundary headline ${i}`);
         upstashState.sourcesByHash.set(hash, [`outlet-${i % 4}`]);
       }
+      flat.push('chunk-baseline', String(now - 3 * 60 * 60 * 1000));
+      upstashState.titlesByHash.set('chunk-baseline', 'Chunk boundary baseline headline');
       upstashState.zrangeFlat = flat;
 
       const { result } = await callTool('get_keyword_spikes', {});
-      assert.equal(result.story_count, 450, 'titles from every chunk must be reassembled');
+      assert.equal(result.story_count, 451, 'titles from every chunk must be reassembled');
       assert.equal(result.sample_truncated, false);
     });
 
@@ -468,6 +565,46 @@ describe('#5697 NLP MCP tools', () => {
       assert.match(result.note, /partial story-store read/);
       assert.equal(upstashState.storedPayloads.size, 0,
         'a degraded corpus must never poison the shared 10-minute cache');
+    });
+
+    it('does not cache an unavailable accumulator pipeline', async () => {
+      seedAccumulator();
+      upstashState.failCommands.add('ZRANGE');
+
+      const { result } = await callTool('get_keyword_spikes', {});
+      assert.deepEqual(result.spikes, []);
+      assert.match(result.note, /accumulator unavailable or empty/);
+      assert.equal(upstashState.storedPayloads.size, 0);
+    });
+
+    for (const command of ['HMGET', 'SMEMBERS']) {
+      for (const [condition, transform] of [
+        ['short', (reply) => reply.slice(0, -1)],
+        ['malformed', (reply) => reply.map(() => ({ result: 'not-an-array' }))],
+        ['per-command error', (reply) => reply.map((item, index) => (
+          index === 0 ? { error: 'WRONGTYPE simulated' } : item
+        ))],
+      ]) {
+        it(`treats a ${condition} ${command} pipeline reply as degraded and never caches it`, async () => {
+          seedAccumulator();
+          upstashState.pipelineReplyTransforms.set(command, transform);
+
+          const { result } = await callTool('get_keyword_spikes', {});
+          assert.match(result.note, /partial story-store read/);
+          assert.equal(upstashState.storedPayloads.size, 0);
+        });
+      }
+    }
+
+    it('treats a missing HMGET title as degraded and never caches it', async () => {
+      seedAccumulator();
+      upstashState.pipelineReplyTransforms.set('HMGET', (reply) => reply.map((item, index) => (
+        index === 0 ? { result: [null] } : item
+      )));
+
+      const { result } = await callTool('get_keyword_spikes', {});
+      assert.match(result.note, /partial story-store read/);
+      assert.equal(upstashState.storedPayloads.size, 0);
     });
 
     it('falls back to live computation when the cache read fails', async () => {

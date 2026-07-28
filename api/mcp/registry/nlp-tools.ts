@@ -34,6 +34,15 @@ import type { ToolDef } from '../types';
 // bounded; all four are standard quota-consuming tools/call tools.
 
 const CLASSIFY_TEXT_MAX_CHARS = 500; // mirrors the classify-event handler's own clip
+const CLASSIFY_CATEGORIES = [
+  'conflict', 'protest', 'disaster', 'diplomatic', 'economic',
+  'terrorism', 'cyber', 'health', 'environmental', 'military',
+  'crime', 'infrastructure', 'tech', 'general',
+];
+const CLASSIFY_LEVELS = ['critical', 'high', 'medium', 'low', 'info'];
+const CLASSIFY_SEVERITIES = [
+  'SEVERITY_LEVEL_HIGH', 'SEVERITY_LEVEL_MEDIUM', 'SEVERITY_LEVEL_LOW',
+];
 const EXTRACT_TEXT_MAX_CHARS = 2048; // issue #5697's 2 KB arbitrary-text cap
 const NLP_DIGEST_TIMEOUT_MS = 6_000;
 const NLP_UA = 'worldmonitor-mcp-edge/1.0';
@@ -171,10 +180,17 @@ export const NLP_TOOLS: ToolDef[] = [
         classification: {
           type: ['object', 'null'],
           description: 'null when the classifier could not produce an enum-valid result for this text.',
+          required: ['category', 'level', 'severity', 'confidence'],
           properties: {
-            category: { type: 'string', description: 'One of: conflict, protest, disaster, diplomatic, economic, terrorism, cyber, health, environmental, military, crime, infrastructure, tech, general.' },
-            level: { type: 'string', description: 'Fine-grained threat level: critical, high, medium, low, or info.' },
-            severity: { type: 'string', description: 'Coarse proto severity bucket: SEVERITY_LEVEL_HIGH, SEVERITY_LEVEL_MEDIUM, or SEVERITY_LEVEL_LOW.' },
+            category: {
+              type: 'string',
+              enum: CLASSIFY_CATEGORIES,
+            },
+            level: { type: 'string', enum: CLASSIFY_LEVELS },
+            severity: {
+              type: 'string',
+              enum: CLASSIFY_SEVERITIES,
+            },
             confidence: { type: 'number' },
           },
         },
@@ -202,14 +218,24 @@ export const NLP_TOOLS: ToolDef[] = [
         classification?: { category?: string; subcategory?: string; severity?: string; confidence?: number };
       };
       const c = result.classification;
+      if (
+        !c
+        || !CLASSIFY_CATEGORIES.includes(c.category ?? '')
+        || !CLASSIFY_LEVELS.includes(c.subcategory ?? '')
+        || !CLASSIFY_SEVERITIES.includes(c.severity ?? '')
+        || typeof c.confidence !== 'number'
+        || !Number.isFinite(c.confidence)
+      ) {
+        return { classification: null };
+      }
       return {
-        classification: c ? {
-          category: c.category ?? 'general',
+        classification: {
+          category: c.category,
           // The REST payload carries the fine-grained level in `subcategory`.
-          level: c.subcategory ?? 'info',
-          severity: c.severity ?? 'SEVERITY_LEVEL_LOW',
-          confidence: typeof c.confidence === 'number' ? c.confidence : 0,
-        } : null,
+          level: c.subcategory,
+          severity: c.severity,
+          confidence: c.confidence,
+        },
       };
     },
     _apiPaths: [
@@ -388,23 +414,25 @@ export const NLP_TOOLS: ToolDef[] = [
     },
     outputSchema: {
       type: 'object',
-      required: ['spikes', 'window_hours', 'baseline_hours', 'story_count', 'generatedAt'],
+      required: ['spikes', 'window_hours', 'baseline_hours', 'story_count', 'sample_truncated', 'generatedAt'],
       properties: {
         spikes: {
           type: 'array',
-          items: { type: 'object', properties: {
+          items: { type: 'object', required: [
+            'term', 'count', 'baseline', 'multiplier', 'uniqueSources', 'sampleHeadlines',
+          ], properties: {
             term: { type: 'string' },
             count: { type: 'number', description: 'Distinct stories mentioning the term inside the recent window.' },
-            baseline: { type: 'number', description: 'Per-window story rate over the pre-window remainder of the sampled span (see baseline_hours). 0 means cold start.' },
-            multiplier: { type: 'number', description: 'count / baseline; 0 on cold start.' },
+            baseline: { type: 'number', description: 'Per-window story rate over the exact sampled pre-window duration (see baseline_hours). 0 means this term was absent from the available baseline cohort.' },
+            multiplier: { type: 'number', description: 'count / baseline; 0 when the term has no baseline mentions.' },
             uniqueSources: { type: 'number' },
             sampleHeadlines: { type: 'array', items: { type: 'string' } },
           } },
         },
         window_hours: { type: 'number' },
-        baseline_hours: { type: 'number', description: 'Hours of history the baseline was ACTUALLY computed over — the accumulator retains 48h, but a high-volume feed can fill the per-call story cap with a shorter, more recent span. Always read this rather than assuming 48.' },
-        story_count: { type: 'number', description: 'Stories this computation saw (capped per call; see sample_truncated).' },
-        sample_truncated: { type: 'boolean', description: 'True when the per-call story cap was hit, so baseline_hours is narrower than the accumulator retention.' },
+        baseline_hours: { type: 'number', description: 'Exact hours in the sampled pre-window baseline cohort. 0 means no baseline was available and spikes is empty.' },
+        story_count: { type: 'number', description: 'Stories this computation saw across the separately bounded recent and baseline cohorts.' },
+        sample_truncated: { type: 'boolean', description: 'True when either bounded cohort hit its 800-story cap.' },
         generatedAt: { type: 'string' },
         note: { type: 'string', description: 'Present when the accumulator was unavailable/empty or the story store was only partially readable.' },
       },
@@ -415,7 +443,9 @@ export const NLP_TOOLS: ToolDef[] = [
       const minCount = nlpClampInt(params.min_count, 2, 20, DEFAULT_MIN_SPIKE_COUNT);
       const limit = nlpClampInt(params.limit, 1, 25, 10);
 
-      const cacheKey = `intelligence:keyword-spikes:mcp:v1:${windowHours}h:${minCount}`;
+      // v2 invalidates v1 payloads computed without an independently sampled
+      // pre-window cohort (and before sample_truncated became required).
+      const cacheKey = `intelligence:keyword-spikes:mcp:v2:${windowHours}h:${minCount}`;
       // A cache-read failure must degrade to live computation, not surface as a
       // tool error: readJsonFromUpstash throws on network failure (unlike
       // redisPipeline, which returns null).
@@ -431,50 +461,81 @@ export const NLP_TOOLS: ToolDef[] = [
 
       const nowMs = Date.now();
       const windowMs = windowHours * 60 * 60 * 1000;
+      const windowStart = nowMs - windowMs;
       const emptyResult = {
         spikes: [] as unknown[],
         window_hours: windowHours,
-        baseline_hours: KEYWORD_SPIKE_BASELINE_MS / 3_600_000,
+        baseline_hours: 0,
         story_count: 0,
         sample_truncated: false,
         generatedAt: new Date(nowMs).toISOString(),
       };
 
-      const zres = await redisPipeline([[
-        'ZRANGE', DIGEST_ACCUMULATOR_KEY_MCP,
-        String(nowMs), String(nowMs - KEYWORD_SPIKE_BASELINE_MS),
-        'BYSCORE', 'REV', 'WITHSCORES', 'LIMIT', '0', String(KEYWORD_SPIKE_MAX_STORIES),
-      ]]) as Array<{ result?: unknown }> | null;
-      const flat = zres?.[0]?.result;
-      if (!Array.isArray(flat) || flat.length === 0) {
+      // Read recent and pre-window cohorts independently. A single newest-first
+      // cap can be consumed entirely by a busy recent window, which proves
+      // nothing about whether older baseline rows exist.
+      const zres = await redisPipeline([
+        [
+          'ZRANGE', DIGEST_ACCUMULATOR_KEY_MCP,
+          String(nowMs), String(windowStart),
+          'BYSCORE', 'REV', 'WITHSCORES', 'LIMIT', '0', String(KEYWORD_SPIKE_MAX_STORIES),
+        ],
+        [
+          'ZRANGE', DIGEST_ACCUMULATOR_KEY_MCP,
+          String(windowStart - 1), String(nowMs - KEYWORD_SPIKE_BASELINE_MS),
+          'BYSCORE', 'REV', 'WITHSCORES', 'LIMIT', '0', String(KEYWORD_SPIKE_MAX_STORIES),
+        ],
+      ]) as Array<{ result?: unknown; error?: unknown }> | null;
+      const recentFlat = zres?.[0]?.result;
+      const baselineFlat = zres?.[1]?.result;
+      if (!Array.isArray(recentFlat) || !Array.isArray(baselineFlat)) {
         return { ...emptyResult, note: 'story accumulator unavailable or empty' };
       }
 
-      const entries: Array<{ hash: string; lastSeenMs: number }> = [];
-      for (let i = 0; i + 1 < flat.length; i += 2) {
-        const hash = String(flat[i]);
-        const lastSeenMs = Number(flat[i + 1]);
-        if (hash && Number.isFinite(lastSeenMs)) entries.push({ hash, lastSeenMs });
+      if (recentFlat.length === 0 && baselineFlat.length === 0) {
+        return { ...emptyResult, note: 'story accumulator unavailable or empty' };
       }
-      // A non-empty reply whose every member/score pair is unreadable is a
-      // malformed payload, not a quiet window. Without this the computation
-      // would run over zero stories and cache an empty, note-less result —
-      // the same indistinguishable-from-quiet failure the degraded path below
-      // exists to prevent.
-      if (entries.length === 0) {
+
+      const parseEntries = (flat: unknown[]): {
+        entries: Array<{ hash: string; lastSeenMs: number }>;
+        malformed: boolean;
+      } => {
+        const entries: Array<{ hash: string; lastSeenMs: number }> = [];
+        let malformed = flat.length % 2 !== 0;
+        for (let i = 0; i + 1 < flat.length; i += 2) {
+          const rawHash = flat[i];
+          const hash = typeof rawHash === 'string' ? rawHash : '';
+          const lastSeenMs = Number(flat[i + 1]);
+          if (hash && Number.isFinite(lastSeenMs)) entries.push({ hash, lastSeenMs });
+          else malformed = true;
+        }
+        return { entries, malformed };
+      };
+      const recentParsed = parseEntries(recentFlat);
+      const baselineParsed = parseEntries(baselineFlat);
+      if (recentParsed.malformed || baselineParsed.malformed) {
         return { ...emptyResult, note: 'story accumulator returned an unreadable payload' };
       }
 
-      // The ZRANGE is REV (newest first) and capped, so on a high-volume feed
-      // the sample spans far less than the accumulator's 48h retention. The
-      // baseline must be divided by the span actually sampled — assuming 48h
-      // would drive baselines toward zero and inflate every multiplier.
-      const sampleTruncated = entries.length >= KEYWORD_SPIKE_MAX_STORIES;
-      const oldestMs = entries[entries.length - 1]?.lastSeenMs ?? nowMs;
-      const sampledSpanMs = Math.min(
-        KEYWORD_SPIKE_BASELINE_MS,
-        Math.max(windowMs * 2, nowMs - oldestMs),
+      const recentEntries = recentParsed.entries;
+      const baselineEntries = baselineParsed.entries;
+      const sampleTruncated = recentEntries.length >= KEYWORD_SPIKE_MAX_STORIES
+        || baselineEntries.length >= KEYWORD_SPIKE_MAX_STORIES;
+      if (baselineEntries.length === 0) {
+        return {
+          ...emptyResult,
+          story_count: recentEntries.length,
+          sample_truncated: sampleTruncated,
+          note: 'baseline unavailable: no pre-window stories were present; spikes were not computed or cached',
+        };
+      }
+
+      const oldestBaselineMs = baselineEntries[baselineEntries.length - 1]!.lastSeenMs;
+      const baselineDurationMs = Math.min(
+        KEYWORD_SPIKE_BASELINE_MS - windowMs,
+        windowStart - oldestBaselineMs,
       );
+      const entries = [...recentEntries, ...baselineEntries];
 
       // Any chunk failure means the corpus is incomplete: spikes computed from
       // it can be both false (missing baseline stories) and missing (dropped
@@ -494,15 +555,24 @@ export const NLP_TOOLS: ToolDef[] = [
       ) as Promise<Array<{ result?: unknown }> | null>));
       hmgetChunks.forEach((chunk, chunkIdx) => {
         const res = hmgetResults[chunkIdx];
-        if (!res) { degraded = true; return; }
+        if (!Array.isArray(res) || res.length !== chunk.length) degraded = true;
         chunk.forEach((entry, idx) => {
-          const fields = res[idx]?.result;
-          const title = Array.isArray(fields) ? fields[0] : null;
-          if (typeof title === 'string' && title) titles.set(entry.hash, title);
+          const reply = res?.[idx];
+          const fields = reply?.result;
+          if (!reply || Object.prototype.hasOwnProperty.call(reply, 'error')
+            || !Array.isArray(fields) || fields.length !== 1) {
+            degraded = true;
+            return;
+          }
+          const title = fields[0];
+          if (typeof title !== 'string' || !title) {
+            degraded = true;
+            return;
+          }
+          titles.set(entry.hash, title);
         });
       });
 
-      const windowStart = nowMs - windowMs;
       const recentHashes = entries
         .filter(entry => entry.lastSeenMs >= windowStart && titles.has(entry.hash))
         .map(entry => entry.hash);
@@ -514,10 +584,16 @@ export const NLP_TOOLS: ToolDef[] = [
       ) as Promise<Array<{ result?: unknown }> | null>));
       smembersChunks.forEach((chunk, chunkIdx) => {
         const res = smembersResults[chunkIdx];
-        if (!res) { degraded = true; return; }
+        if (!Array.isArray(res) || res.length !== chunk.length) degraded = true;
         chunk.forEach((hash, idx) => {
-          const members = res[idx]?.result;
-          sourcesByHash.set(hash, Array.isArray(members) ? members.map(String) : []);
+          const reply = res?.[idx];
+          const members = reply?.result;
+          if (!reply || Object.prototype.hasOwnProperty.call(reply, 'error')
+            || !Array.isArray(members) || members.some(member => typeof member !== 'string')) {
+            degraded = true;
+            return;
+          }
+          sourcesByHash.set(hash, members);
         });
       });
 
@@ -532,7 +608,7 @@ export const NLP_TOOLS: ToolDef[] = [
       const spikes = computeKeywordSpikesFromStories(stories, {
         nowMs,
         windowMs,
-        baselineSpanMs: sampledSpanMs,
+        baselineDurationMs,
         minSpikeCount: minCount,
         spikeMultiplier: DEFAULT_SPIKE_MULTIPLIER,
       }).slice(0, KEYWORD_SPIKE_MAX_STORED).map(spike => ({
@@ -548,7 +624,7 @@ export const NLP_TOOLS: ToolDef[] = [
         ...emptyResult,
         spikes,
         story_count: stories.length,
-        baseline_hours: Math.round((sampledSpanMs / 3_600_000) * 10) / 10,
+        baseline_hours: baselineDurationMs / 3_600_000,
         sample_truncated: sampleTruncated,
       };
       if (degraded) {

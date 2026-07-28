@@ -134,7 +134,7 @@ describe('keyword-spike-core', () => {
     const HOUR = 60 * 60 * 1000;
     const nowMs = 1_800_000_000_000;
     const windowMs = 2 * HOUR;
-    const baselineSpanMs = 48 * HOUR;
+    const baselineDurationMs = 46 * HOUR;
     const stories = [];
     // 5 recent stories about zaporizhzhia from 3 sources — should spike.
     for (let i = 0; i < 5; i++) {
@@ -152,7 +152,7 @@ describe('keyword-spike-core', () => {
         sources: ['weather-wire'],
       });
     }
-    const spikes = computeKeywordSpikesFromStories(stories, { nowMs, windowMs, baselineSpanMs });
+    const spikes = computeKeywordSpikesFromStories(stories, { nowMs, windowMs, baselineDurationMs });
     const terms = spikes.map((s) => s.term);
     assert.ok(terms.includes('zaporizhzhia'), `expected zaporizhzhia spike, got: ${terms.join(', ')}`);
     assert.ok(!terms.includes('weather'), 'baseline-only term must not spike');
@@ -171,7 +171,7 @@ describe('keyword-spike-core', () => {
       sources: ['single-blog'],
     }));
     const spikes = computeKeywordSpikesFromStories(stories, {
-      nowMs, windowMs: 2 * HOUR, baselineSpanMs: 48 * HOUR,
+      nowMs, windowMs: 2 * HOUR, baselineDurationMs: 46 * HOUR,
     });
     assert.equal(spikes.length, 0, 'single-source bursts must not spike');
   });
@@ -185,9 +185,53 @@ describe('keyword-spike-core', () => {
       sources: [`s${i}`],
     }));
     const spikes = computeKeywordSpikesFromStories(stories, {
-      nowMs, windowMs: 2 * HOUR, baselineSpanMs: 48 * HOUR,
+      nowMs, windowMs: 2 * HOUR, baselineDurationMs: 46 * HOUR,
     });
     assert.equal(spikes.length, 0, 'suppressed generic terms must not spike');
+  });
+
+  it('normalizes baseline counts over the exact fractional pre-window duration', () => {
+    const HOUR = 60 * 60 * 1000;
+    const nowMs = 1_800_000_000_000;
+    const windowMs = 2 * HOUR;
+    const stories = Array.from({ length: 5 }, (_, i) => ({
+      title: `Zaporizhzhia alert expands (${i})`,
+      lastSeenMs: nowMs - i * 5 * 60 * 1000,
+      sources: [`source-${i % 3}`],
+    }));
+    stories.push({
+      title: 'Zaporizhzhia monitoring continues',
+      lastSeenMs: nowMs - windowMs - 30 * 60 * 1000,
+      sources: ['baseline-wire'],
+    });
+
+    const spikes = computeKeywordSpikesFromStories(stories, {
+      nowMs,
+      windowMs,
+      baselineDurationMs: 1 * HOUR,
+    });
+
+    assert.equal(
+      spikes.some((spike) => spike.term === 'zaporizhzhia'),
+      false,
+      'one mention in a half-window baseline normalizes to 2/window, so 5 recent is not >3x',
+    );
+  });
+
+  it('returns no spikes when no pre-window duration is available', () => {
+    const HOUR = 60 * 60 * 1000;
+    const nowMs = 1_800_000_000_000;
+    const stories = Array.from({ length: 5 }, (_, i) => ({
+      title: `Zaporizhzhia alert expands (${i})`,
+      lastSeenMs: nowMs - i * 5 * 60 * 1000,
+      sources: [`source-${i % 3}`],
+    }));
+
+    assert.deepEqual(computeKeywordSpikesFromStories(stories, {
+      nowMs,
+      windowMs: 2 * HOUR,
+      baselineDurationMs: 0,
+    }), []);
   });
 });
 

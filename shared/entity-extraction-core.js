@@ -81,11 +81,33 @@ export function getEntityIndex() {
   return cachedIndex;
 }
 
+export function lookupEntityByAlias(alias) {
+  const index = getEntityIndex();
+  const id = index.byAlias.get(alias.toLowerCase());
+  return id ? index.byId.get(id) : undefined;
+}
+
+function resolveEntitiesById(index, ids) {
+  if (!ids) return [];
+  return Array.from(ids)
+    .map(id => index.byId.get(id))
+    .filter(entity => entity !== undefined);
+}
+
+export function lookupEntitiesByKeyword(keyword) {
+  const index = getEntityIndex();
+  return resolveEntitiesById(index, index.byKeyword.get(keyword.toLowerCase()));
+}
+
+export function lookupEntitiesBySector(sector) {
+  const index = getEntityIndex();
+  return resolveEntitiesById(index, index.bySector.get(sector.toLowerCase()));
+}
+
 export function findRelatedEntities(entityId) {
   const index = getEntityIndex();
   const entity = index.byId.get(entityId);
-  if (!entity?.related) return [];
-  return entity.related.map(id => index.byId.get(id)).filter(e => !!e);
+  return resolveEntitiesById(index, entity?.related);
 }
 
 export function findEntitiesInText(text) {

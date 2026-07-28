@@ -754,7 +754,7 @@ curl -s https://worldmonitor.app/mcp \
 
 ### `get_keyword_spikes`
 
-Trending keyword, CVE, and APT/FIN threat-group spikes versus baseline, using the same term-candidacy and spike-decision math as the dashboard's trending-keywords engine (minimum recent count, strict baseline multiplier, source-diversity gate). The baseline derives from the story accumulator as a per-window story rate — not the dashboard's incremental 7-day client-side history. The accumulator retains 48 hours, but a high-volume feed can fill the per-call story cap with a shorter, more recent span, so the response reports the hours actually sampled in `baseline_hours` and sets `sample_truncated: true` when the cap bounded the read. Read those fields rather than assuming 48. Results are cached for 10 minutes per `(window_hours, min_count)` combination.
+Trending keyword, CVE, and APT/FIN threat-group spikes versus baseline, using the same term-candidacy and spike-decision math as the dashboard's trending-keywords engine (minimum recent count, strict baseline multiplier, source-diversity gate). The tool queries the recent window and its pre-window baseline as separate cohorts, each capped at 800 stories, so a busy recent window cannot consume the baseline sample. `baseline_hours` reports the exact sampled pre-window duration, and `sample_truncated: true` means either cohort reached its cap. When no pre-window stories are available, the tool returns no spikes with an explicit `baseline unavailable` note and does not cache the result. Results are cached for 10 minutes per `(window_hours, min_count)` combination.
 
 **Parameters (tool-specific):**
 

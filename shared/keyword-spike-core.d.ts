@@ -57,7 +57,7 @@ export declare function computeKeywordSpikesFromStories(
   opts: {
     nowMs: number;
     windowMs?: number;
-    baselineSpanMs: number;
+    baselineDurationMs: number;
     minSpikeCount?: number;
     spikeMultiplier?: number;
     blockedTerms?: Set<string>;

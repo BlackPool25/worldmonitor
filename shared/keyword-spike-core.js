@@ -145,23 +145,26 @@ export function evaluateSpikeDecision({ recentCount, baseline, minSpikeCount, sp
 /**
  * Corpus-snapshot spike computation for the server-side tool: applies the
  * shared candidacy + decision math over stories with known last-seen times.
- * `baseline` is the per-window story rate over the pre-window remainder of
- * the corpus span — the 48h digest accumulator server-side, vs the client's
- * incremental 7-day per-term history. Same decision function either way.
+ * `baseline` is the per-window story rate over the exact sampled pre-window
+ * duration — the digest accumulator server-side, vs the client's incremental
+ * 7-day per-term history. Same decision function either way. A caller with no
+ * sampled pre-window duration has no defensible baseline, so no spikes emit.
  *
  * stories: Array<{ title, lastSeenMs, sources?: string[] }>
  */
 export function computeKeywordSpikesFromStories(stories, {
   nowMs,
   windowMs = ROLLING_WINDOW_MS,
-  baselineSpanMs,
+  baselineDurationMs,
   minSpikeCount = DEFAULT_MIN_SPIKE_COUNT,
   spikeMultiplier = DEFAULT_SPIKE_MULTIPLIER,
   blockedTerms = SUPPRESSED_TRENDING_TERMS,
   maxSampleHeadlines = 3,
 }) {
+  if (!Number.isFinite(baselineDurationMs) || baselineDurationMs <= 0) return [];
+
   const windowStart = nowMs - windowMs;
-  const baselineWindows = Math.max(1, (baselineSpanMs - windowMs) / windowMs);
+  const baselineWindows = baselineDurationMs / windowMs;
 
   const terms = new Map();
   for (const story of stories) {

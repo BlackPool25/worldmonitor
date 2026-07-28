@@ -33,6 +33,9 @@ export interface ExtractedEntity {
 
 export declare function buildEntityIndex(entities: EntityEntry[]): EntityIndex;
 export declare function getEntityIndex(): EntityIndex;
+export declare function lookupEntityByAlias(alias: string): EntityEntry | undefined;
+export declare function lookupEntitiesByKeyword(keyword: string): EntityEntry[];
+export declare function lookupEntitiesBySector(sector: string): EntityEntry[];
 export declare function findRelatedEntities(entityId: string): EntityEntry[];
 export declare function findEntitiesInText(text: string): EntityMatch[];
 export declare function getEntityDisplayName(entityId: string): string;

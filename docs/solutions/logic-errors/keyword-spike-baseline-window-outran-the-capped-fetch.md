@@ -77,77 +77,91 @@ What *did* work: joining the per-call cap against the **real cardinality of the 
 
 ## Solution
 
-Derive the baseline span from the data actually fetched, and disclose the truncation. `api/mcp/registry/nlp-tools.ts:468-477`:
+Split the recent and pre-window data into separately bounded cohorts. A single
+newest-first range can be consumed entirely by recent traffic, so one pipeline
+now carries two `ZRANGE` commands:
 
 ```ts
-// The ZRANGE is REV (newest first) and capped, so on a high-volume feed
-// the sample spans far less than the accumulator's 48h retention. The
-// baseline must be divided by the span actually sampled — assuming 48h
-// would drive baselines toward zero and inflate every multiplier.
-const sampleTruncated = entries.length >= KEYWORD_SPIKE_MAX_STORIES;
-const oldestMs = entries[entries.length - 1]?.lastSeenMs ?? nowMs;
-const sampledSpanMs = Math.min(
-  KEYWORD_SPIKE_BASELINE_MS,
-  Math.max(windowMs * 2, nowMs - oldestMs),
-);
+const zres = await redisPipeline([
+  [
+    'ZRANGE', DIGEST_ACCUMULATOR_KEY_MCP,
+    String(nowMs), String(windowStart),
+    'BYSCORE', 'REV', 'WITHSCORES', 'LIMIT', '0', String(KEYWORD_SPIKE_MAX_STORIES),
+  ],
+  [
+    'ZRANGE', DIGEST_ACCUMULATOR_KEY_MCP,
+    String(windowStart - 1), String(nowMs - KEYWORD_SPIKE_BASELINE_MS),
+    'BYSCORE', 'REV', 'WITHSCORES', 'LIMIT', '0', String(KEYWORD_SPIKE_MAX_STORIES),
+  ],
+]);
 ```
 
-The measured span replaces the constant in the math (`api/mcp/registry/nlp-tools.ts:532-538`) and in the response (`api/mcp/registry/nlp-tools.ts:547-553`):
+Each cohort is capped at 800 stories. The recent cap therefore cannot consume
+the baseline rows, while the worst-case request remains explicitly bounded at
+1,600 story records.
+
+If no pre-window rows exist, the tool does not claim a cold start. It returns
+no spikes with an explicit note and does not cache the result:
 
 ```ts
-const spikes = computeKeywordSpikesFromStories(stories, {
-  nowMs,
-  windowMs,
-  baselineSpanMs: sampledSpanMs,   // measured, not assumed
-  minSpikeCount: minCount,
-  spikeMultiplier: DEFAULT_SPIKE_MULTIPLIER,
-});
-// ...
-const payload = {
-  ...emptyResult,
-  spikes,
-  story_count: stories.length,
-  baseline_hours: Math.round((sampledSpanMs / 3_600_000) * 10) / 10,
-  sample_truncated: sampleTruncated,
-};
+if (baselineEntries.length === 0) {
+  return {
+    ...emptyResult,
+    story_count: recentEntries.length,
+    sample_truncated: sampleTruncated,
+    note: 'baseline unavailable: no pre-window stories were present; spikes were not computed or cached',
+  };
+}
 ```
 
-`sample_truncated` is a new, declared output field so the caller can see the sample was capped (`api/mcp/registry/nlp-tools.ts:405-407`), and the schema descriptions now say the quiet part out loud:
-
-```ts
-baseline_hours: { type: 'number', description: 'Hours of history the baseline was ACTUALLY computed over — the accumulator retains 48h, but a high-volume feed can fill the per-call story cap with a shorter, more recent span. Always read this rather than assuming 48.' },
-story_count: { type: 'number', description: 'Stories this computation saw (capped per call; see sample_truncated).' },
-sample_truncated: { type: 'boolean', description: 'True when the per-call story cap was hit, so baseline_hours is narrower than the accumulator retention.' },
-```
-
-The same correction is mirrored in the public tool reference (`docs/mcp-tools-reference.mdx:757` and the zh mirror), so an agent reading the docs is told to read `baseline_hours` rather than assume 48. A flat 48 still appears in exactly two responses — the accumulator-unavailable path (`api/mcp/registry/nlp-tools.ts:449-452`) and the unreadable-payload guard added alongside it — and in both `spikes` is empty and `story_count` is 0, so nothing is ever derived from that number.
-
-Regression test — "reports the sampled baseline span instead of assuming the full retention window" (`tests/mcp-nlp-tools.test.mjs:426-445`):
+The denominator is the exact pre-window duration represented by the baseline
+cohort. The shared core divides by the positive fractional number of recent
+windows in that duration instead of flooring the divisor to one:
 
 ```js
-// 900 stories inside ~3h: the per-call cap truncates the sample, so a
-// 48h baseline claim would divide by a span never actually read.
-for (let i = 0; i < 900; i++) {
-  const hash = `dense${i}`;
-  const lastSeen = now - Math.floor(i * 12_000); // 12s apart -> ~3h total
-  // ...
-}
-const { result } = await callTool('get_keyword_spikes', {});
-assert.equal(result.sample_truncated, true, 'hitting the story cap must be disclosed');
-assert.ok(result.baseline_hours < 48, `baseline_hours must reflect the sampled span, got ${result.baseline_hours}`);
-assert.ok(result.baseline_hours >= 4, `sampled span should cover the ~3h read, got ${result.baseline_hours}`);
-assert.equal(result.story_count, 800, 'the cap bounds the corpus actually processed');
+if (!Number.isFinite(baselineDurationMs) || baselineDurationMs <= 0) return [];
+const baselineWindows = baselineDurationMs / windowMs;
 ```
 
-The non-truncated fixture was tightened in the same pass: it now asserts `baseline_hours === 32` for a corpus whose oldest story sits 32h back, with the comment "asserting a flat 48 here is exactly the bug the span fix removed" (`tests/mcp-nlp-tools.test.mjs:374-378`).
+For example, one baseline mention observed over one hour with a two-hour recent
+window normalizes to two mentions per window. Treating that hour as a full
+window would halve the baseline and could manufacture a spike.
+
+`baseline_hours` reports the pre-window duration, `story_count` covers both
+bounded cohorts, and `sample_truncated` is a required output field that becomes
+true when either cohort reaches 800 rows. The cache key advanced from `v1` to
+`v2`, so payloads computed under the old sampling contract cannot survive the
+deployment.
+
+The same pass made downstream story reads all-or-nothing for caching. HMGET
+and SMEMBERS pipeline replies must match their command count and carry the
+expected per-command result shape. Short arrays, malformed results, and
+command-level errors return the existing partial-read note and never write the
+shared 10-minute cache.
+
+Regression coverage now crosses every relevant boundary:
+
+- 900 recent rows prove the recent cap engages while a second cohort still
+  reaches pre-window history.
+- A recent-only corpus proves missing baseline history emits no cold-start
+  spikes and writes no cache.
+- A one-hour baseline proves fractional normalization against a two-hour recent
+  window.
+- Short, malformed, and command-error replies are exercised for both HMGET and
+  SMEMBERS.
 
 ## Why This Works
 
-- **The span is now evidence, not a premise.** `nowMs - oldestMs` is computed from the last entry the `REV` scan actually returned, so `baselineWindows` in `shared/keyword-spike-core.js:164` is divided by a window the data demonstrably covers. When the cap truncates to ~2h, the divisor is ~1 instead of 23, and baselines stop collapsing to zero — the strict `recentCount > baseline * spikeMultiplier` branch does real work again instead of falling through to the cold-start rule.
-- **`Math.min(KEYWORD_SPIKE_BASELINE_MS, ...)` keeps the constant as a ceiling only.** Retention is still an upper bound on what could possibly be sampled; it is no longer a claim about what *was* sampled.
-- **`Math.max(windowMs * 2, ...)` floors the span at two windows.** If the entire sample lands inside the recent window there are no baseline stories at all, and the honest reading is cold start. The floor makes `(baselineSpanMs - windowMs) / windowMs` land at exactly 1 rather than a sub-1 fraction, so the result matches the core's own `Math.max(1, ...)` clamp by construction instead of depending on it — and `baseline_hours` never reports a span narrower than the comparison it is describing.
-- **`sample_truncated` converts a silent condition into a readable one.** The caller — usually an LLM, which will happily reason over `baseline_hours` as if it were ground truth — can now see that the number is cap-bounded. A field that says "48" with no way to tell it was assumed is worse than no field.
-- **The fix is stable under load growth.** It does not encode today's ~350-440 stories/hour anywhere. If ingest doubles and 800 stories covers one hour instead of two, `sampledSpanMs` shrinks automatically and the reported baseline stays honest. Re-tuning the cap changes the sample, never the correctness of the ratio.
+- **Recent load cannot erase baseline evidence.** The pre-window query has its
+  own cap and score range.
+- **No baseline is distinct from cold start.** The tool declines to classify or
+  cache spikes when the comparison cohort is unavailable.
+- **The denominator is measured.** The oldest sampled pre-window row determines
+  the exact fractional duration used by the spike math.
+- **Provenance is machine-readable.** `baseline_hours` and required
+  `sample_truncated` describe what the two queries actually returned.
+- **Partial dependency failures cannot become authoritative output.** Incomplete
+  pipeline replies are explicitly degraded and excluded from caching.
 
 ## Prevention
 
@@ -161,18 +175,20 @@ The non-truncated fixture was tightened in the same pass: it now asserts `baseli
 4. **Check the sort direction — truncation is biased, not random.** `REV`/`DESC` + `LIMIT` keeps the *newest* rows, which is exactly the numerator's side of a recent-vs-baseline ratio: the cap eats the baseline first. `ASC` + `LIMIT` biases the opposite way and starves the recent window instead. Either way the survivors are not a sample of the whole.
 5. **Treat every response field that restates a constant as an unproven claim.** If a tool reports `baseline_hours`, `coverage_days`, `sample_size`, or `window`, that value must be *computed from the rows returned*. A field echoing an input constant is documentation of an assumption, not of behavior — and for MCP tools it is worse than useless, because the model consuming it has no way to check.
 
-**Test shape that catches it — three assertions, one fixture:**
+**Test shape that catches it:**
 
-Seed **strictly more rows than the cap**, packed into a span **much shorter than the assumed constant**, then assert all three of:
-
-- the truncation flag is `true` (the cap engaged — otherwise the test proves nothing),
-- the reported span is **strictly less than** the constant (`baseline_hours < 48`) and at least the real span (`>= 4`), pinning it from both sides so a hardcoded small number can't pass either,
-- the processed count **equals the cap exactly** (`story_count === 800`), proving the truncation happened where you think it did.
+Seed more recent rows than the recent cap and add a small pre-window cohort.
+Assert that truncation is disclosed, the baseline cohort is still present, and
+`baseline_hours` equals the pre-window duration rather than total elapsed time.
+Then remove the pre-window cohort and assert empty spikes, an explicit note, and
+no cache write.
 
 Two corollaries worth generalizing:
 
 - **If a code path has a cap, at least one test must exceed it.** The pre-existing fixtures here seeded 35 and 450 rows against an 800 cap; both were meaningful tests of other behavior and neither could ever have caught this. Sizing a fixture "big enough to look realistic" is not the same as sizing it to cross a specific boundary. Enumerate the caps, then make sure one fixture per cap sits on the far side of it.
-- **Also pin the non-truncated case to the measured value.** `assert.equal(first.result.baseline_hours, 32)` on a 32h-deep fixture (`tests/mcp-nlp-tools.test.mjs:377`) fails the moment anyone reverts to reporting the retention constant. Without it, the truncated test alone could be satisfied by any narrowing hack.
+- **Also pin the non-truncated case to the measured value.** A corpus whose
+  oldest story is 32 hours old with a 2-hour recent window must report 30
+  baseline hours, not 32 total hours or 48 hours of retention.
 
 **Related shapes already in this repo's history** — same family, different surface, worth checking together when auditing:
 
