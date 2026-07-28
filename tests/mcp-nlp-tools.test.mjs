@@ -468,3 +468,30 @@ describe('#5697 NLP MCP tools', () => {
     });
   });
 });
+
+// The edge bundle cannot import server/_shared/cache-keys.ts, so get_keyword_spikes
+// hardcodes the accumulator/story-track/story-sources key strings. Tests CAN import
+// both sides, so this pins them together: a server-side key-version bump would
+// otherwise leave the tool reading dead keys and reporting "accumulator unavailable"
+// forever, with every other test still green.
+describe('#5697 spike-tool Redis key drift', () => {
+  it('keeps the hardcoded key literals aligned with server/_shared/cache-keys.ts', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { STORY_TRACK_KEY_PREFIX, STORY_SOURCES_KEY_PREFIX, DIGEST_ACCUMULATOR_KEY } =
+      await import('../server/_shared/cache-keys.ts');
+
+    const src = readFileSync(new URL('../api/mcp/registry/rpc-tools.ts', import.meta.url), 'utf8');
+    assert.ok(
+      src.includes(`'${DIGEST_ACCUMULATOR_KEY('full', 'en')}'`),
+      `rpc-tools.ts must read the canonical accumulator key ${DIGEST_ACCUMULATOR_KEY('full', 'en')}`,
+    );
+    assert.ok(
+      src.includes(`\`${STORY_TRACK_KEY_PREFIX}\${`),
+      `rpc-tools.ts must build story-track keys from ${STORY_TRACK_KEY_PREFIX}`,
+    );
+    assert.ok(
+      src.includes(`\`${STORY_SOURCES_KEY_PREFIX}\${`),
+      `rpc-tools.ts must build story-sources keys from ${STORY_SOURCES_KEY_PREFIX}`,
+    );
+  });
+});
