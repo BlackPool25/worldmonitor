@@ -34,6 +34,8 @@ interface HarnessState {
   /** Body + headers the stub fetch should answer the create-checkout POST with. */
   responseBody: string;
   responseHeaders: Record<string, string>;
+  /** When set, text() rejects — models a stream that dies mid-read. */
+  failBodyRead?: boolean;
 }
 
 declare global {
@@ -90,7 +92,10 @@ function installBrowserGlobals(): void {
       return {
         ok: true,
         status: 200,
-        text: async () => harness.responseBody,
+        text: async () => {
+          if (harness.failBodyRead) throw new TypeError('network error');
+          return harness.responseBody;
+        },
         json: async () => JSON.parse(harness.responseBody),
         headers: { get: (name: string) => harness.responseHeaders[name.toLowerCase()] ?? null },
       };
@@ -303,6 +308,72 @@ describe('create-checkout 200 with an unparsable body (WORLDMONITOR-XV)', () => 
     assert.equal(report.tags?.action, 'missing-checkout-url');
     assert.equal(report.extra?.serverMessage, 'Server returned 200 without a usable checkout_url');
     assert.equal((report.extra?.upstream as Record<string, unknown>).server, 'Vercel');
+  });
+
+  it('a parsed 200 reports key names only — no payload values reach Sentry', async () => {
+    // The highest-exposure path: safeHostedCheckoutUrl rejected an untrusted
+    // host, so the body is a COMPLETE successful payload. Its field set comes
+    // from the Dodo SDK, which we do not control, so nothing value-level may
+    // ship — not the claim token, not the session id.
+    resetHarness(
+      JSON.stringify({
+        session_id: 'cks_live_9f2b7c1d4e',
+        checkout_url: 'https://unexpected-host.example/pay/abc',
+        anonymous_claim_token: 'tok_live_SECRET123',
+      }),
+    );
+    const checkout = await loadCheckoutModule();
+
+    assert.equal(await checkout.startCheckout('prod_monthly'), false);
+    const report = soleReport();
+    assert.equal(report.tags?.action, 'missing-checkout-url');
+    const upstream = report.extra?.upstream as Record<string, unknown>;
+    assert.deepEqual(upstream.bodyKeys, ['anonymous_claim_token', 'checkout_url', 'session_id']);
+    assert.equal(upstream.bodySnippet, undefined);
+    const serialized = JSON.stringify(report);
+    assert.ok(!serialized.includes('tok_live_SECRET123'), 'claim token leaked to Sentry');
+    assert.ok(!serialized.includes('cks_live_9f2b7c1d4e'), 'session id leaked to Sentry');
+    assert.ok(!serialized.includes('unexpected-host.example'), 'rejected URL leaked to Sentry');
+  });
+
+  it('distinguishes an empty body from one that is merely unparseable', async () => {
+    // Two different upstream faults; a shared message would erase which.
+    resetHarness('');
+    let checkout = await loadCheckoutModule();
+    await checkout.startCheckout('prod_monthly');
+    assert.equal(soleReport().extra?.serverMessage, 'Server returned 200 with an empty body');
+
+    resetHarness('<html>nope</html>');
+    checkout = await loadCheckoutModule();
+    await checkout.startCheckout('prod_monthly');
+    assert.equal(soleReport().extra?.serverMessage, 'Server returned 200 with a non-JSON body');
+  });
+
+  it('does not call valid-but-non-object JSON a non-JSON body', async () => {
+    resetHarness('[]');
+    const checkout = await loadCheckoutModule();
+    await checkout.startCheckout('prod_monthly');
+
+    const report = soleReport();
+    assert.equal(report.tags?.action, 'unparsable-success-body');
+    assert.equal(
+      report.extra?.serverMessage,
+      'Server returned 200 with a JSON body that is not an object',
+    );
+  });
+
+  it('reports an unreadable body distinctly from an empty one', async () => {
+    // A response whose stream dies mid-read is a different fault from a
+    // server that sent zero bytes, and `.catch(() => "")` collapsed them.
+    resetHarness('');
+    globalThis.__xvHarness.failBodyRead = true;
+    const checkout = await loadCheckoutModule();
+
+    assert.equal(await checkout.startCheckout('prod_monthly'), false);
+    assert.equal(
+      soleReport().extra?.serverMessage,
+      'Server returned 200 but the response body could not be read',
+    );
   });
 
   it('a valid success payload still navigates and reports nothing', async () => {

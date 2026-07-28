@@ -179,14 +179,10 @@ const stubSources: Record<string, string> = {
     export const loadCheckoutAttempt = () => null;
     export const clearCheckoutAttempt = () => {};
   `,
-  './checkout-errors': `
-    export const classifyHttpCheckoutError = () => ({ code: 'service_unavailable', userMessage: 'unavailable', retryable: true });
-    export const classifySyntheticCheckoutError = (code) => ({ code, userMessage: code, retryable: false });
-    export const classifyThrownCheckoutError = () => ({ code: 'service_unavailable', userMessage: 'unavailable', retryable: true });
-    export const parseCheckoutErrorBody = () => ({});
-    export const parseCheckoutSuccessBody = (raw) => { try { const v = JSON.parse(raw); return (typeof v === 'object' && v !== null && !Array.isArray(v)) ? v : null; } catch { return null; } };
-    export const snapshotUpstreamResponse = () => ({});
-  `,
+  // checkout-errors is deliberately NOT stubbed: it is dependency-free, so
+  // the real taxonomy bundles cleanly, and a stub would have to restate its
+  // parsing rules — a second source of truth that can drift from production
+  // while these tests stay green.
   './checkout-error-toast': `
     export const showCheckoutErrorToast = () => {};
   `,

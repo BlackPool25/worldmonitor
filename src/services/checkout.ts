@@ -29,7 +29,10 @@ import {
   classifyThrownCheckoutError,
   parseCheckoutErrorBody,
   parseCheckoutSuccessBody,
+  snapshotUpstreamBodyKeys,
   snapshotUpstreamResponse,
+  UNREADABLE_SUCCESS_BODY_MESSAGE,
+  UNUSABLE_SUCCESS_BODY_MESSAGE,
   type CheckoutError,
   type CheckoutErrorCode,
   type UpstreamSnapshot,
@@ -976,10 +979,19 @@ export async function startCheckout(
     // which skipped the contract-violation reporter below, discarded the
     // upstream snapshot that would name the emitter, and split one bug
     // across a Sentry fingerprint per browser engine. WORLDMONITOR-XV.
-    const rawSuccessText = await resp.text().catch(() => '');
-    const result = parseCheckoutSuccessBody(rawSuccessText);
-    if (result === null) {
-      // A 200 we cannot parse is a different contract violation from a
+    // A body that fails to READ is a distinct upstream cause from one that
+    // arrives empty (a died-mid-stream response vs. a server that sent zero
+    // bytes), so the two must not collapse into the same Sentry signature.
+    let rawSuccessText = '';
+    let successBodyRead = true;
+    try {
+      rawSuccessText = await resp.text();
+    } catch {
+      successBodyRead = false;
+    }
+    const parsedSuccess = parseCheckoutSuccessBody(rawSuccessText);
+    if (parsedSuccess.kind !== 'object') {
+      // A 200 we cannot use is a different contract violation from a
       // well-formed payload missing checkout_url below: it points at
       // transport corruption or a middlebox rather than a relay payload
       // bug, so it carries its own action tag. The upstream snapshot is
@@ -988,7 +1000,9 @@ export async function startCheckout(
       const unparsableBodyError: CheckoutError = {
         code: 'service_unavailable',
         userMessage: 'Checkout is temporarily unavailable. Please try again in a moment.',
-        serverMessage: 'Server returned 200 with a non-JSON body',
+        serverMessage: successBodyRead
+          ? UNUSABLE_SUCCESS_BODY_MESSAGE[parsedSuccess.kind]
+          : UNREADABLE_SUCCESS_BODY_MESSAGE,
         httpStatus: resp.status,
         retryable: true,
       };
@@ -1001,6 +1015,7 @@ export async function startCheckout(
       renderCheckoutErrorSurface(unparsableBodyError, fallbackToPricingPage);
       return false;
     }
+    const result = parsedSuccess.body;
     if (typeof result.anonymous_claim_token === 'string' && result.anonymous_claim_token.length > 0) {
       saveAnonClaimToken(result.anonymous_claim_token);
     }
@@ -1039,10 +1054,12 @@ export async function startCheckout(
       missingUrlError,
       { productId, action: 'missing-checkout-url' },
       undefined,
-      // Names the emitter (cf-ray / server / x-vercel-id) and carries a
-      // redacted body snippet — the payload that was returned is the whole
-      // diagnostic for a relay contract violation.
-      snapshotUpstreamResponse(resp, rawSuccessText),
+      // Names the emitter (cf-ray / server / x-vercel-id) and the payload's
+      // KEY NAMES — "had session_id, no checkout_url" is the whole finding
+      // here, so values are withheld. The payload is a wholesale spread of
+      // the Dodo SDK's response, whose field set we do not control, and a
+      // redaction deny-list would silently outrun any schema change.
+      snapshotUpstreamBodyKeys(resp, result),
     );
     renderCheckoutErrorSurface(missingUrlError, fallbackToPricingPage);
     return false;

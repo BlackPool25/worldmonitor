@@ -29,6 +29,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   parseCheckoutSuccessBody,
+  snapshotUpstreamBodyKeys,
   snapshotUpstreamResponse,
 } from '../src/services/checkout-errors.ts';
 
@@ -38,50 +39,89 @@ function makeResp(headers: Record<string, string> = {}): { headers: Headers } {
 
 describe('parseCheckoutSuccessBody', () => {
   it('returns the parsed object for a well-formed success body', () => {
-    const body = parseCheckoutSuccessBody('{"checkout_url":"https://checkout.dodopayments.com/s/abc"}');
-    assert.equal(body?.checkout_url, 'https://checkout.dodopayments.com/s/abc');
+    const outcome = parseCheckoutSuccessBody('{"checkout_url":"https://checkout.dodopayments.com/s/abc"}');
+    assert.equal(outcome.kind, 'object');
+    assert.equal(
+      outcome.kind === 'object' ? outcome.body.checkout_url : undefined,
+      'https://checkout.dodopayments.com/s/abc',
+    );
   });
 
-  it('returns null for an empty 200 body (the shape that threw in WORLDMONITOR-XV)', () => {
+  it('reports an empty 200 body as empty, not as malformed JSON', () => {
     // A bare resp.json() on this input is what produced the Safari
-    // DOMException. null is the signal "unparseable", which the caller
-    // must report distinctly from a parsed body missing checkout_url.
-    assert.equal(parseCheckoutSuccessBody(''), null);
+    // DOMException (WORLDMONITOR-XV). The arm matters because "sent zero
+    // bytes" and "sent something unparseable" are different upstream faults.
+    assert.equal(parseCheckoutSuccessBody('').kind, 'empty');
   });
 
-  it('returns null for an HTML body served with 200 (edge interstitial / middlebox)', () => {
-    assert.equal(parseCheckoutSuccessBody('<!DOCTYPE html><html>Attention Required</html>'), null);
+  it('reports an HTML body served with 200 as invalid JSON (edge interstitial)', () => {
+    assert.equal(
+      parseCheckoutSuccessBody('<!DOCTYPE html><html>Attention Required</html>').kind,
+      'invalid-json',
+    );
   });
 
-  it('returns null for truncated JSON (mid-transit cut)', () => {
-    assert.equal(parseCheckoutSuccessBody('{"checkout_url":"https://checkout.dod'), null);
-    assert.equal(parseCheckoutSuccessBody('{'), null);
+  it('reports truncated JSON as invalid JSON (mid-transit cut)', () => {
+    assert.equal(parseCheckoutSuccessBody('{"checkout_url":"https://checkout.dod').kind, 'invalid-json');
+    assert.equal(parseCheckoutSuccessBody('{').kind, 'invalid-json');
   });
 
-  it('returns null for JSON that is not a plain object', () => {
+  it('reports valid-but-non-object JSON as non-object, never as non-JSON', () => {
     // Same structural-lie reasoning as parseCheckoutErrorBody: null, arrays
-    // and primitives are valid JSON but cannot carry checkout_url, and
-    // casting them would set traps for consumers without optional chaining.
-    assert.equal(parseCheckoutSuccessBody('null'), null);
-    assert.equal(parseCheckoutSuccessBody('[]'), null);
-    assert.equal(parseCheckoutSuccessBody('[{"checkout_url":"https://x"}]'), null);
-    assert.equal(parseCheckoutSuccessBody('42'), null);
-    assert.equal(parseCheckoutSuccessBody('"https://checkout.example/s/abc"'), null);
+    // and primitives are valid JSON but cannot carry checkout_url. Calling
+    // them a "non-JSON body" in Sentry would claim more than was observed.
+    for (const raw of ['null', '[]', '[{"checkout_url":"https://x"}]', '42', '"https://checkout.example/s/abc"']) {
+      assert.equal(parseCheckoutSuccessBody(raw).kind, 'non-object', `for ${raw}`);
+    }
   });
 
-  it('distinguishes unparseable from parsed-but-missing-checkout_url', () => {
+  it('distinguishes an unusable body from parsed-but-missing-checkout_url', () => {
     // Both are contract violations, but they have different upstream
     // causes (transport corruption vs. a relay payload bug) and must not
     // collapse into one disposition.
-    assert.equal(parseCheckoutSuccessBody('not json'), null);
-    assert.deepEqual(parseCheckoutSuccessBody('{}'), {});
+    assert.equal(parseCheckoutSuccessBody('not json').kind, 'invalid-json');
+    const empty = parseCheckoutSuccessBody('{}');
+    assert.equal(empty.kind, 'object');
+    assert.deepEqual(empty.kind === 'object' ? empty.body : null, {});
   });
 
   it('preserves anonymous_claim_token so the caller can still persist claim proof', () => {
-    const body = parseCheckoutSuccessBody(
+    const outcome = parseCheckoutSuccessBody(
       '{"checkout_url":"https://checkout.dodopayments.com/s/a","anonymous_claim_token":"tok_live_123"}',
     );
-    assert.equal(body?.anonymous_claim_token, 'tok_live_123');
+    assert.equal(outcome.kind === 'object' ? outcome.body.anonymous_claim_token : undefined, 'tok_live_123');
+  });
+});
+
+describe('snapshotUpstreamBodyKeys', () => {
+  // The 200 payload is `{ ...dodoSdkResponse, anonymous_claim_token }` — a
+  // field set owned by a third party. Capturing values there would be a
+  // standing bet that no future SDK field is sensitive, policed only by a
+  // deny-list that a schema change outruns silently. Key names carry the
+  // whole diagnostic for this path, so values are withheld outright.
+  it('captures key names and no values', () => {
+    const snap = snapshotUpstreamBodyKeys(makeResp({ 'cf-ray': 'ray-1' }), {
+      session_id: 'cks_live_9f2b7c1d4e',
+      anonymous_claim_token: 'tok_live_SECRET123',
+    });
+    assert.deepEqual(snap.bodyKeys, ['anonymous_claim_token', 'session_id']);
+    assert.equal(snap.bodySnippet, undefined, 'must never carry a value snippet');
+    const serialized = JSON.stringify(snap);
+    assert.ok(!serialized.includes('tok_live_SECRET123'));
+    assert.ok(!serialized.includes('cks_live_9f2b7c1d4e'), 'session_id value must not ship either');
+  });
+
+  it('still names the upstream emitter', () => {
+    const snap = snapshotUpstreamBodyKeys(makeResp({ 'cf-ray': 'ray-1', server: 'Vercel' }), {});
+    assert.equal(snap.cfRay, 'ray-1');
+    assert.equal(snap.server, 'Vercel');
+    assert.deepEqual(snap.bodyKeys, []);
+  });
+
+  it('sorts keys so the Sentry signature is stable across payload orderings', () => {
+    const a = snapshotUpstreamBodyKeys(makeResp(), { b: 1, a: 2 });
+    const b = snapshotUpstreamBodyKeys(makeResp(), { a: 2, b: 1 });
+    assert.deepEqual(a.bodyKeys, b.bodyKeys);
   });
 });
 
