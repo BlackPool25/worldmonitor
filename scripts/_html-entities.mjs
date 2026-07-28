@@ -8,7 +8,7 @@
  *
  * `String.fromCodePoint` throws `RangeError` on anything outside the Unicode
  * range, which would turn one malformed numeric reference (`&#999999999;`)
- * into a failed seed run. Out-of-range references are dropped instead.
+ * into a failed seed run. Out-of-range references are preserved instead.
  * `fromCharCode` is not usable here: it truncates to 16 bits, so `&#128512;`
  * would decode to U+F600 (a private-use glyph) rather than 😀.
  */
@@ -51,8 +51,8 @@ const ENTITY_RE = /&(?:#x([0-9a-f]+)|#(\d+)|([a-z][a-z0-9]*));/gi;
  *
  * @param {unknown} text
  * @param {{ unknownEntity?: 'keep' | 'blank' }} [options]
- *   `keep` (default) leaves unrecognized entities untouched and drops invalid
- *   numeric references; `blank` replaces both with a single space (the old
+ *   `keep` (default) leaves unrecognized entities and invalid numeric
+ *   references untouched; `blank` replaces both with a single space (the old
  *   seed-sovereign-wealth catch-all — a space keeps adjacent digits from
  *   welding into one number, e.g. `100&#999999999;200`).
  */
@@ -60,8 +60,9 @@ export function decodeHtmlEntities(text, { unknownEntity = 'keep' } = {}) {
   return String(text ?? '').replace(ENTITY_RE, (match, hex, dec, name) => {
     if (hex !== undefined || dec !== undefined) {
       const decoded = decodeNumericReference(hex !== undefined ? parseInt(hex, 16) : Number(dec));
-      // A null (invalid scalar) drops to '' — or to a space under 'blank'.
-      return decoded ?? (unknownEntity === 'blank' ? ' ' : '');
+      // Preserve invalid references by default; 'blank' intentionally replaces
+      // them with a separator so adjacent identifier segments cannot weld.
+      return decoded ?? (unknownEntity === 'blank' ? ' ' : match);
     }
     const value = NAMED_ENTITIES[name.toLowerCase()];
     if (value !== undefined) return value;

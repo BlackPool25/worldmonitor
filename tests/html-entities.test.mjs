@@ -49,15 +49,23 @@ describe('decodeHtmlEntities: one pass must decode exactly one level', () => {
     assert.equal(decodeHtmlEntities('&#X1f600;'), '\u{1F600}');
   });
 
-  it('drops out-of-range numeric references instead of throwing', () => {
-    assert.equal(decodeHtmlEntities('a&#999999999;b'), 'ab');
-    assert.equal(decodeHtmlEntities('a&#x110000;b'), 'ab');
+  it('preserves out-of-range numeric references instead of throwing', () => {
+    assert.equal(decodeHtmlEntities('a&#999999999;b'), 'a&#999999999;b');
+    assert.equal(decodeHtmlEntities('a&#x110000;b'), 'a&#x110000;b');
   });
 
-  it('drops surrogate-range numeric references instead of emitting lone surrogates', () => {
-    assert.equal(decodeHtmlEntities('a&#55296;b'), 'ab');
-    assert.equal(decodeHtmlEntities('a&#xD800;b'), 'ab');
-    assert.equal(decodeHtmlEntities('a&#57343;b'), 'ab');
+  it('preserves surrogate-range numeric references instead of emitting lone surrogates', () => {
+    assert.equal(decodeHtmlEntities('a&#55296;b'), 'a&#55296;b');
+    assert.equal(decodeHtmlEntities('a&#xD800;b'), 'a&#xD800;b');
+    assert.equal(decodeHtmlEntities('a&#57343;b'), 'a&#57343;b');
+  });
+
+  it('does not weld identifiers around invalid numeric references', () => {
+    assert.equal(
+      decodeHtmlEntities('CVE-2026-1234&#999999999;CVE-2026-5678'),
+      'CVE-2026-1234&#999999999;CVE-2026-5678',
+    );
+    assert.equal(decodeHtmlEntities('GHSA-abcd&#xD800;efgh'), 'GHSA-abcd&#xD800;efgh');
   });
 
   it('still decodes a single level of the predefined entities', () => {
