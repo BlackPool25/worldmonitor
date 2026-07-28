@@ -37,6 +37,11 @@ export const HISTORY_MAX_RECORDS_PER_RUN = 150;
 // row); 50 × (512 floats + text) keeps a chunk body around 500KB.
 export const HISTORY_CHUNK_SIZE = 50;
 
+// Wire limits. These MUST NOT exceed what the relay route accepts
+// (INTEL_HISTORY_MAX_* in convex/http.ts): a record this sanitizer lets
+// through but the route rejects fails its entire chunk with a 400, so a
+// single over-long field would silently cost a whole batch of history.
+const DEDUPE_KEY_MAX_CHARS = 256;
 const TITLE_MAX_CHARS = 500;
 const SUMMARY_MAX_CHARS = 2000;
 
@@ -97,10 +102,14 @@ export function normalizeHistoryRecords(records) {
   for (const raw of records) {
     if (!raw || typeof raw !== 'object') continue;
 
-    const dedupeKey = trimmedString(raw.dedupeKey, 512);
+    // NOT truncated: dedupeKey is an identity, and clipping one would let two
+    // distinct events collapse into a single stored row. Over-long keys are a
+    // caller bug, so drop the record (below) rather than corrupt the identity.
+    const dedupeKey = trimmedString(raw.dedupeKey, Number.POSITIVE_INFINITY);
     const title = trimmedString(raw.title, TITLE_MAX_CHARS);
     const occurredAt = typeof raw.occurredAt === 'number' ? raw.occurredAt : Number.NaN;
     if (!dedupeKey || !title || !Number.isFinite(occurredAt)) continue;
+    if (dedupeKey.length > DEDUPE_KEY_MAX_CHARS) continue;
 
     const record = { dedupeKey, title, occurredAt };
     const summary = trimmedString(raw.summary, SUMMARY_MAX_CHARS);

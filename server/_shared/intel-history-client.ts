@@ -61,9 +61,26 @@ const CONVEX_TIMEOUT_MS = 5_000;
  * mismatched vectors. The key carries the model and dimension for that
  * reason — a model swap lands on a cold namespace instead of silently mixing
  * vector spaces.
+ *
+ * The query itself is HASHED into the key, never embedded verbatim. What
+ * users search for is their business: a raw-text key would expose every
+ * analyst's query to anything that can list Redis keys (dashboards, key
+ * dumps, support tooling) and would let an unbounded input become an
+ * unbounded key.
  */
 const EMBED_CACHE_TTL_SECONDS = 6 * 60 * 60;
 const EMBED_CACHE_PREFIX = `intel-history:embed:v1:${EMBED_MODEL}:${EMBED_DIMS}:`;
+
+/**
+ * SHA-256 via Web Crypto — available on the Edge runtime, unlike the
+ * node:crypto hashing the seed-side cache uses.
+ */
+async function hashCacheInput(input: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
 
 let _didWarnMissingOpenRouterKey = false;
 let _didWarnMissingConvexSiteUrl = false;
@@ -146,7 +163,7 @@ export async function embedQueryText(text: string): Promise<number[] | null> {
   const input = normalizeQueryText(text);
   if (!input) return null;
 
-  const cacheKey = `${EMBED_CACHE_PREFIX}${input}`;
+  const cacheKey = `${EMBED_CACHE_PREFIX}${await hashCacheInput(input)}`;
   const cached = await getCachedJson(cacheKey);
   if (isUsableVector(cached)) return cached;
 

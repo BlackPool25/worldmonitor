@@ -225,15 +225,18 @@ export const ENDPOINT_RATE_POLICIES: Record<string, EndpointRatePolicy> = {
   // caller's free text through the OpenRouter embeddings API on every cache
   // miss, so they are provider-backed spend, not pure reads. They are also
   // premium-gated, which means the gateway serves them with no CDN cache — a
-  // Pro caller reaches the function on every request. 60/min per principal
-  // covers interactive use (a search plus follow-ups) while bounding the
-  // per-caller embeddings bill; lower than the LLM routes' 600/min because
-  // nothing here is called in a page-load fan-out. The companion
-  // /get-intel-timeline is a pure Convex index read with no provider leg and
-  // deliberately has no policy — it inherits the global availability-first
-  // fallback like the other read-only gateway routes.
-  '/api/intelligence/v1/search-intel-history': { limit: 60, window: '60 s' },
-  '/api/intelligence/v1/get-similar-events': { limit: 60, window: '60 s' },
+  // Pro caller reaches the function on every request. These two spend the
+  // SAME embeddings budget, and the registry is keyed per path — so a caller
+  // alternating them gets the sum, not the cap. 30/min each keeps the
+  // combined worst case at the 60/min per-principal embeddings bill this is
+  // sized for, while still covering interactive use (a search plus
+  // follow-ups); lower than the LLM routes' 600/min because nothing here is
+  // called in a page-load fan-out. The companion /get-intel-timeline is a
+  // pure Convex index read with no provider leg and deliberately has no
+  // policy — it inherits the global availability-first fallback like the
+  // other read-only gateway routes.
+  '/api/intelligence/v1/search-intel-history': { limit: 30, window: '60 s' },
+  '/api/intelligence/v1/get-similar-events': { limit: 30, window: '60 s' },
   // Batch humanitarian-summary fans out to the external HAPI (humdata) provider
   // on cache miss — up to 25 countries per request, 5 concurrent upstream
   // fetches. Batch aircraft-details fans out to the external Wingbits provider —

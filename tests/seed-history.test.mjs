@@ -112,6 +112,31 @@ describe('normalizeHistoryRecords', () => {
     );
   });
 
+  // The relay route rejects a dedupeKey over 256 chars with a 400 that fails
+  // the WHOLE chunk, so an over-long key must never reach the wire. It is
+  // dropped rather than clipped: dedupeKey is an identity, and two distinct
+  // events truncated to the same prefix would silently collapse into one row.
+  it('drops an over-long dedupeKey instead of truncating it into a collision', () => {
+    const prefix = `conflict:acled:${'x'.repeat(250)}`;
+    const out = normalizeHistoryRecords([
+      record(1, { dedupeKey: `${prefix}-AAAA` }),
+      record(2, { dedupeKey: `${prefix}-BBBB` }),
+      record(3, { dedupeKey: 'conflict:acled:short' }),
+    ]);
+
+    assert.deepEqual(
+      out.map((r) => r.dedupeKey),
+      ['conflict:acled:short'],
+    );
+  });
+
+  it('keeps a dedupeKey exactly at the wire limit', () => {
+    const exact = 'k'.repeat(256);
+    const out = normalizeHistoryRecords([record(1, { dedupeKey: exact })]);
+    assert.equal(out.length, 1);
+    assert.equal(out[0].dedupeKey.length, 256);
+  });
+
   it('keeps the newest HISTORY_MAX_RECORDS_PER_RUN by occurredAt desc', () => {
     const input = [];
     for (let i = 0; i < HISTORY_MAX_RECORDS_PER_RUN + 60; i++) input.push(record(i));

@@ -149,13 +149,21 @@ describe('query-vector cache', () => {
   // to Convex, which would reject it and surface as a false outage.
   const upstashGet = (key: string) =>
     `https://fake-upstash.upstash.io/get/${encodeURIComponent(key)}`;
-  const cacheKeyFor = (text: string) =>
-    `intel-history:embed:v1:openai/text-embedding-3-small:${EMBED_DIMS}:${normalizeQueryText(text)}`;
+  // The query text is hashed into the key, never stored verbatim — what an
+  // analyst searches for must not be readable from a Redis key listing.
+  const sha256Hex = async (text: string) => {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+    return Array.from(new Uint8Array(digest))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  };
+  const cacheKeyFor = async (text: string) =>
+    `intel-history:embed:v1:openai/text-embedding-3-small:${EMBED_DIMS}:${await sha256Hex(normalizeQueryText(text))}`;
 
   it('serves a cached vector without calling the embeddings provider', async () => {
     const query = 'artillery strikes near Kharkiv';
     stubFetch({
-      [upstashGet(cacheKeyFor(query))]: () =>
+      [upstashGet(await cacheKeyFor(query))]: () =>
         jsonResponse({ result: JSON.stringify(vector(0.25)) }),
       [CONVEX_SEARCH_URL]: () => jsonResponse({ records: [convexRecord] }),
     });
@@ -211,7 +219,8 @@ describe('query-vector cache', () => {
     assert.equal(writes.length, 1, 'a miss must populate the cache');
     const [verb, key, value, ex, ttl] = writes[0] as string[];
     assert.equal(verb, 'SET');
-    assert.equal(key, cacheKeyFor(query), 'key carries normalized query, model, dimension');
+    assert.equal(key, await cacheKeyFor(query), 'key carries hashed query, model, dimension');
+    assert.ok(!key.includes('rotterdam'), 'raw query text must never appear in the cache key');
     assert.deepEqual(JSON.parse(value), vector());
     assert.equal(ex, 'EX');
     assert.equal(Number(ttl), 6 * 60 * 60);
@@ -220,7 +229,7 @@ describe('query-vector cache', () => {
   it('re-embeds when the cached entry has the wrong dimension', async () => {
     const query = 'cyber incident at a utility';
     stubFetch({
-      [upstashGet(cacheKeyFor(query))]: () =>
+      [upstashGet(await cacheKeyFor(query))]: () =>
         jsonResponse({ result: JSON.stringify([0.1, 0.2, 0.3]) }),
       [OPENROUTER_EMBEDDINGS_URL]: embeddingsOk,
       [CONVEX_SEARCH_URL]: () => jsonResponse({ records: [] }),
