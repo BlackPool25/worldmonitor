@@ -13,7 +13,7 @@
  * would decode to U+F600 (a private-use glyph) rather than 😀.
  */
 
-export function decodeNumericReference(codePoint) {
+function decodeNumericReference(codePoint) {
   return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff
     ? String.fromCodePoint(codePoint)
     : '';

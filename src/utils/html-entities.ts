@@ -16,7 +16,7 @@
  * cannot be imported from `src/`).
  */
 
-export function decodeNumericReference(codePoint: number): string {
+function decodeNumericReference(codePoint: number): string {
   return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff
     ? String.fromCodePoint(codePoint)
     : '';

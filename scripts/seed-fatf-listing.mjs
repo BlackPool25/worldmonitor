@@ -404,11 +404,6 @@ export function extractListedCountries(html, nameLookup) {
   return { listed: isoSet, unmatchedCandidates };
 }
 
-// HTML entity decoding for the entities FATF emits in anchor text
-// (&#39; for apostrophe, &amp; for ampersand, &nbsp; for space) is handled
-// by the shared single-pass decoder imported above — it decodes exactly
-// one level, so publisher-escaped `&amp;lt;` stays literal `&lt;`.
-
 // Try to extract the publication date from the URL slug or the page
 // header. Falls back to the current date if neither succeeds.
 export function extractPublicationDate(url, html) {
