@@ -179,19 +179,31 @@ export const append = internalMutation({
     // Within-batch dedupe: two records sharing a key in one payload would
     // both miss the index lookup (neither is committed yet at read time).
     const seenInBatch = new Set<string>();
-
+    const candidates = [];
     for (const rec of args.records) {
       if (seenInBatch.has(rec.dedupeKey)) {
         skipped += 1;
         continue;
       }
       seenInBatch.add(rec.dedupeKey);
+      candidates.push(rec);
+    }
 
-      const existing = await ctx.db
-        .query("intelHistory")
-        .withIndex("by_dedupeKey", (q) => q.eq("dedupeKey", rec.dedupeKey))
-        .first();
-      if (existing !== null) {
+    // The existence checks are independent of each other, so issue them
+    // together: this is up to 100 indexed reads, and running them serially
+    // holds the mutation's read set open far longer than needed while three
+    // seeders write to this table on overlapping schedules.
+    const existing = await Promise.all(
+      candidates.map((rec) =>
+        ctx.db
+          .query("intelHistory")
+          .withIndex("by_dedupeKey", (q) => q.eq("dedupeKey", rec.dedupeKey))
+          .first(),
+      ),
+    );
+
+    for (const [index, rec] of candidates.entries()) {
+      if (existing[index] !== null) {
         skipped += 1;
         continue;
       }
@@ -315,12 +327,11 @@ export const getByIds = internalQuery({
         `intelHistory.getByIds: at most ${VECTOR_SEARCH_MAX_LIMIT} ids per call, got ${args.ids.length}`,
       );
     }
-    const records: IntelHistoryRecord[] = [];
-    for (const id of args.ids) {
-      const doc = await ctx.db.get(id);
-      if (doc !== null) records.push(projectRecord(doc));
-    }
-    return records;
+    // Independent reads on a user-facing search path — issue them together
+    // rather than serially. Promise.all resolves in input order, which IS the
+    // relevance order the caller depends on.
+    const docs = await Promise.all(args.ids.map((id) => ctx.db.get(id)));
+    return docs.filter((doc) => doc !== null).map((doc) => projectRecord(doc));
   },
 });
 

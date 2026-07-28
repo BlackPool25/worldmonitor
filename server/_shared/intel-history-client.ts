@@ -34,6 +34,7 @@ import {
   OPENROUTER_EMBEDDINGS_URL,
 } from '../../scripts/lib/brief-dedup-consts.mjs';
 import { stripSourceSuffix } from '../../scripts/lib/brief-dedup-jaccard.mjs';
+import { getCachedJson, setCachedJson } from './redis';
 
 const CONVEX_INTERNAL_SEARCH_PATH = '/api/internal-intel-search';
 const CONVEX_INTERNAL_TIMELINE_PATH = '/api/internal-intel-timeline';
@@ -48,6 +49,21 @@ const EMBED_TIMEOUT_MS = 4_000;
 
 /** Convex read budget, matching the entitlement gate's posture. */
 const CONVEX_TIMEOUT_MS = 5_000;
+
+/**
+ * Query-vector cache. Every miss spends one paid OpenRouter call on an
+ * interactive request, and repeat traffic here is real: agents re-issue the
+ * same MCP query, and dashboard phrases repeat verbatim.
+ *
+ * The seed writer's 14-day TTL is sized for a corpus that never changes once
+ * written; a query vector only has to outlive a burst of repeats, so hours
+ * are enough and a shorter window bounds how long a model change could serve
+ * mismatched vectors. The key carries the model and dimension for that
+ * reason — a model swap lands on a cold namespace instead of silently mixing
+ * vector spaces.
+ */
+const EMBED_CACHE_TTL_SECONDS = 6 * 60 * 60;
+const EMBED_CACHE_PREFIX = `intel-history:embed:v1:${EMBED_MODEL}:${EMBED_DIMS}:`;
 
 let _didWarnMissingOpenRouterKey = false;
 let _didWarnMissingConvexSiteUrl = false;
@@ -91,6 +107,20 @@ export function normalizeQueryText(text: string): string {
 }
 
 /**
+ * A vector is only usable at exactly the index's dimension, all components
+ * finite. Applied to cache hits as well as provider responses: a stale or
+ * corrupt entry must be re-embedded, never forwarded — Convex would reject
+ * it and the caller would report an outage that isn't one.
+ */
+function isUsableVector(value: unknown): value is number[] {
+  return (
+    Array.isArray(value) &&
+    value.length === EMBED_DIMS &&
+    value.every((n) => typeof n === 'number' && Number.isFinite(n))
+  );
+}
+
+/**
  * Embed one free-text query with the model and dimensions the stored vectors
  * were produced under. Returns null on any failure — missing key, provider
  * error, timeout, or a vector the store would reject anyway.
@@ -98,6 +128,10 @@ export function normalizeQueryText(text: string): string {
  * A wrong-dimension or non-finite vector is treated as failure rather than
  * passed through: convex/intelHistory.ts would reject it, and a silently
  * substituted vector would return arbitrary rows presented as real matches.
+ *
+ * Results are cached on the normalized query text, so a repeated query costs
+ * a Redis read instead of a paid provider call. Cache failures are never
+ * fatal: a miss or a write error just means the provider is asked again.
  */
 export async function embedQueryText(text: string): Promise<number[] | null> {
   const apiKey = process.env.OPENROUTER_API_KEY ?? '';
@@ -111,6 +145,10 @@ export async function embedQueryText(text: string): Promise<number[] | null> {
 
   const input = normalizeQueryText(text);
   if (!input) return null;
+
+  const cacheKey = `${EMBED_CACHE_PREFIX}${input}`;
+  const cached = await getCachedJson(cacheKey);
+  if (isUsableVector(cached)) return cached;
 
   try {
     const resp = await fetch(OPENROUTER_EMBEDDINGS_URL, {
@@ -143,6 +181,7 @@ export async function embedQueryText(text: string): Promise<number[] | null> {
       console.warn('[intel-history] embeddings provider returned a non-finite component');
       return null;
     }
+    await setCachedJson(cacheKey, vector, EMBED_CACHE_TTL_SECONDS);
     return vector as number[];
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

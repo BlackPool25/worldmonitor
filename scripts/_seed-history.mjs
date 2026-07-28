@@ -24,7 +24,7 @@
  * See tests/scripts-railway-nixpacks-no-escape-import.test.mts.
  */
 
-import { isRetryableHttpStatus, withRetry } from './_seed-utils.mjs';
+import { httpRetryError, withRetry } from './_seed-utils.mjs';
 import { embedBatch, normalizeForEmbedding } from './lib/brief-embedding.mjs';
 
 // Per-run cap. A seed tick that suddenly emits thousands of "historic"
@@ -50,6 +50,9 @@ const RELAY_PATH = '/relay/intel-history';
 const RELAY_TIMEOUT_MS = 10_000;
 const RELAY_MAX_RETRIES = 2;
 const RELAY_RETRY_DELAY_MS = 1000;
+// History is best-effort; a relay asking for a minute-long backoff should not
+// hold the seed run's process open that long.
+const RELAY_RETRY_AFTER_CAP_MS = 10_000;
 const ERROR_SNIPPET_MAX_CHARS = 200;
 
 /** Typed error so callers can distinguish history failures from seed failures. */
@@ -177,9 +180,13 @@ function resolveRelayConfig(env) {
 }
 
 /**
- * POST one chunk, with retry. Permanent statuses (4xx that aren't 408 /
- * 429) are tagged `nonRetryable` so withRetry fails in ~10ms instead of
- * burning 3s of the seeder's budget on a misconfigured secret.
+ * POST one chunk, with retry. Retry semantics come from `httpRetryError`,
+ * the convention every other retrying POST in scripts/ uses: permanent
+ * statuses (4xx that aren't 408/429) are tagged `nonRetryable` so a
+ * misconfigured secret fails in ~10ms instead of burning 3s of the
+ * seeder's budget, and a `Retry-After` header is honored rather than
+ * overridden by bare exponential backoff. The cap keeps a long
+ * server-suggested delay from eating the run's remaining budget.
  */
 async function postHistoryChunk({ fetchImpl, url, secret, payload }) {
   return withRetry(
@@ -196,11 +203,13 @@ async function postHistoryChunk({ fetchImpl, url, secret, payload }) {
 
       if (!response.ok) {
         const snippet = await readErrorSnippet(response);
+        const retry = httpRetryError(response, { capMs: RELAY_RETRY_AFTER_CAP_MS });
         const error = new SeedHistoryError(
           `intel-history relay returned HTTP ${response.status}: ${snippet}`,
           { status: response.status },
         );
-        if (!isRetryableHttpStatus(response.status)) error.nonRetryable = true;
+        error.nonRetryable = retry.nonRetryable;
+        if (retry.retryAfterMs != null) error.retryAfterMs = retry.retryAfterMs;
         throw error;
       }
 
@@ -209,6 +218,44 @@ async function postHistoryChunk({ fetchImpl, url, secret, payload }) {
     RELAY_MAX_RETRIES,
     RELAY_RETRY_DELAY_MS,
   );
+}
+
+/**
+ * Build a seeder's `afterPublish` hook.
+ *
+ * Every collector wires history the same way and must fail the same way:
+ * the canonical publish has already committed by the time runSeed invokes
+ * this, so a history failure logs and returns. A throw would skip
+ * `writeFreshnessMetadataSafely` and age seed-meta out on fresh data —
+ * the hazard documented at scripts/seed-gdelt-intel.mjs.
+ *
+ * Only the domain/resource pair and the record projection differ per
+ * seeder, so those are the parameters; the failure semantics are not
+ * per-seeder policy and are deliberately not overridable.
+ *
+ * The returned hook keeps runSeed's `(data, meta)` shape with the
+ * appender in a third, injectable slot for tests.
+ */
+export function makeSeedHistoryAfterPublish({ domain, resource, buildRecords }) {
+  return async function seedHistoryAfterPublish(data, meta, append = appendSeedHistory) {
+    try {
+      const result = await append({
+        domain,
+        resource,
+        runId: String(meta?.runId ?? ''),
+        records: buildRecords(data),
+      });
+      if (result?.skipped !== 'unconfigured') {
+        console.log(
+          `  [intel-history] ${domain}/${resource} appended ${result?.inserted ?? 0}, deduped ${result?.skipped ?? 0}`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `  [intel-history] ${domain}/${resource} append failed (non-fatal): ${err?.message || err}`,
+      );
+    }
+  };
 }
 
 /**

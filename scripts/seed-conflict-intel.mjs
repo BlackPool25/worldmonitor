@@ -31,7 +31,7 @@ import { fetchGdeltJson } from './_gdelt-fetch.mjs';
 import { buildGdeltConflictUrl, mapGdeltArticlesToEvents, GDELT_COUNTRY_NAMES } from './_conflict-gdelt.mjs';
 import { fetchGdeltBulkConflictEvents, GDELT_ROLLING_WINDOW_MS, mergeGdeltBulkRollingWindow } from './_conflict-gdelt-bulk.mjs';
 import { parseProxyConfig, proxyFetch } from './_proxy-utils.cjs';
-import { appendSeedHistory } from './_seed-history.mjs';
+import { makeSeedHistoryAfterPublish } from './_seed-history.mjs';
 import { resolveIso2 } from './_country-resolver.mjs';
 
 loadEnvFile(import.meta.url);
@@ -1110,24 +1110,11 @@ export function buildConflictHistoryRecords(data) {
   }).filter(Boolean);
 }
 
-// History append is strictly best-effort: the canonical publish already
-// succeeded, so a failure here must log and return, never throw (a throw
-// would skip runSeed's freshness write and crash a healthy run).
-export async function conflictIntelAfterPublish(data, meta, append = appendSeedHistory) {
-  try {
-    const result = await append({
-      domain: 'conflict',
-      resource: 'acled-intel',
-      runId: String(meta?.runId ?? ''),
-      records: buildConflictHistoryRecords(data),
-    });
-    if (result?.skipped !== 'unconfigured') {
-      console.log(`  [intel-history] appended ${result?.inserted ?? 0}, deduped ${result?.skipped ?? 0}`);
-    }
-  } catch (err) {
-    console.warn(`  [intel-history] append failed (non-fatal): ${err?.message || err}`);
-  }
-}
+export const conflictIntelAfterPublish = makeSeedHistoryAfterPublish({
+  domain: 'conflict',
+  resource: 'acled-intel',
+  buildRecords: buildConflictHistoryRecords,
+});
 
 if (process.argv[1]?.endsWith('seed-conflict-intel.mjs')) {
   runSeed('conflict', 'acled-intel', ACLED_CACHE_KEY, fetchAll, {

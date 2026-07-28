@@ -140,6 +140,112 @@ describe('query-time normalization parity', () => {
 
 // ── SearchIntelHistory ──────────────────────────────────────────────────────
 
+// ── query-vector cache ──────────────────────────────────────────────────────
+
+describe('query-vector cache', () => {
+  // Every miss spends a paid OpenRouter call on an interactive request, so the
+  // hit path has to actually skip the provider — and a cache entry that no
+  // longer matches the index contract has to be ignored rather than forwarded
+  // to Convex, which would reject it and surface as a false outage.
+  const upstashGet = (key: string) =>
+    `https://fake-upstash.upstash.io/get/${encodeURIComponent(key)}`;
+  const cacheKeyFor = (text: string) =>
+    `intel-history:embed:v1:openai/text-embedding-3-small:${EMBED_DIMS}:${normalizeQueryText(text)}`;
+
+  it('serves a cached vector without calling the embeddings provider', async () => {
+    const query = 'artillery strikes near Kharkiv';
+    stubFetch({
+      [upstashGet(cacheKeyFor(query))]: () =>
+        jsonResponse({ result: JSON.stringify(vector(0.25)) }),
+      [CONVEX_SEARCH_URL]: () => jsonResponse({ records: [convexRecord] }),
+    });
+
+    const res = await searchIntelHistory(ctx, {
+      query,
+      domain: '',
+      country: '',
+      from: 0,
+      to: 0,
+      limit: 0,
+    });
+
+    assert.equal(res.upstreamUnavailable, false);
+    assert.equal(
+      calls.filter((c) => c.url === OPENROUTER_EMBEDDINGS_URL).length,
+      0,
+      'a cache hit must not reach the embeddings provider',
+    );
+    const search = calls.find((c) => c.url === CONVEX_SEARCH_URL);
+    assert.deepEqual(search?.body?.embedding, vector(0.25));
+  });
+
+  it('writes the provider vector back to the cache on a miss', async () => {
+    const query = 'port strike in Rotterdam';
+    // setCachedJson issues an atomic `SET key value EX ttl` as a command array
+    // POSTed to the Upstash base URL (not a /set/ path), so match on that.
+    const writes: unknown[][] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url.startsWith('https://fake-upstash.upstash.io/get/')) {
+        return jsonResponse({ result: null });
+      }
+      if (url === 'https://fake-upstash.upstash.io/' && init?.method === 'POST') {
+        writes.push(JSON.parse(String(init.body)) as unknown[]);
+        return jsonResponse({ result: 'OK' });
+      }
+      if (url === OPENROUTER_EMBEDDINGS_URL) return embeddingsOk();
+      if (url === CONVEX_SEARCH_URL) return jsonResponse({ records: [] });
+      throw new Error(`unstubbed fetch: ${url}`);
+    }) as typeof globalThis.fetch;
+
+    const res = await searchIntelHistory(ctx, {
+      query,
+      domain: '',
+      country: '',
+      from: 0,
+      to: 0,
+      limit: 0,
+    });
+
+    assert.equal(res.upstreamUnavailable, false);
+    assert.equal(writes.length, 1, 'a miss must populate the cache');
+    const [verb, key, value, ex, ttl] = writes[0] as string[];
+    assert.equal(verb, 'SET');
+    assert.equal(key, cacheKeyFor(query), 'key carries normalized query, model, dimension');
+    assert.deepEqual(JSON.parse(value), vector());
+    assert.equal(ex, 'EX');
+    assert.equal(Number(ttl), 6 * 60 * 60);
+  });
+
+  it('re-embeds when the cached entry has the wrong dimension', async () => {
+    const query = 'cyber incident at a utility';
+    stubFetch({
+      [upstashGet(cacheKeyFor(query))]: () =>
+        jsonResponse({ result: JSON.stringify([0.1, 0.2, 0.3]) }),
+      [OPENROUTER_EMBEDDINGS_URL]: embeddingsOk,
+      [CONVEX_SEARCH_URL]: () => jsonResponse({ records: [] }),
+    });
+
+    const res = await searchIntelHistory(ctx, {
+      query,
+      domain: '',
+      country: '',
+      from: 0,
+      to: 0,
+      limit: 0,
+    });
+
+    assert.equal(res.upstreamUnavailable, false);
+    assert.equal(
+      calls.filter((c) => c.url === OPENROUTER_EMBEDDINGS_URL).length,
+      1,
+      'an unusable cache entry must fall through to the provider',
+    );
+    const search = calls.find((c) => c.url === CONVEX_SEARCH_URL);
+    assert.equal((search?.body?.embedding as number[])?.length, EMBED_DIMS);
+  });
+});
+
 describe('searchIntelHistory handler', () => {
   it('embeds the query and maps Convex records onto the proto shape', async () => {
     stubFetch({

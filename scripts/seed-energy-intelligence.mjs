@@ -2,7 +2,7 @@
 
 import { loadEnvFile, CHROME_UA, runSeed, httpsProxyFetchRaw } from './_seed-utils.mjs';
 import { resolveProxyStringConnect } from './_proxy-utils.cjs';
-import { appendSeedHistory } from './_seed-history.mjs';
+import { makeSeedHistoryAfterPublish } from './_seed-history.mjs';
 
 loadEnvFile(import.meta.url);
 
@@ -224,24 +224,11 @@ export function buildEnergyHistoryRecords(data) {
   }).filter(Boolean);
 }
 
-// Best-effort by contract: the canonical publish already succeeded, so a
-// history failure must log and return, never throw (a throw would skip
-// runSeed's freshness write and crash a healthy run).
-export async function energyIntelAfterPublish(data, meta, append = appendSeedHistory) {
-  try {
-    const result = await append({
-      domain: 'energy',
-      resource: 'intelligence',
-      runId: String(meta?.runId ?? ''),
-      records: buildEnergyHistoryRecords(data),
-    });
-    if (result?.skipped !== 'unconfigured') {
-      console.log(`[EnergyIntel] intel-history appended ${result?.inserted ?? 0}, deduped ${result?.skipped ?? 0}`);
-    }
-  } catch (err) {
-    console.warn(`[EnergyIntel] intel-history append failed (non-fatal): ${err?.message || err}`);
-  }
-}
+export const energyIntelAfterPublish = makeSeedHistoryAfterPublish({
+  domain: 'energy',
+  resource: 'intelligence',
+  buildRecords: buildEnergyHistoryRecords,
+});
 
 if (process.argv[1]?.endsWith('seed-energy-intelligence.mjs')) {
   runSeed('energy', 'intelligence', CANONICAL_KEY, fetchEnergyIntelligence, {

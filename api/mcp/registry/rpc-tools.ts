@@ -142,7 +142,10 @@ type ProcurementRouteResponse = {
   countryCoverage?: string;
 };
 
-function addProcurementStringParam(query: URLSearchParams, name: string, value: unknown): void {
+/** Copy a text filter onto the query string. Blank means "no filter", which is
+ *  what the routes already do with an absent parameter, so blanks are dropped
+ *  rather than sent. */
+function addStringParam(query: URLSearchParams, name: string, value: unknown): void {
   if (typeof value === 'string' && value.trim()) query.set(name, value.trim());
 }
 
@@ -198,13 +201,6 @@ function compactProcurementOpportunity(tender: ProcurementRouteTender) {
 
 /** Domains the history writers populate today (proto `intel_history_record`). */
 const INTEL_HISTORY_DOMAINS = ['conflict', 'military', 'energy'];
-
-/** Copy a text filter onto the query string. Blank means "no filter", which is
- *  what the routes already do with an absent parameter, so blanks are dropped
- *  rather than sent. */
-function addIntelHistoryText(query: URLSearchParams, name: string, value: unknown): void {
-  if (typeof value === 'string' && value.trim()) query.set(name, value.trim());
-}
 
 /**
  * Copy a numeric filter onto the query string. Absent and non-numeric values
@@ -386,7 +382,7 @@ export const RPC_TOOLS: ToolDef[] = [
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     _execute: async (params, base, context) => {
       const query = new URLSearchParams();
-      addProcurementStringParam(query, 'country', params.country);
+      addStringParam(query, 'country', params.country);
       if (Array.isArray(params.countries)) {
         for (const country of params.countries) {
           if (typeof country === 'string' && country.trim()) query.append('countries', country.trim());
@@ -400,7 +396,7 @@ export const RPC_TOOLS: ToolDef[] = [
         deadline_to: params.deadline_to,
         sort: params.sort,
         cursor: params.cursor,
-      })) addProcurementStringParam(query, name, value);
+      })) addStringParam(query, name, value);
       query.set('page_size', String(procurementPageSize(params.page_size)));
       const threshold = procurementAutomationThreshold(params.min_automation_score);
       if (threshold !== null) query.set('min_automation_score', String(threshold));
@@ -1395,9 +1391,9 @@ export const RPC_TOOLS: ToolDef[] = [
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     _execute: async (params, base, context, execution) => {
       const query = new URLSearchParams();
-      addIntelHistoryText(query, 'query', params.query);
-      addIntelHistoryText(query, 'domain', params.domain);
-      addIntelHistoryText(query, 'country', params.country);
+      addStringParam(query, 'query', params.query);
+      addStringParam(query, 'domain', params.domain);
+      addStringParam(query, 'country', params.country);
       addIntelHistoryNumber(query, 'from', params.from);
       addIntelHistoryNumber(query, 'to', params.to);
       addIntelHistoryNumber(query, 'limit', params.limit);
@@ -1458,8 +1454,8 @@ export const RPC_TOOLS: ToolDef[] = [
       }
 
       const query = new URLSearchParams();
-      addIntelHistoryText(query, 'domain', domain);
-      addIntelHistoryText(query, 'country', country);
+      addStringParam(query, 'domain', domain);
+      addStringParam(query, 'country', country);
       addIntelHistoryNumber(query, 'from', params.from);
       addIntelHistoryNumber(query, 'to', params.to);
       addIntelHistoryNumber(query, 'limit', params.limit);
@@ -1510,9 +1506,9 @@ export const RPC_TOOLS: ToolDef[] = [
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     _execute: async (params, base, context, execution) => {
       const query = new URLSearchParams();
-      addIntelHistoryText(query, 'situation', params.situation);
-      addIntelHistoryText(query, 'domain', params.domain);
-      addIntelHistoryText(query, 'country', params.country);
+      addStringParam(query, 'situation', params.situation);
+      addStringParam(query, 'domain', params.domain);
+      addStringParam(query, 'country', params.country);
       addIntelHistoryNumber(query, 'limit', params.limit);
 
       const url = `${base}/api/intelligence/v1/get-similar-events?${query}`;

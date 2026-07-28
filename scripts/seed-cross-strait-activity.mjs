@@ -6,7 +6,7 @@ import {
 } from './cross-strait-activity/adapters.mjs';
 import { DAY_MIN, tokensToContentMeta } from './_content-age-helpers.mjs';
 import { loadEnvFile, readSeedSnapshot, runSeed, writeExtraKey } from './_seed-utils.mjs';
-import { appendSeedHistory } from './_seed-history.mjs';
+import { makeSeedHistoryAfterPublish } from './_seed-history.mjs';
 
 loadEnvFile(import.meta.url);
 
@@ -210,25 +210,13 @@ export function buildCrossStraitHistoryRecords(snapshot) {
   }).filter(Boolean);
 }
 
-// Best-effort by contract: this seeder's completion marker rides
-// afterFreshness, so history takes the afterPublish slot; a failure here must
-// log and return, never throw (a throw would skip the freshness write and the
-// completion marker, crashing a healthy run).
-export async function crossStraitHistoryAfterPublish(snapshot, meta, append = appendSeedHistory) {
-  try {
-    const result = await append({
-      domain: 'military',
-      resource: 'cross-strait-activity',
-      runId: String(meta?.runId ?? ''),
-      records: buildCrossStraitHistoryRecords(snapshot),
-    });
-    if (result?.skipped !== 'unconfigured') {
-      console.log(`  [intel-history] appended ${result?.inserted ?? 0}, deduped ${result?.skipped ?? 0}`);
-    }
-  } catch (err) {
-    console.warn(`  [intel-history] append failed (non-fatal): ${err?.message || err}`);
-  }
-}
+// This seeder's completion marker rides afterFreshness, so history takes the
+// afterPublish slot.
+export const crossStraitHistoryAfterPublish = makeSeedHistoryAfterPublish({
+  domain: 'military',
+  resource: 'cross-strait-activity',
+  buildRecords: buildCrossStraitHistoryRecords,
+});
 
 function validatePublishableSnapshot(snapshot) {
   if (!validateCrossStraitActivitySnapshot(snapshot)) return false;
