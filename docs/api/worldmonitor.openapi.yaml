@@ -3207,7 +3207,7 @@ paths:
                                       "name": "WorldMonitor Analyst"
                                 "marketCode": "US"
                                 "range": "7d"
-                                "upstreamUnavailable": true
+                                "upstreamUnavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_consumer_prices_v1_ListConsumerPriceCategoriesResponse'
                 "400":
@@ -4537,7 +4537,7 @@ paths:
                                 "generatedAt": "2026-01-15T12:00:00Z"
                                 "methodVersion": "example"
                                 "payloadJson": "example"
-                                "upstreamUnavailable": true
+                                "upstreamUnavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_economic_v1_GetChinaActivityNowcastResponse'
                 "400":
@@ -5321,7 +5321,7 @@ paths:
                                       "debtUsd": 1.5
                                       "gdpUsd": 1.5
                                 "seededAt": "2026-01-15T12:00:00Z"
-                                "unavailable": true
+                                "unavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_economic_v1_GetNationalDebtResponse'
                 "400":
@@ -5618,7 +5618,7 @@ paths:
                                 "fromDate": "2026-01-15"
                                 "toDate": "2026-01-15"
                                 "total": 1
-                                "unavailable": true
+                                "unavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_economic_v1_GetEconomicCalendarResponse'
                 "400":
@@ -5866,7 +5866,7 @@ paths:
                                       "pair": "example"
                                       "rate": 75.25
                                 "seededAt": "1717200000000"
-                                "unavailable": true
+                                "unavailable": false
                                 "updatedAt": "2026-01-15"
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_economic_v1_GetEcbFxRatesResponse'
@@ -5966,7 +5966,7 @@ paths:
                                             "unit": "example"
                                             "value": 1.5
                                 "seededAt": "1717200000000"
-                                "unavailable": true
+                                "unavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_economic_v1_GetEurostatCountryDataResponse'
                 "400":
@@ -6135,7 +6135,7 @@ paths:
                                         "exampleKey": 1.5
                                     "source": "example"
                                     "updatedAt": "2026-01-15"
-                                "unavailable": true
+                                "unavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_economic_v1_GetEuYieldCurveResponse'
                 "400":
@@ -6306,7 +6306,7 @@ paths:
                                 "compositeScore": 42.5
                                 "label": "example"
                                 "seededAt": "2026-01-15T12:00:00Z"
-                                "unavailable": true
+                                "unavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_economic_v1_GetEconomicStressResponse'
                 "400":
@@ -6492,7 +6492,7 @@ paths:
                                     "northAmerica":
                                         "avgDays": 7
                                         "netExporters": 1
-                                "unavailable": true
+                                "unavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_economic_v1_GetOilStocksAnalysisResponse'
                 "400":
@@ -6707,7 +6707,7 @@ paths:
                                       "measure": "example"
                                 "source": "example"
                                 "sourceUrl": "https://example.com/worldmonitor"
-                                "unavailable": true
+                                "unavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_economic_v1_GetEnergyCrisisPoliciesResponse'
                 "400":
@@ -14627,7 +14627,7 @@ paths:
                                 "fromDate": "2026-01-15"
                                 "toDate": "2026-01-15"
                                 "total": 1
-                                "unavailable": true
+                                "unavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_market_v1_ListEarningsCalendarResponse'
                 "400":
@@ -14712,7 +14712,7 @@ paths:
                                       "dealerLong": "1717200000000"
                                       "dealerShort": "1717200000000"
                                 "reportDate": "2026-01-15"
-                                "unavailable": true
+                                "unavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_market_v1_GetCotPositioningResponse'
                 "400":
@@ -14887,7 +14887,7 @@ paths:
                                       "pctAbove200d": 1.5
                                       "pctAbove20d": 1.5
                                       "pctAbove50d": 1.5
-                                "unavailable": true
+                                "unavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_market_v1_GetMarketBreadthHistoryResponse'
                 "400":
@@ -15100,7 +15100,7 @@ paths:
                                       "dayNotional": "example"
                                 "fetchedAt": "2026-01-15T12:00:00Z"
                                 "ts": "1717200000000"
-                                "unavailable": true
+                                "unavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_market_v1_GetHyperliquidFlowResponse'
                 "400":
@@ -18881,7 +18881,7 @@ paths:
                                             "value": 1.5
                                       "indexId": "example-id"
                                       "name": "WorldMonitor Analyst"
-                                "upstreamUnavailable": true
+                                "upstreamUnavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_supply_chain_v1_GetShippingRatesResponse'
                 "400":
@@ -18970,7 +18970,7 @@ paths:
                                       "congestionLevel": "example"
                                       "description": "Example WorldMonitor observation."
                                 "fetchedAt": "2026-01-15T12:00:00Z"
-                                "upstreamUnavailable": true
+                                "upstreamUnavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_supply_chain_v1_GetChokepointStatusResponse'
                 "400":
@@ -19154,7 +19154,7 @@ paths:
                                             "countryCode": "US"
                                             "productionTonnes": 1.5
                                             "sharePct": 1.5
-                                "upstreamUnavailable": true
+                                "upstreamUnavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_supply_chain_v1_GetCriticalMineralsResponse'
                 "400":
@@ -19242,7 +19242,7 @@ paths:
                                 "fetchedAt": 1717200000000
                                 "stressLevel": "example"
                                 "stressScore": 42.5
-                                "upstreamUnavailable": true
+                                "upstreamUnavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_supply_chain_v1_GetShippingStressResponse'
                 "400":
@@ -20238,7 +20238,7 @@ paths:
                                               "date": "2026-01-15"
                                               "text": "example"
                                               "url": "https://example.com/worldmonitor"
-                                "upstreamUnavailable": true
+                                "upstreamUnavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_supply_chain_v1_ListPipelinesResponse'
                 "400":
@@ -20348,7 +20348,7 @@ paths:
                                       "fieldChanged": "example"
                                       "newValue": "example"
                                       "previousValue": "example"
-                                "unavailable": true
+                                "unavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_supply_chain_v1_GetPipelineDetailResponse'
                 "400":
@@ -20454,7 +20454,7 @@ paths:
                                           "fillDisclosed": true
                                           "fillSource": "example"
                                 "fetchedAt": "2026-01-15T12:00:00Z"
-                                "upstreamUnavailable": true
+                                "upstreamUnavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_supply_chain_v1_ListStorageFacilitiesResponse'
                 "400":
@@ -20559,7 +20559,7 @@ paths:
                                       "fieldChanged": "example"
                                       "newValue": "example"
                                       "previousValue": "example"
-                                "unavailable": true
+                                "unavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_supply_chain_v1_GetStorageFacilityDetailResponse'
                 "400":
@@ -20682,7 +20682,7 @@ paths:
                                           "lastEvidenceUpdate": "2026-01-15"
                                       "firstSeen": "example"
                                       "id": "example-id"
-                                "upstreamUnavailable": true
+                                "upstreamUnavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_supply_chain_v1_ListFuelShortagesResponse'
                 "400":
@@ -20787,7 +20787,7 @@ paths:
                                         "lastEvidenceUpdate": "2026-01-15"
                                     "firstSeen": "example"
                                     "id": "example-id"
-                                "unavailable": true
+                                "unavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_supply_chain_v1_GetFuelShortageDetailResponse'
                 "400":
@@ -20901,7 +20901,7 @@ paths:
                                       "causeChain":
                                           - "example"
                                 "fetchedAt": "2026-01-15T12:00:00Z"
-                                "upstreamUnavailable": true
+                                "upstreamUnavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_supply_chain_v1_ListEnergyDisruptionsResponse'
                 "400":
@@ -21191,7 +21191,7 @@ paths:
                                       "id": "example-id"
                                       "measureType": "all"
                                       "notifiedAt": "2026-01-15T12:00:00Z"
-                                "upstreamUnavailable": true
+                                "upstreamUnavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_trade_v1_GetTradeRestrictionsResponse'
                 "400":
@@ -21315,7 +21315,7 @@ paths:
                                     "tariffRate": 75.25
                                     "updatedAt": "2026-01-15"
                                 "fetchedAt": "2026-01-15T12:00:00Z"
-                                "upstreamUnavailable": true
+                                "upstreamUnavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_trade_v1_GetTariffTrendsResponse'
                 "400":
@@ -21422,7 +21422,7 @@ paths:
                                       "partnerCountry": "156"
                                       "productSector": "diesel"
                                       "reportingCountry": "840"
-                                "upstreamUnavailable": true
+                                "upstreamUnavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_trade_v1_GetTradeFlowsResponse'
                 "400":
@@ -21538,7 +21538,7 @@ paths:
                                       "notifyingCountry": "US"
                                       "objective": "example"
                                 "fetchedAt": "2026-01-15T12:00:00Z"
-                                "upstreamUnavailable": true
+                                "upstreamUnavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_trade_v1_GetTradeBarriersResponse'
                 "400":
@@ -21623,7 +21623,7 @@ paths:
                                       "fiscalYear": 1
                                       "fytdAmountBillions": 1.5
                                       "monthlyAmountBillions": 1.5
-                                "upstreamUnavailable": true
+                                "upstreamUnavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_trade_v1_GetCustomsRevenueResponse'
                 "400":
@@ -21734,7 +21734,7 @@ paths:
                                       "isAnomaly": true
                                       "netWeightKg": 1.5
                                       "partnerCode": "example"
-                                "upstreamUnavailable": true
+                                "upstreamUnavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_trade_v1_ListComtradeFlowsResponse'
                 "400":

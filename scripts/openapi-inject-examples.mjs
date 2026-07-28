@@ -662,7 +662,14 @@ function exampleForSchema(schema, spec, context = {}, depth = 0, seen = new Set(
   }
   if (type === 'integer') return numberExample(name, schema, true);
   if (type === 'number') return numberExample(name, schema, false);
-  if (type === 'boolean') return true;
+  if (type === 'boolean') {
+    // Success-path examples must not teach outage envelopes. `unavailable` on
+    // corporate-intel (and similar) RPCs means the upstream seed/registry was
+    // unreadable — a 200 example with unavailable:true is a contract footgun.
+    const key = normalizeKey(name || context.name || '');
+    if (key === 'unavailable' || key.endsWith('unavailable')) return false;
+    return true;
+  }
   return stringExample(name, schema, context);
 }
 
