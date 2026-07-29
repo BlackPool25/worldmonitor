@@ -52,6 +52,26 @@ let initialized = false;
 let unsubscribeFn: (() => void) | null = null;
 
 /**
+ * Fan a new snapshot out to every subscriber, isolating failures.
+ *
+ * One listener must not block the rest: subscribers are independent UI
+ * surfaces, and an unguarded loop silently stops updating every listener
+ * registered after the one that threw — a failure with no error path, since
+ * the survivors just quietly hold their last verdict. Both emission sites
+ * (the Convex watch below and `resetEntitlementState`) route through here so
+ * they cannot drift apart on that guarantee.
+ */
+function notifyListeners(state: EntitlementState | null): void {
+  for (const cb of listeners) {
+    try {
+      cb(state);
+    } catch (err) {
+      console.warn('[entitlements] listener threw; continuing fan-out:', err);
+    }
+  }
+}
+
+/**
  * Initialize the entitlement subscription for the authenticated user.
  * Idempotent — calling multiple times is a no-op after the first.
  * Failures are logged but never thrown (dashboard must not break).
@@ -89,7 +109,7 @@ export async function initEntitlementSubscription(_userId?: string): Promise<voi
       {},
       (result: EntitlementState | null) => {
         currentState = result;
-        for (const cb of listeners) cb(result);
+        notifyListeners(result);
       },
       (err: Error) => {
         console.warn('[entitlements] Subscription query error:', err.message);
@@ -133,13 +153,7 @@ export function destroyEntitlementSubscription(): void {
  */
 export function resetEntitlementState(): void {
   currentState = null;
-  for (const cb of listeners) {
-    try {
-      cb(null);
-    } catch {
-      // One listener must not block the rest of the sign-out fan-out.
-    }
-  }
+  notifyListeners(null);
 }
 
 /**
