@@ -464,12 +464,12 @@ function filterEvents(
  * request cannot resolve narrower than the documented widest bounds.
  * Exported for the regression test.
  */
-export const WIDEST_TECH_EVENTS_REQUEST: ListTechEventsRequest = {
+export const WIDEST_TECH_EVENTS_REQUEST: Readonly<ListTechEventsRequest> = Object.freeze({
   type: 'all',
   mappable: false,
   limit: 200,
   days: 365,
-};
+});
 
 /**
  * The cache-miss fetcher, exactly as handed to `cachedFetchJson`.
