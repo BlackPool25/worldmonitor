@@ -13,15 +13,55 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { writeFileSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const SCRIPTS_DIR = fileURLToPath(new URL('../scripts/', import.meta.url));
+const REPO_ROOT = fileURLToPath(new URL('../', import.meta.url));
+const SEED_UTILS_SPECIFIER = './_seed-utils.mjs';
+const SEED_UTILS_URL = new URL('../scripts/_seed-utils.mjs', import.meta.url).href;
+
+/**
+ * Write a spawnable fixture OUTSIDE the checkout.
+ *
+ * These fixtures used to land in `scripts/` so their `./_seed-utils.mjs`
+ * import would resolve. That put transient files inside a tree
+ * tests/seed-env-hermeticity.test.mjs walks: it enumerates every source file
+ * and then reads it, so a fixture deleted in between failed the whole `unit`
+ * job with an ENOENT unrelated to the change under test. A private temp dir
+ * makes the interference structurally impossible; the relative import is
+ * rewritten to an absolute URL to survive the move.
+ *
+ * All four spawn helpers below share this placement — they differ only in how
+ * they signal the child and what they assert, which is why only the file
+ * placement is factored out here.
+ */
+function writeFixture(bodyJs) {
+  const dir = mkdtempSync(join(tmpdir(), 'wm-sigterm-fixture-'));
+  const path = join(dir, 'fixture.mjs');
+  // Executable invariant, not a comment: if a fixture ever lands back inside
+  // the checkout, the hermeticity scan can race it again and red an unrelated
+  // job. Asserting here covers all four spawn helpers at their single shared
+  // placement point.
+  assert.ok(
+    !path.startsWith(REPO_ROOT),
+    `fixture must be written outside the checkout, got ${path}`,
+  );
+  writeFileSync(
+    path,
+    bodyJs.replaceAll(`'${SEED_UTILS_SPECIFIER}'`, JSON.stringify(SEED_UTILS_URL)),
+  );
+  return {
+    path,
+    cleanup: () => {
+      try { rmSync(dir, { recursive: true, force: true }); } catch {}
+    },
+  };
+}
 
 function runFixture(bodyJs) {
-  const path = join(SCRIPTS_DIR, `_sigterm-fixture-${Date.now()}.mjs`);
-  writeFileSync(path, bodyJs);
+  const { path, cleanup } = writeFixture(bodyJs);
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [path], {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -36,7 +76,7 @@ function runFixture(bodyJs) {
     child.stdout.on('data', (c) => { stdout += c; });
     child.stderr.on('data', (c) => { stderr += c; });
     child.on('close', (code, signal) => {
-      try { unlinkSync(path); } catch {}
+      cleanup();
       resolve({ code, signal, stdout, stderr });
     });
     // Let runSeed register the SIGTERM handler and enter fetchFn before we kill.
@@ -152,8 +192,7 @@ test('runSeed SIGTERM handler fires once even if multiple SIGTERMs arrive', { sk
       lockTtlMs: 60_000,
     });
   `;
-  const path = join(SCRIPTS_DIR, `_sigterm-once-fixture-${Date.now()}.mjs`);
-  writeFileSync(path, body);
+  const { path, cleanup } = writeFixture(body);
   try {
     await new Promise((resolve) => {
       const child = spawn(process.execPath, [path], {
@@ -188,7 +227,7 @@ test('runSeed SIGTERM handler fires once even if multiple SIGTERMs arrive', { sk
       setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 10_000);
     });
   } finally {
-    try { unlinkSync(path); } catch {}
+    cleanup();
   }
 });
 
@@ -260,8 +299,7 @@ test('publish-phase SIGTERM releases lock but does NOT extend TTL (strict-floor 
       lockTtlMs: 60_000,
     });
   `;
-  const path = join(SCRIPTS_DIR, `_sigterm-postfetch-fixture-${Date.now()}.mjs`);
-  writeFileSync(path, body);
+  const { path, cleanup } = writeFixture(body);
   try {
     await new Promise((resolve) => {
       const child = spawn(process.execPath, [path], {
@@ -324,7 +362,7 @@ test('publish-phase SIGTERM releases lock but does NOT extend TTL (strict-floor 
       setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 10_000);
     });
   } finally {
-    try { unlinkSync(path); } catch {}
+    cleanup();
   }
 });
 
@@ -399,8 +437,7 @@ test('SIGTERM during fetch-failure cleanup still triggers handler (no leak windo
       maxRetries: 0,  // fail fast — no withRetry retries
     });
   `;
-  const path = join(SCRIPTS_DIR, `_sigterm-fetchfail-fixture-${Date.now()}.mjs`);
-  writeFileSync(path, body);
+  const { path, cleanup } = writeFixture(body);
   try {
     await new Promise((resolve) => {
       const child = spawn(process.execPath, [path], {
@@ -437,6 +474,6 @@ test('SIGTERM during fetch-failure cleanup still triggers handler (no leak windo
       setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 10_000);
     });
   } finally {
-    try { unlinkSync(path); } catch {}
+    cleanup();
   }
 });

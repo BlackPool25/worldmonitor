@@ -159,12 +159,31 @@ function findHomeDirReferences(source) {
 // sweeps cost nothing to extend.
 const SCANNED_TREES = ['scripts', 'api', 'server', 'cli', 'middleware.ts'];
 
+/**
+ * Yields `[entry, source]` for every scanned file.
+ *
+ * The read lives HERE rather than at each call site so the tolerance below
+ * cannot be forgotten by a future sweep. A glob-then-read over a live working
+ * tree is inherently TOCTOU — a concurrent test's temp file, a build artifact,
+ * an editor swap file — and one such file vanishing mid-walk used to fail the
+ * whole `unit` job with an ENOENT unrelated to the change under test. Skipping
+ * a file that no longer exists cannot hide a committed leak: it is not in the
+ * tree. Only ENOENT is tolerated; a file that IS there but unreadable still
+ * throws, because that is a real signal.
+ */
 async function* scanSources() {
   for (const tree of SCANNED_TREES) {
     const pattern = tree.includes('.') ? tree : `${tree}/**/*.{mjs,cjs,js,mts,ts}`;
     for await (const entry of glob(pattern, { cwd: REPO_ROOT })) {
       if (entry.includes('node_modules')) continue;
-      yield entry;
+      let source;
+      try {
+        source = readFileSync(join(REPO_ROOT, entry), 'utf8');
+      } catch (err) {
+        if (err?.code === 'ENOENT') continue;
+        throw err;
+      }
+      yield [entry, source];
     }
   }
 }
@@ -442,9 +461,9 @@ describe('seeder env hermeticity (#5767)', () => {
     it('no source bakes a home path into the repo', async () => {
       const offenders = [];
       let scanned = 0;
-      for await (const entry of scanSources()) {
+      for await (const [entry, source] of scanSources()) {
         scanned += 1;
-        const found = findCheckoutEscapingEnvPaths(readFileSync(join(REPO_ROOT, entry), 'utf8'));
+        const found = findCheckoutEscapingEnvPaths(source);
         if (found.length > 0) offenders.push(`${entry}: ${found.join(', ')}`);
       }
       assert.ok(scanned > 100, `expected to scan the seeder fleet, scanned ${scanned}`);
@@ -459,8 +478,7 @@ describe('seeder env hermeticity (#5767)', () => {
       // read-half gate has no such bypass: naming a `.env` file (or a loader)
       // is unavoidable, so anything reaching for $HOME to find one lands here.
       const offenders = [];
-      for await (const entry of scanSources()) {
-        const source = readFileSync(join(REPO_ROOT, entry), 'utf8');
+      for await (const [entry, source] of scanSources()) {
         if (!accessesEnvFileItself(source)) continue;
         const found = findHomeDirReferences(stripJsComments(source));
         if (found.length > 0) offenders.push(`${entry}: ${found.join(', ')}`);
@@ -514,9 +532,9 @@ describe('seeder env hermeticity (#5767)', () => {
 
     it('no source outside the allowlist reads a .env file', async () => {
       const offenders = [];
-      for await (const entry of scanSources()) {
+      for await (const [entry, source] of scanSources()) {
         if (ENV_PARSER_ALLOWLIST.has(entry)) continue;
-        if (accessesEnvFileItself(readFileSync(join(REPO_ROOT, entry), 'utf8'))) offenders.push(entry);
+        if (accessesEnvFileItself(source)) offenders.push(entry);
       }
       assert.deepEqual(
         offenders,
