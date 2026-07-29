@@ -238,18 +238,57 @@ function parseBootstrapCacheContract(source = read('api/bootstrap.js')) {
     throw new Error('docs-stats: could not parse the tier-less public cache fallbacks in api/bootstrap.js');
   }
 
-  // Every LITERAL Cache-Control inside successCacheHeaders is a non-cacheable
-  // answer (the cacheable one is the `cacheControl` variable above). Requiring
-  // exactly one keeps a newly-added third state from landing undocumented.
   const successBlock = source.match(/function successCacheHeaders\([\s\S]*?\n\}/)?.[0];
   if (!successBlock) throw new Error('docs-stats: could not parse successCacheHeaders in api/bootstrap.js');
+
+  // Pin the WIRING, not just the constants. Parsing `cacheTier` proves the
+  // value is COMPUTED, never that it reaches the emitter: swap the call to
+  // `successCacheHeaders(tier, ...)` and on-demand inheritance stops while
+  // every parsed value stays byte-identical and the pages keep publishing it.
+  // Same for the profile lookup — without it the per-key overrides are dead.
+  // A source gate cannot prove runtime behavior (api/bootstrap-auth.test.mjs
+  // does that); this narrows the gap between "the constant says X" and "the
+  // handler emits X" to a rename, which throws rather than passing quietly.
+  if (!/successCacheHeaders\(\s*cacheTier,\s*auth\.kind,\s*cors,\s*onDemandKey,?\s*\)/.test(source)) {
+    throw new Error(
+      'docs-stats: api/bootstrap.js no longer calls successCacheHeaders(cacheTier, auth.kind, cors, onDemandKey) '
+      + '— the documented per-auth-kind cache contract may no longer be what it emits',
+    );
+  }
+  if (!/ON_DEMAND_CACHE_PROFILES\[onDemandKey\]/.test(successBlock)) {
+    throw new Error('docs-stats: successCacheHeaders no longer looks up ON_DEMAND_CACHE_PROFILES[onDemandKey]');
+  }
+
+  // The non-cacheable branches. These objects contain no nested braces, so the
+  // first `};` closes each one.
+  //
+  // Counting BRANCHES, not distinct values: deduping to a set meant deleting
+  // one of the two no-store returns (making the anonymous weather URL
+  // cacheable — the whole of #5386) left `['no-store']` and passed. And the
+  // pages promise these shapes emit "no CDN cache headers", which nothing
+  // checked, so adding CDN-Cache-Control to a no-store branch passed too.
+  const returnBodies = [...successBlock.matchAll(/return \{([\s\S]*?)\};/g)].map((m) => m[1]);
+  const nonCacheableReturns = returnBodies.filter((body) => /'Cache-Control':\s*'/.test(body));
+  if (nonCacheableReturns.length !== 2) {
+    throw new Error(
+      `docs-stats: successCacheHeaders has ${nonCacheableReturns.length} literal Cache-Control branches, expected 2 `
+      + '(non-public, and public-but-not-shared-cacheable) — a changed branch set needs a doc review',
+    );
+  }
+  const withCdnHeader = nonCacheableReturns.filter((body) => body.includes('CDN-Cache-Control'));
+  if (withCdnHeader.length) {
+    throw new Error(
+      'docs-stats: a non-cacheable successCacheHeaders branch now sets CDN-Cache-Control, but the docs promise '
+      + 'these shapes emit no CDN cache headers',
+    );
+  }
   const nonCacheableValues = [...new Set(
-    [...successBlock.matchAll(/'Cache-Control':\s*'([^']+)'/g)].map((m) => m[1]),
+    nonCacheableReturns.map((body) => body.match(/'Cache-Control':\s*'([^']+)'/)[1]),
   )];
   if (nonCacheableValues.length !== 1) {
     throw new Error(
-      `docs-stats: successCacheHeaders emits ${nonCacheableValues.length} literal Cache-Control values `
-      + `(${nonCacheableValues.join(', ') || 'none'}); expected exactly one non-cacheable value`,
+      `docs-stats: successCacheHeaders emits ${nonCacheableValues.length} distinct non-cacheable Cache-Control values `
+      + `(${nonCacheableValues.join(', ')}); expected one`,
     );
   }
 
@@ -276,7 +315,18 @@ function parseBootstrapKeyTiers(source = read('shared/bootstrap-tier-keys.js')) 
   ]) {
     const block = source.match(new RegExp(`const ${constName} = new Set\\(\\[([\\s\\S]*?)\\n\\]\\);`));
     if (!block) throw new Error(`docs-stats: could not parse ${constName} in shared/bootstrap-tier-keys.js`);
-    for (const m of block[1].matchAll(/'([^']+)'/g)) tiers[m[1]] = tier;
+    for (const m of block[1].matchAll(/'([^']+)'/g)) {
+      // Last-write-wins would make this parser disagree with the runtime in the
+      // one case that matters: tierForKey() tests fast FIRST, so a key in both
+      // FAST and ON_DEMAND resolves to fast at runtime and would resolve to
+      // on-demand here. Duplicate membership is a registry bug either way.
+      if (tiers[m[1]]) {
+        throw new Error(
+          `docs-stats: bootstrap key "${m[1]}" is registered in both ${tiers[m[1]]} and ${tier} tiers`,
+        );
+      }
+      tiers[m[1]] = tier;
+    }
   }
   if (Object.keys(tiers).length === 0) {
     throw new Error('docs-stats: shared/bootstrap-tier-keys.js yielded no key tier assignments');
@@ -941,6 +991,18 @@ function validateBootstrapCacheDocs(stats, docs = null, keyTiers = parseBootstra
   return failures;
 }
 
+// The --check validator set. Exported and iterated rather than called as four
+// separate lines in main() so the wiring is data a test can assert: every
+// validator here is unit-tested against its own fixtures, but nothing caught a
+// validator being dropped from the CLI — the whole suite stayed green while
+// `--check` silently stopped running that gate.
+const DOC_VALIDATORS = [
+  validateIndexLanguageMetadata,
+  validateSupportedLanguagesRegistry,
+  validateMcpAppsDocs,
+  validateBootstrapCacheDocs,
+];
+
 function main() {
   const check = process.argv.includes('--check');
   const stats = computeStats();
@@ -963,10 +1025,7 @@ function main() {
     }
   }
 
-  failures.push(...validateIndexLanguageMetadata(stats));
-  failures.push(...validateSupportedLanguagesRegistry(stats));
-  failures.push(...validateMcpAppsDocs(stats));
-  failures.push(...validateBootstrapCacheDocs(stats));
+  for (const validate of DOC_VALIDATORS) failures.push(...validate(stats));
 
   for (const c of claims(stats)) {
     let text;
@@ -1018,6 +1077,7 @@ export {
   validateBootstrapCacheDocs,
   bootstrapCacheDocSources,
   BOOTSTRAP_CACHE_DOC_FILES,
+  DOC_VALIDATORS,
 };
 
 // Run only when executed directly (node scripts/docs-stats.mjs [--check]).

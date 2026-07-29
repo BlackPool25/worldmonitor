@@ -9,6 +9,7 @@
  * rather than asserted.
  */
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -19,6 +20,7 @@ import {
   validateBootstrapCacheDocs,
   bootstrapCacheDocSources,
   BOOTSTRAP_CACHE_DOC_FILES,
+  DOC_VALIDATORS,
 } from '../scripts/docs-stats.mjs';
 
 const ROOT = new URL('../', import.meta.url).pathname;
@@ -84,6 +86,7 @@ function successCacheHeaders(tier, authKind, cors, onDemandKey = null) {
   };
 }
 const cacheTier = tier ?? (auth.kind === 'public-on-demand' ? 'slow' : null);
+const response = jsonResponse({ data, missing }, 200, successCacheHeaders(cacheTier, auth.kind, cors, onDemandKey));
 `;
 
 describe('parseBootstrapCacheContract', () => {
@@ -182,7 +185,46 @@ describe('parseBootstrapCacheContract', () => {
       "return { ...cors, 'Cache-Control': 'no-store' };",
       "return { ...cors, 'Cache-Control': 'private, max-age=0' };",
     );
-    assert.throws(() => parseBootstrapCacheContract(source), /expected exactly one non-cacheable value/);
+    assert.throws(() => parseBootstrapCacheContract(source), /expected one/);
+  });
+
+  // Parsing a constant proves it is COMPUTED, never that it reaches the
+  // emitter. Both mutations below leave every parsed value byte-identical
+  // while the handler stops emitting what all four pages publish.
+  it('throws when the emitter stops receiving the computed cache tier', () => {
+    const source = SYNTHETIC_BOOTSTRAP.replace(
+      'successCacheHeaders(cacheTier, auth.kind, cors, onDemandKey)',
+      'successCacheHeaders(tier, auth.kind, cors, onDemandKey)',
+    );
+    assert.notEqual(source, SYNTHETIC_BOOTSTRAP, 'fixture drift: call site not found');
+    assert.throws(() => parseBootstrapCacheContract(source), /no longer calls successCacheHeaders/);
+  });
+
+  it('throws when the emitter stops consulting the on-demand profiles', () => {
+    const source = SYNTHETIC_BOOTSTRAP.replace('? ON_DEMAND_CACHE_PROFILES[onDemandKey]', '? null');
+    assert.notEqual(source, SYNTHETIC_BOOTSTRAP, 'fixture drift: profile lookup not found');
+    assert.throws(() => parseBootstrapCacheContract(source), /no longer looks up ON_DEMAND_CACHE_PROFILES/);
+  });
+
+  // Deleting the second no-store branch is #5386 restored: the anonymous
+  // weather URL becomes shared-cacheable. Deduping to a set left ['no-store']
+  // and passed, so count branches.
+  it('throws when a non-cacheable branch is deleted', () => {
+    const source = SYNTHETIC_BOOTSTRAP.replace(
+      "  if (!isSharedCacheableBootstrapKind(authKind)) {\n    return { ...publicCors, 'Cache-Control': 'no-store' };\n  }\n",
+      '',
+    );
+    assert.notEqual(source, SYNTHETIC_BOOTSTRAP, 'fixture drift: shared-cacheable branch not found');
+    assert.throws(() => parseBootstrapCacheContract(source), /literal Cache-Control branches, expected 2/);
+  });
+
+  // The pages promise these shapes emit no CDN cache headers; nothing checked it.
+  it('throws when a non-cacheable branch starts setting CDN-Cache-Control', () => {
+    const source = SYNTHETIC_BOOTSTRAP.replace(
+      "return { ...cors, 'Cache-Control': 'no-store' };",
+      "return { ...cors, 'Cache-Control': 'no-store', 'CDN-Cache-Control': 'no-store' };",
+    );
+    assert.throws(() => parseBootstrapCacheContract(source), /sets CDN-Cache-Control/);
   });
 });
 
@@ -198,6 +240,32 @@ describe('parseBootstrapKeyTiers', () => {
       () => parseBootstrapKeyTiers("const OTHER = new Set([\n  'a',\n]);"),
       /could not parse FAST_KEY_NAMES/,
     );
+  });
+
+  // Last-write-wins made this parser disagree with the runtime in the only case
+  // that matters: tierForKey() tests fast first, so a key in FAST and ON_DEMAND
+  // resolves to fast at runtime and resolved to on-demand here.
+  it('throws when a key is registered in two tiers', () => {
+    const source = read('shared/bootstrap-tier-keys.js')
+      .replace("  'earthquakes', 'outages',", "  'earthquakes', 'outages', 'chinaDecisionSignals',");
+    assert.notEqual(source, read('shared/bootstrap-tier-keys.js'), 'fixture drift: FAST_KEY_NAMES head changed');
+    assert.throws(() => parseBootstrapKeyTiers(source), /registered in both fast and on-demand tiers/);
+  });
+});
+
+describe('--check wiring', () => {
+  // Every validator is unit-tested against its own fixtures, but nothing caught
+  // a validator being dropped from the CLI: the whole suite stayed green while
+  // `--check` silently stopped running that gate. DOC_VALIDATORS is the wiring,
+  // so assert against it directly.
+  it('runs the bootstrap cache gate as part of --check', () => {
+    assert.ok(DOC_VALIDATORS.includes(validateBootstrapCacheDocs));
+  });
+
+  it('exits 0 end to end on the real repo', () => {
+    const result = spawnSync('node', ['scripts/docs-stats.mjs', '--check'], { cwd: ROOT, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /doc claims match code/);
   });
 });
 
