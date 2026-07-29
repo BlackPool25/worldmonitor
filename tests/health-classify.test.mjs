@@ -218,7 +218,7 @@ test('classifyKey: a permanently blocked humanitarian provider surfaces as SEED_
       metaValues: {
         [metaKey]: seedMeta({
           status: 'error',
-          errorReason: 'HAPI_PROXY_FALLBACK_FAILED',
+          errorReason: 'HAPI_HDX_SNAPSHOT_FALLBACK_FAILED',
         }),
       },
     }));
