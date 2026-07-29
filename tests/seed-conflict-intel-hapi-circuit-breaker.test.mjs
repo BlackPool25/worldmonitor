@@ -22,9 +22,15 @@ import {
   aggregateHapiConflictEvents,
   buildHapiConflictEventsUrl,
   fetchAllHumanitarianSummaries,
+  fetchHapiHdxSnapshotRows,
   selectHapiHdxCsvResources,
 } from '../scripts/seed-conflict-intel.mjs';
-import { readBoundedHapiHdxText } from '../scripts/_conflict-hapi.mjs';
+import {
+  HAPI_HDX_METADATA_TIMEOUT_MS,
+  HAPI_HDX_SNAPSHOT_TIMEOUT_MS,
+  hapiHdxFailureReason,
+  readBoundedHapiHdxText,
+} from '../scripts/_conflict-hapi.mjs';
 
 const NOW = Date.parse('2026-07-26T13:30:00Z');
 const HAPI_CSV_HEADER = '\ufefflocation_code,has_hrp,in_gho,provider_admin1_name,provider_admin2_name,admin1_code,admin1_name,admin2_code,admin2_name,admin_level,event_type,events,fatalities,reference_period_start,reference_period_end,dataset_hdx_id,resource_hdx_id,warning,error';
@@ -119,6 +125,38 @@ test('HAPI HDX snapshot selection rejects metadata-controlled resource hosts', (
     }], { nowMs: NOW }),
     (error) => error.reasonCode === 'HDX_RESOURCE_INVALID',
   );
+});
+
+test('HAPI HDX gives snapshot downloads a longer bounded deadline than metadata', async () => {
+  const timeoutCalls = [];
+  const timeoutSignals = [];
+  const fetchSignals = [];
+  const csv = hapiCsv(
+    'SDN,,,,,,,,,0,political_violence,12,3,2026-07-01,2026-07-31,dataset,resource,,',
+  );
+  const rows = await fetchHapiHdxSnapshotRows({
+    nowMs: NOW,
+    countryCodes: ['SD'],
+    createTimeoutSignal: (timeoutMs) => {
+      timeoutCalls.push(timeoutMs);
+      const signal = new AbortController().signal;
+      timeoutSignals.push(signal);
+      return signal;
+    },
+    fetchFn: async (input, options) => {
+      fetchSignals.push(options.signal);
+      return String(input).includes('/api/3/action/package_show')
+        ? Response.json(hapiHdxMetadata())
+        : new Response(csv, { headers: { 'Content-Type': 'text/csv' } });
+    },
+  });
+
+  assert.equal(rows.length, 1);
+  assert.equal(HAPI_HDX_METADATA_TIMEOUT_MS, 60_000);
+  assert.equal(HAPI_HDX_SNAPSHOT_TIMEOUT_MS, 120_000);
+  assert.deepEqual(timeoutCalls, [60_000, 120_000]);
+  assert.strictEqual(fetchSignals[0], timeoutSignals[0]);
+  assert.strictEqual(fetchSignals[1], timeoutSignals[1]);
 });
 
 test('HAPI bulk rows are grouped by country and only the latest reference period is published', () => {
@@ -395,8 +433,10 @@ test('HAPI snapshot network failure publishes actionable SEED_ERROR metadata bef
     writeFailureMeta: async (value) => { failureMeta = value; },
     preserveLastGood: async () => {},
     snapshotFetchFn: async () => {
-      throw Object.assign(new Error('getaddrinfo ENOTFOUND data.humdata.org'), {
-        code: 'ENOTFOUND',
+      throw Object.assign(new TypeError('fetch failed'), {
+        cause: Object.assign(new Error('getaddrinfo ENOTFOUND data.humdata.org'), {
+          code: 'ENOTFOUND',
+        }),
       });
     },
     fetchFn: async () => (
@@ -412,6 +452,20 @@ test('HAPI snapshot network failure publishes actionable SEED_ERROR metadata bef
   assert.equal(failureMeta.directFailureReason, 'HAPI_BOT_BLOCK');
   assert.equal(failureMeta.snapshotFailureReason, 'HDX_DNS_ERROR');
   assert.equal(failureMeta.failedAt, NOW);
+});
+
+test('HAPI snapshot classifies nested Undici timeouts', () => {
+  for (const code of [
+    'UND_ERR_CONNECT_TIMEOUT',
+    'UND_ERR_HEADERS_TIMEOUT',
+    'UND_ERR_BODY_TIMEOUT',
+  ]) {
+    const error = Object.assign(new TypeError('fetch failed'), {
+      cause: Object.assign(new Error(code), { code }),
+    });
+
+    assert.equal(hapiHdxFailureReason(error), 'HDX_TIMEOUT', code);
+  }
 });
 
 test('HAPI snapshot response limit failure keeps its operator-actionable reason', async () => {

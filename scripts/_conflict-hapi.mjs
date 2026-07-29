@@ -10,7 +10,11 @@ export const HAPI_MAX_PAGES = 3;
 export const HAPI_HDX_PACKAGE_URL = 'https://data.humdata.org/api/3/action/package_show?id=hdx-hapi-conflict-event';
 const HAPI_HDX_METADATA_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 export const HAPI_HDX_MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
-const HAPI_HDX_REQUEST_TIMEOUT_MS = 60_000;
+export const HAPI_HDX_METADATA_TIMEOUT_MS = 60_000;
+// The official annual CSV is currently about 18.7 MB and has taken longer
+// than 60 seconds to transfer. Keep the stream bounded by bytes, but allow
+// enough time for a legitimate snapshot to finish.
+export const HAPI_HDX_SNAPSHOT_TIMEOUT_MS = 120_000;
 
 const ISO2_TO_ISO3 = loadSharedConfig('iso2-to-iso3.json');
 const ISO3_TO_ISO2 = new Map(
@@ -218,17 +222,18 @@ export async function fetchHapiHdxSnapshotRows({
   fetchFn = (...args) => globalThis.fetch(...args),
   nowMs = Date.now(),
   countryCodes = Object.keys(ISO2_TO_ISO3),
+  createTimeoutSignal = (timeoutMs) => AbortSignal.timeout(timeoutMs),
 } = {}) {
-  const requestOptions = (accept) => ({
+  const requestOptions = (accept, timeoutMs) => ({
     headers: {
       Accept: accept,
       'User-Agent': CHROME_UA,
     },
-    signal: AbortSignal.timeout(HAPI_HDX_REQUEST_TIMEOUT_MS),
+    signal: createTimeoutSignal(timeoutMs),
   });
   const metadataResponse = await fetchFn(
     HAPI_HDX_PACKAGE_URL,
-    requestOptions('application/json'),
+    requestOptions('application/json', HAPI_HDX_METADATA_TIMEOUT_MS),
   );
   if (!metadataResponse.ok) {
     throw hapiHdxError(`HAPI HDX metadata request failed: HTTP ${metadataResponse.status}`, {
@@ -258,7 +263,10 @@ export async function fetchHapiHdxSnapshotRows({
   const resources = selectHapiHdxCsvResources(metadata.result.resources, { nowMs });
   const rows = [];
   for (const resource of resources) {
-    const response = await fetchFn(resource.url, requestOptions('text/csv'));
+    const response = await fetchFn(
+      resource.url,
+      requestOptions('text/csv', HAPI_HDX_SNAPSHOT_TIMEOUT_MS),
+    );
     if (!response.ok) {
       throw hapiHdxError(
         `HAPI HDX ${resource.year} snapshot request failed: HTTP ${response.status}`,
@@ -282,13 +290,29 @@ export async function fetchHapiHdxSnapshotRows({
 }
 
 export function hapiHdxFailureReason(error) {
-  if (error?.reasonCode) return error.reasonCode;
-  if (
-    error?.name === 'TimeoutError'
-    || error?.name === 'AbortError'
-    || error?.code === 'ETIMEDOUT'
-  ) return 'HDX_TIMEOUT';
-  if (error?.code === 'ENOTFOUND' || error?.code === 'EAI_AGAIN') return 'HDX_DNS_ERROR';
+  const seen = new Set();
+  let reasonCode;
+  let sawTimeout = false;
+  let sawDns = false;
+  let current = error;
+  while (current && typeof current === 'object' && !seen.has(current)) {
+    seen.add(current);
+    reasonCode ||= current.reasonCode;
+    sawTimeout ||= (
+      current.name === 'TimeoutError'
+      || current.name === 'AbortError'
+      || current.code === 'ETIMEDOUT'
+      || current.code === 'UND_ERR_CONNECT_TIMEOUT'
+      || current.code === 'UND_ERR_HEADERS_TIMEOUT'
+      || current.code === 'UND_ERR_BODY_TIMEOUT'
+    );
+    sawDns ||= current.code === 'ENOTFOUND' || current.code === 'EAI_AGAIN';
+    current = current.cause;
+  }
+
+  if (reasonCode) return reasonCode;
+  if (sawTimeout) return 'HDX_TIMEOUT';
+  if (sawDns) return 'HDX_DNS_ERROR';
   return 'HDX_FETCH_FAILED';
 }
 

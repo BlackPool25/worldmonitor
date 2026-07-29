@@ -151,10 +151,10 @@ const RATE_LIMIT_ERROR = /\b429\b|rate.?limit|too many requests/i;
 // 92s observed live 2026-07-10). Worst single fetchAll attempt before the bulk
 // fallback is now dominated by the GDELT path. Without this cap a
 // GDELT brownout ran 5 batches ≈ 375s+ → deadline breach → exit 75 every tick.
-// HAPI's 15s API plus 60s snapshot bounds run inside the parallel auxiliary
-// stage, not after the sweep. The 220s deadline-plus-drain bound and 30s publish
-// slack therefore remain comfortably under ACLED_INTEL_LOCK_TTL_MS's 540s fetch
-// deadline (lockTtlMs+120s)
+// HAPI's 15s API plus 60s metadata and, only at the January boundary, at most
+// two 120s annual snapshot downloads run inside the parallel auxiliary stage,
+// not after the sweep. The resulting ≤315s HAPI bound remains comfortably under
+// ACLED_INTEL_LOCK_TTL_MS's 540s fetch deadline (lockTtlMs+120s)
 // below (re-verified #5554 review after growing HAPI_COUNTRIES to 38).
 export const GDELT_SWEEP_BUDGET_MS = 120_000;
 // maxRetries: 0 — a second direct attempt would honor GDELT's Retry-After header
