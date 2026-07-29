@@ -17,6 +17,7 @@ import {
   parseBootstrapCacheContract,
   parseBootstrapKeyTiers,
   validateBootstrapCacheDocs,
+  bootstrapCacheDocSources,
   BOOTSTRAP_CACHE_DOC_FILES,
 } from '../scripts/docs-stats.mjs';
 
@@ -142,6 +143,32 @@ describe('parseBootstrapCacheContract', () => {
     assert.throws(() => parseBootstrapCacheContract(source), /must declare both browser and cdn/);
   });
 
+  // The entry pattern is layout-sensitive and a miss returns {} rather than
+  // throwing — which would silently switch off the per-key doc check while the
+  // pages still publish those headers. Both reformats below parsed clean and
+  // passed the gate before the cross-check landed.
+  it('throws when the profile block is collapsed onto one line', () => {
+    const source = SYNTHETIC_BOOTSTRAP.replace(
+      / {2}chinaDecisionSignals: \{\n {4}browser: '([^']+)',\n {4}cdn: '([^']+)',\n {2}\},/,
+      (_m: string, browser: string, cdn: string) => `  chinaDecisionSignals: { browser: '${browser}', cdn: '${cdn}' },`,
+    );
+    assert.notEqual(source, SYNTHETIC_BOOTSTRAP, 'fixture drift: profile block shape changed');
+    assert.throws(() => parseBootstrapCacheContract(source), /the profile block layout changed/);
+  });
+
+  it('throws when the profile block is re-indented', () => {
+    const source = SYNTHETIC_BOOTSTRAP.replace('  chinaDecisionSignals: {', '    chinaDecisionSignals: {');
+    assert.throws(() => parseBootstrapCacheContract(source), /the profile block layout changed/);
+  });
+
+  it('accepts a genuinely empty profile block', () => {
+    const source = SYNTHETIC_BOOTSTRAP.replace(
+      /const ON_DEMAND_CACHE_PROFILES = \{[\s\S]*?\n\};/,
+      'const ON_DEMAND_CACHE_PROFILES = {};',
+    );
+    assert.deepEqual(parseBootstrapCacheContract(source).onDemandProfiles, {});
+  });
+
   it('throws when the on-demand default tier moves', () => {
     const source = SYNTHETIC_BOOTSTRAP.replace(
       "const cacheTier = tier ?? (auth.kind === 'public-on-demand' ? 'slow' : null);",
@@ -174,9 +201,28 @@ describe('parseBootstrapKeyTiers', () => {
   });
 });
 
+describe('bootstrapCacheDocSources', () => {
+  it('discovers exactly the known surfaces by scanning docs/, not a hardcoded list', () => {
+    const { docs, failures } = bootstrapCacheDocSources();
+    assert.deepEqual(failures, []);
+    assert.deepEqual(Object.keys(docs).sort(), [...BOOTSTRAP_CACHE_DOC_FILES].sort());
+  });
+});
+
 describe('validateBootstrapCacheDocs', () => {
   it('passes against the four real doc surfaces', () => {
     assert.deepEqual(validateBootstrapCacheDocs(REAL_STATS), []);
+  });
+
+  // A fifth page that starts publishing the contract must be checked like the
+  // four we already know about — the validator is list-agnostic, and
+  // bootstrapCacheDocSources finds the page by its content.
+  it('checks a page outside the known list once it publishes the contract', () => {
+    const stale = REAL_DOCS[EN_PAGE].replace('CDN `s-maxage=600` / `s-maxage=7200`', 'CDN `s-maxage=60` / `s-maxage=7200`');
+    assert.notEqual(stale, REAL_DOCS[EN_PAGE], 'fixture drift: CDN tier values not found');
+    const failures = validateBootstrapCacheDocs(REAL_STATS, { 'docs/some-new-page.mdx': stale });
+    assert.ok(hit(failures, 'docs/some-new-page.mdx'));
+    assert.ok(hit(failures, '?tier=fast&public=1 CDN-Cache-Control documented as `s-maxage=60`'));
   });
 
   // #5791, failure 1: docs/usage-rate-limits.mdx and its zh mirror carry a
@@ -281,6 +327,16 @@ describe('validateBootstrapCacheDocs', () => {
     const failures = validateBootstrapCacheDocs({ bootstrapCache: cache }, REAL_DOCS, REAL_TIERS);
     assert.equal(failures.length, BOOTSTRAP_CACHE_DOC_FILES.length);
     assert.ok(hit(failures, '`portwatchPortActivity` declares its own cache profile'));
+  });
+
+  // The reverse direction. Iterating only the code's profiles left this open:
+  // remove the profile and every page still naming the key as having its own
+  // headers passes, publishing a profile that no longer exists.
+  it('catches a page publishing an own-profile that api/bootstrap.js no longer declares', () => {
+    const cache = { ...REAL_CACHE, onDemandProfiles: {} };
+    const failures = validateBootstrapCacheDocs({ bootstrapCache: cache }, REAL_DOCS, REAL_TIERS);
+    assert.equal(failures.length, BOOTSTRAP_CACHE_DOC_FILES.length);
+    assert.ok(hit(failures, 'publishes an own cache profile for `chinaDecisionSignals`, but api/bootstrap.js declares none'));
   });
 
   it('catches a declared on-demand profile whose published values are stale', () => {

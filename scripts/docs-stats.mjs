@@ -148,10 +148,25 @@ function parseMcpAppsInventory({
 // the prose. A silently wrong published header is worse than an undocumented
 // one, because integrators act on it — so parse what the handler emits here.
 
+// Brace-balanced rather than a `\{([\s\S]*?)\n\};` match. The non-greedy form
+// silently runs PAST its own object whenever the declaration is not in the
+// expected multi-line shape — `= {};` on one line captured everything up to
+// some later block's closing brace and parsed that instead. Counting braces
+// bounds the body to the object actually declared. Safe here because these
+// blocks hold only header strings, which contain no braces.
 function parseObjectBlockBody(source, declaration, label) {
-  const block = source.match(new RegExp(`${declaration}\\s*=\\s*\\{([\\s\\S]*?)\\n\\};`));
-  if (!block) throw new Error(`docs-stats: could not parse ${label}`);
-  return block[1];
+  const start = source.search(new RegExp(`${declaration}\\s*=\\s*\\{`));
+  if (start === -1) throw new Error(`docs-stats: could not parse ${label}`);
+  const open = source.indexOf('{', start);
+  let depth = 0;
+  for (let i = open; i < source.length; i += 1) {
+    if (source[i] === '{') depth += 1;
+    else if (source[i] === '}') {
+      depth -= 1;
+      if (depth === 0) return source.slice(open + 1, i);
+    }
+  }
+  throw new Error(`docs-stats: could not parse ${label} (unbalanced braces)`);
 }
 
 function parseCacheHeaderMap(source, name) {
@@ -189,6 +204,19 @@ function parseBootstrapCacheContract(source = read('api/bootstrap.js')) {
       throw new Error(`docs-stats: ON_DEMAND_CACHE_PROFILES.${key} must declare both browser and cdn`);
     }
     onDemandProfiles[key] = { browser, cdn };
+  }
+  // The entry pattern above is layout-sensitive (two-space key, `},` on its own
+  // line). A miss returns {} rather than throwing, which would silently disable
+  // the per-key doc check below while the pages still publish those headers —
+  // green while dead. Cross-check against a layout-independent count so a
+  // reformat (profile collapsed to one line, block re-indented) throws instead.
+  // A genuinely empty block counts 0 against 0 and stays legal.
+  const declaredProfiles = (profilesBody.match(/\bcdn:/g) || []).length;
+  if (Object.keys(onDemandProfiles).length !== declaredProfiles) {
+    throw new Error(
+      `docs-stats: parsed ${Object.keys(onDemandProfiles).length} ON_DEMAND_CACHE_PROFILES entries but found `
+      + `${declaredProfiles} cdn declarations in api/bootstrap.js — the profile block layout changed`,
+    );
   }
 
   // `const cacheTier = tier ?? (auth.kind === 'public-on-demand' ? 'slow' : null)`
@@ -800,13 +828,38 @@ function expectedBootstrapCacheDocValues(cache) {
   };
 }
 
+// Which pages are in scope is DISCOVERED, not listed. #5791's first failure was
+// a sibling page nobody remembered to update — usage-rate-limits.mdx carries a
+// near-verbatim copy of the api-platform.mdx prose with no cross-reference — so
+// a hardcoded list of four would reproduce that miss for the fifth page. Any
+// page that quotes the anchor is publishing this contract and gets checked;
+// BOOTSTRAP_CACHE_DOC_FILES stays as the floor so a known surface that loses
+// its bullet still fails instead of quietly dropping out of scope.
+function bootstrapCacheDocSources() {
+  const docs = {};
+  const failures = [];
+  const discovered = walk('docs').filter((f) => f.endsWith('.mdx'));
+  for (const file of discovered) {
+    const text = read(file);
+    if (text.includes(BOOTSTRAP_CACHE_ANCHOR)) docs[file] = text;
+  }
+  for (const file of BOOTSTRAP_CACHE_DOC_FILES) {
+    if (docs[file]) continue;
+    failures.push(`${file}: known /api/bootstrap cache surface no longer publishes the contract (missing ${BOOTSTRAP_CACHE_ANCHOR})`);
+  }
+  return { docs, failures };
+}
+
 // keyTiers is read here rather than carried in stats.json: it is validator
 // input, like the i18n source above, and dumping all ~113 registry entries into
 // the generated snapshot would bury the claims it actually publishes.
-function validateBootstrapCacheDocs(stats, docs = Object.fromEntries(
-  BOOTSTRAP_CACHE_DOC_FILES.map((file) => [file, read(file)]),
-), keyTiers = parseBootstrapKeyTiers()) {
+function validateBootstrapCacheDocs(stats, docs = null, keyTiers = parseBootstrapKeyTiers()) {
   const failures = [];
+  if (docs === null) {
+    const discovered = bootstrapCacheDocSources();
+    failures.push(...discovered.failures);
+    docs = discovered.docs;
+  }
   const cache = stats.bootstrapCache;
   const expected = expectedBootstrapCacheDocValues(cache);
 
@@ -853,21 +906,35 @@ function validateBootstrapCacheDocs(stats, docs = Object.fromEntries(
     // inherited-tier sentence above does not describe, so the bullet must name
     // it with its real values — otherwise "unless the key declares its own" is
     // an escape hatch no reader can resolve and no gate can check.
+    //
+    // Checked in BOTH directions against the set the bullet actually publishes.
+    // Iterating only the code's profiles left the reverse case open: drop
+    // ON_DEMAND_CACHE_PROFILES to `{}` and every page still naming a key as
+    // having its own headers passes, now describing a profile that is gone.
+    const documented = new Map(
+      [...line.matchAll(/`(\w+)`[^`]*`(max-age=[^`]+)`[^`]*CDN[^`]*`(s-maxage=[^`]+)`/g)]
+        .map(([, key, browser, cdn]) => [key, { browser, cdn }]),
+    );
+    for (const key of documented.keys()) {
+      if (!cache.onDemandProfiles[key]) {
+        failures.push(`${file}: the cache bullet publishes an own cache profile for \`${key}\`, but api/bootstrap.js declares none`);
+      }
+    }
     for (const [key, profile] of Object.entries(cache.onDemandProfiles)) {
-      const m = line.match(new RegExp(`\`${key}\`[^\`]*\`(max-age=[^\`]+)\`[^\`]*CDN[^\`]*\`(s-maxage=[^\`]+)\``));
-      if (!m) {
+      const published = documented.get(key);
+      if (!published) {
         failures.push(`${file}: on-demand key \`${key}\` declares its own cache profile in api/bootstrap.js but the cache bullet does not publish it`);
         continue;
       }
       const wanted = [
-        [cacheDirective(profile.browser, 'max-age', `${key} browser profile`), 'browser Cache-Control'],
-        [cacheDirective(profile.cdn, 's-maxage', `${key} cdn profile`), 'CDN-Cache-Control'],
+        [published.browser, cacheDirective(profile.browser, 'max-age', `${key} browser profile`), 'browser Cache-Control'],
+        [published.cdn, cacheDirective(profile.cdn, 's-maxage', `${key} cdn profile`), 'CDN-Cache-Control'],
       ];
-      wanted.forEach(([value, label], i) => {
-        if (m[i + 1] !== value) {
-          failures.push(`${file}: \`${key}\` ${label} documented as \`${m[i + 1]}\`, api/bootstrap.js emits \`${value}\``);
+      for (const [found, value, label] of wanted) {
+        if (found !== value) {
+          failures.push(`${file}: \`${key}\` ${label} documented as \`${found}\`, api/bootstrap.js emits \`${value}\``);
         }
-      });
+      }
     }
   }
 
@@ -949,6 +1016,7 @@ export {
   parseBootstrapCacheContract,
   parseBootstrapKeyTiers,
   validateBootstrapCacheDocs,
+  bootstrapCacheDocSources,
   BOOTSTRAP_CACHE_DOC_FILES,
 };
 
