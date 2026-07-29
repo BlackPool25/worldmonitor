@@ -18,7 +18,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { fetchAllTopics } from '../scripts/seed-gdelt-intel.mjs';
+import { fetchAllTopics, RUN_SEED_OPTS } from '../scripts/seed-gdelt-intel.mjs';
 
 const TOPIC_IDS = ['military', 'cyber', 'nuclear', 'sanctions', 'intelligence', 'maritime'];
 const cachedSnapshot = () => ({
@@ -95,6 +95,39 @@ describe('seed-gdelt-intel fetchAllTopics soft budget (issue #4864)', () => {
       assert.equal(t.articles[0].title, `fresh ${t.id}`);
       assert.ok(Array.isArray(t._tone) && Array.isArray(t._vol), 'timelines attached');
     }
+  });
+
+  it('default budgets complete all 18 DOC calls at the measured residential-proxy latency', async () => {
+    let now = 0;
+    let articleCalls = 0;
+    let timelineCalls = 0;
+    const measuredRequestMs = 22_000;
+
+    const out = await fetchAllTopics({
+      _now: () => now,
+      _sleep: async (ms) => { now += ms; },
+      _fetchArticles: async (topic) => {
+        articleCalls += 1;
+        now += measuredRequestMs;
+        return {
+          id: topic.id,
+          articles: [{ title: `fresh ${topic.id}`, url: `https://example.test/live/${topic.id}` }],
+          fetchedAt: 'NOW',
+        };
+      },
+      _fetchTimeline: async () => {
+        timelineCalls += 1;
+        now += measuredRequestMs;
+        return { points: [{ date: '2026-07-29', value: 1 }], errorCode: null };
+      },
+      _loadPrevious: async () => { throw new Error('a complete sweep must not read cache'); },
+    });
+
+    assert.equal(articleCalls, 6);
+    assert.equal(timelineCalls, 12);
+    assert.equal(out._gdeltFailureCode, null);
+    assert.equal(out._freshTopicCount, 6);
+    assert.equal(RUN_SEED_OPTS.fetchPhaseTimeoutMs, 690_000);
   });
 
   it('paces every healthy DOC request instead of bursting article/tone/volume', async () => {

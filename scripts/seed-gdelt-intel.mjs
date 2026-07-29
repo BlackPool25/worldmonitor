@@ -36,7 +36,7 @@ const GDELT_REQUEST_DELAY_MS = 5_500;
 // hours preserves a wide scheduling margin without blocking the next 4h cron
 // tick if a process dies before its owner-token release runs.
 export const GDELT_LOCK_TTL_MS = 2 * 60 * 60_000;
-const RUN_SEED_FETCH_PHASE_TIMEOUT_MS = 270_000;
+const RUN_SEED_FETCH_PHASE_TIMEOUT_MS = 690_000;
 const TIMELINE_ERROR_REASON = 'timeline_keys_missing_or_unconfirmed';
 const GDELT_UPSTREAM_ERROR_REASON = 'gdelt_upstream_unavailable';
 const GDELT_DOC_API = 'https://api.gdeltproject.org/api/v2/doc/doc';
@@ -45,8 +45,14 @@ const GDELT_DOC_API = 'https://api.gdeltproject.org/api/v2/doc/doc';
 // an injected/hung implementation, but a budget timeout opens the run circuit:
 // the abandoned promise is allowed to settle and no timeline or later-topic
 // request is launched alongside it.
-const FETCH_SOFT_BUDGET_MS = 180_000; // 3min — 90s headroom under the 270s hard deadline for merge + publish
-const MIN_REQUEST_BUDGET_MS = 25_000; // don't start a curl that cannot finish before the budget
+// The production residential route completed the real ArticleList query in
+// roughly 22s, with most of that time in the target TLS handshake. A healthy
+// sweep is 18 sequential DOC calls plus 17 pacing gaps, so the former 3-minute
+// budget could never finish even though the route was returning valid data.
+// Ten minutes covers that measured envelope without adding retries; the
+// runSeed deadline keeps 90s for cache merge and fetch-phase cleanup.
+const FETCH_SOFT_BUDGET_MS = 600_000;
+const MIN_REQUEST_BUDGET_MS = 35_000; // 30s curl ceiling plus scheduling headroom
 
 const INTEL_TOPICS = [
   { id: 'military',     query: '(military exercise OR troop deployment OR airstrike OR "naval exercise") sourcelang:eng' },
