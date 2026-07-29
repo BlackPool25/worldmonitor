@@ -139,6 +139,123 @@ function parseMcpAppsInventory({
   };
 }
 
+// ---- /api/bootstrap cache contract (api/bootstrap.js) ----
+//
+// Four doc surfaces publish the concrete Cache-Control / CDN-Cache-Control
+// values `/api/bootstrap` emits per auth kind. During #5386/#5791 all four were
+// wrong at once, in two different ways, while every test stayed green:
+// api/bootstrap-auth.test.mjs pins the handler exhaustively and nothing pinned
+// the prose. A silently wrong published header is worse than an undocumented
+// one, because integrators act on it — so parse what the handler emits here.
+
+function parseObjectBlockBody(source, declaration, label) {
+  const block = source.match(new RegExp(`${declaration}\\s*=\\s*\\{([\\s\\S]*?)\\n\\};`));
+  if (!block) throw new Error(`docs-stats: could not parse ${label}`);
+  return block[1];
+}
+
+function parseCacheHeaderMap(source, name) {
+  const body = parseObjectBlockBody(source, `const ${name}`, `${name} in api/bootstrap.js`);
+  const map = Object.fromEntries(
+    [...body.matchAll(/^ {2}(\w+):\s*'([^']+)',$/gm)].map((m) => [m[1], m[2]]),
+  );
+  for (const tier of ['fast', 'slow']) {
+    if (!map[tier]) throw new Error(`docs-stats: ${name} in api/bootstrap.js is missing the ${tier} tier`);
+  }
+  return map;
+}
+
+// The docs quote ONE directive out of a full header value (`max-age=60`, not
+// the whole `max-age=60, stale-while-revalidate=120, ...` string), so compare
+// directive-for-directive instead of substring-matching the header.
+function cacheDirective(headerValue, name, label) {
+  const found = headerValue.split(',').map((part) => part.trim()).find((part) => part.startsWith(`${name}=`));
+  if (!found) throw new Error(`docs-stats: ${label} has no ${name} directive (${headerValue})`);
+  return found;
+}
+
+function parseBootstrapCacheContract(source = read('api/bootstrap.js')) {
+  const tierCache = parseCacheHeaderMap(source, 'TIER_CACHE');
+  const tierCdnCache = parseCacheHeaderMap(source, 'TIER_CDN_CACHE');
+
+  const profilesBody = parseObjectBlockBody(
+    source, 'const ON_DEMAND_CACHE_PROFILES', 'ON_DEMAND_CACHE_PROFILES in api/bootstrap.js',
+  );
+  const onDemandProfiles = {};
+  for (const [, key, body] of profilesBody.matchAll(/^ {2}(\w+):\s*\{([\s\S]*?)^ {2}\},$/gm)) {
+    const browser = body.match(/browser:\s*'([^']+)'/)?.[1];
+    const cdn = body.match(/cdn:\s*'([^']+)'/)?.[1];
+    if (!browser || !cdn) {
+      throw new Error(`docs-stats: ON_DEMAND_CACHE_PROFILES.${key} must declare both browser and cdn`);
+    }
+    onDemandProfiles[key] = { browser, cdn };
+  }
+
+  // `const cacheTier = tier ?? (auth.kind === 'public-on-demand' ? 'slow' : null)`
+  // — the tier a marked single-key on-demand URL inherits when it declares no
+  // profile of its own.
+  const onDemandDefaultTier = source.match(
+    /const cacheTier = tier \?\? \(auth\.kind === 'public-on-demand' \? '(\w+)' : null\);/,
+  )?.[1];
+  if (!onDemandDefaultTier || !tierCache[onDemandDefaultTier]) {
+    throw new Error('docs-stats: could not parse the public-on-demand default cache tier in api/bootstrap.js');
+  }
+
+  // The tier-less fallbacks in successCacheHeaders — what
+  // `?keys=weatherAlerts&public=1` gets, since a marked single-key URL carries
+  // no `tier` param and weatherAlerts declares no on-demand profile.
+  const defaultCacheControl = source.match(/const cacheControl = [\s\S]*?\|\|\s*'([^']+)';/)?.[1];
+  const defaultCdnTier = source.match(/'CDN-Cache-Control':[\s\S]*?\|\|\s*TIER_CDN_CACHE\.(\w+),/)?.[1];
+  if (!defaultCacheControl || !defaultCdnTier || !tierCdnCache[defaultCdnTier]) {
+    throw new Error('docs-stats: could not parse the tier-less public cache fallbacks in api/bootstrap.js');
+  }
+
+  // Every LITERAL Cache-Control inside successCacheHeaders is a non-cacheable
+  // answer (the cacheable one is the `cacheControl` variable above). Requiring
+  // exactly one keeps a newly-added third state from landing undocumented.
+  const successBlock = source.match(/function successCacheHeaders\([\s\S]*?\n\}/)?.[0];
+  if (!successBlock) throw new Error('docs-stats: could not parse successCacheHeaders in api/bootstrap.js');
+  const nonCacheableValues = [...new Set(
+    [...successBlock.matchAll(/'Cache-Control':\s*'([^']+)'/g)].map((m) => m[1]),
+  )];
+  if (nonCacheableValues.length !== 1) {
+    throw new Error(
+      `docs-stats: successCacheHeaders emits ${nonCacheableValues.length} literal Cache-Control values `
+      + `(${nonCacheableValues.join(', ') || 'none'}); expected exactly one non-cacheable value`,
+    );
+  }
+
+  return {
+    tierCache,
+    tierCdnCache,
+    onDemandProfiles,
+    onDemandDefaultTier,
+    defaultCacheControl,
+    defaultCdnTier,
+    nonCacheable: nonCacheableValues[0],
+  };
+}
+
+// Tier membership for the bootstrap keys the API docs name by hand. Text-parsed
+// like everything else here rather than imported, so the gate keeps running on
+// bare Node with no import graph to resolve.
+function parseBootstrapKeyTiers(source = read('shared/bootstrap-tier-keys.js')) {
+  const tiers = {};
+  for (const [tier, constName] of [
+    ['fast', 'FAST_KEY_NAMES'],
+    ['slow', 'SLOW_KEY_NAMES'],
+    ['on-demand', 'ON_DEMAND_KEY_NAMES'],
+  ]) {
+    const block = source.match(new RegExp(`const ${constName} = new Set\\(\\[([\\s\\S]*?)\\n\\]\\);`));
+    if (!block) throw new Error(`docs-stats: could not parse ${constName} in shared/bootstrap-tier-keys.js`);
+    for (const m of block[1].matchAll(/'([^']+)'/g)) tiers[m[1]] = tier;
+  }
+  if (Object.keys(tiers).length === 0) {
+    throw new Error('docs-stats: shared/bootstrap-tier-keys.js yielded no key tier assignments');
+  }
+  return tiers;
+}
+
 function parseJsonLdBlocks(html) {
   return [...html.matchAll(/<script\s+type="application\/ld\+json">\s*([\s\S]*?)\s*<\/script>/g)]
     .map((m) => JSON.parse(m[1]));
@@ -400,6 +517,7 @@ function computeStats() {
     mcpAppCount: mcpApps.apps.length,
     mcpAppUiResources: mcpApps.uiResources,
     mcpAppLinkedTools: mcpApps.linkedTools,
+    bootstrapCache: parseBootstrapCacheContract(),
   };
 }
 
@@ -597,6 +715,165 @@ function validateMcpAppsDocs(stats) {
   return failures;
 }
 
+const BOOTSTRAP_CACHE_DOC_FILES = [
+  'docs/api-platform.mdx',
+  'docs/usage-rate-limits.mdx',
+  'docs/zh/api-platform.mdx',
+  'docs/zh/usage-rate-limits.mdx',
+];
+
+// Every published cache claim lives in ONE markdown bullet per page, so the
+// patterns below run against that single line, located by this anchor.
+//
+// Two separate properties keep this from degrading into "the value appears
+// somewhere on the page", which is how #5791 stayed green:
+//
+//   1. Each pattern CAPTURES the value at its documented position, with `[^`]*`
+//      gaps that cannot jump a backtick — so no claim can be satisfied by its
+//      neighbour's token. `s-maxage=600` is simultaneously the fast tier's CDN
+//      value and part of the weatherAlerts header, so a substring search stays
+//      green with the two transposed; a positional capture does not.
+//   2. Line scoping pins WHICH bullet was read. Combined with the
+//      exactly-one-anchor rule below, a stale duplicate of the prose elsewhere
+//      on the page can neither satisfy the gate nor hide behind the live copy.
+//
+// Anchored on the ASCII URL literals instead of the surrounding prose, so one
+// set of patterns reads the English pages and their zh mirrors alike.
+//
+// The anchor is the tier PAIR, not `?tier=fast&public=1` alone: api-platform.mdx
+// also name-drops the fast URL in an earlier bullet, and anchoring on that would
+// scope every pattern to a line carrying none of the values.
+const BOOTSTRAP_CACHE_ANCHOR = '`?tier=fast&public=1` / `?tier=slow&public=1`';
+
+const BOOTSTRAP_CACHE_CHECKS = [
+  {
+    re: /`\?tier=fast&public=1` \/ `\?tier=slow&public=1`[^`]*`(max-age=[^`]+)` \/ `(max-age=[^`]+)`[^`]*CDN[^`]*`(s-maxage=[^`]+)` \/ `(s-maxage=[^`]+)`/,
+    what: 'the ?tier=fast|slow&public=1 browser/CDN values',
+    slots: [
+      ['tierFastBrowser', '?tier=fast&public=1 browser Cache-Control'],
+      ['tierSlowBrowser', '?tier=slow&public=1 browser Cache-Control'],
+      ['tierFastCdn', '?tier=fast&public=1 CDN-Cache-Control'],
+      ['tierSlowCdn', '?tier=slow&public=1 CDN-Cache-Control'],
+    ],
+  },
+  {
+    re: /`\?keys=<onDemandName>&public=1`[^`]*\b(fast|slow)\b[^`]*`(max-age=[^`]+)`[^`]*CDN[^`]*`(s-maxage=[^`]+)`/,
+    what: 'the inherited on-demand single-key profile',
+    slots: [
+      ['onDemandDefaultTier', 'tier inherited by ?keys=<onDemandName>&public=1'],
+      ['onDemandBrowser', '?keys=<onDemandName>&public=1 browser Cache-Control'],
+      ['onDemandCdn', '?keys=<onDemandName>&public=1 CDN-Cache-Control'],
+    ],
+  },
+  {
+    re: /`\?keys=weatherAlerts&public=1`[^`]*`Cache-Control: ([^`]+)`[^`]*\b(fast|slow)\b[^`]*CDN/,
+    what: 'the ?keys=weatherAlerts&public=1 values',
+    slots: [
+      ['defaultCacheControl', '?keys=weatherAlerts&public=1 Cache-Control'],
+      ['defaultCdnTier', '?keys=weatherAlerts&public=1 CDN tier'],
+    ],
+  },
+  {
+    // The anonymous UNMARKED weather URL, which is the enumeration's last item
+    // on every page — `?keys=weatherAlerts` closed by a backtick, so it never
+    // matches the `&public=1` variant above.
+    re: /`\?keys=weatherAlerts`[^`]*`Cache-Control: ([^`]+)`/,
+    what: 'the non-shared-cacheable value',
+    slots: [['nonCacheable', 'Cache-Control for every non-shared-cacheable shape']],
+  },
+];
+
+function expectedBootstrapCacheDocValues(cache) {
+  const browser = (tier) => cacheDirective(cache.tierCache[tier], 'max-age', `TIER_CACHE.${tier}`);
+  const cdn = (tier) => cacheDirective(cache.tierCdnCache[tier], 's-maxage', `TIER_CDN_CACHE.${tier}`);
+  return {
+    tierFastBrowser: browser('fast'),
+    tierSlowBrowser: browser('slow'),
+    tierFastCdn: cdn('fast'),
+    tierSlowCdn: cdn('slow'),
+    onDemandDefaultTier: cache.onDemandDefaultTier,
+    onDemandBrowser: browser(cache.onDemandDefaultTier),
+    onDemandCdn: cdn(cache.onDemandDefaultTier),
+    defaultCacheControl: cache.defaultCacheControl,
+    defaultCdnTier: cache.defaultCdnTier,
+    nonCacheable: cache.nonCacheable,
+  };
+}
+
+// keyTiers is read here rather than carried in stats.json: it is validator
+// input, like the i18n source above, and dumping all ~113 registry entries into
+// the generated snapshot would bury the claims it actually publishes.
+function validateBootstrapCacheDocs(stats, docs = Object.fromEntries(
+  BOOTSTRAP_CACHE_DOC_FILES.map((file) => [file, read(file)]),
+), keyTiers = parseBootstrapKeyTiers()) {
+  const failures = [];
+  const cache = stats.bootstrapCache;
+  const expected = expectedBootstrapCacheDocValues(cache);
+
+  for (const [file, text] of Object.entries(docs)) {
+    // Page-wide: a hand-written "The <tier> tier includes `<key>`" sentence must
+    // name the tier the key is actually registered under. `chinaDecisionSignals`
+    // sat documented as slow-tier while it is an on-demand key, so `?tier=slow`
+    // never returned it.
+    for (const [, tier, key] of text.matchAll(/The (fast|slow|on-demand) tier includes `(\w+)`/g)) {
+      const actual = keyTiers[key];
+      if (!actual) {
+        failures.push(`${file}: \`${key}\` is documented as a ${tier}-tier bootstrap key but is not a registered bootstrap cache key`);
+      } else if (actual !== tier) {
+        failures.push(`${file}: \`${key}\` is documented as ${tier}-tier, shared/bootstrap-tier-keys.js registers it as ${actual}`);
+      }
+    }
+
+    // Exactly one bullet, so "which line did we check" is never a guess: two
+    // anchors would let a stale copy of the prose satisfy the gate from the
+    // wrong line, which is how usage-rate-limits.mdx drifted in the first place.
+    const anchored = text.split('\n').filter((l) => l.includes(BOOTSTRAP_CACHE_ANCHOR));
+    if (anchored.length !== 1) {
+      failures.push(
+        `${file}: expected exactly one /api/bootstrap cache bullet quoting ${BOOTSTRAP_CACHE_ANCHOR}, found ${anchored.length}`,
+      );
+      continue;
+    }
+    const [line] = anchored;
+
+    for (const { re, what, slots } of BOOTSTRAP_CACHE_CHECKS) {
+      const m = line.match(re);
+      if (!m) {
+        failures.push(`${file}: /api/bootstrap cache bullet does not state ${what} (pattern ${re})`);
+        continue;
+      }
+      slots.forEach(([slot, label], i) => {
+        if (m[i + 1] !== expected[slot]) {
+          failures.push(`${file}: ${label} documented as \`${m[i + 1]}\`, api/bootstrap.js emits \`${expected[slot]}\``);
+        }
+      });
+    }
+
+    // Each on-demand key that declares its OWN profile publishes headers the
+    // inherited-tier sentence above does not describe, so the bullet must name
+    // it with its real values — otherwise "unless the key declares its own" is
+    // an escape hatch no reader can resolve and no gate can check.
+    for (const [key, profile] of Object.entries(cache.onDemandProfiles)) {
+      const m = line.match(new RegExp(`\`${key}\`[^\`]*\`(max-age=[^\`]+)\`[^\`]*CDN[^\`]*\`(s-maxage=[^\`]+)\``));
+      if (!m) {
+        failures.push(`${file}: on-demand key \`${key}\` declares its own cache profile in api/bootstrap.js but the cache bullet does not publish it`);
+        continue;
+      }
+      const wanted = [
+        [cacheDirective(profile.browser, 'max-age', `${key} browser profile`), 'browser Cache-Control'],
+        [cacheDirective(profile.cdn, 's-maxage', `${key} cdn profile`), 'CDN-Cache-Control'],
+      ];
+      wanted.forEach(([value, label], i) => {
+        if (m[i + 1] !== value) {
+          failures.push(`${file}: \`${key}\` ${label} documented as \`${m[i + 1]}\`, api/bootstrap.js emits \`${value}\``);
+        }
+      });
+    }
+  }
+
+  return failures;
+}
+
 function main() {
   const check = process.argv.includes('--check');
   const stats = computeStats();
@@ -622,6 +899,7 @@ function main() {
   failures.push(...validateIndexLanguageMetadata(stats));
   failures.push(...validateSupportedLanguagesRegistry(stats));
   failures.push(...validateMcpAppsDocs(stats));
+  failures.push(...validateBootstrapCacheDocs(stats));
 
   for (const c of claims(stats)) {
     let text;
@@ -668,6 +946,10 @@ export {
   describeSetDelta,
   parseMcpAppsInventory,
   validateMcpAppsDocs,
+  parseBootstrapCacheContract,
+  parseBootstrapKeyTiers,
+  validateBootstrapCacheDocs,
+  BOOTSTRAP_CACHE_DOC_FILES,
 };
 
 // Run only when executed directly (node scripts/docs-stats.mjs [--check]).
