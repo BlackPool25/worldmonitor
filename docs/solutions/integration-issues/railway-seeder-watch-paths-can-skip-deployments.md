@@ -99,12 +99,13 @@ their exact closures and every other live seeder against the broad floor, so
 opted in. Read-back verification prevents a Railway CLI no-op from being
 mistaken for a successful mutation.
 
-The scheduled workflow checks operational health only after the current main
-commit has a successful `gate` status. It deliberately does not run on an
-ingestion push because Railway may not have deployed or executed that revision
-yet. That separates a code failure from the operational case this guard
-targets: repository checks are green while a Railway producer or composed
-coverage is still unhealthy.
+The scheduled workflow checks live Railway config and operational health only
+after the current main commit has a successful `gate` status. A missing,
+pending, or failed gate fails the workflow; it is never converted into a green
+skip. It deliberately does not run on an ingestion push because Railway may not
+have deployed or executed that revision yet. That separates a code failure from
+the operational case this guard targets: repository checks are green while a
+Railway producer, deployment trigger, or composed coverage is still unhealthy.
 
 ## Prevention
 
