@@ -490,6 +490,53 @@ describe('recordHistoryIngestHealth', () => {
     }
   });
 
+  it('a meta write that never lands cannot hide a stalled ingest', async () => {
+    // The 3-command pipeline is not transactional, so a per-command failure can
+    // land the record while the meta write is skipped. The meta then keeps its
+    // PREVIOUS value — and on this path that value can only be an earlier
+    // healthy observation, never a newer one. Prove the staleness backstop is
+    // therefore untouched: the retained meta ages exactly as it would have.
+    const healthy = project(null, { result: SUCCESS });
+    const { fetchImpl, calls } = stubUpstash({
+      getResult: JSON.stringify(healthy.record),
+      pipelineBody: [{ result: 'OK' }, { error: 'ERR backend unavailable' }, { result: 'OK' }],
+    });
+
+    const { value, warns } = await withCapturedWarn(() => recordHistoryIngestHealth(
+      { domain: DOMAIN, resource: RESOURCE, result: null, error: relayRejection(500) },
+      { env: ENV, fetchImpl, now: () => AT + MINUTE },
+    ));
+
+    assert.equal(value, null, 'the caller learns the write did not fully land');
+    assert.equal(warns.length, 1);
+
+    // Health still reads the retained meta. Its fetchedAt is the last healthy
+    // append, so the ordinary budget still expires on schedule.
+    const retained = healthy.meta;
+    assert.equal(retained.fetchedAt, AT);
+
+    const ingestKey = healthTesting.STANDALONE_KEYS.intelHistoryIngestConflictAcled;
+    const maxStaleMin = healthTesting.SEED_META.intelHistoryIngestConflictAcled.maxStaleMin;
+    const entry = healthTesting.classifyKey(
+      'intelHistoryIngestConflictAcled',
+      ingestKey,
+      { allowOnDemand: true },
+      {
+        keyStrens: new Map([[ingestKey, 512]]),
+        keyErrors: new Map(),
+        keyMetaValues: new Map([[
+          healthTesting.SEED_META.intelHistoryIngestConflictAcled.key,
+          JSON.stringify(retained),
+        ]]),
+        keyMetaErrors: new Map(),
+        activatedNames: new Set(['intelHistoryIngestConflictAcled']),
+        now: AT + (maxStaleMin + 1) * MINUTE,
+      },
+    );
+    assert.equal(entry.status, 'STALE_SEED', 'the alarm survives a lost meta write');
+    assert.equal(calls.pipelines.length, 1);
+  });
+
   it('no-ops without Upstash credentials instead of exiting the seeder', async () => {
     const { fetchImpl, calls } = stubUpstash();
     const { value, warns } = await withCapturedWarn(() => recordHistoryIngestHealth(

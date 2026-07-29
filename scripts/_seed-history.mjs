@@ -682,6 +682,13 @@ async function writeHistoryIngestRecord({ fetchImpl, url, token, domain, resourc
   const results = await resp.json();
   const failed = Array.isArray(results) ? results.find((entry) => entry?.error) : null;
   if (failed) throw new Error(`ingest-health pipeline command failed: ${failed.error}`);
+  // The pipeline is not transactional, so a per-command failure can land the
+  // record without the meta. That degrades the DIAGNOSTIC, never the alarm:
+  // a skipped meta write leaves the PREVIOUS meta in place, and `fetchedAt`
+  // there can only ever be an earlier healthy observation — nothing on this
+  // path can advance it. So the staleness backstop keeps counting on schedule
+  // and only the faster `degraded` signal waits for the next tick. Pinned by
+  // "a meta write that never lands cannot hide a stalled ingest".
 }
 
 /**
