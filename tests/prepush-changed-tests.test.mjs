@@ -18,15 +18,35 @@
 // wiring exists, not that it behaves — the executable cases above carry that.
 
 import { strict as assert } from 'node:assert';
-import { describe, test } from 'node:test';
+import { after, describe, test } from 'node:test';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPT = join(REPO_ROOT, 'scripts', 'prepush-changed-tests.sh');
+
+// Every mkdtemp below funnels through here so the run leaves nothing behind.
+// These fixtures used to accumulate one directory per call in $TMPDIR forever.
+const FIXTURE_DIRS = [];
+function fixtureDir(prefix) {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  FIXTURE_DIRS.push(dir);
+  return dir;
+}
+after(() => {
+  for (const dir of FIXTURE_DIRS) rmSync(dir, { recursive: true, force: true });
+});
 
 /** Files that exist on disk in the fixture worktree. */
 const EXISTING = [
@@ -52,7 +72,7 @@ const CHANGED = [...EXISTING];
 const RUNNABLE_TESTS = EXISTING.filter((f) => /\.test\.(mjs|mts)$/.test(f));
 
 function makeFixtureWorktree(files = EXISTING) {
-  const root = mkdtempSync(join(tmpdir(), 'wm-prepush-partition-'));
+  const root = fixtureDir('wm-prepush-partition-');
   for (const file of files) {
     mkdirSync(join(root, dirname(file)), { recursive: true });
     writeFileSync(join(root, file), '// fixture\n');
@@ -194,7 +214,7 @@ describe('partition stays in step with the vitest DOM project', () => {
   // vitest/config (~220MB RSS) into the shared `npm run test:data` runner,
   // which already OOMs at the tail of its ~390-file single-process run.
   const include = (() => {
-    const probe = join(mkdtempSync(join(tmpdir(), 'wm-dom-config-probe-')), 'probe.mts');
+    const probe = join(fixtureDir('wm-dom-config-probe-'), 'probe.mts');
     writeFileSync(
       probe,
       `const m = await import(${JSON.stringify(join(REPO_ROOT, 'vitest.dom.config.mts'))});\n` +
@@ -259,7 +279,7 @@ describe('runner dispatch', () => {
   // the suite. The decision now lives in the script, so these run it for real
   // against stubbed runners and assert what was invoked.
   function runDispatch(mode, list, { stubExit = 0 } = {}) {
-    const dir = mkdtempSync(join(tmpdir(), 'wm-prepush-dispatch-'));
+    const dir = fixtureDir('wm-prepush-dispatch-');
     const log = join(dir, 'invocations.log');
     for (const bin of ['npm', 'npx']) {
       const stub = join(dir, bin);
