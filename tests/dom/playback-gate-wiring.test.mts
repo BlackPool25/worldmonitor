@@ -63,23 +63,27 @@ vi.mock('@/services/auth-state', async (importOriginal) => ({
   },
 }));
 
-// `isEntitled` is re-implemented rather than passed through because the real
-// one reads a module-private `currentState` this test cannot write. The three
-// conditions are entitlements.ts:192-198 verbatim; `isProUser()` (widget-store)
-// consumes it for real, which is the path a paying subscriber actually takes.
-vi.mock('@/services/entitlements', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/services/entitlements')>()),
-  getEntitlementState: () => entitlement,
-  isEntitled: () =>
-    entitlement !== null && entitlement.planKey !== 'free' && entitlement.validUntil >= Date.now(),
-  onEntitlementChange: (fn: (state: Entitlement) => void) => {
-    entitlementListeners.push(fn);
-    // Real behaviour: late subscribers get the current value immediately, but
-    // ONLY when a snapshot already exists (entitlements.ts:156-158).
-    if (entitlement !== null) fn(entitlement);
-    return () => entitlementUnsubscribed++;
-  },
-}));
+// `isEntitled` delegates to the REAL predicate rather than re-implementing it.
+// The real `isEntitled()` reads a module-private `currentState` this test
+// cannot write, but `isEntitlementActive` is that same rule over an injected
+// snapshot — so a change to what "entitled" means cannot drift away from this
+// suite. `isProUser()` (widget-store) consumes it for real, which is the path
+// a paying subscriber actually takes.
+vi.mock('@/services/entitlements', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/services/entitlements')>();
+  return {
+    ...actual,
+    getEntitlementState: () => entitlement,
+    isEntitled: () => actual.isEntitlementActive(entitlement, Date.now()),
+    onEntitlementChange: (fn: (state: Entitlement) => void) => {
+      entitlementListeners.push(fn);
+      // Real behaviour: late subscribers get the current value immediately, but
+      // ONLY when a snapshot already exists (entitlements.ts:156-158).
+      if (entitlement !== null) fn(entitlement);
+      return () => entitlementUnsubscribed++;
+    },
+  };
+});
 
 const trackGateHit = vi.fn<(feature: string) => void>();
 vi.mock('@/services/analytics', async (importOriginal) => ({

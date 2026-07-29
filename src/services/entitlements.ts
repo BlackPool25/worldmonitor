@@ -186,15 +186,26 @@ export function hasTier(minTier: number): boolean {
 }
 
 /**
+ * The "is this a paying user" predicate, over an injected snapshot and clock.
+ *
+ * Split out of `isEntitled()` so tests can evaluate the REAL rule against a
+ * snapshot they control — `currentState` is module-private and has no setter,
+ * so the alternative is re-implementing these three conditions in a mock,
+ * where they silently drift the moment this rule changes (#5632).
+ */
+export function isEntitlementActive(
+  state: EntitlementState | null,
+  now: number,
+): boolean {
+  return state !== null && state.planKey !== 'free' && state.validUntil >= now;
+}
+
+/**
  * Simple "is this a paying user" check.
  * Returns true if entitlement data exists, plan is not free, and hasn't expired.
  */
 export function isEntitled(): boolean {
-  return (
-    currentState !== null &&
-    currentState.planKey !== 'free' &&
-    currentState.validUntil >= Date.now()
-  );
+  return isEntitlementActive(currentState, Date.now());
 }
 
 /**
