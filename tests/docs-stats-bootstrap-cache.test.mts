@@ -180,6 +180,44 @@ describe('parseBootstrapCacheContract', () => {
     assert.throws(() => parseBootstrapCacheContract(source), /public-on-demand default cache tier/);
   });
 
+  it('throws when the on-demand default names a tier that does not exist', () => {
+    const source = SYNTHETIC_BOOTSTRAP.replace("? 'slow' : null)", "? 'medium' : null)");
+    assert.notEqual(source, SYNTHETIC_BOOTSTRAP, 'fixture drift: cacheTier ternary not found');
+    assert.throws(() => parseBootstrapCacheContract(source), /public-on-demand default cache tier/);
+  });
+
+  // Removing the tier-less default is what `?keys=weatherAlerts&public=1`
+  // actually depends on. The lookup is bounded to successCacheHeaders, so this
+  // throws rather than matching some unrelated `|| '...'` later in the module
+  // and reporting a confident wrong value.
+  it('throws when the tier-less browser fallback is removed', () => {
+    const source = SYNTHETIC_BOOTSTRAP.replace(
+      "    || (tier && TIER_CACHE[tier])\n    || 'public, s-maxage=600, stale-while-revalidate=120, stale-if-error=900';",
+      '    || (tier && TIER_CACHE[tier]);',
+    );
+    assert.notEqual(source, SYNTHETIC_BOOTSTRAP, 'fixture drift: cacheControl fallback chain not found');
+    assert.throws(() => parseBootstrapCacheContract(source), /tier-less public cache fallbacks/);
+  });
+
+  it('throws when the tier-less CDN fallback is removed', () => {
+    const source = SYNTHETIC_BOOTSTRAP.replace(
+      '      || (tier && TIER_CDN_CACHE[tier])\n      || TIER_CDN_CACHE.fast,',
+      '      || (tier && TIER_CDN_CACHE[tier]),',
+    );
+    assert.notEqual(source, SYNTHETIC_BOOTSTRAP, 'fixture drift: CDN fallback chain not found');
+    assert.throws(() => parseBootstrapCacheContract(source), /tier-less public cache fallbacks/);
+  });
+
+  it('throws when successCacheHeaders is renamed away', () => {
+    const source = SYNTHETIC_BOOTSTRAP.replace('function successCacheHeaders(', 'function buildCacheHeaders(');
+    assert.throws(() => parseBootstrapCacheContract(source), /could not parse successCacheHeaders|no longer calls successCacheHeaders/);
+  });
+
+  it('throws on an unterminated object block instead of scanning to EOF', () => {
+    const source = SYNTHETIC_BOOTSTRAP.replace('const TIER_CACHE = {', 'const TIER_CACHE = { {');
+    assert.throws(() => parseBootstrapCacheContract(source), /unbalanced braces/);
+  });
+
   it('throws when successCacheHeaders grows an undocumented literal state', () => {
     const source = SYNTHETIC_BOOTSTRAP.replace(
       "return { ...cors, 'Cache-Control': 'no-store' };",
@@ -242,6 +280,12 @@ describe('parseBootstrapKeyTiers', () => {
     );
   });
 
+  it('throws when every tier set parses empty', () => {
+    const empty = ['FAST_KEY_NAMES', 'SLOW_KEY_NAMES', 'ON_DEMAND_KEY_NAMES']
+      .map((name) => `const ${name} = new Set([\n]);`).join('\n');
+    assert.throws(() => parseBootstrapKeyTiers(empty), /yielded no key tier assignments/);
+  });
+
   // Last-write-wins made this parser disagree with the runtime in the only case
   // that matters: tierForKey() tests fast first, so a key in FAST and ON_DEMAND
   // resolves to fast at runtime and resolved to on-demand here.
@@ -274,6 +318,41 @@ describe('bootstrapCacheDocSources', () => {
     const { docs, failures } = bootstrapCacheDocSources();
     assert.deepEqual(failures, []);
     assert.deepEqual(Object.keys(docs).sort(), [...BOOTSTRAP_CACHE_DOC_FILES].sort());
+  });
+
+  // The floor check is the whole reason this function exists, and every other
+  // failure-path test passes an explicit docs map — which bypasses discovery
+  // entirely. Without this, the safety net added for #5791's "sibling page
+  // nobody remembered" class had nothing proving it ever fires.
+  it('fails when a known surface stops publishing the contract', () => {
+    const pages = Object.fromEntries(
+      BOOTSTRAP_CACHE_DOC_FILES.map((f: string) => [f, REAL_DOCS[f]]),
+    );
+    pages['docs/usage-rate-limits.mdx'] = 'a page with no cache bullet at all';
+    const { docs, failures } = bootstrapCacheDocSources(pages);
+    assert.equal(Object.keys(docs).length, BOOTSTRAP_CACHE_DOC_FILES.length - 1);
+    assert.equal(failures.length, 1);
+    assert.ok(hit(failures, 'docs/usage-rate-limits.mdx: known /api/bootstrap cache surface no longer publishes the contract'));
+  });
+
+  // Discovery, not the list, is what puts a page in scope.
+  it('pulls in an unlisted page that starts publishing the contract', () => {
+    const pages = Object.fromEntries(
+      BOOTSTRAP_CACHE_DOC_FILES.map((f: string) => [f, REAL_DOCS[f]]),
+    );
+    pages['docs/brand-new-surface.mdx'] = REAL_DOCS[EN_PAGE];
+    const { docs, failures } = bootstrapCacheDocSources(pages);
+    assert.deepEqual(failures, []);
+    assert.ok(Object.keys(docs).includes('docs/brand-new-surface.mdx'));
+  });
+
+  it('ignores pages that never quote the contract', () => {
+    const pages = Object.fromEntries(
+      BOOTSTRAP_CACHE_DOC_FILES.map((f: string) => [f, REAL_DOCS[f]]),
+    );
+    pages['docs/unrelated.mdx'] = '# Something else entirely\n\nNo cache prose here.';
+    const { docs } = bootstrapCacheDocSources(pages);
+    assert.equal(Object.keys(docs).includes('docs/unrelated.mdx'), false);
   });
 });
 
@@ -406,6 +485,22 @@ describe('validateBootstrapCacheDocs', () => {
     assert.equal(failures.length, BOOTSTRAP_CACHE_DOC_FILES.length);
     assert.ok(hit(failures, 'publishes an own cache profile for `chinaDecisionSignals`, but api/bootstrap.js declares none'));
   });
+
+  // Every other doc fixture swaps a captured VALUE, so the "anchor present but
+  // the clause is structurally gone" branch — a reworded bullet that stops
+  // stating a claim at all — was never exercised. That is the failure mode a
+  // doc rewrite actually produces.
+  for (const [label, from, to, expected] of [
+    ['the tier pair', 'and CDN `s-maxage=600` / `s-maxage=7200`', 'and shielded at `s-maxage=600` / `s-maxage=7200`', 'the ?tier=fast|slow&public=1 browser/CDN values'],
+    ['the on-demand clause', 'CDN `s-maxage=7200` — unless', 'shield `s-maxage=7200` — unless', 'the inherited on-demand single-key profile'],
+    ['the weatherAlerts clause', 'with the fast-tier CDN shield', 'with the fast-tier shield', 'the ?keys=weatherAlerts&public=1 values'],
+    ['the non-cacheable clause', 'path — uses `Cache-Control: no-store`', 'path — is never stored', 'the non-shared-cacheable value'],
+  ] as [string, string, string, string][]) {
+    it(`catches ${label} being reworded out of the bullet`, () => {
+      const failures = validateBootstrapCacheDocs(REAL_STATS, mutate(EN_PAGE, from, to));
+      assert.ok(hit(failures, `cache bullet does not state ${expected}`), failures.join(' | '));
+    });
+  }
 
   it('catches a declared on-demand profile whose published values are stale', () => {
     const failures = validateBootstrapCacheDocs(

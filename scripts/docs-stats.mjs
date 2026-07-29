@@ -229,17 +229,22 @@ function parseBootstrapCacheContract(source = read('api/bootstrap.js')) {
     throw new Error('docs-stats: could not parse the public-on-demand default cache tier in api/bootstrap.js');
   }
 
-  // The tier-less fallbacks in successCacheHeaders — what
-  // `?keys=weatherAlerts&public=1` gets, since a marked single-key URL carries
-  // no `tier` param and weatherAlerts declares no on-demand profile.
-  const defaultCacheControl = source.match(/const cacheControl = [\s\S]*?\|\|\s*'([^']+)';/)?.[1];
-  const defaultCdnTier = source.match(/'CDN-Cache-Control':[\s\S]*?\|\|\s*TIER_CDN_CACHE\.(\w+),/)?.[1];
+  const successBlock = source.match(/function successCacheHeaders\([\s\S]*?\n\}/)?.[0];
+  if (!successBlock) throw new Error('docs-stats: could not parse successCacheHeaders in api/bootstrap.js');
+
+  // The tier-less fallbacks — what `?keys=weatherAlerts&public=1` gets, since a
+  // marked single-key URL carries no `tier` param and weatherAlerts declares no
+  // on-demand profile.
+  //
+  // Searched inside successCacheHeaders, not the whole file: these `[\s\S]*?`
+  // patterns will happily run past a deleted fallback and match some unrelated
+  // `|| '...'` elsewhere in the module, reporting a confident wrong value.
+  // Bounding them to the emitter means a removed fallback throws.
+  const defaultCacheControl = successBlock.match(/const cacheControl = [\s\S]*?\|\|\s*'([^']+)';/)?.[1];
+  const defaultCdnTier = successBlock.match(/'CDN-Cache-Control':[\s\S]*?\|\|\s*TIER_CDN_CACHE\.(\w+),/)?.[1];
   if (!defaultCacheControl || !defaultCdnTier || !tierCdnCache[defaultCdnTier]) {
     throw new Error('docs-stats: could not parse the tier-less public cache fallbacks in api/bootstrap.js');
   }
-
-  const successBlock = source.match(/function successCacheHeaders\([\s\S]*?\n\}/)?.[0];
-  if (!successBlock) throw new Error('docs-stats: could not parse successCacheHeaders in api/bootstrap.js');
 
   // Pin the WIRING, not just the constants. Parsing `cacheTier` proves the
   // value is COMPUTED, never that it reaches the emitter: swap the call to
@@ -885,12 +890,16 @@ function expectedBootstrapCacheDocValues(cache) {
 // page that quotes the anchor is publishing this contract and gets checked;
 // BOOTSTRAP_CACHE_DOC_FILES stays as the floor so a known surface that loses
 // its bullet still fails instead of quietly dropping out of scope.
-function bootstrapCacheDocSources() {
+// `pages` is injectable so the selection and floor-check are testable without
+// writing fixture files into docs/. Default reads only what walk() just listed,
+// so a page cannot vanish between listing and read.
+function bootstrapCacheDocSources(pages = null) {
+  const candidates = pages ?? Object.fromEntries(
+    walk('docs').filter((f) => f.endsWith('.mdx')).map((file) => [file, read(file)]),
+  );
   const docs = {};
   const failures = [];
-  const discovered = walk('docs').filter((f) => f.endsWith('.mdx'));
-  for (const file of discovered) {
-    const text = read(file);
+  for (const [file, text] of Object.entries(candidates)) {
     if (text.includes(BOOTSTRAP_CACHE_ANCHOR)) docs[file] = text;
   }
   for (const file of BOOTSTRAP_CACHE_DOC_FILES) {
