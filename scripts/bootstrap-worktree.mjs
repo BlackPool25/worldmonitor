@@ -263,6 +263,7 @@ const RELATIVE_HOOKS_PATH = '.husky';
 export function decideHooksPathAction({
   allowForeignHooks = false,
   hooksPathValue,
+  hooksPathOwnedByRepository = false,
   originFile,
   rootDir,
 }) {
@@ -296,14 +297,20 @@ export function decideHooksPathAction({
       reason: `shared config sets absolute hooksPath (${hooksPathValue}); WM_ALLOW_FOREIGN_HOOKS is set, leaving it alone`,
     };
   }
+  if (!hooksPathOwnedByRepository) {
+    return {
+      action: 'warn-shared',
+      reason: `shared config points at an unverified .husky dir (${hooksPathValue}); leaving it alone`,
+    };
+  }
   return {
     action: 'repair-shared',
     reason: `shared config pins every worktree's hooks to one checkout (${hooksPathValue})`,
   };
 }
 
-function probeHooksPath(rootDir) {
-  const probe = spawnSync(
+function probeHooksPath(rootDir, runGit) {
+  const probe = runGit(
     'git',
     ['config', '--show-origin', '--get', 'core.hooksPath'],
     { cwd: rootDir, encoding: 'utf8' },
@@ -318,11 +325,27 @@ function probeHooksPath(rootDir) {
   };
 }
 
+function getGitCommonDir(rootDir, runGit) {
+  const result = runGit(
+    'git',
+    ['rev-parse', '--path-format=absolute', '--git-common-dir'],
+    { cwd: rootDir, encoding: 'utf8' },
+  );
+  return result.status === 0 ? resolve(result.stdout.trim()) : null;
+}
+
+function hooksPathBelongsToRepository({ hooksPathValue, rootDir, runGit }) {
+  const currentCommonDir = getGitCommonDir(rootDir, runGit);
+  const hooksCheckoutCommonDir = getGitCommonDir(dirname(hooksPathValue), runGit);
+  return currentCommonDir !== null && currentCommonDir === hooksCheckoutCommonDir;
+}
+
 export function normalizeWorktreeHooksPath({
   allowForeignHooks = Boolean(process.env.WM_ALLOW_FOREIGN_HOOKS),
   dryRun = false,
   log = console.log,
   rootDir = process.cwd(),
+  runGit = spawnSync,
 } = {}) {
   const decisions = [];
 
@@ -332,13 +355,24 @@ export function normalizeWorktreeHooksPath({
   // calling it done is exactly how the 2026-07-24 incident survived its first
   // fix.
   for (let pass = 0; pass < 2; pass += 1) {
-    const probed = probeHooksPath(rootDir);
+    const probed = probeHooksPath(rootDir, runGit);
     if (!probed) {
       decisions.push({ action: 'none', reason: 'core.hooksPath not set' });
       break;
     }
 
-    const decision = decideHooksPathAction({ allowForeignHooks, rootDir, ...probed });
+    const decision = decideHooksPathAction({
+      allowForeignHooks,
+      hooksPathOwnedByRepository:
+        probed.hooksPathValue.startsWith('/')
+        && hooksPathBelongsToRepository({
+          hooksPathValue: probed.hooksPathValue,
+          rootDir,
+          runGit,
+        }),
+      rootDir,
+      ...probed,
+    });
     decisions.push(decision);
 
     if (decision.action === 'unset-worktree') {
@@ -347,10 +381,16 @@ export function normalizeWorktreeHooksPath({
         log('[worktree]   the shared value it masks cannot be read until the override is gone');
         break;
       }
-      spawnSync('git', ['config', '--worktree', '--unset', 'core.hooksPath'], {
+      const unset = runGit('git', ['config', '--worktree', '--unset', 'core.hooksPath'], {
         cwd: rootDir,
         stdio: 'inherit',
       });
+      if (unset.status !== 0) {
+        throw new Error(
+          'failed to remove stale worktree hooksPath override; '
+          + 'run: git config --worktree --unset core.hooksPath',
+        );
+      }
       continue;
     }
 
@@ -358,12 +398,14 @@ export function normalizeWorktreeHooksPath({
       log(`[worktree] repairing shared hooksPath: ${decision.reason}`);
       log(`[worktree]   setting core.hooksPath=${RELATIVE_HOOKS_PATH} so each worktree runs its own hook`);
       if (!dryRun) {
-        const repair = spawnSync('git', ['config', 'core.hooksPath', RELATIVE_HOOKS_PATH], {
+        const repair = runGit('git', ['config', 'core.hooksPath', RELATIVE_HOOKS_PATH], {
           cwd: rootDir,
           stdio: 'inherit',
         });
         if (repair.status !== 0) {
-          log('[worktree] WARNING: repair failed; run it by hand: git config core.hooksPath .husky');
+          throw new Error(
+            'failed to repair shared hooksPath; run: git config core.hooksPath .husky',
+          );
         }
       }
     } else if (decision.action === 'warn-shared') {
