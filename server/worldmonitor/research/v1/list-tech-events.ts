@@ -28,6 +28,14 @@ import { getRelayBaseUrl, getRelayHeaders } from '../../../_shared/relay';
 const REDIS_CACHE_KEY = 'research:tech-events:v1';
 const REDIS_CACHE_TTL = 21600; // 6 hr — weekly event data
 
+/**
+ * Set on the response when neither the seeder nor the cold-start fetch could
+ * supply upstream data. Doubles as the gateway's no-store signal — see the
+ * comment at the early return in `listTechEvents`. Exported for the tests that
+ * pin that contract.
+ */
+export const TECH_EVENTS_UNAVAILABLE_ERROR = 'tech events unavailable: no upstream data';
+
 // ---------- Constants ----------
 
 const ICS_URL = 'https://www.techmeme.com/newsy_events.ics';
@@ -306,24 +314,10 @@ function parseDevEventsRSS(rssText: string): TechEvent[] {
 /** Number of external feeds (Techmeme ICS + dev.events RSS) behind a fetch. */
 const EXTERNAL_SOURCE_COUNT = 2;
 
-/**
- * A fetch plus how much of it came from upstream.
- *
- * `externalSourcesFailed` is deliberately OUTSIDE `response`: the response is
- * what gets written to the shared cache key, and it must keep the exact shape
- * the seeders write (scripts/ais-relay.cjs, scripts/seed-research.mjs). Only
- * the cache-fill path reads this counter, to decide whether the payload is
- * worth persisting at all.
- */
-interface TechEventsFetch {
-  response: ListTechEventsResponse;
-  externalSourcesFailed: number;
-}
-
 async function fetchTechEvents(
   req: ListTechEventsRequest,
   pagingPresence: TechEventsPagingPresence,
-): Promise<TechEventsFetch> {
+): Promise<ListTechEventsResponse> {
   const { type, mappable } = req;
   const { limit, days } = resolveTechEventsPaging(req, pagingPresence);
 
@@ -410,16 +404,13 @@ async function fetchTechEvents(
   }
 
   return {
-    response: {
-      success: true,
-      count: events.length,
-      conferenceCount: conferences.length,
-      mappableCount,
-      lastUpdated: new Date().toISOString(),
-      events,
-      error: '',
-    },
-    externalSourcesFailed,
+    success: true,
+    count: events.length,
+    conferenceCount: conferences.length,
+    mappableCount,
+    lastUpdated: new Date().toISOString(),
+    events,
+    error: '',
   };
 }
 
@@ -506,31 +497,31 @@ export const WIDEST_TECH_EVENTS_REQUEST: Readonly<ListTechEventsRequest> = Objec
  * with it).
  */
 export async function fetchWidestTechEvents(): Promise<ListTechEventsResponse | null> {
-  const { response, externalSourcesFailed } = await fetchTechEvents(
-    WIDEST_TECH_EVENTS_REQUEST,
-    { hasLimit: true, hasDays: true },
-  );
+  const response = await fetchTechEvents(WIDEST_TECH_EVENTS_REQUEST, { hasLimit: true, hasDays: true });
 
-  // Returning null here makes cachedFetchJson write a 120s NEG_SENTINEL
-  // instead of a REDIS_CACHE_TTL (6h) payload, so the key recovers on the
-  // next request rather than on the seeder's next cycle.
+  // Returning null makes cachedFetchJson write a 120s NEG_SENTINEL instead of
+  // a REDIS_CACHE_TTL (6h) payload, so the shared key recovers on the next
+  // request rather than on the seeder's next cycle.
   //
-  // Refuse when NO external feed answered. `CURATED_EVENTS` alone always
-  // clears the `events.length > 0` bar, so without this check a total upstream
-  // outage pins a curated-only rump under the seeder-owned key for 6h, served
-  // to every client as `success: true` with an empty `error`. That is strictly
-  // worse than the pre-#5603 behaviour, where the caller's default 90-day
-  // window dropped the far-future curated entries, the payload came back
-  // empty, and the key self-healed in 120s. This is the Seed-Owned Key
-  // contract in CONCEPTS.md: a reader answers a miss with a short-TTL
-  // fallback and never poisons the key with a degraded payload.
+  // The test is whether any event actually came from UPSTREAM, not whether a
+  // fetch threw. `CURATED_EVENTS` alone always clears an `events.length > 0`
+  // bar, so a curated-only payload would otherwise be pinned under the
+  // seeder-owned key for 6h and served to every client as `success: true`.
+  // Keying on a fetch-failure counter misses the common shape where a feed
+  // answers HTTP 200 with an error page or an empty calendar: the body clears
+  // fetchTextWithRelay's 100-char floor, so the fetch "succeeded" while
+  // parsing yields nothing. Both shapes collapse to the same question --
+  // did upstream give us anything? -- so ask that directly.
   //
-  // A PARTIAL failure still caches: one live feed is materially complete
+  // This is the Seed-Owned Key contract in CONCEPTS.md: a reader answers a
+  // miss with a short-TTL fallback and never poisons the key with a degraded
+  // payload.
+  //
+  // A PARTIAL fetch still caches: one live feed is materially complete
   // (~26 or ~100 events), and refusing it would drop every caller into the
   // empty-response window for as long as the other feed stayed down.
-  if (externalSourcesFailed >= EXTERNAL_SOURCE_COUNT) return null;
-
-  return response.events.length > 0 ? response : null;
+  const hasUpstreamData = response.events.some(e => e.source !== 'curated');
+  return hasUpstreamData ? response : null;
 }
 
 export async function listTechEvents(
@@ -550,8 +541,24 @@ export async function listTechEvents(
       fetchWidestTechEvents,
     );
 
+    // No data at all: the seeder has not populated the key and the cold-start
+    // fetch found nothing upstream. This is NOT the same as "your filters
+    // matched nothing" -- that case flows through filterEvents() below and
+    // legitimately returns count 0 with an empty `error`.
+    //
+    // The non-empty `error` is load-bearing, not decoration: the gateway reads
+    // it via getRpcNoStoreReasonFromJson (server/gateway.ts:1933) and answers
+    // `Cache-Control: no-store`. Without it this route falls to its 'daily'
+    // tier (gateway.ts:265 -> s-maxage=14400), so an outage that Redis now
+    // shrugs off in 120s would instead sit at the shared CDN edge for 4h.
+    // It also lets a client tell "upstream is down" from "no events found".
+    //
+    // `success` stays true because the RPC itself did not fail; a dedicated
+    // `dataAvailable`/`upstreamUnavailable` proto field (as consumer-prices
+    // and natural-events have) would model this better than overloading
+    // `error`, but that needs a schema change beyond this fix.
     if (!result || result.events.length === 0) {
-      return { success: true, count: 0, conferenceCount: 0, mappableCount: 0, lastUpdated: new Date().toISOString(), events: [], error: '' };
+      return { success: true, count: 0, conferenceCount: 0, mappableCount: 0, lastUpdated: new Date().toISOString(), events: [], error: TECH_EVENTS_UNAVAILABLE_ERROR };
     }
 
     // Apply geocoding (seed stores events without coords) and filter by request params

@@ -4,6 +4,7 @@ import { resolveTechEventsPaging } from '../server/worldmonitor/research/v1/_tec
 import {
   fetchWidestTechEvents,
   listTechEvents,
+  TECH_EVENTS_UNAVAILABLE_ERROR,
   WIDEST_TECH_EVENTS_REQUEST,
 } from '../server/worldmonitor/research/v1/list-tech-events.ts';
 import { __resetKeyPrefixCacheForTests } from '../server/_shared/redis.ts';
@@ -200,12 +201,26 @@ describe('listTechEvents cold-start cache write', () => {
     __resetKeyPrefixCacheForTests();
   });
 
+  // A 200 that clears fetchTextWithRelay's 100-char floor but parses to zero
+  // events — an empty calendar, an HTML error page, a challenge interstitial.
+  // The fetch "succeeds", so a failure counter never sees it.
+  const EVENTLESS_ICS_200 = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//worldmonitor//tech-events-fixture//EN',
+    'X-WR-CALNAME:upstream returned a valid but empty calendar',
+    'X-WR-CALDESC:padding so this body clears the 100-character floor',
+    'END:VCALENDAR',
+  ].join('\n');
+
   /**
    * Cold Redis (every GET misses) + the two upstream feeds. `icsFails` /
    * `rssFails` return 503 so `fetchTextWithRelay` falls through to its relay
    * leg, finds no WS_RELAY_URL, and yields null — the real total-outage path.
+   * `icsEventless` instead returns a healthy-looking 200 that parses to
+   * nothing. FIXTURE_RSS is already item-free, so it covers the RSS side.
    */
-  function installFetchMock({ icsFails = false, rssFails = false } = {}) {
+  function installFetchMock({ icsFails = false, rssFails = false, icsEventless = false } = {}) {
     const redisSets: RedisSetCommand[] = [];
     mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -217,7 +232,8 @@ describe('listTechEvents cold-start cache write', () => {
         return new Response(JSON.stringify({ result: 'OK' }), { status: 200 });
       }
       if (url === ICS_URL) {
-        return icsFails ? new Response('', { status: 503 }) : new Response(FIXTURE_ICS, { status: 200 });
+        if (icsFails) return new Response('', { status: 503 });
+        return new Response(icsEventless ? EVENTLESS_ICS_200 : FIXTURE_ICS, { status: 200 });
       }
       if (url === DEV_EVENTS_RSS) {
         return rssFails ? new Response('', { status: 503 }) : new Response(FIXTURE_RSS, { status: 200 });
@@ -323,6 +339,51 @@ describe('listTechEvents cold-start cache write', () => {
       const ttl = Number(writeFor(redisSets)[4]);
       assert.ok(ttl > 0 && ttl <= 300, `expected a short negative TTL, got ${ttl}s`);
       assert.notEqual(ttl, 21600, 'the outage write must not take the 6h REDIS_CACHE_TTL');
+    });
+
+    // The guard must key on "did upstream give us anything", not on a fetch
+    // failure counter. A feed answering 200 with an error page or an empty
+    // calendar never increments a failure count, so a counter-based guard
+    // lets the same curated-only rump through at the full 6h TTL.
+    it('writes a negative sentinel when feeds answer 200 with nothing parseable', async () => {
+      const redisSets = installFetchMock({ icsEventless: true });
+      await listTechEvents(ctxFor(PATH), REQ);
+
+      const write = writeFor(redisSets);
+      assert.equal(
+        JSON.parse(write[2]),
+        '__WM_NEG__',
+        `a healthy-looking 200 that parses to nothing must not persist a curated-only payload, got: ${write[2].slice(0, 200)}`,
+      );
+    });
+
+    // Without a no-store marker this route falls to its 'daily' tier
+    // (s-maxage=14400), so the CDN would pin the empty body for 4h even though
+    // Redis recovers in 120s.
+    it('marks the unavailable response no-store so the CDN cannot pin it', async () => {
+      installFetchMock({ icsFails: true, rssFails: true });
+      const response = await listTechEvents(ctxFor(PATH), REQ);
+
+      assert.equal(response.count, 0);
+      assert.equal(
+        response.error,
+        TECH_EVENTS_UNAVAILABLE_ERROR,
+        'an unavailable response must carry the error the gateway reads as a no-store reason',
+      );
+    });
+
+    // Precision check: the marker must fire ONLY on data-unavailability, never
+    // on a healthy response whose filters happened to match nothing — that is
+    // a real answer and stays cacheable.
+    it('leaves a healthy zero-match response cacheable', async () => {
+      installFetchMock();
+      const response = await listTechEvents(
+        ctxFor('/api/research/v1/list-tech-events?type=ipo'),
+        { type: 'ipo', mappable: false, limit: 0, days: 0 },
+      );
+
+      assert.equal(response.count, 0, 'fixture has no ipo events');
+      assert.equal(response.error, '', 'a healthy empty result must stay cacheable');
     });
 
     it('still caches a partial fetch, so one dead feed does not blank the endpoint', async () => {
