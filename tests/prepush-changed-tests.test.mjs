@@ -99,6 +99,13 @@ function partition(mode, { cwd, changed = CHANGED } = {}) {
     cwd,
     input: nulList(changed),
     encoding: 'utf8',
+    // execFileSync echoes child stderr to the parent unless stdio is explicit.
+    // The cases below deliberately trigger the script's error paths, and this
+    // suite runs INSIDE the pre-push gate — so without piping, a successful
+    // push prints "ERROR: ... missing from the worktree" twice and reads as a
+    // gate that failed. `err.stderr` is still populated, which is what the
+    // loud-failure assertions match on.
+    stdio: ['pipe', 'pipe', 'pipe'],
   });
   return out.split('\0').filter(Boolean);
 }
