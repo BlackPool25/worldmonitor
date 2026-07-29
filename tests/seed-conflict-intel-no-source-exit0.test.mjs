@@ -291,7 +291,7 @@ test('GDELT 429 storm: sweep aborts after the first all-throttled batch', async 
   const result = await fetchGdeltConflictEvents({
     fetchCountryEvents: async (cc) => {
       attempted.push(cc);
-      return { country: cc, ok: false, events: [], error: 'GDELT retries exhausted (last direct: HTTP 429) (last proxy: HTTP 429)' };
+      return { country: cc, ok: false, events: [], error: 'GDELT_SHARED_PROXY_HTTP_429' };
     },
     fetchBulkEvents: async () => { throw new Error('bulk export also throttled'); },
     pace: async () => {},
@@ -314,10 +314,10 @@ test('GDELT storm: aborts on a MIXED throttled batch (429 + SSL tear), not just 
   // and at least one failure is an explicit rate-limit.
   const attempted = [];
   const errors = [
-    'GDELT retries exhausted (last direct: HTTP 429) (last proxy: HTTP 429)',
-    'GDELT retries exhausted (last direct: HTTP 429) (last proxy: HTTP 429)',
-    'GDELT retries exhausted (last direct: HTTP 429) (last proxy: HTTP 429)',
-    'curl failed: curl: (35) OpenSSL SSL_connect: SSL_ERROR_SYSCALL', // no 429 in this one
+    'GDELT_SHARED_PROXY_HTTP_429',
+    'GDELT_SHARED_PROXY_HTTP_429',
+    'GDELT_SHARED_PROXY_HTTP_429',
+    'GDELT_SHARED_PROXY_TLS',
   ];
   const result = await fetchGdeltConflictEvents({
     fetchCountryEvents: async (cc) => {
@@ -339,11 +339,7 @@ test('GDELT storm: aborts on a MIXED throttled batch (429 + SSL tear), not just 
   );
 });
 
-test('GDELT storm abort does NOT fire on an all-failed batch with NO rate-limit (SSL/timeout only)', async () => {
-  // PR#5290 review: without this, deleting `anyRateLimited` from the abort condition still
-  // passed every test. It is the clause that distinguishes "we are being throttled — backing
-  // off helps" from "transient per-country network failures — backing off just gives up
-  // early". A pure SSL/timeout wipeout must keep sweeping and let floorUnreachable decide.
+test('GDELT route circuit opens after one SSL/timeout canary failure', async () => {
   const attempted = [];
   await fetchGdeltConflictEvents({
     fetchCountryEvents: async (cc) => {
@@ -361,8 +357,8 @@ test('GDELT storm abort does NOT fire on an all-failed batch with NO rate-limit 
   }).catch(() => {});
 
   assert.ok(
-    attempted.length > 4,
-    `a non-throttled wipeout must not be mislabelled a rate-limit storm and cut short: attempted ${attempted.length}`,
+    attempted.length === 1,
+    `a selected-route TLS failure must not be repeated for another country: attempted ${attempted.length}`,
   );
 });
 
