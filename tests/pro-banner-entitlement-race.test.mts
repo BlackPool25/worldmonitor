@@ -16,9 +16,12 @@ import {
   decideProBannerMount,
   isPremiumEntitlementHint,
   resolveBannerPremium,
+  stabilizeProBannerPremium,
+  PRO_BANNER_DOWNGRADE_SETTLE_MS,
   PRO_BANNER_ENTITLEMENT_HINT_KEY,
   PRO_BANNER_ENTITLEMENT_HINT_VALUE,
   type ProBannerDecisionInput,
+  type ProBannerPremiumStabilityState,
 } from '@/services/pro-banner-policy';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -52,6 +55,35 @@ describe('decideProBannerMount (#5728)', () => {
       })),
       'suppress',
     );
+  });
+
+  it('never mounts the free upsell between half-second snapshots for a confirmed Pro session', () => {
+    let state: ProBannerPremiumStabilityState | null = null;
+    const decisions = [true, false, true, false, true].map((premium, index) => {
+      const stable = stabilizeProBannerPremium({
+        now: index * 500,
+        userId: 'user_pro',
+        premiumHint: true,
+        live: { premium, accountBacked: premium },
+        previous: state,
+      });
+      state = stable.state;
+      return decideProBannerMount(base({
+        hasPremiumAccess: stable.premium,
+        premiumHint: true,
+        authPending: false,
+        signedIn: true,
+        entitlementLoaded: true,
+      }));
+    });
+
+    assert.deepEqual(decisions, [
+      'suppress',
+      'suppress',
+      'suppress',
+      'suppress',
+      'suppress',
+    ]);
   });
 
   it('defers while Clerk auth is still hydrating (the init race)', () => {
@@ -194,6 +226,104 @@ describe('resolveBannerPremium (#5728 sign-out + local keys)', () => {
   });
 });
 
+describe('stabilizeProBannerPremium (confirmed Pro anti-flap)', () => {
+  it('requires a continuous settled-free window before showing a downgrade', () => {
+    const confirmed = stabilizeProBannerPremium({
+      now: 0,
+      userId: 'user_pro',
+      premiumHint: false,
+      live: { premium: true, accountBacked: true },
+      previous: null,
+    });
+    const transientFree = stabilizeProBannerPremium({
+      now: 500,
+      userId: 'user_pro',
+      premiumHint: true,
+      live: { premium: false, accountBacked: false },
+      previous: confirmed.state,
+    });
+    assert.equal(transientFree.premium, true);
+    assert.equal(transientFree.heldPremium, true);
+    assert.equal(transientFree.recheckAt, 500 + PRO_BANNER_DOWNGRADE_SETTLE_MS);
+
+    const settledFree = stabilizeProBannerPremium({
+      now: 500 + PRO_BANNER_DOWNGRADE_SETTLE_MS,
+      userId: 'user_pro',
+      premiumHint: true,
+      live: { premium: false, accountBacked: false },
+      previous: transientFree.state,
+    });
+    assert.equal(settledFree.premium, false);
+    assert.equal(settledFree.heldPremium, false);
+    assert.equal(settledFree.recheckAt, null);
+  });
+
+  it('bounds a stale post-checkout hint for a genuinely free account', () => {
+    const hinted = stabilizeProBannerPremium({
+      now: 10_000,
+      userId: 'user_free',
+      premiumHint: true,
+      live: { premium: false, accountBacked: false },
+      previous: null,
+    });
+    assert.equal(hinted.premium, true);
+    assert.equal(hinted.recheckAt, 10_000 + PRO_BANNER_DOWNGRADE_SETTLE_MS);
+
+    const expired = stabilizeProBannerPremium({
+      now: 10_000 + PRO_BANNER_DOWNGRADE_SETTLE_MS,
+      userId: 'user_free',
+      premiumHint: true,
+      live: { premium: false, accountBacked: false },
+      previous: hinted.state,
+    });
+    assert.equal(expired.premium, false);
+    assert.equal(expired.state.accountPremiumConfirmed, false);
+  });
+
+  it('clears remembered Pro immediately on sign-out', () => {
+    const confirmed = stabilizeProBannerPremium({
+      now: 0,
+      userId: 'user_pro',
+      premiumHint: false,
+      live: { premium: true, accountBacked: true },
+      previous: null,
+    });
+    const signedOut = stabilizeProBannerPremium({
+      now: 500,
+      userId: null,
+      premiumHint: true,
+      live: { premium: false, accountBacked: false },
+      previous: confirmed.state,
+    });
+    assert.equal(signedOut.premium, false);
+    assert.deepEqual(signedOut.state, {
+      userId: null,
+      accountPremiumConfirmed: false,
+      freeSince: null,
+    });
+  });
+
+  it('does not carry a Pro hint across a direct account switch', () => {
+    const accountA = stabilizeProBannerPremium({
+      now: 0,
+      userId: 'user_pro_a',
+      premiumHint: true,
+      live: { premium: true, accountBacked: true },
+      previous: null,
+    });
+    const accountB = stabilizeProBannerPremium({
+      now: 500,
+      userId: 'user_free_b',
+      premiumHint: true,
+      live: { premium: false, accountBacked: false },
+      previous: accountA.state,
+    });
+    assert.equal(accountB.premium, false);
+    assert.equal(accountB.heldPremium, false);
+    assert.equal(accountB.recheckAt, null);
+  });
+});
+
 describe('entitlement hint helpers', () => {
   it('recognizes only the canonical pro value', () => {
     assert.equal(isPremiumEntitlementHint(PRO_BANNER_ENTITLEMENT_HINT_VALUE), true);
@@ -275,6 +405,8 @@ describe('wiring contracts (#5728)', () => {
     const src = readFileSync(resolve(root, 'src/components/ProBanner.ts'), 'utf-8');
     assert.match(src, /decideProBannerMount\(/);
     assert.match(src, /resolveBannerPremium\(/);
+    assert.match(src, /stabilizeProBannerPremium\(/);
+    assert.match(src, /schedulePremiumStabilityRecheck\(/);
     assert.match(src, /subscribeAuthState\(/);
     assert.match(src, /isClerkAuthEnabled\(/);
     assert.match(src, /accountBacked/);

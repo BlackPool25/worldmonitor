@@ -12,7 +12,9 @@ import {
   decideProBannerMount,
   isPremiumEntitlementHint,
   resolveBannerPremium,
+  stabilizeProBannerPremium,
   PRO_BANNER_ENTITLEMENT_HINT_KEY,
+  type ProBannerPremiumStabilityState,
 } from '@/services/pro-banner-policy';
 import { t } from '@/services/i18n';
 import { setTrustedHtml, trustedHtml } from '@/utils/dom-utils';
@@ -20,6 +22,9 @@ import { setTrustedHtml, trustedHtml } from '@/utils/dom-utils';
 
 let bannerEl: HTMLElement | null = null;
 let pendingBannerRemoval: ReturnType<typeof setTimeout> | null = null;
+let premiumStabilityState: ProBannerPremiumStabilityState | null = null;
+let premiumStabilityRecheck: ReturnType<typeof setTimeout> | null = null;
+let premiumStabilityRecheckAt: number | null = null;
 let dismissedThisSession = false;
 // Cached at first showProBanner() call (App.ts always calls it once at init,
 // regardless of premium state — the early-returns inside decide whether to
@@ -135,16 +140,45 @@ function hasAccountBackedPremium(): boolean {
   );
 }
 
-function resolveEffectiveBannerPremium(): ReturnType<typeof resolveBannerPremium> {
+function schedulePremiumStabilityRecheck(recheckAt: number | null): void {
+  if (premiumStabilityRecheck !== null && premiumStabilityRecheckAt === recheckAt) {
+    return;
+  }
+  if (premiumStabilityRecheck !== null) {
+    clearTimeout(premiumStabilityRecheck);
+    premiumStabilityRecheck = null;
+  }
+  premiumStabilityRecheckAt = recheckAt;
+  if (recheckAt === null) return;
+
+  premiumStabilityRecheck = setTimeout(() => {
+    premiumStabilityRecheck = null;
+    premiumStabilityRecheckAt = null;
+    syncProBanner();
+  }, Math.max(0, recheckAt - Date.now()));
+}
+
+function resolveEffectiveBannerPremium(): ReturnType<typeof stabilizeProBannerPremium> {
   const auth = getAuthState();
-  const signedIn = getCurrentClerkUser() !== null || auth.user !== null;
-  return resolveBannerPremium({
+  const clerkUser = getCurrentClerkUser();
+  const userId = clerkUser?.id ?? auth.user?.id ?? null;
+  const live = resolveBannerPremium({
     authPending: auth.isPending,
-    signedIn,
+    signedIn: userId !== null,
     localUnlockPremium: hasLocalUnlockPremium(),
     rawPremium: hasPremiumAccess(auth),
     accountBackedPremium: hasAccountBackedPremium(),
   });
+  const stable = stabilizeProBannerPremium({
+    now: Date.now(),
+    userId,
+    premiumHint: readPremiumHint(),
+    live,
+    previous: premiumStabilityState,
+  });
+  premiumStabilityState = stable.state;
+  schedulePremiumStabilityRecheck(stable.recheckAt);
+  return stable;
 }
 
 export function showProBanner(container: HTMLElement): void {

@@ -73,6 +73,41 @@ export interface BannerPremiumResolution {
 }
 
 /**
+ * How long a previously confirmed account must report non-premium
+ * continuously before the banner may treat it as a real downgrade.
+ *
+ * Entitlement/auth transports can briefly disagree while reconnecting. The
+ * banner changes page geometry, so reacting to every contradictory snapshot
+ * turns a 500 ms transport flap into a full-page flicker.
+ */
+export const PRO_BANNER_DOWNGRADE_SETTLE_MS = 2_000;
+
+export interface ProBannerPremiumStabilityState {
+  /** Clerk identity the remembered account-backed verdict belongs to. */
+  userId: string | null;
+  /** True after a live Pro signal or a bounded post-checkout/browser hint. */
+  accountPremiumConfirmed: boolean;
+  /** First continuous non-premium observation for that confirmed account. */
+  freeSince: number | null;
+}
+
+export interface StableBannerPremiumInput {
+  now: number;
+  userId: string | null;
+  premiumHint: boolean;
+  live: BannerPremiumResolution;
+  previous: ProBannerPremiumStabilityState | null;
+}
+
+export interface StableBannerPremiumResolution extends BannerPremiumResolution {
+  state: ProBannerPremiumStabilityState;
+  /** True only while a contradictory non-premium snapshot is settling. */
+  heldPremium: boolean;
+  /** Caller should re-evaluate at this time if no newer snapshot arrives. */
+  recheckAt: number | null;
+}
+
+/**
  * Resolve effective premium for the Pro banner.
  *
  * Settled signed-out without local unlock keys → free, even if the entitlement
@@ -88,6 +123,107 @@ export function resolveBannerPremium(
   return {
     premium: input.rawPremium,
     accountBacked: input.accountBackedPremium,
+  };
+}
+
+/**
+ * Debounce only the dangerous Pro → free direction for the banner.
+ *
+ * A live account-backed Pro verdict is accepted immediately. Once confirmed,
+ * non-premium must remain continuous for PRO_BANNER_DOWNGRADE_SETTLE_MS before
+ * the upsell may mount. Any intervening Pro snapshot cancels that downgrade.
+ * The memory is scoped to a Clerk user and is cleared immediately on sign-out
+ * or account change, so one account can never keep another account's upsell
+ * hidden. A persisted premium hint seeds the same bounded window when a user
+ * first hydrates on a cold/post-checkout load; it is not trusted across a
+ * direct account switch or beyond the settle interval.
+ */
+export function stabilizeProBannerPremium(
+  input: StableBannerPremiumInput,
+): StableBannerPremiumResolution {
+  const identityChanged = input.previous?.userId !== input.userId;
+  const maySeedFromHint = input.previous === null || input.previous.userId === null;
+  let state: ProBannerPremiumStabilityState = identityChanged
+    ? {
+        userId: input.userId,
+        accountPremiumConfirmed:
+          input.userId !== null && maySeedFromHint && input.premiumHint,
+        freeSince: null,
+      }
+    : input.previous ?? {
+        userId: input.userId,
+        accountPremiumConfirmed: false,
+        freeSince: null,
+      };
+
+  if (input.userId === null) {
+    return {
+      ...input.live,
+      state: { userId: null, accountPremiumConfirmed: false, freeSince: null },
+      heldPremium: false,
+      recheckAt: null,
+    };
+  }
+
+  if (input.live.premium && input.live.accountBacked) {
+    state = {
+      userId: input.userId,
+      accountPremiumConfirmed: true,
+      freeSince: null,
+    };
+    return {
+      ...input.live,
+      state,
+      heldPremium: false,
+      recheckAt: null,
+    };
+  }
+
+  // A desktop/tester key already suppresses the banner. It must not become
+  // account evidence, but it also must not advance an account downgrade while
+  // the local unlock is active.
+  if (input.live.premium) {
+    state = { ...state, freeSince: null };
+    return {
+      ...input.live,
+      state,
+      heldPremium: false,
+      recheckAt: null,
+    };
+  }
+
+  if (!state.accountPremiumConfirmed) {
+    return {
+      ...input.live,
+      state,
+      heldPremium: false,
+      recheckAt: null,
+    };
+  }
+
+  const freeSince = state.freeSince ?? input.now;
+  const recheckAt = freeSince + PRO_BANNER_DOWNGRADE_SETTLE_MS;
+  if (input.now < recheckAt) {
+    state = { ...state, freeSince };
+    return {
+      premium: true,
+      accountBacked: false,
+      state,
+      heldPremium: true,
+      recheckAt,
+    };
+  }
+
+  state = {
+    userId: input.userId,
+    accountPremiumConfirmed: false,
+    freeSince: null,
+  };
+  return {
+    ...input.live,
+    state,
+    heldPremium: false,
+    recheckAt: null,
   };
 }
 
