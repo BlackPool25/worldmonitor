@@ -30,6 +30,7 @@ import {
   pickMapKeysLike,
   pickNestedMap,
   selectDatasets,
+  summarizeData,
 } from '../filters';
 import type { ToolDef } from '../types';
 import { utf8ByteLength } from '../utils';
@@ -117,6 +118,32 @@ function fitConflictEventsToBudget(data: Record<string, unknown>): void {
     caps.set(label, feedLow);
     applyCaps();
   }
+}
+
+function summarizeConflictEvents(data: Record<string, unknown>): Record<string, unknown> {
+  const summary = summarizeData(data);
+  if (utf8ByteLength(JSON.stringify(summary)) <= CONFLICT_EVENTS_DATA_BUDGET_BYTES) return summary;
+
+  const samples = CONFLICT_EVENT_LISTS.flatMap((label) => {
+    const parent = summary[label];
+    if (!parent || typeof parent !== 'object' || Array.isArray(parent)) return [];
+    const events = (parent as Record<string, unknown>).events;
+    if (!events || typeof events !== 'object' || Array.isArray(events)) return [];
+    const sample = (events as Record<string, unknown>).sample;
+    return Array.isArray(sample) ? [{ sample, original: [...sample] }] : [];
+  });
+
+  for (const { sample } of samples) sample.length = 0;
+  const maxSampleLength = Math.max(0, ...samples.map(({ original }) => original.length));
+  for (let index = 0; index < maxSampleLength; index++) {
+    for (const { sample, original } of samples) {
+      if (index >= original.length) continue;
+      sample.push(original[index]);
+      if (utf8ByteLength(JSON.stringify(summary)) > CONFLICT_EVENTS_DATA_BUDGET_BYTES) sample.pop();
+    }
+  }
+
+  return summary;
 }
 
 function addNewsSourceProvenance(value: unknown): unknown {
@@ -404,6 +431,7 @@ export const CACHE_TOOLS: ToolDef[] = [
       },
     }),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    _summarize: summarizeConflictEvents,
     _postFilter: (data, params) => {
       const country = argStr(params.country);
       const minFatal = argNum(params.min_fatalities);

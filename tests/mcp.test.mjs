@@ -1389,6 +1389,23 @@ describe('api/mcp.ts — PRO MCP Server', () => {
     assert.equal(out.data.partial, undefined, 'summary mode fits naturally and must not report source truncation');
   });
 
+  it('get_conflict_events preserves summary counts when one sample event exceeds the output budget', async () => {
+    mockCacheKeys(
+      {
+        'conflict:ucdp-events:v1': {
+          events: [{ id: 'oversized', country: 'X', sourceOriginal: 'x'.repeat(140 * 1024) }],
+        },
+      },
+      { 'seed-meta:conflict:ucdp-events': { fetchedAt: Date.now() - 60_000, recordCount: 1 } },
+    );
+
+    const out = await callTool('get_conflict_events', { limit: 0, summary: true });
+
+    assert.equal(out._budget_exceeded, undefined, 'oversized summary samples must not erase the full count');
+    assert.equal(out.data['ucdp-events'].events.count, 1, 'summary count must still describe the full matching set');
+    assert.deepEqual(out.data['ucdp-events'].events.sample, [], 'an individually oversized sample cannot be returned');
+  });
+
   it('get_conflict_events applies JMESPath to the full oversized no-cap response before byte fitting', async () => {
     const events = Array.from({ length: 1000 }, (_, i) => ({
       id: `event-${i}`,
