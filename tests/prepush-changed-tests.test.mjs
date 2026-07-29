@@ -40,8 +40,13 @@ const EXISTING = [
   'src/services/thing.ts',
 ];
 
-/** Changed-file list handed to the script — a superset of what exists. */
-const CHANGED = [...EXISTING, 'tests/removed.test.mjs', 'tests/dom/removed.test.mts'];
+/**
+ * Changed-file list handed to the script. Every entry exists on disk: the hook
+ * now passes the paths that exist in the pushed commit
+ * (`prepush-attest.sh changed-live`), so a missing one is a broken invariant
+ * rather than "the push deleted it" — see the loud-failure case below.
+ */
+const CHANGED = [...EXISTING];
 
 /** Every changed path that is a test file the repo expects to run somewhere. */
 const RUNNABLE_TESTS = EXISTING.filter((f) => /\.test\.(mjs|mts)$/.test(f));
@@ -64,13 +69,18 @@ function expandBraces(glob) {
     .flatMap((option) => expandBraces(glob.replace(match[0], option.trim())));
 }
 
+/** NUL-delimited both ways — a C-quoted or newline-bearing path must survive. */
+function nulList(paths) {
+  return paths.map((path) => `${path}\0`).join('');
+}
+
 function partition(mode, { cwd, changed = CHANGED } = {}) {
   const out = execFileSync('bash', [SCRIPT, mode], {
     cwd,
-    input: `${changed.join('\n')}\n`,
+    input: nulList(changed),
     encoding: 'utf8',
   });
-  return out.split('\n').filter(Boolean);
+  return out.split('\0').filter(Boolean);
 }
 
 describe('pre-push changed-test partition', () => {
@@ -119,20 +129,41 @@ describe('pre-push changed-test partition', () => {
     );
   });
 
-  test('drops non-test files and files deleted by the push', () => {
+  test('drops helpers and fixtures that are not test files', () => {
     for (const mode of ['node', 'dom']) {
-      const picked = partition(mode, { cwd });
       assert.deepEqual(
-        picked.filter((f) => !/\.test\.(mjs|mts)$/.test(f)),
+        partition(mode, { cwd }).filter((f) => !/\.test\.(mjs|mts)$/.test(f)),
         [],
         `${mode} mode must not run helpers or fixtures`,
       );
-      assert.deepEqual(
-        picked.filter((f) => f.endsWith('removed.test.mjs') || f.endsWith('removed.test.mts')),
-        [],
-        `${mode} mode must skip paths the push deleted`,
+    }
+  });
+
+  test('a test file missing from the worktree fails loudly instead of vanishing', () => {
+    // #5800: the old `[ -f "$file" ] || continue` read "absent from disk" as
+    // "the push deleted it". It could just as easily mean the worktree drifted
+    // from the commit being pushed — an unstaged `rm` of a changed test made
+    // the gate skip it and report green. Deletion is now filtered upstream by
+    // git, so absence here has exactly one meaning and must stop the push.
+    for (const [mode, missing] of [
+      ['node', 'tests/never-written.test.mjs'],
+      ['dom', 'tests/dom/never-written.test.mts'],
+    ]) {
+      assert.throws(
+        () => partition(mode, { cwd, changed: [...EXISTING, missing] }),
+        (err) => err.status === 1 && /missing from the worktree/.test(String(err.stderr)),
+        `${mode} mode must refuse a path it cannot run`,
       );
     }
+  });
+
+  test('a path containing a newline stays one path', () => {
+    // The reason the list is NUL-delimited: a line reader would split this
+    // into two entries, neither of which exists, and the old code would have
+    // silently dropped both.
+    const weird = 'tests/two\nlines.test.mjs';
+    const root = makeFixtureWorktree([weird]);
+    assert.deepEqual(partition('node', { cwd: root, changed: [weird] }), [weird]);
   });
 
   test('an unknown mode fails loudly instead of silently emitting nothing', () => {
@@ -240,7 +271,7 @@ describe('runner dispatch', () => {
     try {
       execFileSync('bash', [SCRIPT, mode], {
         cwd: REPO_ROOT,
-        input: `${list.join('\n')}\n`,
+        input: nulList(list),
         encoding: 'utf8',
         env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
       });
@@ -317,27 +348,50 @@ describe('pre-push hook wiring', () => {
   });
 
   test('treats a partition failure as a blocked push, not an empty test list', () => {
-    // Command substitution discards the exit status: a missing or broken
-    // helper would yield an empty list, which the hook reads as "no test files
-    // changed" and skips everything. The gate must fail loudly instead.
-    assert.match(hook, /if ! TESTS_CHANGED=\$\(/);
-    assert.match(hook, /if ! DOM_TESTS_CHANGED=\$\(/);
+    // A discarded exit status yields an empty list, which the hook reads as
+    // "no test files changed" and skips everything. The gate must fail loudly.
+    for (const mode of ['node', 'dom']) {
+      const guarded = new RegExp(
+        `if ! [^\\n]*prepush-changed-tests\\.sh ${mode} >[^\\n]*\\n\\s*echo "ERROR[^\\n]*\\n\\s*exit 1`,
+      );
+      assert.ok(guarded.test(hook), `the ${mode} partition must be checked and abort the push`);
+    }
   });
 
-  test('runs the partition test when any file in the routing contract changes', () => {
-    // The contract spans four files. Guarding only the partition script left
-    // the assertions absent exactly when the hook, the vitest project, or the
-    // npm script they pin was the thing being rewritten.
+  test('hands the partition NUL-delimited paths, not a newline-joined string', () => {
+    // `printf '%s\\n' "$LIST"` is what lost C-quoted and space-bearing paths
+    // (#5800); command substitution cannot carry NUL, so the lists move
+    // through files and `nul_list`.
+    assert.ok(
+      !/printf '%s\\n'[^\n]*prepush-changed-tests\.sh/.test(hook),
+      'a newline-joined round trip re-introduces the quoting loss',
+    );
+    for (const mode of ['node', 'dom', 'run-node', 'run-dom']) {
+      assert.ok(
+        new RegExp(`nul_list [^\\n]*prepush-changed-tests\\.sh ${mode}`).test(hook),
+        `${mode} must receive a NUL-delimited list`,
+      );
+    }
+  });
+
+  test('runs the contract tests when any file in the routing contract changes', () => {
+    // The contract spans the hook, both scripts it delegates to, the vitest
+    // project, and the npm script. Guarding only the partition script left the
+    // assertions absent exactly when the thing they pin was being rewritten.
     for (const path of [
       '\\.husky/pre-push',
       'scripts/prepush-changed-tests\\.sh',
+      'scripts/prepush-attest\\.sh',
       'vitest\\.dom\\.config\\.mts',
       'package\\.json',
     ]) {
       assert.ok(
         hook.includes(path),
-        `pre-push must re-run the partition test when ${path} changes`,
+        `pre-push must re-run the contract tests when ${path} changes`,
       );
+    }
+    for (const testFile of ['tests/prepush-changed-tests.test.mjs', 'tests/prepush-attest.test.mjs']) {
+      assert.ok(hook.includes(testFile), `${testFile} must be in the contract-test list`);
     }
   });
 });
