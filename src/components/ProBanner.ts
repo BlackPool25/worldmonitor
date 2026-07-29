@@ -1,6 +1,5 @@
 import { trackGateHit } from '@/services/analytics';
-import { hasPremiumAccess } from '@/services/panel-gating';
-import { onEntitlementChange, getEntitlementState, isEntitled } from '@/services/entitlements';
+import { onEntitlementChange, getEntitlementState, isEntitlementActive } from '@/services/entitlements';
 import { getSubscription, onSubscriptionChange } from '@/services/billing';
 import { deriveBillingUxState, getReactivationHref } from '@/services/billing-state';
 import { getAuthState, subscribeAuthState } from '@/services/auth-state';
@@ -25,6 +24,10 @@ let pendingBannerRemoval: ReturnType<typeof setTimeout> | null = null;
 let premiumStabilityState: ProBannerPremiumStabilityState | null = null;
 let premiumStabilityRecheck: ReturnType<typeof setTimeout> | null = null;
 let premiumStabilityRecheckAt: number | null = null;
+// A direct Clerk A -> B notification can run before App resets A's preserved
+// Convex snapshot. Keep that user-unscoped evidence blocked across nested
+// sync/show evaluations until resetEntitlementState() publishes null.
+let blockedEntitlementUserId: string | null = null;
 let dismissedThisSession = false;
 // Cached at first showProBanner() call (App.ts always calls it once at init,
 // regardless of premium state — the early-returns inside decide whether to
@@ -130,16 +133,6 @@ function hasLocalUnlockPremium(): boolean {
   );
 }
 
-function hasAccountBackedPremium(): boolean {
-  const clerkUser = getCurrentClerkUser();
-  const auth = getAuthState();
-  return (
-    isEntitled() ||
-    auth.user?.role === 'pro' ||
-    clerkUser?.plan === 'pro'
-  );
-}
-
 function schedulePremiumStabilityRecheck(recheckAt: number | null): void {
   if (premiumStabilityRecheck !== null && premiumStabilityRecheckAt === recheckAt) {
     return;
@@ -158,19 +151,52 @@ function schedulePremiumStabilityRecheck(recheckAt: number | null): void {
   }, Math.max(0, recheckAt - Date.now()));
 }
 
-function resolveEffectiveBannerPremium(): ReturnType<typeof stabilizeProBannerPremium> {
+type EffectiveBannerPremium = ReturnType<typeof stabilizeProBannerPremium> & {
+  acceptedEntitlementLoaded: boolean;
+};
+
+function resolveEffectiveBannerPremium(): EffectiveBannerPremium {
   const auth = getAuthState();
   const clerkUser = getCurrentClerkUser();
   const userId = clerkUser?.id ?? auth.user?.id ?? null;
+  const entitlement = getEntitlementState();
+  const now = Date.now();
+  const identityBoundPremium = (
+    (clerkUser?.id === userId && clerkUser.plan === 'pro') ||
+    (auth.user?.id === userId && auth.user.role === 'pro')
+  );
+  const previousUserId = premiumStabilityState?.userId ?? null;
+  const directAccountSwitch = (
+    previousUserId !== null &&
+    userId !== null &&
+    previousUserId !== userId
+  );
+  if (userId === null) {
+    blockedEntitlementUserId = null;
+  } else if (directAccountSwitch) {
+    // If App's listener ran first, the null snapshot already proves the old
+    // account was cleared and there is no stale evidence left to quarantine.
+    blockedEntitlementUserId = entitlement === null ? null : userId;
+  } else if (
+    blockedEntitlementUserId === userId &&
+    entitlement === null
+  ) {
+    blockedEntitlementUserId = null;
+  }
+  const acceptedEntitlementLoaded = (
+    entitlement !== null &&
+    blockedEntitlementUserId !== userId
+  );
   const live = resolveBannerPremium({
     authPending: auth.isPending,
     signedIn: userId !== null,
     localUnlockPremium: hasLocalUnlockPremium(),
-    rawPremium: hasPremiumAccess(auth),
-    accountBackedPremium: hasAccountBackedPremium(),
+    identityBoundPremium,
+    unscopedAccountPremium: isEntitlementActive(entitlement, now),
+    acceptUnscopedAccountPremium: acceptedEntitlementLoaded,
   });
   const stable = stabilizeProBannerPremium({
-    now: Date.now(),
+    now,
     userId,
     premiumHint: readPremiumHint(),
     live,
@@ -178,7 +204,7 @@ function resolveEffectiveBannerPremium(): ReturnType<typeof stabilizeProBannerPr
   });
   premiumStabilityState = stable.state;
   schedulePremiumStabilityRecheck(stable.recheckAt);
-  return stable;
+  return { ...stable, acceptedEntitlementLoaded };
 }
 
 export function showProBanner(container: HTMLElement): void {
@@ -194,7 +220,11 @@ export function showProBanner(container: HTMLElement): void {
   if (bannerEl) return;
 
   const auth = getAuthState();
-  const { premium, accountBacked } = resolveEffectiveBannerPremium();
+  const {
+    premium,
+    accountBacked,
+    acceptedEntitlementLoaded,
+  } = resolveEffectiveBannerPremium();
   // Persist only account-backed premium. Local unlock keys suppress the
   // banner this session via `premium` without poisoning pre-paint for free web.
   if (accountBacked) {
@@ -213,7 +243,7 @@ export function showProBanner(container: HTMLElement): void {
     authPending: auth.isPending,
     clerkConfigured: isClerkAuthEnabled(),
     signedIn: getCurrentClerkUser() !== null || auth.user !== null,
-    entitlementLoaded: getEntitlementState() !== null,
+    entitlementLoaded: acceptedEntitlementLoaded,
   });
 
   if (decision === 'suppress') {
@@ -301,7 +331,11 @@ export function isProBannerVisible(): boolean {
 //     → re-mount via showProBanner. Same gate set as the initial mount path,
 //       so we can never surface a banner the user has already ✕'d this week.
 function syncProBanner(): void {
-  const { premium, accountBacked } = resolveEffectiveBannerPremium();
+  const {
+    premium,
+    accountBacked,
+    acceptedEntitlementLoaded,
+  } = resolveEffectiveBannerPremium();
   if (premium) {
     if (accountBacked) writePremiumHint(true);
     if (!bannerEl) {
@@ -312,11 +346,26 @@ function syncProBanner(): void {
     scheduleBannerRemoval();
     return;
   }
-  // Settled free / sign-out: clear a stale pro hint even when the banner was
-  // never mounted (premium branch above would re-affirm it before #5728 fix).
   const auth = getAuthState();
+  const signedIn = getCurrentClerkUser() !== null || auth.user !== null;
+  // Settled free / account handoff: clear a stale Pro hint even when the
+  // banner was never mounted. A direct switch must not let A's hint suppress
+  // B's eventual free banner.
   if (!auth.isPending) {
     writePremiumHint(false);
+  }
+  if (signedIn && !acceptedEntitlementLoaded) {
+    // An already-mounted free banner belongs to the previous account. During
+    // a direct identity handoff, remove it until the current account's first
+    // accepted Convex snapshot arrives; otherwise a Pro B briefly inherits
+    // A's "Upgrade" UI even though new mounts correctly defer.
+    if (bannerEl) {
+      cancelPendingBannerRemoval();
+      bannerEl.remove();
+      bannerEl = null;
+      setReservation(false);
+    }
+    return;
   }
   // A premium snapshot may have started the fade-out immediately before a
   // non-premium snapshot arrived. Keep the banner visible for the restored

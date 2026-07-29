@@ -59,10 +59,12 @@ export interface BannerPremiumResolutionInput {
   signedIn: boolean;
   /** Desktop API key / browser tester keys — local unlock, not an account. */
   localUnlockPremium: boolean;
-  /** hasPremiumAccess() (may include stale Convex entitlement). */
-  rawPremium: boolean;
-  /** Convex isEntitled() or Clerk plan/role pro. */
-  accountBackedPremium: boolean;
+  /** Clerk plan/role evidence bound to the current signed-in user ID. */
+  identityBoundPremium: boolean;
+  /** Convex entitlement evidence whose snapshot carries no user ID. */
+  unscopedAccountPremium: boolean;
+  /** Whether the unscoped snapshot has been rebound to the current identity. */
+  acceptUnscopedAccountPremium: boolean;
 }
 
 export interface BannerPremiumResolution {
@@ -112,7 +114,9 @@ export interface StableBannerPremiumResolution extends BannerPremiumResolution {
  *
  * Settled signed-out without local unlock keys → free, even if the entitlement
  * module still holds a previous-account snapshot (sign-out races App's
- * resetEntitlementState against ProBanner's auth listener).
+ * resetEntitlementState against ProBanner's auth listener). Direct account
+ * switches may likewise quarantine that unscoped snapshot until App publishes
+ * its reset; current-user Clerk plan/role and local unlock evidence remain safe.
  */
 export function resolveBannerPremium(
   input: BannerPremiumResolutionInput,
@@ -120,9 +124,13 @@ export function resolveBannerPremium(
   if (!input.authPending && !input.signedIn && !input.localUnlockPremium) {
     return { premium: false, accountBacked: false };
   }
+  const accountBacked = (
+    input.identityBoundPremium ||
+    (input.acceptUnscopedAccountPremium && input.unscopedAccountPremium)
+  );
   return {
-    premium: input.rawPremium,
-    accountBacked: input.accountBackedPremium,
+    premium: input.localUnlockPremium || accountBacked,
+    accountBacked,
   };
 }
 
