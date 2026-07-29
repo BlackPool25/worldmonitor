@@ -108,6 +108,49 @@ describe('PortWatch last-good and gap reporting', () => {
     assert.deepEqual(report.refreshFailures, [{ iso2: 'CY', code: 'timeout' }]);
     assert.equal(report.complete, false);
   });
+
+  it('reports a truncated reference feed against the durable country target', () => {
+    const report = portwatchSeed.buildCoverageReport({
+      eligibleCountries: ['US'],
+      expectedCountries: ['US', 'CY'],
+      countryData: new Map([['US', cachedCountry('US', 10 * DAY).prevPayload]]),
+    });
+
+    assert.equal(report.target, 174);
+    assert.equal(report.referenceCountryCount, 1);
+    assert.equal(report.published, 1);
+    assert.equal(report.complete, false);
+    assert.deepEqual(report.missingCountries, ['CY']);
+    assert.equal(report.unidentifiedMissingCount, 172);
+  });
+
+  it('classifies the root cause before transport wording in composite errors', () => {
+    const invalidQueryState = portwatchSeed.buildRefreshFailureState(
+      cachedCountry('US'),
+      new Error('ArcGIS error (via proxy after timeout): Invalid query parameters'),
+      10 * DAY,
+    );
+    const rateLimitedState = portwatchSeed.buildRefreshFailureState(
+      cachedCountry('CY'),
+      new Error('Proxy timeout after upstream HTTP 429 rate limit'),
+      10 * DAY,
+    );
+
+    assert.equal(invalidQueryState.refreshFailure.code, 'invalid_query');
+    assert.equal(rateLimitedState.refreshFailure.code, 'rate_limited');
+  });
+});
+
+describe('PortWatch canonical reference guard', () => {
+  it('refuses to publish a shrunken canonical when the reference feed is partial', () => {
+    assert.equal(portwatchSeed.shouldAdvanceCanonicalForRun({
+      countryCount: 153,
+      previousCountryCount: 174,
+      referenceCountryCount: 153,
+      capTriggered: true,
+      upstreamContactCount: 30,
+    }), false);
+  });
 });
 
 describe('PortWatch atomic publication', () => {

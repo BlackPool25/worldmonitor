@@ -25,9 +25,9 @@ const LOCK_TTL_MS = 60 * 60 * 1000;
 const TTL = 259_200; // 3 days — 6× the 12h cron interval
 // PortWatch currently has 174 ISO2-mapped countries with port references.
 // This is the issue #3613 health target. Runs below this count must stay
-// non-green in /api/health and /api/seed-health, but they still need to
-// advance seed-meta/canonical when they meet the recovery publish floor below
-// so fetchedAt does not freeze and incremental coverage gains reach consumers.
+// non-green in /api/health and /api/seed-health. Partial activity snapshots
+// may still advance when the reference feed proves the full universe, but a
+// truncated reference feed must preserve the prior canonical + seed-meta.
 export const PORTWATCH_PORT_ACTIVITY_TARGET_COUNTRIES = 174;
 // Coverage gate for treating a run as a usable partial data snapshot. Lowered
 // to 5 on 2026-05-18 (was 50 → 25 → 20). Per-country recovery state now
@@ -976,9 +976,9 @@ export function classifyDeferredPayload(
 function refreshFailureCode(reason) {
   if (reason?.refreshFailureCode) return reason.refreshFailureCode;
   const text = `${reason?.code || ''} ${reason?.message || reason || ''}`;
-  if (/timeout|timed out|abort/i.test(text)) return 'timeout';
   if (/invalid query parameters/i.test(text)) return 'invalid_query';
   if (/\b429\b|rate.?limit/i.test(text)) return 'rate_limited';
+  if (/timeout|timed out|abort/i.test(text)) return 'timeout';
   return 'fetch_error';
 }
 
@@ -1001,12 +1001,16 @@ export function buildRefreshFailureState(item, reason, attemptedAt = Date.now())
 
 export function buildCoverageReport({
   eligibleCountries,
+  expectedCountries = [],
   countryData,
   retryState = new Map(),
   refreshFailures = [],
 }) {
   const eligible = [...new Set(eligibleCountries)].sort();
-  const missingCountries = eligible.filter((iso2) => !countryData.has(iso2));
+  const expected = [...new Set([...expectedCountries, ...eligible])].sort();
+  const target = Math.max(PORTWATCH_PORT_ACTIVITY_TARGET_COUNTRIES, expected.length);
+  const missingCountries = expected.filter((iso2) => !countryData.has(iso2));
+  const unidentifiedMissingCount = Math.max(0, target - expected.length);
   const failureByCountry = new Map();
   for (const [iso2, state] of retryState) {
     if (typeof state?.refreshFailure?.code === 'string') {
@@ -1020,10 +1024,12 @@ export function buildCoverageReport({
     .map(([iso2, code]) => ({ iso2, code }))
     .sort((a, b) => a.iso2.localeCompare(b.iso2));
   return {
-    target: eligible.length,
+    target,
+    referenceCountryCount: eligible.length,
     published: countryData.size,
-    complete: missingCountries.length === 0,
+    complete: missingCountries.length === 0 && unidentifiedMissingCount === 0,
     missingCountries,
+    unidentifiedMissingCount,
     refreshFailures: failures,
   };
 }
@@ -1032,7 +1038,7 @@ export function buildCoverageReport({
 // → batched fetch → finalise); splitting it would move complexity into a
 // hidden seam and obscure the linear pipeline. Each stage is short and
 // well-commented.
-export async function fetchAll(progress, { signal } = {}) {
+export async function fetchAll(progress, { signal, expectedCountries = [] } = {}) {
   const { iso3ToIso2 } = createCountryResolvers();
 
   // Resolve the queryable date-column name once per run, before any
@@ -1360,6 +1366,7 @@ export async function fetchAll(progress, { signal } = {}) {
   const countries = [...countryData.keys()];
   const coverage = buildCoverageReport({
     eligibleCountries: eligibleIso3.map((iso3) => iso3ToIso2.get(iso3)),
+    expectedCountries,
     countryData,
     retryState,
     refreshFailures,
@@ -1370,7 +1377,8 @@ export async function fetchAll(progress, { signal } = {}) {
       : '';
     console.error(
       `  [port-activity] COVERAGE GAPS: ${coverage.published}/${coverage.target}; ` +
-      `unpublished countries: ${coverage.missingCountries.join(', ') || 'none'}.${failureCodes}`,
+      `unpublished countries: ${coverage.missingCountries.join(', ') || 'none'}; ` +
+      `unidentified shortfall: ${coverage.unidentifiedMissingCount}.${failureCodes}`,
     );
   }
   return {
@@ -1410,15 +1418,22 @@ export function shouldAdvanceCanonicalForRun(
   {
     countryCount,
     previousCountryCount,
+    referenceCountryCount,
     capTriggered,
     upstreamContactCount,
   },
   {
     publishFloor = MIN_CANONICAL_PUBLISH,
     minUpstreamContacts = MIN_FRESH_FETCH_FOR_CAP_BYPASS,
+    minReferenceCountries = PORTWATCH_PORT_ACTIVITY_TARGET_COUNTRIES,
   } = {},
 ) {
   if (!shouldAdvanceCanonical(countryCount, publishFloor)) return false;
+  const currentReferenceCount = Number(referenceCountryCount);
+  if (
+    !Number.isFinite(currentReferenceCount)
+    || currentReferenceCount < minReferenceCountries
+  ) return false;
   if (upstreamContactCount < minUpstreamContacts) return false;
   if (
     !capTriggered
@@ -1494,7 +1509,10 @@ async function main() {
       cacheHitCount,
       retryState,
       coverage,
-    } = await fetchAll(progress, { signal: shutdownController.signal });
+    } = await fetchAll(progress, {
+      signal: shutdownController.signal,
+      expectedCountries: Array.isArray(prevIso2List) ? prevIso2List : [],
+    });
 
     console.log(`  Fetched ${countryData.size} countries`);
 
@@ -1527,8 +1545,20 @@ async function main() {
     // per-country recovery state persists but the canonical list and seed-meta
     // remain at last-good, preserving the operator-facing warning.
     const upstreamContactCount = freshFetchedCount + cacheHitCount;
-    const capBypassEarned = capTriggered && upstreamContactCount >= MIN_FRESH_FETCH_FOR_CAP_BYPASS;
-    if (capBypassEarned) {
+    const referenceGatePassed =
+      coverage.referenceCountryCount >= PORTWATCH_PORT_ACTIVITY_TARGET_COUNTRIES;
+    const capBypassEarned = capTriggered
+      && referenceGatePassed
+      && upstreamContactCount >= MIN_FRESH_FETCH_FOR_CAP_BYPASS;
+    if (!referenceGatePassed) {
+      console.error(
+        `  REFERENCE COVERAGE GATE: ${coverage.referenceCountryCount}/` +
+        `${PORTWATCH_PORT_ACTIVITY_TARGET_COUNTRIES} reference countries; ` +
+        `${coverage.missingCountries.length} named gap(s), ` +
+        `${coverage.unidentifiedMissingCount} unidentified gap(s). ` +
+        'Canonical + seed-meta will be preserved.',
+      );
+    } else if (capBypassEarned) {
       console.warn(
         `  PARTIAL PUBLISH (cap-mode): ${countryData.size}/${prevCount} countries — ` +
         `${freshFetchedCount} fresh-fetched, ${cacheHitCount} cache-fresh, ${servedStaleCount} stale-served, ` +
@@ -1565,6 +1595,7 @@ async function main() {
     const canonicalAdvances = coverageGatePassed && shouldAdvanceCanonicalForRun({
       countryCount: countryData.size,
       previousCountryCount: prevCount,
+      referenceCountryCount: coverage.referenceCountryCount,
       capTriggered,
       upstreamContactCount,
     });

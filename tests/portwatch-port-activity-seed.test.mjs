@@ -186,8 +186,9 @@ describe('seed-portwatch-port-activity.mjs exports', () => {
 
   it('canonical/seed-meta advance at the recovery publish floor, below the 174 health target', () => {
     // Per-country recovery state persists at every coverage level, but
-    // CANONICAL_KEY + META_KEY require a higher coverage floor before they
-    // advance — protecting consumers from a tiny canonical published fresh.
+    // CANONICAL_KEY + META_KEY require a higher activity coverage floor and
+    // the complete reference universe before they advance — protecting
+    // consumers from a tiny or reference-truncated canonical published fresh.
     assert.match(src, /export const PORTWATCH_PORT_ACTIVITY_TARGET_COUNTRIES\s*=\s*174/);
     assert.match(src, /const MIN_CANONICAL_PUBLISH\s*=\s*50/);
     // The gate is evaluated and used to conditionally write canonical/meta:
@@ -217,9 +218,11 @@ describe('seed-portwatch-port-activity.mjs exports', () => {
     assert.match(src, /freshFetchedCount\+\+/);
     // Counts are surfaced out of fetchAll:
     assert.match(src, /freshFetchedCount,[\s\n]+cacheHitCount: cacheHits/);
-    // main() gates the bypass on the combined fresh upstream contact:
+    // main() gates the bypass on the complete reference universe plus the
+    // combined fresh upstream contact:
     assert.match(src, /const upstreamContactCount = freshFetchedCount \+ cacheHitCount/);
-    assert.match(src, /const capBypassEarned = capTriggered && upstreamContactCount >= MIN_FRESH_FETCH_FOR_CAP_BYPASS/);
+    assert.match(src, /const referenceGatePassed =[\s\S]{0,100}coverage\.referenceCountryCount >= PORTWATCH_PORT_ACTIVITY_TARGET_COUNTRIES/);
+    assert.match(src, /const capBypassEarned = capTriggered[\s\n]+&& referenceGatePassed[\s\n]+&& upstreamContactCount >= MIN_FRESH_FETCH_FOR_CAP_BYPASS/);
     // When cap-mode is triggered but bypass is not earned, canonical + meta
     // must stay at last-good even when stale fallback keeps recordCount high.
     assert.match(src, /CAP-MODE BYPASS REFUSED/);
@@ -960,18 +963,21 @@ describe('validateFn', () => {
     assert.equal(shouldAdvanceCanonicalForRun({
       countryCount: 174,
       previousCountryCount: 174,
+      referenceCountryCount: 174,
       capTriggered: true,
       upstreamContactCount: 0,
     }), false);
     assert.equal(shouldAdvanceCanonicalForRun({
       countryCount: 174,
       previousCountryCount: 174,
+      referenceCountryCount: 174,
       capTriggered: true,
       upstreamContactCount: 30,
     }), true);
     assert.equal(shouldAdvanceCanonicalForRun({
       countryCount: 120,
       previousCountryCount: 174,
+      referenceCountryCount: 174,
       capTriggered: false,
       upstreamContactCount: 30,
     }), false);
