@@ -117,7 +117,7 @@ describe('fetchWidestTechEvents produces an unnarrowed payload (#5603 review)', 
 // fake Upstash and asserting on the payload that actually reaches the shared
 // `research:tech-events:v1` key — mirroring the captured-SET pattern in
 // tests/aviation-cache-poison.test.mts.
-describe('listTechEvents cold-start write is not narrowed by the warming request (#5427)', () => {
+describe('listTechEvents cold-start cache write', () => {
   const ENV_KEYS = [
     'LOCAL_API_MODE',
     'RELAY_SHARED_SECRET',
@@ -200,8 +200,12 @@ describe('listTechEvents cold-start write is not narrowed by the warming request
     __resetKeyPrefixCacheForTests();
   });
 
-  /** Cold Redis (every GET misses) + both upstream feeds served from fixtures. */
-  function installFetchMock() {
+  /**
+   * Cold Redis (every GET misses) + the two upstream feeds. `icsFails` /
+   * `rssFails` return 503 so `fetchTextWithRelay` falls through to its relay
+   * leg, finds no WS_RELAY_URL, and yields null — the real total-outage path.
+   */
+  function installFetchMock({ icsFails = false, rssFails = false } = {}) {
     const redisSets: RedisSetCommand[] = [];
     mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -212,23 +216,32 @@ describe('listTechEvents cold-start write is not narrowed by the warming request
         redisSets.push(JSON.parse(String(init?.body ?? '[]')) as RedisSetCommand);
         return new Response(JSON.stringify({ result: 'OK' }), { status: 200 });
       }
-      if (url === ICS_URL) return new Response(FIXTURE_ICS, { status: 200 });
-      if (url === DEV_EVENTS_RSS) return new Response(FIXTURE_RSS, { status: 200 });
+      if (url === ICS_URL) {
+        return icsFails ? new Response('', { status: 503 }) : new Response(FIXTURE_ICS, { status: 200 });
+      }
+      if (url === DEV_EVENTS_RSS) {
+        return rssFails ? new Response('', { status: 503 }) : new Response(FIXTURE_RSS, { status: 200 });
+      }
       throw new Error(`unexpected fetch: ${url}`);
     });
     return redisSets;
   }
 
-  function cachedPayload(redisSets: RedisSetCommand[]): { events: { id: string; type: string }[] } {
+  function writeFor(redisSets: RedisSetCommand[]): RedisSetCommand {
     const write = redisSets.find(([, key]) => key === REDIS_CACHE_KEY);
     assert.ok(write, `expected a Redis SET for ${REDIS_CACHE_KEY}, saw keys: ${JSON.stringify(redisSets.map(([, k]) => k))}`);
-    return JSON.parse(write[2]) as { events: { id: string; type: string }[] };
+    return write;
+  }
+
+  function cachedPayload(redisSets: RedisSetCommand[]): { events: { id: string; type: string }[] } {
+    return JSON.parse(writeFor(redisSets)[2]) as { events: { id: string; type: string }[] };
   }
 
   function ctxFor(path: string) {
     return { request: new Request(`https://worldmonitor.app${path}`), pathParams: {}, headers: {} } as never;
   }
 
+  describe('is not narrowed by the warming request (#5427)', () => {
   // The warming caller narrows on all three axes at once.
   const NARROW_PATH = '/api/research/v1/list-tech-events?type=conference&limit=1&days=5';
   const NARROW_REQ = { type: 'conference', mappable: false, limit: 1, days: 5 };
@@ -277,5 +290,50 @@ describe('listTechEvents cold-start write is not narrowed by the warming request
     assert.equal(response.conferenceCount, 1);
     // ...and the cache still holds the unnarrowed set behind that response.
     assert.ok(cachedPayload(redisSets).events.length >= 4);
+  });
+  });
+
+  // Review finding #2 on #5603. CURATED_EVENTS always clears the
+  // `events.length > 0` bar, so once the fallback widened to days:365 the
+  // far-future curated entries survived the cutoff and a TOTAL upstream outage
+  // began pinning a curated-only rump under the seeder-owned key for the full
+  // 6h TTL — served to every client as `success: true` with an empty `error`.
+  // Before #5603 the caller's default 90-day window dropped those entries, the
+  // payload came back empty, and the key self-healed via a 120s sentinel.
+  describe('refuses to persist a payload with no upstream data (#5603 review)', () => {
+    const PATH = '/api/research/v1/list-tech-events';
+    const REQ = { type: '', mappable: false, limit: 0, days: 0 };
+
+    it('writes a short-TTL negative sentinel when every feed is down', async () => {
+      const redisSets = installFetchMock({ icsFails: true, rssFails: true });
+      await listTechEvents(ctxFor(PATH), REQ);
+
+      const write = writeFor(redisSets);
+      assert.equal(
+        JSON.parse(write[2]),
+        '__WM_NEG__',
+        `a curated-only outage payload must not be persisted under the shared key, got: ${write[2].slice(0, 200)}`,
+      );
+    });
+
+    it('lets the key recover in seconds, not on the seeder cycle', async () => {
+      const redisSets = installFetchMock({ icsFails: true, rssFails: true });
+      await listTechEvents(ctxFor(PATH), REQ);
+
+      const ttl = Number(writeFor(redisSets)[4]);
+      assert.ok(ttl > 0 && ttl <= 300, `expected a short negative TTL, got ${ttl}s`);
+      assert.notEqual(ttl, 21600, 'the outage write must not take the 6h REDIS_CACHE_TTL');
+    });
+
+    it('still caches a partial fetch, so one dead feed does not blank the endpoint', async () => {
+      // ICS alive, RSS down: ~4 real events. Materially complete, so refusing
+      // it would drop every caller into the empty-response window for as long
+      // as the other feed stayed down.
+      const redisSets = installFetchMock({ rssFails: true });
+      await listTechEvents(ctxFor(PATH), REQ);
+
+      const ids = cachedPayload(redisSets).events.map(e => e.id);
+      assert.ok(ids.includes('wm-conf-day1'), `partial fetches must still be cached, got: ${JSON.stringify(ids)}`);
+    });
   });
 });

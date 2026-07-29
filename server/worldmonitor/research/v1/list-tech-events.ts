@@ -303,10 +303,27 @@ function parseDevEventsRSS(rssText: string): TechEvent[] {
 
 // ---------- Fetch ----------
 
+/** Number of external feeds (Techmeme ICS + dev.events RSS) behind a fetch. */
+const EXTERNAL_SOURCE_COUNT = 2;
+
+/**
+ * A fetch plus how much of it came from upstream.
+ *
+ * `externalSourcesFailed` is deliberately OUTSIDE `response`: the response is
+ * what gets written to the shared cache key, and it must keep the exact shape
+ * the seeders write (scripts/ais-relay.cjs, scripts/seed-research.mjs). Only
+ * the cache-fill path reads this counter, to decide whether the payload is
+ * worth persisting at all.
+ */
+interface TechEventsFetch {
+  response: ListTechEventsResponse;
+  externalSourcesFailed: number;
+}
+
 async function fetchTechEvents(
   req: ListTechEventsRequest,
   pagingPresence: TechEventsPagingPresence,
-): Promise<ListTechEventsResponse> {
+): Promise<TechEventsFetch> {
   const { type, mappable } = req;
   const { limit, days } = resolveTechEventsPaging(req, pagingPresence);
 
@@ -389,17 +406,20 @@ async function fetchTechEvents(
   const mappableCount = conferences.filter(e => e.coords && !e.coords.virtual).length;
 
   if (externalSourcesFailed > 0) {
-    console.warn(`[tech-events] ${externalSourcesFailed}/2 external sources failed, returning ${events.length} events (curated fallback)`);
+    console.warn(`[tech-events] ${externalSourcesFailed}/${EXTERNAL_SOURCE_COUNT} external sources failed, returning ${events.length} events (curated fallback)`);
   }
 
   return {
-    success: true,
-    count: events.length,
-    conferenceCount: conferences.length,
-    mappableCount,
-    lastUpdated: new Date().toISOString(),
-    events,
-    error: '',
+    response: {
+      success: true,
+      count: events.length,
+      conferenceCount: conferences.length,
+      mappableCount,
+      lastUpdated: new Date().toISOString(),
+      events,
+      error: '',
+    },
+    externalSourcesFailed,
   };
 }
 
@@ -486,8 +506,31 @@ export const WIDEST_TECH_EVENTS_REQUEST: Readonly<ListTechEventsRequest> = Objec
  * with it).
  */
 export async function fetchWidestTechEvents(): Promise<ListTechEventsResponse | null> {
-  const fetched = await fetchTechEvents(WIDEST_TECH_EVENTS_REQUEST, { hasLimit: true, hasDays: true });
-  return fetched.events.length > 0 ? fetched : null;
+  const { response, externalSourcesFailed } = await fetchTechEvents(
+    WIDEST_TECH_EVENTS_REQUEST,
+    { hasLimit: true, hasDays: true },
+  );
+
+  // Returning null here makes cachedFetchJson write a 120s NEG_SENTINEL
+  // instead of a REDIS_CACHE_TTL (6h) payload, so the key recovers on the
+  // next request rather than on the seeder's next cycle.
+  //
+  // Refuse when NO external feed answered. `CURATED_EVENTS` alone always
+  // clears the `events.length > 0` bar, so without this check a total upstream
+  // outage pins a curated-only rump under the seeder-owned key for 6h, served
+  // to every client as `success: true` with an empty `error`. That is strictly
+  // worse than the pre-#5603 behaviour, where the caller's default 90-day
+  // window dropped the far-future curated entries, the payload came back
+  // empty, and the key self-healed in 120s. This is the Seed-Owned Key
+  // contract in CONCEPTS.md: a reader answers a miss with a short-TTL
+  // fallback and never poisons the key with a degraded payload.
+  //
+  // A PARTIAL failure still caches: one live feed is materially complete
+  // (~26 or ~100 events), and refusing it would drop every caller into the
+  // empty-response window for as long as the other feed stayed down.
+  if (externalSourcesFailed >= EXTERNAL_SOURCE_COUNT) return null;
+
+  return response.events.length > 0 ? response : null;
 }
 
 export async function listTechEvents(
