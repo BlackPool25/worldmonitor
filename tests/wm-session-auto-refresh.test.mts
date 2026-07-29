@@ -1864,7 +1864,55 @@ describe('wm-session route-scoped recovery failures (#5674)', () => {
 // ---------------------------------------------------------------------------
 
 describe('wm-session cookie-persistence detection (Layer 3)', () => {
-  it('reports cookie_not_persisted and stops spending mints once the cookie proves unstorable', async () => {
+  it('mints on browsers that do not implement AbortSignal.timeout', async () => {
+    memoryStorage.clear();
+    currentFetchHandler = (input) => {
+      const url = typeof input === 'string' ? input : (input instanceof URL ? input.href : input.url);
+      if (url.includes('/api/wm-session')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          exp: FAR_FUTURE,
+          hadSession: false,
+          token: 'wms_legacy-browser-token',
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      return Promise.resolve(new Response('ok', { status: 200 }));
+    };
+
+    const originalTimeout = AbortSignal.timeout;
+    Object.defineProperty(AbortSignal, 'timeout', {
+      configurable: true,
+      value: undefined,
+    });
+    try {
+      assert.equal(
+        await mod.ensureWmSession(),
+        true,
+        'missing AbortSignal.timeout must not fail before the mint request is dispatched',
+      );
+    } finally {
+      Object.defineProperty(AbortSignal, 'timeout', {
+        configurable: true,
+        value: originalTimeout,
+      });
+    }
+  });
+
+  it('still aborts a stalled mint without AbortSignal.timeout', async () => {
+    memoryStorage.clear();
+    mod.__setWmSessionFetchTimeoutForTests(5);
+    currentFetchHandler = (_input, init) => new Promise((_resolve, reject) => {
+      const signal = init?.signal;
+      assert.ok(signal, 'the compatible timeout must pass an AbortSignal');
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+
+    assert.equal(await mod.ensureWmSession(), false, 'a stalled mint must fail closed after the timeout');
+  });
+
+  it('falls back to the anonymous session header once the cookie proves unstorable', async () => {
     memoryStorage.clear();
 
     const captures: Array<{ ctx: { tags?: Record<string, string> } }> = [];
@@ -1876,41 +1924,68 @@ describe('wm-session cookie-persistence detection (Layer 3)', () => {
     }) as Parameters<typeof mod.__setWmSessionSentryEnqueueForTests>[0]);
 
     let mints = 0;
-    currentFetchHandler = (input) => {
+    const fallbackToken = 'wms_header-fallback-token';
+    let premiumFallbackHeader: string | null = null;
+    currentFetchHandler = (input, init) => {
       const url = typeof input === 'string' ? input : (input instanceof URL ? input.href : input.url);
       if (url.includes('/api/wm-session')) {
         mints += 1;
         // The browser stores nothing, so EVERY mint arrives without a cookie.
-        return Promise.resolve(new Response(JSON.stringify({ exp: FAR_FUTURE, hadSession: false }), {
+        return Promise.resolve(new Response(JSON.stringify({
+          exp: FAR_FUTURE,
+          hadSession: false,
+          token: fallbackToken,
+        }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         }));
       }
-      return Promise.resolve(new Response('no cookie presented', { status: 401 }));
+      const headers = new Headers(init?.headers);
+      if (url.includes('/api/market/v1/analyze-stock')) {
+        premiumFallbackHeader = headers.get('X-WorldMonitor-Key');
+        return Promise.resolve(new Response('premium auth remains separate', { status: 401 }));
+      }
+      if (headers.get('X-WorldMonitor-Key') === 'wm_explicit-user-key') {
+        return Promise.resolve(new Response('explicit user key preserved', { status: 200 }));
+      }
+      return Promise.resolve(headers.get('X-WorldMonitor-Key') === fallbackToken
+        ? new Response('header session accepted', { status: 200 })
+        : new Response('no cookie presented', { status: 401 }));
     };
 
     const originalWarn = console.warn;
     console.warn = () => {};
     try {
-      await wrappedFetch('https://api.worldmonitor.app/api/conflict/v1/get-humanitarian-summary-batch');
+      const recovered = await wrappedFetch('https://api.worldmonitor.app/api/conflict/v1/get-humanitarian-summary-batch');
+      assert.equal(recovered.status, 200, 'the request that proves cookie loss must recover through the header');
       const afterFirstRoute = mints;
-      await wrappedFetch('https://api.worldmonitor.app/api/military/v1/get-aircraft-details-batch');
+      const next = await wrappedFetch('https://api.worldmonitor.app/api/military/v1/get-aircraft-details-batch');
+      assert.equal(next.status, 200, 'later requests must use the in-memory anonymous header token');
       assert.equal(
         mints,
         afterFirstRoute,
-        'a cookie proven unstorable must not be re-minted for the next route',
+        'a cookie proven unstorable must not require another mint for the next route',
+      );
+      const explicit = await wrappedFetch(
+        'https://api.worldmonitor.app/api/infrastructure/v1/get-cable-health',
+        { headers: { 'X-WorldMonitor-Key': 'wm_explicit-user-key' } },
+      );
+      assert.equal(explicit.status, 200, 'an explicit user key must outrank the anonymous fallback');
+
+      const premium = await wrappedFetch('https://api.worldmonitor.app/api/market/v1/analyze-stock');
+      assert.equal(premium.status, 401, 'premium auth remains owned by its dedicated injector');
+      assert.equal(
+        premiumFallbackHeader,
+        null,
+        'the anonymous fallback must never be injected into a premium route',
       );
     } finally {
       console.warn = originalWarn;
     }
 
     const dead = captures.filter((c) => c.ctx.tags?.kind === 'wm_session_dead');
-    assert.equal(dead.length, 1, 'exactly one session-dead episode');
-    assert.equal(
-      dead[0].ctx.tags?.reason,
-      'cookie_not_persisted',
-      'must name the browser-side storage failure, not blame the server with retry_401',
-    );
+    assert.equal(dead.length, 0, 'a working header fallback is not a dead-session episode');
+    assert.equal(mod.isWmSessionDead(), false, 'cookie rejection must not black out anonymous data');
   });
 
   it('does not accuse a brand-new browser whose first mint legitimately carries no cookie', async () => {
