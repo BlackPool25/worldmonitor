@@ -22,6 +22,7 @@ import { strict as assert } from 'node:assert';
 import { describe, it, beforeEach, afterEach } from 'node:test';
 
 import { resolvePremiumCallerIdentity } from '../server/_shared/premium-check.ts';
+import { __resetJwksForTests } from '../server/auth-session.ts';
 import { __resetEntitlementNegativeCacheForTests } from '../server/_shared/entitlement-check.ts';
 import {
   INTERNAL_MCP_VERIFIED_HEADER,
@@ -118,6 +119,13 @@ beforeEach(() => {
   process.env.CONVEX_SERVER_SHARED_SECRET = 'fake-secret';
   process.env.UPSTASH_REDIS_REST_URL = 'https://redis.test';
   process.env.UPSTASH_REDIS_REST_TOKEN = 'redis-test-token';
+  // Without an issuer domain, validateBearerToken cannot BUILD a verifier and
+  // answers `unverifiable` — so a test asserting "this token is bad" would
+  // never actually judge a token, it would just observe missing config. Pin it
+  // so the malformed tokens below are genuinely verified and rejected. jose
+  // parses the JWS before resolving any key, so a malformed token fails without
+  // a network call and the URL is never fetched.
+  process.env.CLERK_JWT_ISSUER_DOMAIN = 'https://clerk.test';
   // A validated enterprise key would short-circuit to premium; keep the set
   // empty so the credential branches below are the ones under test.
   delete process.env.WORLDMONITOR_VALID_KEYS;
@@ -164,6 +172,90 @@ describe('resolvePremiumCallerIdentity separates a missing credential from a fre
 
     assert.equal(identity.isPremium, false);
     assert.equal(identity.unauthenticated, true);
+  });
+
+  it('a WELL-FORMED key whose validation could not complete is retryable, not a 401', async () => {
+    // `nope` above is rejected by the wm_ regex before any network call, so it
+    // never reaches the outage path. Use a canonical key so validateUserApiKey
+    // actually attempts a Convex lookup, and make that lookup fail: it throws
+    // UserApiKeyUnavailableError, which used to fall through to the credential
+    // denial and tell a machine client its key was bad and retrying was futile.
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : String((input as Request)?.url ?? input);
+      if (url.includes('redis.test')) {
+        return new Response(JSON.stringify({ result: undefined }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      throw new Error('convex unreachable');
+    }) as typeof fetch;
+
+    const identity = await resolvePremiumCallerIdentity(
+      badCredentialRequest({ 'X-WorldMonitor-Key': `wm_${'a'.repeat(40)}` }),
+    );
+
+    assert.equal(identity.isPremium, false);
+    assert.equal(
+      identity.unauthenticated,
+      undefined,
+      'the credential was supplied — only its verification failed',
+    );
+    assert.equal(identity.billingDenial?.code, 'entitlement_verification_unavailable');
+    assert.equal(identity.billingDenial?.status, 503);
+  });
+
+  it('a bearer that could not be VERIFIED is retryable, not a 401', async () => {
+    // validateBearerToken answers `valid: false` for two very different states:
+    // a token judged bad, and a token never judged at all (no issuer domain
+    // configured, or the JWKS fetch failed). Only the first may be told that
+    // signing in again is the fix.
+    installFetchStub(FREE_ROW);
+    const originalIssuer = process.env.CLERK_JWT_ISSUER_DOMAIN;
+    delete process.env.CLERK_JWT_ISSUER_DOMAIN;
+    __resetJwksForTests();
+    try {
+      const identity = await resolvePremiumCallerIdentity(
+        badCredentialRequest({ Authorization: 'Bearer not-a-real-jwt' }),
+      );
+
+      assert.equal(identity.isPremium, false);
+      assert.equal(
+        identity.unauthenticated,
+        undefined,
+        'no verifier could be built, so nothing was learned about the token',
+      );
+      assert.equal(identity.billingDenial?.code, 'entitlement_verification_unavailable');
+    } finally {
+      if (originalIssuer === undefined) delete process.env.CLERK_JWT_ISSUER_DOMAIN;
+      else process.env.CLERK_JWT_ISSUER_DOMAIN = originalIssuer;
+      __resetJwksForTests();
+    }
+  });
+
+  it('an identified caller with an UNCONFIGURED backend is retryable, not an upsell', async () => {
+    // The #5600 shape: getEntitlements returns null before attempting a lookup,
+    // for everyone. Rendering that as the Pro upsell sells subscribers the plan
+    // they already own because of our own deploy defect.
+    delete process.env.CONVEX_SITE_URL;
+    delete process.env.CONVEX_SERVER_SHARED_SECRET;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : String((input as Request)?.url ?? input);
+      if (url.includes('redis.test')) {
+        return new Response(JSON.stringify({ result: undefined }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      throw new Error('no lookup may be attempted with the backend unconfigured');
+    }) as typeof fetch;
+
+    const identity = await resolvePremiumCallerIdentity(confirmedFreeRequest('user_paying'));
+
+    assert.equal(identity.isPremium, false);
+    assert.equal(identity.unauthenticated, undefined, 'the caller WAS identified');
+    assert.equal(identity.billingDenial?.code, 'entitlement_verification_unavailable');
+    assert.equal(identity.billingDenial?.status, 503);
   });
 
   it('a spoofed internal-MCP marker falls through to the credential denial', async () => {

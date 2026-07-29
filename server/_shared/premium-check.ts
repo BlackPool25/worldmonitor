@@ -6,6 +6,8 @@ import { validateBearerToken } from '../auth-session';
 import {
   classifyBillingVerification,
   getEntitlements,
+  isEntitlementBackendConfigured,
+  unverifiableEntitlementDenial,
   type BillingVerificationDenial,
   type BillingVerificationInput,
 } from './entitlement-check';
@@ -115,6 +117,17 @@ const UNAUTHENTICATED: DeniedIdentity = Object.freeze({
  * a caller choose retryable-vs-terminal wording.
  */
 function denyFor(entitlements: BillingVerificationInput | null): DeniedIdentity {
+  // An absent row is a verdict about the account only when a lookup could
+  // actually run. With CONVEX_SITE_URL or the shared secret missing,
+  // getEntitlements returns null BEFORE attempting one — for everyone, paying
+  // customers included — and a bare DENIED renders as the Pro upsell, selling
+  // subscribers the plan they already own because of OUR deploy defect. This is
+  // the same guard pro-entitlement.ts applies at the browser gates; every arm
+  // that reaches here has already resolved an identity, so the caller is a
+  // known user and this is never the anonymous path (#5619, precedent #5600).
+  if (!entitlements && !isEntitlementBackendConfigured()) {
+    return { ...DENIED, billingDenial: unverifiableEntitlementDenial() };
+  }
   const billingDenial = classifyBillingVerification(entitlements);
   return billingDenial ? { ...DENIED, billingDenial } : DENIED;
 }
@@ -247,6 +260,9 @@ export async function resolvePremiumCallerIdentity(request: Request): Promise<Pr
     request.headers.get('X-WorldMonitor-Key') ??
     request.headers.get('X-Api-Key') ??
     '';
+  // Set when the wm_-key lookup could not COMPLETE (below). Read only at the
+  // terminal fall-through, so a co-present bearer still wins if it resolves.
+  let userKeyLookupUnavailable = false;
   if (wmKey) {
     const validKeys = (process.env.WORLDMONITOR_VALID_KEYS ?? '')
       .split(',').map((k) => k.trim()).filter(Boolean);
@@ -273,6 +289,12 @@ export async function resolvePremiumCallerIdentity(request: Request): Promise<Pr
       // Transient validation outage: do not grant premium, but fall through so
       // a co-present bearer can still resolve. Matches UserApiKeyUnavailableError
       // semantics from the negative-cache fix (#5384 / #5599).
+      //
+      // Remember it. Without this the fall-through below answers UNAUTHENTICATED
+      // — telling a machine client holding a perfectly good key that the key is
+      // bad and retrying is futile, which is exactly what user-api-key.ts says
+      // these outages must never become (#5619 follow-up).
+      userKeyLookupUnavailable = true;
     }
   }
 
@@ -289,7 +311,17 @@ export async function resolvePremiumCallerIdentity(request: Request): Promise<Pr
     // An invalid token is a confirmed answer about the CREDENTIAL, not a failed
     // entitlement lookup — and not a statement about any plan either, so it
     // denies as unauthenticated rather than as a free account (#5619).
-    if (!session.valid) return UNAUTHENTICATED;
+    //
+    // But `valid: false` alone does not mean the token was judged: a missing
+    // issuer domain or a failed JWKS fetch lands here too, and neither says
+    // anything about the credential. Only a CONFIRMED-bad token may be told
+    // that signing in again is the fix.
+    if (!session.valid) {
+      if (session.reason === 'unverifiable') {
+        return { ...DENIED, billingDenial: unverifiableEntitlementDenial() };
+      }
+      return UNAUTHENTICATED;
+    }
     if (session.role === 'pro' && session.userId) {
       return { isPremium: true, userId: session.userId, kind: 'bearer', quotaExempt: false };
     }
@@ -303,10 +335,17 @@ export async function resolvePremiumCallerIdentity(request: Request): Promise<Pr
       return denyFor(ent);
     }
   }
+  // A wm_ key was presented and its lookup never completed. That is an outage,
+  // not a missing credential, so it takes the retryable contract rather than the
+  // 401 below — checked first because the credential WAS supplied.
+  if (userKeyLookupUnavailable) {
+    return { ...DENIED, billingDenial: unverifiableEntitlementDenial() };
+  }
   // No credential resolved an identity: no bearer at all, a bearer that carried
   // no subject, an unknown `wm_` key, a rejected `X-WorldMonitor-Key`, or a
   // spoofed internal-MCP marker that fell through. Every arm that DID identify
-  // someone has already returned above, so this is the credential denial (#5619).
+  // someone, or that failed for a reason other than the credential, has already
+  // returned above, so this is the credential denial (#5619).
   return UNAUTHENTICATED;
 }
 

@@ -149,15 +149,56 @@ describe("gateway entitlement check", () => {
     expect(body.requiredTier).toBe(1);
   });
 
-  test("checkEntitlement returns 403 when getEntitlements returns null (fail-closed)", async () => {
-    // getCachedJson returns null by default (no Redis data, no Convex URL) -> null entitlements
-    const result = await checkEntitlement("test-user", "/api/market/v1/analyze-stock", {});
-    expect(result).not.toBeNull();
-    expect(result!.status).toBe(403);
+  test("checkEntitlement returns 403 when Convex CONFIRMS no entitlement row (fail-closed)", async () => {
+    // This test used to rely on "no Convex URL" to produce its null, which
+    // conflated the two states a null now distinguishes: a lookup that was
+    // never attempted vs one that came back empty. Drive the confirmed case
+    // explicitly — backend configured, Convex answering 200 with a null body —
+    // so the terminal 403 is asserted against a real verdict about the account.
+    await withConvexEntitlementFetch(
+      () => Promise.resolve(new Response("null", {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })),
+      async () => {
+        const result = await checkEntitlement("test-user", "/api/market/v1/analyze-stock", {});
+        expect(result).not.toBeNull();
+        expect(result!.status).toBe(403);
 
-    const body = await result!.json();
-    expect(body.error).toBe("Unable to verify entitlements");
-    expect(body.requiredTier).toBe(1);
+        const body = await result!.json();
+        expect(body.error).toBe("Unable to verify entitlements");
+        expect(body.requiredTier).toBe(1);
+      },
+    );
+  });
+
+  test("checkEntitlement answers the retryable 503 when the backend is UNCONFIGURED", async () => {
+    // The other half of the split above. With CONVEX_SITE_URL / the shared
+    // secret missing, getEntitlements returns null before attempting a lookup —
+    // for every user, paying customers included. Rendering that as the terminal
+    // "unable to verify" 403 tells subscribers their access failed because of
+    // our own deploy defect. This gate is reached from server/gateway.ts on
+    // every tier-gated session request, so it is the widest surface of the
+    // asymmetry #5619 set out to remove (#5600 is the precedent).
+    const originalSiteUrl = process.env.CONVEX_SITE_URL;
+    const originalSecret = process.env.CONVEX_SERVER_SHARED_SECRET;
+    delete process.env.CONVEX_SITE_URL;
+    delete process.env.CONVEX_SERVER_SHARED_SECRET;
+    vi.mocked(getCachedJson).mockResolvedValueOnce(null);
+    try {
+      const result = await checkEntitlement("test-user", "/api/market/v1/analyze-stock", {});
+      expect(result).not.toBeNull();
+      expect(result!.status).toBe(503);
+      expect(result!.headers.get("X-Billing-Verification")).toBe(
+        "entitlement_verification_unavailable",
+      );
+      expect(Number(result!.headers.get("Retry-After"))).toBeGreaterThan(0);
+    } finally {
+      if (originalSiteUrl === undefined) delete process.env.CONVEX_SITE_URL;
+      else process.env.CONVEX_SITE_URL = originalSiteUrl;
+      if (originalSecret === undefined) delete process.env.CONVEX_SERVER_SHARED_SECRET;
+      else process.env.CONVEX_SERVER_SHARED_SECRET = originalSecret;
+    }
   });
 
   test("transient Convex fetch failure returns a verificationUnavailable marker, not null", async () => {
@@ -229,6 +270,49 @@ describe("gateway entitlement check", () => {
       if (site !== undefined) process.env.CONVEX_SITE_URL = site;
       if (secret !== undefined) process.env.CONVEX_SERVER_SHARED_SECRET = secret;
     }
+  });
+
+  test("a 429 carries its own Retry-After instead of the generic default", async () => {
+    // Every other unanswered lookup gets the generic 5s. A 429 is the one that
+    // tells us how long the upstream wants to be left alone; re-advertising 5s
+    // would send clients back inside that window and amplify the throttling.
+    await withConvexEntitlementFetch(
+      () => Promise.resolve(new Response("slow down", {
+        status: 429,
+        headers: { "Retry-After": "60" },
+      })),
+      async () => {
+        const ent = await getEntitlements("user-429");
+        expect(ent?.verificationUnavailable).toBe(true);
+        expect(ent?.retryAfterSeconds).toBe(60);
+        // Still denies exactly as hard.
+        expect(ent?.features.tier).toBe(0);
+        const denial = classifyBillingVerification(ent);
+        expect(denial?.retryAfterSeconds).toBe(60);
+
+        // And it must survive the negative-cache hit. The cache re-synthesizes
+        // the marker rather than storing it, so without carrying the cooldown
+        // the first response honors the upstream and every hit inside the
+        // window quietly downgrades to the generic default.
+        const cached = await getEntitlements("user-429");
+        expect(cached?.verificationUnavailable).toBe(true);
+        expect(cached?.retryAfterSeconds).toBe(60);
+      },
+    );
+  });
+
+  test("a non-429 unanswered lookup keeps the generic Retry-After", async () => {
+    await withConvexEntitlementFetch(
+      () => Promise.resolve(new Response("boom", {
+        status: 503,
+        headers: { "Retry-After": "60" },
+      })),
+      async () => {
+        const ent = await getEntitlements("user-503-retryafter");
+        expect(ent?.verificationUnavailable).toBe(true);
+        expect(ent?.retryAfterSeconds).toBeUndefined();
+      },
+    );
   });
 
   test("checkEntitlement answers a transient lookup failure with the retryable 503 contract, not a hard 403", async () => {

@@ -240,14 +240,23 @@ const UNAVAILABLE_NEGATIVE_CACHE_TTL_MS = 3_000;
  */
 const UNAVAILABLE_NEGATIVE_CACHE_MAX_ENTRIES = 1_000;
 
-/** userId -> epoch ms after which the cached transient failure expires. */
-const _unavailableUntil = new Map<string, number>();
+/**
+ * userId -> when the cached transient failure expires, plus any upstream-supplied
+ * cooldown that produced it.
+ *
+ * `retryAfterSeconds` rides along because the cache HIT re-synthesizes the
+ * marker rather than storing it: without this, a 429's own Retry-After would be
+ * honored on the first response and silently downgraded to the generic default
+ * for every hit inside the window — sending clients back at the upstream sooner
+ * than it asked, which is the amplification the header exists to prevent.
+ */
+const _unavailableUntil = new Map<string, { expiresAt: number; retryAfterSeconds?: number }>();
 
-function rememberVerificationUnavailable(userId: string): void {
+function rememberVerificationUnavailable(userId: string, retryAfterSeconds?: number): void {
   const now = Date.now();
   if (_unavailableUntil.size >= UNAVAILABLE_NEGATIVE_CACHE_MAX_ENTRIES) {
-    for (const [key, expiresAt] of _unavailableUntil) {
-      if (expiresAt <= now) _unavailableUntil.delete(key);
+    for (const [key, entry] of _unavailableUntil) {
+      if (entry.expiresAt <= now) _unavailableUntil.delete(key);
     }
     while (_unavailableUntil.size >= UNAVAILABLE_NEGATIVE_CACHE_MAX_ENTRIES) {
       const oldest = _unavailableUntil.keys().next();
@@ -255,7 +264,10 @@ function rememberVerificationUnavailable(userId: string): void {
       _unavailableUntil.delete(oldest.value);
     }
   }
-  _unavailableUntil.set(userId, now + UNAVAILABLE_NEGATIVE_CACHE_TTL_MS);
+  _unavailableUntil.set(userId, {
+    expiresAt: now + UNAVAILABLE_NEGATIVE_CACHE_TTL_MS,
+    retryAfterSeconds,
+  });
 }
 
 /**
@@ -431,9 +443,11 @@ export async function getEntitlements(userId: string): Promise<CachedEntitlement
   // rather than re-paying the backend's 3s budget. Only the synthesized
   // verificationUnavailable answer is cached here — never a confirmed row and
   // never a fail-closed null, both of which have their own (Redis) cache policy.
-  const unavailableUntil = _unavailableUntil.get(userId);
-  if (unavailableUntil !== undefined) {
-    if (unavailableUntil > Date.now()) return unavailableEntitlements();
+  const unavailable = _unavailableUntil.get(userId);
+  if (unavailable !== undefined) {
+    if (unavailable.expiresAt > Date.now()) {
+      return unavailableEntitlements(unavailable.retryAfterSeconds);
+    }
     _unavailableUntil.delete(userId);
   }
 
@@ -444,7 +458,9 @@ export async function getEntitlements(userId: string): Promise<CachedEntitlement
   _inFlight.set(userId, promise);
   try {
     const result = await promise;
-    if (result?.verificationUnavailable) rememberVerificationUnavailable(userId);
+    if (result?.verificationUnavailable) {
+      rememberVerificationUnavailable(userId, result.retryAfterSeconds);
+    }
     return result;
   } finally {
     _inFlight.delete(userId);
@@ -454,7 +470,12 @@ export async function getEntitlements(userId: string): Promise<CachedEntitlement
 // Free-shaped deny-side value for transient lookup failures. Grants nothing
 // (tier 0, no apiAccess/mcpAccess, validUntil 0); its only power is steering
 // the gates to the retryable 503 via getBillingVerificationDenial.
-function unavailableEntitlements(): CachedEntitlements {
+//
+// `retryAfterSeconds` is optional and only supplied when the upstream told us
+// how long to wait (a 429's own Retry-After). Omitted, the denial constructors
+// fall back to the generic clamp default, which is the behavior every other
+// failure mode here wants.
+function unavailableEntitlements(retryAfterSeconds?: number): CachedEntitlements {
   return {
     planKey: 'free',
     features: {
@@ -468,7 +489,21 @@ function unavailableEntitlements(): CachedEntitlements {
     },
     validUntil: 0,
     verificationUnavailable: true,
+    ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
   };
+}
+
+/**
+ * Parse an HTTP `Retry-After` header into seconds.
+ *
+ * Only the delta-seconds form is honored. The HTTP-date form is legal but
+ * Convex does not emit it, and guessing at clock skew to support it would be
+ * worse than falling back to the caller's default.
+ */
+function parseRetryAfterSeconds(header: string | null): number | undefined {
+  if (!header) return undefined;
+  const seconds = Number(header.trim());
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : undefined;
 }
 
 async function _getEntitlementsImpl(userId: string): Promise<CachedEntitlements | null> {
@@ -540,7 +575,16 @@ async function _getEntitlementsImpl(userId: string): Promise<CachedEntitlements 
       // server/gateway.ts answers for this state on wm_-key traffic. A client
       // that keeps retrying spends its transient budget and lands on `give_up`:
       // still terminal, still not an upsell.
-      return unavailableEntitlements();
+      //
+      // A 429 is the one status that tells us how long to wait. Re-advertising
+      // the generic 5s default would send clients back inside the upstream's
+      // own cooldown and amplify the throttling we were just asked to ease, so
+      // its Retry-After rides along on the marker.
+      return unavailableEntitlements(
+        response.status === 429
+          ? parseRetryAfterSeconds(response.headers.get('Retry-After'))
+          : undefined,
+      );
     }
     const result = await response.json() as CachedEntitlements | null;
 
@@ -802,6 +846,23 @@ export async function checkEntitlementDetailed(
 
   const ent = await getEntitlements(userId);
   if (!ent) {
+    // An absent row is a verdict about the account only when a lookup could
+    // actually run. With the backend unconfigured getEntitlements returns null
+    // BEFORE attempting one — for everyone, paying customers included — so the
+    // hard 403 below would tell every subscriber their entitlement could not be
+    // verified because of our own deploy defect. This gate is reached from
+    // server/gateway.ts on every tier-gated session request, which makes it the
+    // widest surface of the #5619 asymmetry (#5600 is the precedent).
+    if (!isEntitlementBackendConfigured()) {
+      return {
+        response: renderBillingVerificationDenial(
+          unverifiableEntitlementDenial(),
+          corsHeaders,
+          requiredTier,
+        ),
+        entitlements: null,
+      };
+    }
     // Fail-closed: unable to verify entitlements -> block the request
     return {
       response: new Response(
