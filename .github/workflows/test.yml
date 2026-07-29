@@ -10,7 +10,6 @@ permissions:
 
 jobs:
   changes:
-    name: test-changes
     runs-on: ubuntu-latest
     permissions:
       pull-requests: read
