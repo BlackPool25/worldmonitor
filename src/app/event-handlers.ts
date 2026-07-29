@@ -1974,7 +1974,12 @@ export class EventHandlerManager implements AppModule {
     const applyGate = (): void => {
       if (this.ctx.isDestroyed) return;
       const verdict = evaluatePlaybackGate(getAuthState());
-      el.style.display = verdict === 'visible' ? '' : 'none';
+      const visible = verdict === 'visible';
+      el.style.display = visible ? '' : 'none';
+      // Losing access mid-replay must also LEAVE playback. `display: none`
+      // alone strands the dashboard on historical data — the "Live" button is
+      // inside the element we just hid. No-ops unless playback is active.
+      if (!visible) this.ctx.playbackControl?.exitPlayback();
       // Affirmative denials only, once per session. 'pending' also hides, but
       // counting it would tick the funnel on every page load — including for
       // subscribers whose control appears a moment later.

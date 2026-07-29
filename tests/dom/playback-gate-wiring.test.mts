@@ -22,26 +22,29 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock }
 
 import { initTestI18n } from './helpers/i18n.mts';
 
-type Session = {
-  user: { id: string; name: string; email: string; role: 'free' | 'pro' } | null;
-  isPending: boolean;
-};
-
-type Entitlement = {
-  planKey: string;
-  features: { tier: number };
-  validUntil: number;
-} | null;
+// Both aliased to the REAL exported interfaces rather than re-declared. A
+// hand-rolled shape here would let the fixtures drift from production silently;
+// this way a field added to either interface fails `npm run typecheck:dom-tests`
+// until the fixtures below are updated.
+type Session = import('@/services/auth-state').AuthSession;
+type Entitlement = import('@/services/entitlements').EntitlementState | null;
 
 /** Live Clerk session, mutated per case. Boot default mirrors auth-state.ts. */
 let session: Session = { user: null, isPending: true };
 /** Live Convex entitlement snapshot; `null` means "no snapshot has arrived". */
 let entitlement: Entitlement = null;
+/** Desktop runtime with WORLDMONITOR_API_KEY configured. */
+let desktopKeyPresent = false;
 // Kept apart, and each replayed with the argument its real emitter passes, so
 // the test cannot accidentally certify a listener that only works when called
 // with the other source's payload (or with none at all).
 const authListeners: Array<(state: Session) => void> = [];
 const entitlementListeners: Array<(state: Entitlement) => void> = [];
+// Real unsubscribe counters. With the previous `() => {}` stubs, a regression
+// that never pushed an unsubscriber onto `proGateUnsubscribers` — or that
+// stopped calling them in destroy() — passed every assertion in this file.
+let authUnsubscribed = 0;
+let entitlementUnsubscribed = 0;
 
 // Partial mocks throughout: a full replacement would turn every other export
 // these modules provide into `undefined` somewhere in the event-handlers import
@@ -51,7 +54,12 @@ vi.mock('@/services/auth-state', async (importOriginal) => ({
   getAuthState: () => session,
   subscribeAuthState: (fn: (state: Session) => void) => {
     authListeners.push(fn);
-    return () => {};
+    // The real one emits the current state synchronously on subscribe
+    // (auth-state.ts:69). Replicated so the suite runs production's actual
+    // multi-fire mount path, not a quieter one that only fires when the test
+    // says so — the gate-hit latch's whole job is to survive that re-entry.
+    fn(session);
+    return () => authUnsubscribed++;
   },
 }));
 
@@ -66,7 +74,10 @@ vi.mock('@/services/entitlements', async (importOriginal) => ({
     entitlement !== null && entitlement.planKey !== 'free' && entitlement.validUntil >= Date.now(),
   onEntitlementChange: (fn: (state: Entitlement) => void) => {
     entitlementListeners.push(fn);
-    return () => {};
+    // Real behaviour: late subscribers get the current value immediately, but
+    // ONLY when a snapshot already exists (entitlements.ts:156-158).
+    if (entitlement !== null) fn(entitlement);
+    return () => entitlementUnsubscribed++;
   },
 }));
 
@@ -76,10 +87,41 @@ vi.mock('@/services/analytics', async (importOriginal) => ({
   trackGateHit: (feature: string) => trackGateHit(feature),
 }));
 
+// Snapshot store, so a test can actually ENTER playback. The real one opens
+// IndexedDB, which happy-dom does not provide.
+const SNAPSHOT_TS = 1_700_000_000_000;
+vi.mock('@/services/storage', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/services/storage')>()),
+  getSnapshotTimestamps: async () => [SNAPSHOT_TS],
+  getSnapshotAt: async () => ({
+    timestamp: SNAPSHOT_TS,
+    events: [],
+    marketPrices: {},
+    predictions: [],
+    hotspotLevels: {},
+  }),
+}));
+
+// The desktop runtime's WORLDMONITOR_API_KEY branch of `hasPremiumAccess`.
+// Without this the suite reaches `premiumAccess` ONLY through `isEntitled()`,
+// so dropping the desktop-key path from `readPlaybackGateInputs` would go
+// unnoticed. Everything else keeps the real (absent-secret) behaviour.
+vi.mock('@/services/runtime-config', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/services/runtime-config')>();
+  return {
+    ...actual,
+    getSecretState: (key: string) =>
+      key === 'WORLDMONITOR_API_KEY' && desktopKeyPresent
+        ? { present: true, valid: true, source: 'env' as const }
+        : actual.getSecretState(key as Parameters<typeof actual.getSecretState>[0]),
+  };
+});
+
 const { EventHandlerManager } = await import('@/app/event-handlers');
 
 let container: HTMLElement;
 let manager: InstanceType<typeof EventHandlerManager>;
+let ctx: ConstructorParameters<typeof EventHandlerManager>[0];
 let loadAllData: Mock<() => void>;
 
 const control = () => container.querySelector<HTMLElement>('.playback-control');
@@ -93,15 +135,27 @@ function signedIn(): Session {
   };
 }
 
+/** Feature blocks matching the real `EntitlementState['features']` contract. */
+function features(tier: number): NonNullable<Entitlement>['features'] {
+  return {
+    tier,
+    apiAccess: tier >= 1,
+    apiRateLimit: tier >= 1 ? 1000 : 0,
+    maxDashboards: tier >= 1 ? 10 : 3,
+    prioritySupport: false,
+    exportFormats: [],
+  };
+}
+
 const PRO_SNAPSHOT: Entitlement = {
   planKey: 'pro',
-  features: { tier: 1 },
+  features: features(1),
   validUntil: Date.now() + 86_400_000,
 };
 
 const FREE_SNAPSHOT: Entitlement = {
   planKey: 'free',
-  features: { tier: 0 },
+  features: features(0),
   validUntil: Date.now() + 86_400_000,
 };
 
@@ -123,9 +177,12 @@ beforeEach(() => {
   document.body.replaceChildren();
   authListeners.length = 0;
   entitlementListeners.length = 0;
+  authUnsubscribed = 0;
+  entitlementUnsubscribed = 0;
   trackGateHit.mockClear();
   session = { user: null, isPending: true };
   entitlement = null;
+  desktopKeyPresent = false;
   loadAllData = vi.fn<() => void>();
 
   container = document.createElement('div');
@@ -134,7 +191,7 @@ beforeEach(() => {
   container.appendChild(headerRight);
   document.body.appendChild(container);
 
-  const ctx = {
+  ctx = {
     container,
     isDestroyed: false,
     isPlaybackMode: false,
@@ -210,6 +267,10 @@ describe('setupPlaybackControl — entitlement gate (#5632)', () => {
 
     expect(isVisible()).toBe(false);
     expect(trackGateHit).not.toHaveBeenCalled();
+    // Pins the `isPlaybackMode` guard inside exitPlayback: this hidden verdict
+    // happens on EVERY page load, and an unguarded exit would fire a full
+    // data reload each time.
+    expect(loadAllData).not.toHaveBeenCalled();
   });
 
   it('reveals the control when the entitlement snapshot lands after boot', () => {
@@ -251,5 +312,144 @@ describe('setupPlaybackControl — entitlement gate (#5632)', () => {
     emitEntitlement();
 
     expect(trackGateHit).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('setupPlaybackControl — revocation (#5632)', () => {
+  it('hides the control when a subscriber signs out', () => {
+    // The security-relevant direction. Every other reveal case proves the
+    // control can APPEAR; a regression that leaves the previous account's
+    // premium control mounted would pass all of them.
+    session = signedIn();
+    entitlement = PRO_SNAPSHOT;
+
+    manager.setupPlaybackControl();
+    expect(isVisible()).toBe(true);
+
+    session = { user: null, isPending: false };
+    entitlement = null;
+    emitEntitlement();
+    emitAuth();
+
+    expect(isVisible()).toBe(false);
+  });
+
+  it('hides the control when the entitlement lapses without a sign-out', () => {
+    session = signedIn();
+    entitlement = PRO_SNAPSHOT;
+
+    manager.setupPlaybackControl();
+    expect(isVisible()).toBe(true);
+
+    entitlement = FREE_SNAPSHOT;
+    emitEntitlement();
+
+    expect(isVisible()).toBe(false);
+  });
+
+  it('keeps the control up across an account switch until the new snapshot lands', () => {
+    // App.ts resets the entitlement snapshot on a userId change while the NEW
+    // user is already signed in, so the chain sees signedIn + no snapshot and
+    // fails open. Pinned deliberately: it is the widest fail-open window in
+    // the design, and any future narrowing should be a conscious change.
+    session = signedIn();
+    entitlement = PRO_SNAPSHOT;
+    manager.setupPlaybackControl();
+
+    session = {
+      user: { id: 'user_2', name: 'B', email: 'b@example.com', role: 'free' },
+      isPending: false,
+    };
+    entitlement = null;
+    emitEntitlement();
+    emitAuth();
+
+    expect(isVisible()).toBe(true);
+
+    entitlement = FREE_SNAPSHOT;
+    emitEntitlement();
+
+    expect(isVisible()).toBe(false);
+  });
+});
+
+describe('setupPlaybackControl — non-Convex premium paths (#5632)', () => {
+  it('shows the control on a desktop API key with no session and no snapshot', () => {
+    // `hasPremiumAccess` short-circuits on WORLDMONITOR_API_KEY before any
+    // Clerk or Convex signal. Without this case the suite reaches
+    // `premiumAccess` only through isEntitled(), so dropping the desktop-key
+    // path from readPlaybackGateInputs would go unnoticed.
+    desktopKeyPresent = true;
+    session = { user: null, isPending: false };
+    entitlement = null;
+
+    manager.setupPlaybackControl();
+
+    expect(isVisible()).toBe(true);
+    expect(trackGateHit).not.toHaveBeenCalled();
+  });
+});
+
+describe('setupPlaybackControl — teardown and active playback (#5632)', () => {
+  it('releases BOTH subscriptions on destroy', () => {
+    // Two emitters means two leaks if either unsubscriber is dropped, and a
+    // leaked listener keeps writing to a detached element for the rest of the
+    // page's life.
+    session = signedIn();
+    entitlement = PRO_SNAPSHOT;
+    manager.setupPlaybackControl();
+
+    expect(authUnsubscribed).toBe(0);
+    expect(entitlementUnsubscribed).toBe(0);
+
+    manager.destroy();
+
+    expect(authUnsubscribed).toBe(1);
+    expect(entitlementUnsubscribed).toBe(1);
+  });
+
+  it('stops touching the control once the manager is destroyed', () => {
+    session = signedIn();
+    entitlement = PRO_SNAPSHOT;
+    manager.setupPlaybackControl();
+    expect(isVisible()).toBe(true);
+
+    (ctx as { isDestroyed: boolean }).isDestroyed = true;
+    session = { user: null, isPending: false };
+    entitlement = null;
+    emitAuth();
+
+    // The guard leaves the last verdict in place rather than writing to a
+    // control whose owner is tearing down.
+    expect(isVisible()).toBe(true);
+  });
+
+  it('leaves playback mode when access is revoked mid-replay', async () => {
+    // Reachable in ordinary use, not just on downgrade: a signed-in free user
+    // is shown the control during the never-over-gate window (Clerk hydrated,
+    // Convex snapshot still in flight for up to 10s) and can enter playback
+    // before the snapshot lands and denies them. Hiding the element alone
+    // strands the dashboard on historical data — the "Live" button is INSIDE
+    // the element being hidden, so there is no way back.
+    session = signedIn();
+    entitlement = PRO_SNAPSHOT;
+    manager.setupPlaybackControl();
+
+    const el = control()!;
+    el.querySelector<HTMLButtonElement>('.playback-toggle')!.click();
+    await vi.waitFor(() => {
+      expect(el.querySelector<HTMLInputElement>('.playback-slider')!.max).toBe('0');
+    });
+    el.querySelector<HTMLButtonElement>('.playback-btn[data-action="start"]')!.click();
+    await vi.waitFor(() => {
+      expect(document.body.classList.contains('playback-mode')).toBe(true);
+    });
+
+    entitlement = FREE_SNAPSHOT;
+    emitEntitlement();
+
+    expect(isVisible()).toBe(false);
+    expect(document.body.classList.contains('playback-mode')).toBe(false);
+    expect(loadAllData).toHaveBeenCalled();
   });
 });
