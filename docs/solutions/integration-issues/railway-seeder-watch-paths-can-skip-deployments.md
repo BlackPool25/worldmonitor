@@ -118,6 +118,10 @@ Railway producer, deployment trigger, or composed coverage is still unhealthy.
   push back to the broad contract on the next `--apply`.
 - Keep the healthy compact-response case in monitor tests; absence of
   `problems` is success when `status` is `HEALTHY`.
+- Keep the Railway project token in the main-only
+  `ingestion-acceptance-production` GitHub Actions environment. Do not move it
+  to repository or organization secret scope, where a manually dispatched
+  non-default ref could access it.
 - Recover stale source deployments with a clean current-main `railway up` or
   Railway's **Deploy Latest Commit** action, then verify both deployment SHA and
   compact health.

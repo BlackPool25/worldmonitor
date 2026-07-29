@@ -101,6 +101,25 @@ describe('seed freshness workflow control plane', () => {
   });
 
   it('audits read-only Railway production config before grading data health', () => {
+    assert.deepEqual(
+      workflow.jobs.monitor.environment,
+      {
+        name: 'ingestion-acceptance-production',
+        deployment: false,
+      },
+      'production credentials must come from the main-only ingestion acceptance environment',
+    );
+
+    const checkout = monitorSteps.find(
+      (step) => typeof step.uses === 'string' && step.uses.startsWith('actions/checkout@'),
+    );
+    assert.ok(checkout, 'workflow must check out the audited repository revision');
+    assert.equal(
+      checkout.uses,
+      'actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10',
+      'credential-bearing workflows must pin checkout to the repository-standard immutable SHA',
+    );
+
     const installIndex = monitorSteps.findIndex(
       (step) => step.name === 'Install pinned Railway CLI',
     );

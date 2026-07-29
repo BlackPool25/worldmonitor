@@ -69,14 +69,23 @@ Run the audit after adding or replacing a standalone seeder, changing a bundle
 dependency, or changing a production cron.
 
 The scheduled operational-acceptance workflow performs the same audit in
-read-only mode before checking compact health. Configure the GitHub Actions
-secret `RAILWAY_PRODUCTION_TOKEN` with a Railway project token scoped to the
-production environment, and set the non-secret repository variable
-`RAILWAY_PROJECT_ID` to the `world-monitor` project ID. The workflow maps the
-project token to the CLI's standard `RAILWAY_TOKEN` variable, links only inside
-the ephemeral runner, and never passes `--apply`. Do not use the broader
-account-scoped `RAILWAY_API_TOKEN`. Missing context intentionally fails the
-acceptance run rather than silently skipping the live audit.
+read-only mode before checking compact health. Create the dedicated GitHub
+Actions environment `ingestion-acceptance-production`, restrict its deployment
+branch policy to `main`, and configure:
+
+- environment secret `RAILWAY_PRODUCTION_TOKEN`: a Railway project token scoped
+  to the production environment;
+- environment variable `RAILWAY_PROJECT_ID`: the `world-monitor` project ID.
+
+Do not define the Railway token as a repository or organization secret:
+`workflow_dispatch` can target another ref, while the environment's server-side
+branch policy keeps the production credential unavailable there. The workflow
+references the environment with deployment tracking disabled, maps the project
+token to the CLI's standard `RAILWAY_TOKEN` variable only for the link and audit
+steps, links only inside the ephemeral runner, and never passes `--apply`. Do not
+use the broader account-scoped `RAILWAY_API_TOKEN`. Missing or inaccessible
+context intentionally fails the acceptance run rather than silently skipping
+the live audit.
 
 ### Bootstrap R2 publisher contract
 
