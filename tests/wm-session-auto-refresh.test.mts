@@ -1988,6 +1988,53 @@ describe('wm-session cookie-persistence detection (Layer 3)', () => {
     assert.equal(mod.isWmSessionDead(), false, 'cookie rejection must not black out anonymous data');
   });
 
+  it('activates the header fallback for concurrent recovery after a reload drops the cookie', async () => {
+    memoryStorage.clear();
+    memoryStorage.set('wm-session-exp', JSON.stringify({ exp: FAR_FUTURE }));
+
+    let mints = 0;
+    const fallbackToken = 'wms_concurrent-reload-token';
+    const routeAttempts = new Map<string, number>();
+    currentFetchHandler = async (input, init) => {
+      const url = typeof input === 'string' ? input : (input instanceof URL ? input.href : input.url);
+      if (url.includes('/api/wm-session')) {
+        mints += 1;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return new Response(JSON.stringify({
+          exp: FAR_FUTURE,
+          hadSession: false,
+          token: fallbackToken,
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      const attempts = (routeAttempts.get(url) ?? 0) + 1;
+      routeAttempts.set(url, attempts);
+      const headers = new Headers(init?.headers);
+      return headers.get('X-WorldMonitor-Key') === fallbackToken
+        ? new Response('header session accepted', { status: 200 })
+        : new Response('cookie missing after reload', { status: 401 });
+    };
+
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    try {
+      const [first, second] = await Promise.all([
+        wrappedFetch('https://api.worldmonitor.app/api/conflict/v1/get-humanitarian-summary-batch'),
+        wrappedFetch('https://api.worldmonitor.app/api/military/v1/get-aircraft-details-batch'),
+      ]);
+
+      assert.equal(first.status, 200, 'the recovery leader must replay with the minted fallback token');
+      assert.equal(second.status, 200, 'the recovery follower must share the same working fallback');
+      assert.equal(mints, 1, 'concurrent recovery must share exactly one mint');
+      assert.equal(mod.isWmSessionDead(), false, 'successful fallback recovery must not enter cooldown');
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
   it('does not accuse a brand-new browser whose first mint legitimately carries no cookie', async () => {
     // Every first-time visitor mints without a cookie. Reading that as
     // non-persistence would black out the whole anonymous surface on arrival.

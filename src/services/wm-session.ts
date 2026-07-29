@@ -856,6 +856,17 @@ export function installWmSessionFetchInterceptor(): void {
           if (isCurrentSessionIdentity()) noteRecoveryFailure('mint_failed', path);
           return null;
         }
+        // Recovery already has stronger evidence than a page-boot mint: the
+        // request that brought us here was rejected, and this fresh mint handed
+        // back an anonymous-only token. Use it for the verification replay now.
+        // This also covers reloads where sessionStorage retained a fresh expiry
+        // but the HttpOnly cookie was dropped: cookieIssuedThisSession starts
+        // false, so hadSession:false alone cannot safely prove persistence is
+        // broken, while replaying without the returned token would send every
+        // concurrent follower into the retry_401 quorum.
+        if (anonymousSessionHeaderToken) {
+          useAnonymousSessionHeader = true;
+        }
         const retryResp = await replayAndReport();
         return retryResp.status === 401 ? null : retryResp;
       })();
