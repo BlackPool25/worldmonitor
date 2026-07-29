@@ -362,6 +362,32 @@ test('GDELT route circuit opens after one SSL/timeout canary failure', async () 
   );
 });
 
+test('GDELT route circuit opens after one proxy-auth canary failure', async () => {
+  for (const status of [401, 407]) {
+    const attempted = [];
+    await fetchGdeltConflictEvents({
+      fetchCountryEvents: async (cc) => {
+        attempted.push(cc);
+        return {
+          country: cc, ok: false, events: [],
+          error: `GDELT_SOURCE_PROXY_HTTP_${status}`,
+        };
+      },
+      fetchBulkEvents: async () => { throw new Error('bulk unavailable'); },
+      pace: async () => {},
+      now: () => 0,
+      deadlineAt: 10_000_000,
+      loadPreviousSnapshot: async () => null,
+    }).catch(() => {});
+
+    assert.equal(
+      attempted.length,
+      1,
+      `HTTP ${status} proxy auth failure must fall through to bulk without another country request`,
+    );
+  }
+});
+
 test('GDELT storm abort does NOT fire when a country in the batch succeeds', async () => {
   // The abort must never cut short a sweep that is actually working. One success in the
   // batch means we are not being uniformly throttled — keep going.
