@@ -1671,25 +1671,44 @@ describe('wm-session route-scoped recovery failures (#5674)', () => {
 
   it('ignores an anonymous recovery result that settles after a key-session upgrade', async () => {
     memoryStorage.clear();
+    memoryStorage.set('wm-session-exp', JSON.stringify({ exp: FAR_FUTURE }));
     const { captures } = collectSentry();
     const gated = 'https://api.worldmonitor.app/api/intelligence/v1/get-risk-scores';
     let gatedAttempts = 0;
-    let releaseAnonymousRetry: (() => void) | null = null;
+    let releaseAnonymousMint: (() => void) | null = null;
+    const anonymousToken = 'wms_stale-anonymous-recovery';
+    const fallbackHeaders: Array<string | null> = [];
 
-    currentFetchHandler = (input) => {
+    currentFetchHandler = (input, init) => {
       const url = typeof input === 'string' ? input : (input instanceof URL ? input.href : input.url);
       if (url.includes('/api/wm-session')) {
-        return Promise.resolve(new Response(JSON.stringify({ exp: FAR_FUTURE }), {
+        const body = typeof init?.body === 'string' ? JSON.parse(init.body) as { proKey?: string } : {};
+        if (!body.proKey) {
+          return new Promise((resolve) => {
+            releaseAnonymousMint = () => resolve(new Response(JSON.stringify({
+              exp: FAR_FUTURE,
+              hadSession: false,
+              token: anonymousToken,
+            }), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            }));
+          });
+        }
+        return Promise.resolve(new Response(JSON.stringify({
+          exp: FAR_FUTURE,
+          hadSession: false,
+          token: 'wms_key-upgrade-mint',
+        }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         }));
       }
 
+      fallbackHeaders.push(new Headers(init?.headers).get('X-WorldMonitor-Key'));
       gatedAttempts += 1;
       if (gatedAttempts === 1) return Promise.resolve(new Response('stale', { status: 401 }));
-      return new Promise((resolve) => {
-        releaseAnonymousRetry = () => resolve(new Response('old identity denied', { status: 401 }));
-      });
+      return Promise.resolve(new Response('key cookie accepted', { status: 200 }));
     };
 
     const originalWarn = console.warn;
@@ -1697,19 +1716,29 @@ describe('wm-session route-scoped recovery failures (#5674)', () => {
     try {
       const anonymousRequest = wrappedFetch(gated);
       await new Promise((resolve) => { setImmediate(resolve); });
-      assert.ok(releaseAnonymousRetry, 'the anonymous fresh-cookie retry should still be in flight');
+      assert.ok(releaseAnonymousMint, 'the anonymous recovery mint should still be in flight');
 
       assert.equal(
         await mod.establishWmKeySession({ proKey: 'pk_test' }),
         true,
         'the key-bound identity should replace the anonymous one',
       );
-      releaseAnonymousRetry?.();
-      assert.equal((await anonymousRequest).status, 401, 'the stale caller still receives its server verdict');
+      releaseAnonymousMint?.();
+      assert.equal((await anonymousRequest).status, 200, 'the stale caller replays through the upgraded identity');
+      assert.equal(
+        (await wrappedFetch(gated)).status,
+        200,
+        'later requests continue through the upgraded key session',
+      );
     } finally {
       console.warn = originalWarn;
     }
 
+    assert.deepEqual(
+      fallbackHeaders,
+      [null, null, null],
+      'a stale anonymous mint must never inject its token after a key-session upgrade',
+    );
     assert.deepEqual(mod.getStruckRoutes(), [], 'the old identity must not repopulate route suppression');
     assert.equal(mod.isWmSessionDead(), false, 'the old identity must not degrade the key-bound session');
     assert.equal(captures.length, 0, 'the stale anonymous denial must not be reported against the key-bound identity');

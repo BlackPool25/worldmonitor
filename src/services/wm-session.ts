@@ -423,6 +423,7 @@ async function fetchNewSession(body?: { widgetKey?: string; proKey?: string }): 
   // would otherwise let the first response to land make the others look like
   // follow-up mints that came back empty. See noteMintCookieEvidence.
   const aCookieExistedWhenSent = cookieIssuedThisSession;
+  const identityGenerationWhenSent = sessionIdentityGeneration;
   // AbortSignal.timeout is Baseline 2024 and absent on older Safari/WebView and
   // Smart-TV engines still present in production. Calling it directly throws
   // before fetch is dispatched and looks exactly like a server-side
@@ -444,7 +445,11 @@ async function fetchNewSession(body?: { widgetKey?: string; proKey?: string }): 
     if (!resp.ok) return null;
     const data = await resp.json() as { exp?: unknown; hadSession?: unknown; token?: unknown };
     if (typeof data?.exp !== 'number') return null;
-    if (typeof data.token === 'string' && data.token.startsWith('wms_')) {
+    if (
+      sessionIdentityGeneration === identityGenerationWhenSent &&
+      typeof data.token === 'string' &&
+      data.token.startsWith('wms_')
+    ) {
       anonymousSessionHeaderToken = data.token;
     }
     // Absent on an older deployment: treat as "no evidence either way" and
@@ -864,7 +869,7 @@ export function installWmSessionFetchInterceptor(): void {
         // false, so hadSession:false alone cannot safely prove persistence is
         // broken, while replaying without the returned token would send every
         // concurrent follower into the retry_401 quorum.
-        if (anonymousSessionHeaderToken) {
+        if (isCurrentSessionIdentity() && anonymousSessionHeaderToken) {
           useAnonymousSessionHeader = true;
         }
         const retryResp = await replayAndReport();
