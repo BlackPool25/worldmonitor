@@ -85,8 +85,8 @@ describe('China corporate disclosure production registration (#5577)', () => {
     );
     assert.match(
       seed,
-      /afterPreservedValidationSkip:\s*async \(snapshot\) =>\s*recordSzseTransportFailure\(snapshot\)/,
-      'the validation-skip callback must adapt runSeed context instead of passing it as the marker writer',
+      /afterValidationSkip:\s*async \(snapshot\) =>\s*recordSzseTransportFailure\(snapshot\)/,
+      'every validation rejection must record the SZSE failure independently of last-good preservation',
     );
     assert.match(
       read('scripts/china-coverage-manifest.mjs'),

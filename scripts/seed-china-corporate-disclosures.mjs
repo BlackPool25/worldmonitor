@@ -142,7 +142,7 @@ if (process.argv[1]?.endsWith('seed-china-corporate-disclosures.mjs')) {
       maxStaleMin: CHINA_CORPORATE_DISCLOSURE_MAX_STALE_MIN,
       contentMeta: chinaCorporateDisclosureContentMeta,
       maxContentAgeMin: 90 * DAY_MIN,
-      afterPreservedValidationSkip: async (snapshot) =>
+      afterValidationSkip: async (snapshot) =>
         recordSzseTransportFailure(snapshot),
     },
   );
