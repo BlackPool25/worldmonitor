@@ -245,6 +245,44 @@ describe('drift: the gates test the worktree, the cache claims HEAD', () => {
     assert.equal(attest(root, ['drift', 'base']).status, 3);
   });
 
+  test('a path containing glob metacharacters is matched literally', () => {
+    // The intersection hands the branch paths to git as pathspecs, and `*`,
+    // `?` and `[` are legal in a filename but magic in a pathspec. The push
+    // changes `tests/b[1].test.mjs`; the dirty file is `tests/b1.test.mjs`,
+    // which the push does NOT touch. Read as a character class, the pathspec
+    // matches the dirty file and blocks the push over an unrelated edit.
+    const root = makeRepo({
+      baseFiles: { 'README.md': 'base\n', 'tests/b1.test.mjs': 'x\n' },
+      branchFiles: { 'tests/b[1].test.mjs': 'x\n' },
+    });
+    write(root, 'tests/b1.test.mjs', 'unrelated edit\n');
+
+    const { status, paths } = attest(root, ['drift', 'base']);
+    assert.equal(status, 0, 'an edit outside the push must not be drift');
+    assert.deepEqual(paths, []);
+  });
+
+  test('drift in a glob-metacharacter path is still caught', () => {
+    // The other half: matching literally must not mean matching nothing.
+    const root = makeRepo({ branchFiles: { 'tests/b[1].test.mjs': 'broken\n' } });
+    write(root, 'tests/b[1].test.mjs', 'fixed\n');
+    const { status, paths } = attest(root, ['drift', 'base']);
+    assert.equal(status, 3);
+    assert.deepEqual(paths, ['tests/b[1].test.mjs']);
+  });
+
+  test('an empty branch diff reports no drift, however dirty the worktree', () => {
+    // `git diff HEAD -- ` with an empty pathspec list means ALL paths, so an
+    // unguarded intersection would report every unrelated edit as drift and
+    // block a push that changes nothing.
+    const root = makeRepo({ baseFiles: { 'README.md': 'base\n', 'notes.md': 'base\n' } });
+    write(root, 'notes.md', 'scratch\n');
+    write(root, 'README.md', 'scratch\n');
+    const { status, paths } = attest(root, ['drift', 'base']);
+    assert.equal(status, 0);
+    assert.deepEqual(paths, []);
+  });
+
   test('drift ignores edits to files this push does not change', () => {
     // Scoped on purpose: blocking every push that has an unrelated scratch
     // edit would be a gate nobody can pass. Out-of-scope dirt is handled by

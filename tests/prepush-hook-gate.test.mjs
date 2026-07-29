@@ -76,7 +76,7 @@ let fixtureCount = 0;
  * A repo carrying the real hook and the two scripts it delegates to, with
  * `refs/remotes/origin/main` at the base commit so branch scoping resolves.
  */
-function makeFixture({ branchFiles = {}, scriptsCjs = true } = {}) {
+function makeFixture({ branchFiles = {}, scriptsCjs = true, failAttestMode = null } = {}) {
   const id = fixtureCount++;
   const root = join(WORK, `repo-${id}`);
   const { bin, log } = makeStubs(join(WORK, `aux-${id}`));
@@ -89,6 +89,17 @@ function makeFixture({ branchFiles = {}, scriptsCjs = true } = {}) {
   copyFileSync(HOOK, join(root, '.husky', 'pre-push'));
   for (const script of ['prepush-attest.sh', 'prepush-changed-tests.sh']) {
     copyFileSync(join(REPO_ROOT, 'scripts', script), join(root, 'scripts', script));
+  }
+  // Fault injection: make one attest mode fail while its siblings still work,
+  // so the hook's handling of a broken enumeration can be executed rather than
+  // reasoned about.
+  if (failAttestMode) {
+    writeFileSync(
+      join(root, 'scripts', 'prepush-attest.sh'),
+      `#!/usr/bin/env bash\n` +
+        `if [ "$1" = ${JSON.stringify(failAttestMode)} ]; then exit 1; fi\n` +
+        `exec bash ${JSON.stringify(join(REPO_ROOT, 'scripts', 'prepush-attest.sh'))} "$@"\n`,
+    );
   }
   writeFileSync(join(root, 'package.json'), '{"name":"fixture"}\n');
   writeFileSync(join(root, 'README.md'), 'base\n');
@@ -157,16 +168,24 @@ function makeFixture({ branchFiles = {}, scriptsCjs = true } = {}) {
   };
 }
 
-/** The arguments of the first `npx tsx --test ...` the hook issued, exactly. */
-function tsxArgs(invocations) {
+/**
+ * The argument list of EVERY `npx tsx --test ...` the hook issued, in order.
+ * All of them, not just the first: asserting one invocation cannot see a
+ * second, duplicate dispatch — which is the failure the TESTS_CHANGED dedup
+ * exists to prevent, so it has to be visible here.
+ */
+function tsxRuns(invocations) {
   const lines = invocations.split('\n');
-  const start = lines.findIndex((line, i) => line === '== npx' && lines[i + 1] === '>tsx');
-  if (start === -1) return null;
-  const args = [];
-  for (let i = start + 1; i < lines.length && lines[i].startsWith('>'); i += 1) {
-    args.push(lines[i].slice(1));
+  const runs = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    if (lines[i] !== '== npx' || lines[i + 1] !== '>tsx') continue;
+    const args = [];
+    for (let j = i + 1; j < lines.length && lines[j].startsWith('>'); j += 1) {
+      args.push(lines[j].slice(1));
+    }
+    runs.push(args);
   }
-  return args;
+  return runs;
 }
 
 describe('a clean push runs the changed tests and attests the tree', () => {
@@ -175,7 +194,7 @@ describe('a clean push runs the changed tests and attests the tree', () => {
     const { status, stdout, invocations } = fixture.run();
 
     assert.equal(status, 0, stdout);
-    assert.deepEqual(tsxArgs(invocations), ['tsx', '--test', 'tests/alpha.test.mjs']);
+    assert.deepEqual(tsxRuns(invocations), [['tsx', '--test', 'tests/alpha.test.mjs']]);
     assert.equal(fixture.cached(), fixture.tree(), 'a clean, resolved, green run is attestable');
   });
 
@@ -186,7 +205,7 @@ describe('a clean push runs the changed tests and attests the tree', () => {
     const second = fixture.run();
     assert.equal(second.status, 0);
     assert.match(second.stdout, /this exact tree already passed/);
-    assert.equal(tsxArgs(second.invocations), null, 'a cache hit must not re-run anything');
+    assert.deepEqual(tsxRuns(second.invocations), [], 'a cache hit must not re-run anything');
   });
 });
 
@@ -201,7 +220,7 @@ describe('worktree drift blocks the push (#5800 item 1)', () => {
     assert.equal(status, 1);
     assert.match(stdout, /differ between your worktree and the commit being pushed/);
     assert.match(stdout, /tests\/beta\.test\.mjs/);
-    assert.equal(tsxArgs(invocations), null);
+    assert.deepEqual(tsxRuns(invocations), []);
     assert.equal(fixture.cached(), null, 'nothing may be attested');
   });
 
@@ -249,7 +268,7 @@ describe('worktree drift blocks the push (#5800 item 1)', () => {
 
     const { status, stdout, invocations } = fixture.run();
     assert.equal(status, 0, stdout);
-    assert.deepEqual(tsxArgs(invocations), ['tsx', '--test', 'tests/gamma.test.mjs']);
+    assert.deepEqual(tsxRuns(invocations), [['tsx', '--test', 'tests/gamma.test.mjs']]);
     assert.match(stdout, /not byte-identical to HEAD/);
     assert.equal(fixture.cached(), null);
   });
@@ -280,8 +299,8 @@ describe('C-quoted and space-bearing paths still reach the runner (#5800 item 2)
     const { status, stdout, invocations } = fixture.run();
     assert.equal(status, 0, stdout);
     assert.deepEqual(
-      tsxArgs(invocations),
-      ['tsx', '--test', 'tests/back\\slash.test.mjs', 'tests/café.test.mjs', 'tests/with space.test.mjs'],
+      tsxRuns(invocations),
+      [['tsx', '--test', 'tests/back\\slash.test.mjs', 'tests/café.test.mjs', 'tests/with space.test.mjs']],
       'every path must arrive intact and as a single argument',
     );
   });
@@ -317,6 +336,32 @@ describe('the unresolved-diff fallback may not attest (#5800 item 3)', () => {
   });
 });
 
+describe('a broken enumeration blocks the push, it does not empty the list', () => {
+  // Every path that produces the changed-file list writes it through a `>`
+  // redirect, which truncates on failure. An unchecked failure therefore hands
+  // the partition an EMPTY list — indistinguishable from "no test files
+  // changed" — and the gate skips every changed test with exit 0. Both call
+  // sites are asserted because only one of them was checked originally.
+  for (const [label, breakOrigin] of [
+    ['with origin/main resolvable', false],
+    ['in the origin/main-unresolvable fallback', true],
+  ]) {
+    test(`refuses to run when changed-live fails ${label}`, () => {
+      const fixture = makeFixture({
+        branchFiles: { 'tests/critical.test.mjs': 'x\n' },
+        failAttestMode: 'changed-live',
+      });
+      if (breakOrigin) fixture.git(['update-ref', '-d', 'refs/remotes/origin/main']);
+
+      const { status, stdout, invocations } = fixture.run();
+      assert.equal(status, 1, 'a gate that cannot enumerate its input must not report success');
+      assert.match(stdout, /refusing to guess which tests to run/);
+      assert.deepEqual(tsxRuns(invocations), []);
+      assert.equal(fixture.cached(), null);
+    });
+  }
+});
+
 describe('the gate does not fail closed on its own edge cases', () => {
   test('a repo with no scripts/*.cjs does not fail the RUN_ALL push', () => {
     // `for f in scripts/*.cjs; do [ -f "$f" ] && node -c "$f" || exit 1; done`
@@ -337,7 +382,7 @@ describe('the gate does not fail closed on its own edge cases', () => {
     const { status, stdout, invocations } = fixture.run();
 
     assert.equal(status, 0, stdout);
-    assert.equal(tsxArgs(invocations), null);
+    assert.deepEqual(tsxRuns(invocations), []);
     assert.equal(fixture.cached(), fixture.tree());
   });
 });

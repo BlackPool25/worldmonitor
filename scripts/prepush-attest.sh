@@ -106,22 +106,27 @@ case "$mode" in
     require_base "$base"
 
     read_nul < <(git diff --name-only -z --no-renames "$base...HEAD")
-    branch_paths=("${collected[@]}")
+    # No paths in the branch diff means nothing this push changes can have
+    # drifted. Guarding is not just an optimisation: `diff -- ` with an empty
+    # pathspec list means ALL paths, which would report every unrelated
+    # worktree edit as drift and block the push.
+    [ "${#collected[@]}" -gt 0 ] || exit 0
 
+    # Intersect via git rather than a nested bash loop: `git diff HEAD` limited
+    # to the branch paths IS the intersection, matched in C. `--literal-pathspecs`
+    # because a path containing `*`, `?` or `[` is a legal filename but glob
+    # magic to a pathspec. (`--pathspec-from-file` is not supported by
+    # `git diff`, so the list goes through argv; on overflow git fails loudly,
+    # which the caller reports as "could not compare" rather than "clean".)
+    #
     # `git diff HEAD` covers staged and unstaged alike — the index is not what
     # gets pushed either.
-    read_nul < <(git diff --name-only -z HEAD --)
-
     found=0
-    for worktree_path in "${collected[@]}"; do
-      for branch_path in "${branch_paths[@]}"; do
-        if [ "$worktree_path" = "$branch_path" ]; then
-          printf '%s\0' "$worktree_path"
-          found=1
-          break
-        fi
-      done
-    done
+    while IFS= read -r -d '' drifted; do
+      [ -n "$drifted" ] || continue
+      printf '%s\0' "$drifted"
+      found=1
+    done < <(git --literal-pathspecs diff --name-only -z HEAD -- "${collected[@]}")
     [ "$found" -eq 0 ] || exit 3
     ;;
 

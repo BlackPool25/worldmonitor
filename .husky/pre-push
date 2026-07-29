@@ -151,6 +151,16 @@ read_paths() {
 # so a consumer never sees a phantom blank entry.
 nul_list() { [ "$#" -eq 0 ] || printf '%s\0' "$@"; }
 
+# show_paths: NUL stdin -> an indented list for a human. Strips control bytes
+# first: whoever authored the commit chose these filenames, and an embedded ESC
+# or CR could repaint the line and scroll the error that follows out of view.
+# Octal ranges: keep \011 (tab) and \012 (newline), drop everything else below
+# \040 plus \177 — note \015 (CR) sits between them and must be inside the
+# range, not skipped.
+show_paths() {
+  tr '\0' '\n' | LC_ALL=C tr -d '\001-\010\013-\037\177' | sed 's/^/  /'
+}
+
 RUN_ALL=false
 RUN_ALL_REASON=""
 DIFF_RESOLVED=true
@@ -178,7 +188,16 @@ else
   if bash "$ATTEST" changed HEAD~1 > "$CHANGED_NUL" 2>/dev/null; then
     read_paths < "$CHANGED_NUL"
     CHANGED_PATHS=("${_collected[@]}")
-    bash "$ATTEST" changed-live HEAD~1 > "$CHANGED_LIVE_NUL" 2>/dev/null
+    # Checked for the same reason as the resolved branch above, even though the
+    # sibling call that just succeeded makes a failure here all but impossible:
+    # the redirect truncates the file, so an unchecked failure hands the
+    # partition an EMPTY list, which reads as "no test files changed" and skips
+    # every changed test with exit 0. That is the precise bug this file exists
+    # to close, so it must not survive in the fallback.
+    if ! bash "$ATTEST" changed-live HEAD~1 > "$CHANGED_LIVE_NUL" 2>/dev/null; then
+      echo "ERROR: could not enumerate the pushed files — refusing to guess which tests to run."
+      exit 1
+    fi
     read_paths < "$CHANGED_LIVE_NUL"
     CHANGED_LIVE=("${_collected[@]}")
   fi
@@ -244,7 +263,7 @@ if [ "$DIFF_RESOLVED" = true ] && [ -z "${WM_ALLOW_WORKTREE_DRIFT:-}" ]; then
     echo ""
     echo "============================================================"
     echo "ERROR: these files differ between your worktree and the commit being pushed:"
-    tr '\0' '\n' < "$WORKTREE_NUL" | sed 's/^/  /'
+    show_paths < "$WORKTREE_NUL"
     echo "The gates run your worktree; git pushes HEAD. Testing one and"
     echo "shipping the other is how a green push lands broken bytes."
     echo "Fix: commit these changes, or stash them, then push again."
@@ -266,7 +285,7 @@ if [ "$DIRTY_STATUS" -eq 0 ]; then
   ATTESTABLE=true
 elif [ "$DIRTY_STATUS" -eq 3 ]; then
   echo "Worktree is not byte-identical to HEAD — this run will not be cached:"
-  tr '\0' '\n' < "$WORKTREE_NUL" | sed 's/^/  /'
+  show_paths < "$WORKTREE_NUL"
 else
   # Fail closed, and say which failure it was: printing the "not byte-identical"
   # list when the list is empty because the CHECK broke reads as a lie.
