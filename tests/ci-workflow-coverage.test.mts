@@ -47,7 +47,7 @@ const TIMEOUT_CAPPED_TEST_JOBS = [
   'resilience-validation-smoke',
 ] as const;
 
-const REQUIRED_GATE_WORKFLOWS = ['Test', 'Typecheck', 'Lint Code', 'Security Audit'] as const;
+const MANDATORY_GATE_WORKFLOWS = ['Test', 'Typecheck', 'Lint Code', 'Security Audit'] as const;
 
 const REQUIRED_NON_TEST_GATE_CHECKS = [
   'typecheck',
@@ -240,16 +240,18 @@ describe('CI workflow coverage', () => {
     const workflowRunNames = deployGateWorkflowRunNames();
     const requiredChecks = deployGateRequiredChecks();
 
-    for (const workflowName of REQUIRED_GATE_WORKFLOWS) {
+    for (const workflowName of MANDATORY_GATE_WORKFLOWS) {
       assert.ok(
         workflowRunNames.includes(workflowName),
         `deploy-gate.yml must run after ${workflowName} completes`,
       );
     }
     for (const job of workflowJobNames(testWorkflow, 'test.yml')) {
+      const { name, templated } = effectiveCheckName(testWorkflow, job);
+      assert.ok(!templated, `test.yml/${job} must publish a literal check-run name`);
       assert.ok(
-        requiredChecks.includes(job),
-        `deploy-gate.yml must require every test.yml job; missing ${job}`,
+        requiredChecks.includes(name),
+        `deploy-gate.yml must require every test.yml job; missing ${name}`,
       );
     }
     for (const check of REQUIRED_NON_TEST_GATE_CHECKS) {
@@ -279,8 +281,9 @@ describe('CI workflow coverage', () => {
     const requiredChecks = deployGateRequiredChecks();
     const sources = gatedWorkflowSources();
     const advisoryOnly: string[] = [];
+    const checkOwners = new Map<string, string>();
 
-    for (const workflowName of REQUIRED_GATE_WORKFLOWS) {
+    for (const workflowName of deployGateWorkflowRunNames()) {
       const source = sources.get(workflowName);
       assert.ok(source, `a workflow named ${workflowName} must exist for the deploy gate to aggregate it`);
 
@@ -305,6 +308,15 @@ describe('CI workflow coverage', () => {
           `${workflowName}/${job} publishes a per-matrix check-run name (${name}) that the gate cannot match, and has no GATE_CHECK_EXEMPTIONS entry naming the aggregate that covers it`,
         );
 
+        const owner = `${workflowName}/${job}`;
+        const existingOwner = checkOwners.get(name);
+        assert.equal(
+          existingOwner,
+          undefined,
+          `${owner} and ${existingOwner} both publish the check-run name ${name}; the deploy gate cannot distinguish their conclusions`,
+        );
+        checkOwners.set(name, owner);
+
         if (!requiredChecks.includes(name)) {
           advisoryOnly.push(`${workflowName}/${name}`);
         }
@@ -326,7 +338,7 @@ describe('CI workflow coverage', () => {
     const sources = gatedWorkflowSources();
     const published = new Set<string>();
 
-    for (const workflowName of REQUIRED_GATE_WORKFLOWS) {
+    for (const workflowName of deployGateWorkflowRunNames()) {
       const source = sources.get(workflowName);
       assert.ok(source, `a workflow named ${workflowName} must exist for the deploy gate to aggregate it`);
 

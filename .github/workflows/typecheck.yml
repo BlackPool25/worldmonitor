@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   changes:
+    name: typecheck-changes
     runs-on: ubuntu-latest
     permissions:
       pull-requests: read
