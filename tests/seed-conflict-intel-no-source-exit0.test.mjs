@@ -388,6 +388,73 @@ test('GDELT route circuit opens after one proxy-auth canary failure', async () =
   }
 });
 
+test('GDELT route circuit opens after one endpoint-wide HTTP canary failure', async () => {
+  for (const status of [404, 406, 410, 451]) {
+    const attempted = [];
+    let bulkCalls = 0;
+    const now = Date.parse('2026-07-29T12:00:00Z');
+    const result = await fetchGdeltConflictEvents({
+      fetchCountryEvents: async (cc) => {
+        attempted.push(cc);
+        return {
+          country: cc, ok: false, events: [],
+          error: `GDELT_SOURCE_PROXY_HTTP_${status}`,
+        };
+      },
+      fetchBulkEvents: async () => {
+        bulkCalls += 1;
+        return {
+          events: [{ id: `route-failure-${status}`, country: 'Sudan' }],
+          exportTimestamp: '20260729110000',
+          exportsRequested: 1,
+          exportsSucceeded: 1,
+        };
+      },
+      pace: async () => {},
+      now: () => now,
+      deadlineAt: now + 10_000_000,
+      loadPreviousSnapshot: async () => null,
+    });
+
+    assert.equal(
+      attempted.length,
+      1,
+      `HTTP ${status} endpoint failure must fall through to bulk without another country request`,
+    );
+    assert.equal(bulkCalls, 1);
+    assert.equal(result.source, 'gdelt-bulk');
+    assert.deepEqual(result.events.map(event => event.id), [`route-failure-${status}`]);
+  }
+});
+
+test('GDELT route circuit stays closed for a request-specific HTTP failure', async () => {
+  const attempted = [];
+  const result = await fetchGdeltConflictEvents({
+    fetchCountryEvents: async (cc) => {
+      attempted.push(cc);
+      if (attempted.length === 1) {
+        return {
+          country: cc, ok: false, events: [],
+          error: 'GDELT_SOURCE_PROXY_HTTP_400',
+        };
+      }
+      return {
+        country: cc,
+        ok: true,
+        events: [{ id: `country-${cc}`, country: cc, event_date: '2026-07-29' }],
+      };
+    },
+    fetchBulkEvents: async () => { throw new Error('bulk unused'); },
+    pace: async () => {},
+    now: () => 0,
+    deadlineAt: 10_000_000,
+    loadPreviousSnapshot: async () => null,
+  });
+
+  assert.equal(attempted.length, CONFLICT_COUNTRIES.length);
+  assert.equal(result.source, 'gdelt');
+});
+
 test('GDELT storm abort does NOT fire when a country in the batch succeeds', async () => {
   // The abort must never cut short a sweep that is actually working. One success in the
   // batch means we are not being uniformly throttled — keep going.

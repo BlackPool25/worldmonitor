@@ -120,7 +120,7 @@ const HAPI_COUNTRIES = [...new Set([...HAPI_ONLY_COUNTRIES, ...HAPI_DASHBOARD_CO
 // The bounded transport emits stable route-specific failure codes. Treat the
 // failures known to implicate the selected route as a run-scoped circuit
 // signal; repeating them for another country cannot improve source reachability.
-const GDELT_ROUTE_FAILURE = /\bGDELT_(?:SOURCE_PROXY|SHARED_PROXY|PROXY|DIRECT)_(?:CONFIG|HTTP_(?:401|403|407|408|429|5\d\d)|INVALID_JSON|TLS|TIMEOUT|DNS|TRANSPORT)\b|\bHTTP 429\b|SSL_ERROR_SYSCALL|\b(?:timed?\s*out|timeout)\b/i;
+const GDELT_ROUTE_FAILURE = /\bGDELT_(?:SOURCE_PROXY|SHARED_PROXY|PROXY|DIRECT)_(?:CONFIG|HTTP_(?:401|403|404|406|407|408|410|429|451|5\d\d)|INVALID_JSON|TLS|TIMEOUT|DNS|TRANSPORT)\b|\bHTTP 429\b|SSL_ERROR_SYSCALL|\b(?:timed?\s*out|timeout)\b/i;
 // #5140: the GDELT fallback sweep may not LAUNCH a batch after this much of the
 // fetch phase has elapsed (fetchAll anchors the clock at its own entry and passes
 // an absolute deadline down, so slow aux feeds automatically shrink the sweep
@@ -431,7 +431,7 @@ export async function fetchGdeltConflictEvents({
 
     // A whole batch of selected-route failures means the route, not a country
     // query, is unavailable. Open the circuit for 429, TLS, timeout, DNS,
-    // malformed upstream JSON, and transient upstream statuses alike.
+    // malformed upstream JSON, and route-wide HTTP statuses alike.
     const batchAllFailed = results.every(r => !r?.ok);
     const routeFailed = results.some(r => GDELT_ROUTE_FAILURE.test(String(r?.error ?? '')));
     if (batchAllFailed && routeFailed) {
