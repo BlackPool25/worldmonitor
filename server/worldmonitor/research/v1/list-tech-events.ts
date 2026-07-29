@@ -471,6 +471,25 @@ export const WIDEST_TECH_EVENTS_REQUEST: ListTechEventsRequest = {
   days: 365,
 };
 
+/**
+ * The cache-miss fetcher, exactly as handed to `cachedFetchJson`.
+ *
+ * It takes NO parameters on purpose. The bug this fixes was the handler
+ * threading the live request into the fetcher, so the shared key ended up
+ * holding one caller's narrowed view; with a zero-argument fetcher that
+ * regression cannot be reintroduced silently — passing caller state back in
+ * requires changing this signature, which is a type error at the call site
+ * rather than a behaviour change no test would notice.
+ *
+ * Exported so the wiring itself is executable in tests, not just the constant
+ * above (the constant being right proves nothing about what the handler does
+ * with it).
+ */
+export async function fetchWidestTechEvents(): Promise<ListTechEventsResponse | null> {
+  const fetched = await fetchTechEvents(WIDEST_TECH_EVENTS_REQUEST, { hasLimit: true, hasDays: true });
+  return fetched.events.length > 0 ? fetched : null;
+}
+
 export async function listTechEvents(
   ctx: ServerContext,
   req: ListTechEventsRequest,
@@ -478,14 +497,15 @@ export async function listTechEvents(
   try {
     const pagingPresence = readTechEventsPagingPresence(ctx);
 
-    // Primary: read from seed-populated Redis key (Railway relay seeds this every 6h)
-    const result = await cachedFetchJson<ListTechEventsResponse>(REDIS_CACHE_KEY, REDIS_CACHE_TTL, async () => {
-      // Fallback fetcher: only runs on cold start when seed hasn't populated
-      // yet. MUST fetch the widest set — per-request narrowing happens in
-      // filterEvents() below, never in what gets cached under the shared key.
-      const fetched = await fetchTechEvents(WIDEST_TECH_EVENTS_REQUEST, { hasLimit: true, hasDays: true });
-      return fetched.events.length > 0 ? fetched : null;
-    });
+    // Primary: read from seed-populated Redis key (Railway relay seeds this every 6h).
+    // The cold-start fallback is request-independent by construction — see
+    // fetchWidestTechEvents. Per-request narrowing happens in filterEvents()
+    // below, never in what gets cached under the shared key.
+    const result = await cachedFetchJson<ListTechEventsResponse>(
+      REDIS_CACHE_KEY,
+      REDIS_CACHE_TTL,
+      fetchWidestTechEvents,
+    );
 
     if (!result || result.events.length === 0) {
       return { success: true, count: 0, conferenceCount: 0, mappableCount: 0, lastUpdated: new Date().toISOString(), events: [], error: '' };
