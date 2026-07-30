@@ -24,7 +24,9 @@ export interface ImfMacroEntry {
 export interface ImfGrowthEntry {
   realGdpGrowthPct: number | null;
   gdpPerCapitaUsd: number | null;
-  realGdp: number | null;
+  realGdpLcuB: number | null;
+  /** Deprecated bootstrap alias; use realGdpLcuB for new code. */
+  realGdp?: number | null;
   gdpPerCapitaPpp: number | null;
   gdpPpp: number | null;
   investmentPct: number | null;
@@ -96,6 +98,79 @@ async function fetchBundle(): Promise<ImfBootstrapPayload['data']> {
 }
 
 /**
+ * One per-country inflation reading for the all-countries "World" view.
+ * `inflationPct` is IMF WEO period-average CPI inflation (PCPIPCH);
+ * `cpiEopPct` is the end-of-period reading (PCPIEPCH).
+ */
+export interface CountryInflationRow {
+  iso2: string;
+  name: string;
+  inflationPct: number | null;
+  cpiEopPct: number | null;
+  year: number | null;
+}
+
+function numOrNull(v: unknown): number | null {
+  if (v == null || v === '') return null; // Number(null) === 0 — guard it
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+let countryNameFmt: Intl.DisplayNames | null = null;
+function resolveCountryName(iso2: string): string {
+  try {
+    if (!countryNameFmt) countryNameFmt = new Intl.DisplayNames(['en'], { type: 'region' });
+    return countryNameFmt.of(iso2) ?? iso2;
+  } catch {
+    return iso2;
+  }
+}
+
+/**
+ * Pure transform — turns the IMF macro `countries` map into a sorted list of
+ * inflation rows, dropping countries with no inflation reading at all. Sorted
+ * by year-over-year inflation descending (highest first); rows with a null YoY
+ * reading sort last, name-ascending as a stable tiebreak. Exported so unit
+ * tests don't need to mock the network (mirrors buildImfEconomicIndicators).
+ */
+export function buildCountryInflationRows(
+  countries: Record<string, Partial<ImfMacroEntry>> | undefined,
+): CountryInflationRow[] {
+  const rows: CountryInflationRow[] = [];
+  for (const [code, entry] of Object.entries(countries ?? {})) {
+    const inflationPct = numOrNull(entry?.inflationPct);
+    const cpiEopPct = numOrNull(entry?.cpiEopPct);
+    if (inflationPct == null && cpiEopPct == null) continue;
+    const iso2 = code.toUpperCase();
+    rows.push({
+      iso2,
+      name: resolveCountryName(iso2),
+      inflationPct,
+      cpiEopPct,
+      year: numOrNull(entry?.year),
+    });
+  }
+  rows.sort((a, b) => {
+    if (a.inflationPct == null && b.inflationPct == null) return a.name.localeCompare(b.name);
+    if (a.inflationPct == null) return 1;
+    if (b.inflationPct == null) return -1;
+    if (b.inflationPct !== a.inflationPct) return b.inflationPct - a.inflationPct;
+    return a.name.localeCompare(b.name);
+  });
+  return rows;
+}
+
+/**
+ * All-countries inflation snapshot from the IMF WEO macro bundle. Reuses the
+ * same memoised bootstrap fetch as getImfCountryBundle (no extra network) and
+ * never throws — returns an empty list when the seeder is offline.
+ */
+export async function getAllCountriesInflation(): Promise<CountryInflationRow[]> {
+  const data = await fetchBundle();
+  return buildCountryInflationRows(data?.imfMacro?.countries);
+}
+
+/**
  * Look up a country's IMF data across all four themed seeders.
  * Returns null entries for any theme that has no data for this country
  * (or whose seeder is offline). Never throws.
@@ -156,6 +231,27 @@ export function buildImfEconomicIndicators(bundle: ImfCountryBundle): {
     });
   }
 
+  // Primary balance %GDP (IMF GGXONLB_NGDP). Directional: a surplus is
+  // unambiguously good, sustained deficit drains fiscal space. Thresholds
+  // tuned around the IMF DSA noise floor — anything within ±1pp of zero is
+  // structural noise; meaningful signal is >+1 surplus or <-3 deficit.
+  // Ordered with the other directional macro rows (growth / inflation /
+  // unemployment) so it survives the caller's 6-row slice. Two slice sites
+  // gate visibility — keep both in mind when changing row count or order:
+  //   - src/app/country-intel.ts:1288 (combined producer → consumer cap)
+  //   - src/components/CountryDeepDivePanel.ts:2240 (post-stock-prepend cap)
+  // The flat context rows below are emitted last because losing them is the
+  // right tradeoff when the card is full.
+  const primaryBalance = bundle.macro?.primaryBalancePct;
+  if (primaryBalance != null && Number.isFinite(primaryBalance)) {
+    out.push({
+      label: 'Primary Balance',
+      value: `${primaryBalance >= 0 ? '+' : ''}${primaryBalance.toFixed(1)}% GDP`,
+      trend: primaryBalance > 1 ? 'up' : primaryBalance < -3 ? 'down' : 'flat',
+      source: 'IMF WEO',
+    });
+  }
+
   const gdpPc = bundle.growth?.gdpPerCapitaUsd;
   if (gdpPc != null && Number.isFinite(gdpPc)) {
     const formatted = gdpPc >= 1000
@@ -164,6 +260,30 @@ export function buildImfEconomicIndicators(bundle: ImfCountryBundle): {
     out.push({
       label: 'GDP / Capita',
       value: formatted,
+      trend: 'flat',
+      source: 'IMF WEO',
+    });
+  }
+
+  // Public spending as % of GDP (IMF GGX_NGDP). Level is descriptive context,
+  // not directional — Nordics sit at 50%+ with strong stability scores while
+  // some low-spending states are fragile. Trend stays flat to avoid baking
+  // a "high = bad" signal into the indicator card.
+  const govExp = bundle.macro?.govExpenditurePct;
+  if (govExp != null && Number.isFinite(govExp)) {
+    out.push({
+      label: 'Public Spending',
+      value: `${govExp.toFixed(1)}% GDP`,
+      trend: 'flat',
+      source: 'IMF WEO',
+    });
+  }
+
+  const govRev = bundle.macro?.govRevenuePct;
+  if (govRev != null && Number.isFinite(govRev)) {
+    out.push({
+      label: 'Gov Revenue',
+      value: `${govRev.toFixed(1)}% GDP`,
       trend: 'flat',
       source: 'IMF WEO',
     });

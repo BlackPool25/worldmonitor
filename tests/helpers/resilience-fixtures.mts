@@ -4,12 +4,12 @@ export const RESILIENCE_FIXTURES: FixtureMap = {
   'resilience:static:NO': {
     wgi: {
       indicators: {
-        VA: { value: 1.9, year: 2025 },
-        PV: { value: 1.7, year: 2025 },
-        GE: { value: 1.8, year: 2025 },
-        RQ: { value: 1.9, year: 2025 },
-        RL: { value: 1.8, year: 2025 },
-        CC: { value: 1.9, year: 2025 },
+        'VA.EST': { value: 1.9, year: 2025 },
+        'PV.EST': { value: 1.7, year: 2025 },
+        'GE.EST': { value: 1.8, year: 2025 },
+        'RQ.EST': { value: 1.9, year: 2025 },
+        'RL.EST': { value: 1.8, year: 2025 },
+        'CC.EST': { value: 1.9, year: 2025 },
       },
     },
     infrastructure: {
@@ -41,12 +41,12 @@ export const RESILIENCE_FIXTURES: FixtureMap = {
   'resilience:static:US': {
     wgi: {
       indicators: {
-        VA: { value: 0.9, year: 2025 },
-        PV: { value: 0.6, year: 2025 },
-        GE: { value: 1.1, year: 2025 },
-        RQ: { value: 1.2, year: 2025 },
-        RL: { value: 1.0, year: 2025 },
-        CC: { value: 1.1, year: 2025 },
+        'VA.EST': { value: 0.9, year: 2025 },
+        'PV.EST': { value: 0.6, year: 2025 },
+        'GE.EST': { value: 1.1, year: 2025 },
+        'RQ.EST': { value: 1.2, year: 2025 },
+        'RL.EST': { value: 1.0, year: 2025 },
+        'CC.EST': { value: 1.1, year: 2025 },
       },
     },
     infrastructure: {
@@ -78,12 +78,12 @@ export const RESILIENCE_FIXTURES: FixtureMap = {
   'resilience:static:YE': {
     wgi: {
       indicators: {
-        VA: { value: -1.9, year: 2025 },
-        PV: { value: -2.3, year: 2025 },
-        GE: { value: -1.8, year: 2025 },
-        RQ: { value: -1.7, year: 2025 },
-        RL: { value: -2.0, year: 2025 },
-        CC: { value: -2.1, year: 2025 },
+        'VA.EST': { value: -1.9, year: 2025 },
+        'PV.EST': { value: -2.3, year: 2025 },
+        'GE.EST': { value: -1.8, year: 2025 },
+        'RQ.EST': { value: -1.7, year: 2025 },
+        'RL.EST': { value: -2.0, year: 2025 },
+        'CC.EST': { value: -2.1, year: 2025 },
       },
     },
     infrastructure: {
@@ -206,30 +206,17 @@ export const RESILIENCE_FIXTURES: FixtureMap = {
   'sanctions:country-counts:v1': { NO: 2, US: 45, YE: 180, LB: 30 },
   'trade:restrictions:v1:tariff-overview:50': {
     restrictions: [
-      { reportingCountry: 'United States', status: 'IN_FORCE' },
-      { reportingCountry: 'United States', status: 'IN_FORCE' },
-      { affectedCountry: 'United States', status: 'PLANNED' },
-      { reportingCountry: 'Yemen', status: 'IN_FORCE' },
-      { reportingCountry: 'Yemen', status: 'IN_FORCE' },
-      { reportingCountry: 'Yemen', status: 'IN_FORCE' },
-      { affectedCountry: 'Yemen', status: 'PLANNED' },
-      { affectedCountry: 'Yemen', status: 'PLANNED' },
+      { reportingCountry: 'Norway', status: 'low' },
+      { reportingCountry: 'United States', status: 'low' },
     ],
-    _reporterCountries: ['US', 'CN', 'DE', 'JP', 'GB', 'IN', 'BR', 'RU', 'KR', 'AU', 'CA', 'MX', 'FR', 'IT', 'NL'],
+    _reporterCountries: ['NO', 'US', 'CN', 'DE', 'JP', 'GB', 'IN', 'BR', 'RU', 'KR', 'AU', 'CA', 'MX', 'FR', 'IT', 'NL'],
   },
   'trade:barriers:v1:tariff-gap:50': {
     barriers: [
-      { notifyingCountry: 'United States' },
-      { notifyingCountry: 'United States' },
-      { notifyingCountry: 'United States' },
-      { notifyingCountry: 'Yemen' },
-      { notifyingCountry: 'Yemen' },
-      { notifyingCountry: 'Yemen' },
-      { notifyingCountry: 'Yemen' },
-      { notifyingCountry: 'Yemen' },
-      { notifyingCountry: 'Yemen' },
+      { notifyingCountry: 'Norway', status: 'high' },
+      { notifyingCountry: 'United States', status: 'low' },
     ],
-    _reporterCountries: ['US', 'CN', 'DE', 'JP', 'GB', 'IN', 'BR', 'RU', 'KR', 'AU', 'CA', 'MX', 'FR', 'IT', 'NL'],
+    _reporterCountries: ['NO', 'US', 'CN', 'DE', 'JP', 'GB', 'IN', 'BR', 'RU', 'KR', 'AU', 'CA', 'MX', 'FR', 'IT', 'NL'],
   },
   'cyber:threats:v2': {
     threats: [
@@ -390,10 +377,66 @@ export const RESILIENCE_FIXTURES: FixtureMap = {
     fetchedAt: 1712102400000,
     recordCount: 196,
   },
+  // plan 2026-04-25-004 Phase 2: financialSystemExposure seed-meta + data
+  // fixtures. The scorer preflights all 3 seed-meta envelopes (fail-closed)
+  // before per-component reads; absence of any of these throws
+  // ResilienceConfigurationError and routes to source-failure imputation.
+  'seed-meta:economic:wb-external-debt:v1': {
+    fetchedAt: 1714694400000,
+    recordCount: 125,
+  },
+  'seed-meta:economic:bis-lbs:v1': {
+    fetchedAt: 1714694400000,
+    recordCount: 200,
+  },
+  'seed-meta:economic:fatf-listing:v1': {
+    fetchedAt: 1714694400000,
+    recordCount: 200,
+  },
+  'economic:wb-external-debt:v1': {
+    countries: {
+      NO: { value: 2, year: 2024 },     // 2% GNI — Norway low external debt → score ~87
+      US: { value: 0, year: 2024 },     // HIC, WB IDS doesn't publish — fixture treats as 0 for the test triple
+      YE: { value: 14, year: 2023 },    // ~14% GNI — fragile state near worst goalpost → score ~7
+    },
+    seededAt: '2026-04-25T00:00:00.000Z',
+  },
+  'economic:bis-lbs:v1': {
+    countries: {
+      NO: { totalXborderPctGdp: 18, parentCount: 8 },  // sweet spot + diverse parents → high score
+      US: { totalXborderPctGdp: 22, parentCount: 9 },  // sweet spot + diverse parents → high score
+      YE: { totalXborderPctGdp: 2, parentCount: 1 },   // financial isolation → low score
+    },
+    seededAt: '2026-04-25T00:00:00.000Z',
+  },
+  'economic:fatf-listing:v1': {
+    listings: {
+      NO: 'compliant',
+      US: 'compliant',
+      YE: 'gray',
+    },
+    publicationDate: '2026-02-13',
+    seededAt: '2026-04-25T00:00:00.000Z',
+  },
   'resilience:recovery:fiscal-space:v1': {
     countries: {
-      NO: { govRevenuePct: 42, fiscalBalancePct: 10, debtToGdpPct: 40, year: 2025 },
-      US: { govRevenuePct: 30, fiscalBalancePct: -6, debtToGdpPct: 122, year: 2025 },
+      // NO: full gap inputs — strong fiscal position, debt path declining
+      // (gap ≈ +11.4 → clamps to 100 against -5/+3 goalposts).
+      NO: {
+        govRevenuePct: 42, fiscalBalancePct: 10, debtToGdpPct: 40, year: 2025,
+        primaryBalancePct: 11, realGdpGrowthPct: 1, inflationPct: 2.5,
+        debtSustainabilityGapPct: 11.4, gapYear: 2025,
+      },
+      // US: full gap inputs — near debt-stabilizing point (gap ≈ 0.02 →
+      // normalized score ≈ 63 against -5/+3 goalposts).
+      US: {
+        govRevenuePct: 30, fiscalBalancePct: -6, debtToGdpPct: 122, year: 2025,
+        primaryBalancePct: -3, realGdpGrowthPct: 2, inflationPct: 3,
+        debtSustainabilityGapPct: 0.02, gapYear: 2025,
+      },
+      // YE: fiscal-3 only, no gap inputs (realistic for data-sparse country).
+      // Scorer's weightedBlend redistributes weight across the 3 populated
+      // indicators, demonstrating null-gap fallback behavior.
       YE: { govRevenuePct: 8, fiscalBalancePct: -10, debtToGdpPct: 80, year: 2024 },
     },
     seededAt: '2026-04-04T00:00:00.000Z',

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { createRequire } from 'node:module';
+
 import {
   acquireLockSafely,
   extendExistingTtl,
@@ -11,6 +13,10 @@ import {
 import { unwrapEnvelope } from './_seed-envelope-source.mjs';
 
 loadEnvFile(import.meta.url);
+const require = createRequire(import.meta.url);
+const UN_TO_ISO2 = require('./shared/un-to-iso2.json');
+const COMTRADE_REPORTER_OVERRIDES = require('./shared/comtrade-reporter-overrides.json');
+const JODI_MEASUREMENT_FIELDS = require('./shared/jodi-measurement-fields.json');
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -23,17 +29,15 @@ const LOCK_DOMAIN = 'energy:spine';
 const LOCK_TTL_MS = 20 * 60 * 1000; // 20 min (pipeline write of 200+ countries)
 const MIN_COVERAGE_RATIO = 0.80; // abort if new spine < 80% of previous country count
 
-// Countries with Comtrade reporter codes for shock model inputs.
-// Only these 6 reporters are seeded in comtrade:flows; must stay in sync with
-// compute-energy-shock.ts ISO2_TO_COMTRADE.
-const ISO2_TO_COMTRADE = {
-  US: '842',
-  CN: '156',
-  RU: '643',
-  IR: '364',
-  IN: '699',
-  TW: '490',
-};
+const ISO2_TO_UN = Object.fromEntries(Object.entries(UN_TO_ISO2).map(([unCode, iso2]) => [iso2, unCode]));
+
+// Only these reporters are seeded in comtrade:flows for spine shock inputs.
+// Reporter codes still resolve from shared Comtrade metadata so non-M49 facts
+// such as IN/TW cannot drift into a separate inline map.
+const SHOCK_INPUT_REPORTERS = ['US', 'CN', 'RU', 'IR', 'IN', 'TW'];
+const ISO2_TO_COMTRADE = Object.freeze(Object.fromEntries(
+  SHOCK_INPUT_REPORTERS.map((iso2) => [iso2, COMTRADE_REPORTER_OVERRIDES[iso2] ?? ISO2_TO_UN[iso2]]),
+));
 
 // Chokepoints supported by the shock model for comtrade-mapped countries.
 const SHOCK_CHOKEPOINTS = ['hormuz', 'malacca', 'suez', 'babelm'];
@@ -126,17 +130,38 @@ function checkIeaAvailability(ieaStocks) {
     (ieaStocks.daysOfCover != null && ieaStocks.anomaly !== true);
 }
 
+function readPath(value, path) {
+  return path.split('.').reduce((current, part) => {
+    if (current == null || typeof current !== 'object') return undefined;
+    return current[part];
+  }, value);
+}
+
+function hasFiniteMeasurementAtPaths(value, paths) {
+  return paths.some((path) => Number.isFinite(readPath(value, path)));
+}
+
+function checkJodiOilAvailability(jodiOil) {
+  if (!jodiOil) return false;
+  return hasFiniteMeasurementAtPaths(jodiOil, JODI_MEASUREMENT_FIELDS.oil);
+}
+
+function checkJodiGasAvailability(jodiGas) {
+  if (!jodiGas) return false;
+  return hasFiniteMeasurementAtPaths(jodiGas, JODI_MEASUREMENT_FIELDS.gas);
+}
+
 function buildOilFields(jodiOil, ieaStocks, hasIeaStocks) {
   return {
-    crudeImportsKbd: jodiOil ? (jodiOil.crude?.importsKbd ?? 0) : 0,
-    gasolineDemandKbd: jodiOil ? (jodiOil.gasoline?.demandKbd ?? 0) : 0,
-    gasolineImportsKbd: jodiOil ? (jodiOil.gasoline?.importsKbd ?? 0) : 0,
-    dieselDemandKbd: jodiOil ? (jodiOil.diesel?.demandKbd ?? 0) : 0,
-    dieselImportsKbd: jodiOil ? (jodiOil.diesel?.importsKbd ?? 0) : 0,
-    jetDemandKbd: jodiOil ? (jodiOil.jet?.demandKbd ?? 0) : 0,
-    jetImportsKbd: jodiOil ? (jodiOil.jet?.importsKbd ?? 0) : 0,
-    lpgDemandKbd: jodiOil ? (jodiOil.lpg?.demandKbd ?? 0) : 0,
-    lpgImportsKbd: jodiOil ? (jodiOil.lpg?.importsKbd ?? 0) : 0,
+    crudeImportsKbd: jodiOil?.crude?.importsKbd ?? null,
+    gasolineDemandKbd: jodiOil?.gasoline?.demandKbd ?? null,
+    gasolineImportsKbd: jodiOil?.gasoline?.importsKbd ?? null,
+    dieselDemandKbd: jodiOil?.diesel?.demandKbd ?? null,
+    dieselImportsKbd: jodiOil?.diesel?.importsKbd ?? null,
+    jetDemandKbd: jodiOil?.jet?.demandKbd ?? null,
+    jetImportsKbd: jodiOil?.jet?.importsKbd ?? null,
+    lpgDemandKbd: jodiOil?.lpg?.demandKbd ?? null,
+    lpgImportsKbd: jodiOil?.lpg?.importsKbd ?? null,
     daysOfCover: hasIeaStocks ? (ieaStocks.daysOfCover ?? 0) : 0,
     netExporter: ieaStocks?.netExporter === true,
     belowObligation: ieaStocks?.belowObligation === true,
@@ -144,12 +169,12 @@ function buildOilFields(jodiOil, ieaStocks, hasIeaStocks) {
 }
 
 function buildGasFields(jodiGas) {
-  if (!jodiGas) return { lngImportsTj: 0, pipeImportsTj: 0, totalDemandTj: 0, lngShareOfImports: 0 };
+  if (!jodiGas) return { lngImportsTj: null, pipeImportsTj: null, totalDemandTj: null, lngShareOfImports: null };
   return {
-    lngImportsTj: jodiGas.lngImportsTj ?? 0,
-    pipeImportsTj: jodiGas.pipeImportsTj ?? 0,
-    totalDemandTj: jodiGas.totalDemandTj ?? 0,
-    lngShareOfImports: jodiGas.lngShareOfImports ?? 0,
+    lngImportsTj: jodiGas.lngImportsTj ?? null,
+    pipeImportsTj: jodiGas.pipeImportsTj ?? null,
+    totalDemandTj: jodiGas.totalDemandTj ?? null,
+    lngShareOfImports: jodiGas.lngShareOfImports ?? null,
   };
 }
 
@@ -193,8 +218,8 @@ export function buildSpineEntry(iso2, { mix, jodiOil, jodiGas, ieaStocks, ember 
   }
 
   const hasMix = mix != null;
-  const hasJodiOil = jodiOil != null;
-  const hasJodiGas = jodiGas != null;
+  const hasJodiOil = checkJodiOilAvailability(jodiOil);
+  const hasJodiGas = checkJodiGasAvailability(jodiGas);
   const hasIeaStocks = checkIeaAvailability(ieaStocks);
   const hasEmber = ember != null && typeof ember.fossilShare === 'number';
 

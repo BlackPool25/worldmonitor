@@ -6,7 +6,7 @@
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { isTransientComtrade, fetchBilateral, __setSleepForTests } from '../scripts/seed-comtrade-bilateral-hs4.mjs';
+import { isTransientComtrade, fetchBilateral, recentPeriod, candidatePeriods, __setSleepForTests } from '../scripts/seed-comtrade-bilateral-hs4.mjs';
 import { fetchFlows, checkCoverage, KEY_PREFIX, __setSleepForTests as __setFlowsSleep } from '../scripts/seed-trade-flows.mjs';
 import { fetchImportsForReporter, __setSleepForTests as __setHhiSleep } from '../scripts/seed-recovery-import-hhi.mjs';
 
@@ -58,6 +58,63 @@ test('fetchBilateral: succeeds on first attempt with 200', async () => {
   assert.equal(fetchCalls.length, 1, 'one fetch, no retries');
   assert.equal(result.length, 1);
   assert.equal(result[0].cmdCode, '2709');
+});
+
+test('fetchBilateral: uses the stable HS API route while metadata tracks HS2022', async () => {
+  fetchResponses = [{ status: 200, body: { data: [] } }];
+
+  await fetchBilateral('699', ['2709']);
+
+  assert.match(new URL(fetchCalls[0]).pathname, /^\/(?:public\/v1\/preview|data\/v1\/get)\/C\/A\/HS$/);
+});
+
+test('recentPeriod: pins the safely-final year and rolls forward at the UTC year boundary', () => {
+  assert.equal(recentPeriod(new Date('2026-07-02T00:00:00Z')), '2024');
+  // Still the old pin one second before the UTC new year...
+  assert.equal(recentPeriod(new Date('2026-12-31T23:59:59Z')), '2024');
+  // ...and it rolls forward the instant the year turns. This is the cliff that
+  // makes a reporter which has not yet filed the new (y-2) year come back
+  // HTTP 200 with zero rows, so any period-fallback work must key off it.
+  assert.equal(recentPeriod(new Date('2027-01-01T00:00:00Z')), '2025');
+  // An explicit lag stays independent of the default.
+  assert.equal(recentPeriod(new Date('2027-01-01T00:00:00Z'), 3), '2024');
+});
+
+test('fetchBilateral: requests an explicit safely-final annual period', async () => {
+  fetchResponses = [{ status: 200, body: { data: [] } }];
+
+  await fetchBilateral('699', ['2709']);
+
+  // Assert the FRESHEST requested year, not the whole parameter: the seeder
+  // sends a multi-year window on the authenticated route and a single year on
+  // the public preview route (which 400s on a list), so the exact string
+  // depends on whether COMTRADE_API_KEYS is present. Pinning the full value
+  // would pass locally and mean something different on CI.
+  const period = new URL(fetchCalls[0]).searchParams.get('period');
+  assert.ok(period, 'period must always be sent — omitting it is the count=0 outage');
+  assert.equal(period.split(',')[0], String(new Date().getUTCFullYear() - 2));
+});
+
+test('recentPeriod: pins y-2 and rolls forward at the UTC year boundary', () => {
+  assert.equal(recentPeriod(new Date('2026-07-02T00:00:00Z')), '2024');
+  assert.equal(recentPeriod(new Date('2026-12-31T23:59:59Z')), '2024');
+  assert.equal(recentPeriod(new Date('2027-01-01T00:00:00Z')), '2025');
+  assert.equal(recentPeriod(new Date('2027-01-01T00:00:00Z'), 3), '2024');
+});
+
+test('candidatePeriods: returns (y-2) then (y-3) for the per-reporter fallback', () => {
+  assert.deepEqual(
+    candidatePeriods(new Date('2026-07-02T00:00:00Z')),
+    ['2024', '2023'],
+  );
+});
+
+test('fetchBilateral: an explicit period argument overrides the default', async () => {
+  fetchResponses = [{ status: 200, body: { data: [] } }];
+
+  await fetchBilateral('699', ['2709'], '2023');
+
+  assert.equal(new URL(fetchCalls[0]).searchParams.get('period'), '2023');
 });
 
 test('fetchBilateral: retries once after a single 503, succeeds on second attempt', async () => {
@@ -158,6 +215,30 @@ test('fetchFlows: retries twice on 503s, succeeds on third', async () => {
   assert.deepEqual(sleepCalls, [5_000, 15_000]);
 });
 
+test('fetchFlows: waits once on 429 and then recovers', async () => {
+  fetchResponses = [
+    { status: 429, body: {} },
+    { status: 200, body: { data: [{ period: 2024, flowCode: 'M', primaryValue: 100, partnerCode: '156' }] } },
+  ];
+  const result = await fetchFlows({ code: '156', name: 'China' }, { code: '8542', desc: 'Semiconductors' });
+  assert.equal(fetchCalls.length, 2, 'one initial request plus one bounded rate-limit retry');
+  assert.ok(result.length >= 1, 'recovers China flow data after the rate-limit wait');
+  assert.deepEqual(sleepCalls, [60_000]);
+});
+
+test('fetchFlows: a second 429 fails without another wait', async () => {
+  fetchResponses = [
+    { status: 429, body: {} },
+    { status: 429, body: {} },
+  ];
+  await assert.rejects(
+    () => fetchFlows({ code: '156', name: 'China' }, { code: '8542', desc: 'Semiconductors' }),
+    /HTTP 429/,
+  );
+  assert.equal(fetchCalls.length, 2, 'caps the rate-limit retry at one additional request');
+  assert.deepEqual(sleepCalls, [60_000], 'waits at most once for a rate-limited pair');
+});
+
 test('fetchFlows: throws after 3 consecutive 5xx (caller catches via allSettled)', async () => {
   fetchResponses = [{ status: 503 }, { status: 502 }, { status: 500 }];
   await assert.rejects(
@@ -194,7 +275,38 @@ test('fetchImportsForReporter: retries twice on 503s, succeeds on third', async 
   assert.deepEqual(sleepCalls, [5_000, 10_000], 'import-hhi uses 10s not 15s for second retry (tighter bundle budget)');
 });
 
-test('fetchImportsForReporter: 429 then 503 still consumes the 5xx retries', async () => {
+test('fetchImportsForReporter: 429 + 503 share the 3-attempt retry budget (post-§U1 unified pattern)', async () => {
+  // Plan 2026-04-28-003 §U1: the prior split-budget pattern (1×429 +
+  // 2×5xx, up to 4 total attempts) was replaced with a unified 3-attempt
+  // budget mirroring seed-recovery-reexport-share.mjs PR #3385. This
+  // test pins the new contract: a 429 followed by a 5xx still gets a
+  // chance on the 3rd attempt, but a 4-error sequence is not allowed
+  // to recover (it would consume 4 attempts under the old design).
+  fetchResponses = [
+    { status: 429, body: {} },
+    { status: 503, body: {} },
+    { status: 200, body: { data: [{ period: 2024, primaryValue: 42, partnerCode: '156' }] } },
+  ];
+  const { records, status } = await fetchImportsForReporter('699', 'fake-key');
+  assert.equal(fetchCalls.length, 3, 'unified 3-attempt budget: 429 → 503 → 200 = exactly 3 fetches');
+  assert.equal(status, 200);
+  assert.ok(records.length >= 0);
+  assert.deepEqual(
+    sleepCalls,
+    [5_000, 10_000],
+    '429 honors the import-HHI per-key pacing floor; 5xx keeps 5_000 * attempt backoff',
+  );
+});
+
+test('fetchImportsForReporter: 4 consecutive errors exhaust the 3-attempt budget without recovery', async () => {
+  // Trade-off the §U1 unified pattern accepts: a 4-error sequence that
+  // ENDS in success can no longer recover (the 200 in position 4 is
+  // never reached). Equivalent to saying "Comtrade is genuinely broken
+  // for this reporter; give up and let the seeder's resume logic try
+  // again on the next cron tick." The pre-fix split budget allowed up
+  // to 4 attempts, but in practice that was masking AE-style rate-limit
+  // failures by appearing to succeed only when Comtrade was healthy
+  // anyway.
   fetchResponses = [
     { status: 429, body: {} },
     { status: 503, body: {} },
@@ -202,10 +314,10 @@ test('fetchImportsForReporter: 429 then 503 still consumes the 5xx retries', asy
     { status: 200, body: { data: [{ period: 2024, primaryValue: 42, partnerCode: '156' }] } },
   ];
   const { records, status } = await fetchImportsForReporter('699', 'fake-key');
-  assert.equal(fetchCalls.length, 4, 'classification loop: 429 + 3 transient 5xx attempts (of which 2 retried)');
-  assert.equal(status, 200);
-  assert.ok(records.length >= 0);
-  assert.deepEqual(sleepCalls, [15_000, 5_000, 10_000], '15s 429 + 5s/10s transient backoffs');
+  assert.equal(fetchCalls.length, 3, '4th response (200) is never consumed under the unified budget');
+  assert.equal(status, 502, 'returns the final upstream status — caller logs the actual failure mode');
+  assert.deepEqual(records, [], 'no recovery path; resume logic re-tries on next cron tick');
+  assert.deepEqual(sleepCalls, [5_000, 10_000]);
 });
 
 test('fetchImportsForReporter: gives up ({records:[], status:503}) after 3 consecutive 5xx', async () => {

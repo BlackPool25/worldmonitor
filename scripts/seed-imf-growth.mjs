@@ -6,7 +6,7 @@
 // Indicators:
 //   NGDP_RPCH   — Real GDP growth, % change
 //   NGDPDPC     — Nominal GDP per capita, USD
-//   NGDP_R      — Real GDP, national currency (constant prices)
+//   NGDP_R      — Real GDP, national currency (constant prices), billions
 //   PPPPC       — GDP per capita, PPP USD
 //   PPPGDP      — GDP, PPP USD
 //   NID_NGDP    — Total investment % GDP
@@ -17,11 +17,14 @@
 // used by seed-imf-macro.mjs.
 
 import { loadEnvFile, runSeed, loadSharedConfig, imfSdmxFetchIndicator } from './_seed-utils.mjs';
+// Sprint 4 IMF/WEO cohort content-age helper — see header for forecast-year semantics.
+import { imfWeoContentMeta, IMF_WEO_MAX_CONTENT_AGE_MIN, maxIntegerYear } from './_imf-weo-content-age-helpers.mjs';
 
 loadEnvFile(import.meta.url);
 
 const CANONICAL_KEY = 'economic:imf:growth:v1';
 const CACHE_TTL = 35 * 24 * 3600; // 35 days — monthly IMF WEO release cadence
+const SCHEMA_VERSION = 3;
 
 const ISO2_TO_ISO3 = loadSharedConfig('iso2-to-iso3.json');
 const ISO3_TO_ISO2 = Object.fromEntries(Object.entries(ISO2_TO_ISO3).map(([k, v]) => [v, k]));
@@ -92,6 +95,8 @@ export function buildGrowthCountries(perIndicator) {
     countries[iso2] = {
       realGdpGrowthPct:   growth?.value ?? null,
       gdpPerCapitaUsd:    gdpPc?.value ?? null,
+      realGdpLcuB:        realGdpV?.value ?? null,
+      // Deprecated bootstrap alias: keep through the v3 rollout window.
       realGdp:            realGdpV?.value ?? null,
       gdpPerCapitaPpp:    pppPc?.value ?? null,
       gdpPpp:             pppGdpV?.value ?? null,
@@ -99,6 +104,10 @@ export function buildGrowthCountries(perIndicator) {
       savingsPct:         sav?.value ?? null,
       savingsInvestmentGap: savInvGap,
       year: growth?.year ?? gdpPc?.year ?? realGdpV?.year ?? pppPc?.year ?? pppGdpV?.year ?? inv?.year ?? sav?.year ?? null,
+      // Codex PR #3604 P2 — see seed-imf-external.mjs for the full
+      // rationale. `latestYear` = max forecast year across all this
+      // country's indicators; drives content-age in the WEO helper.
+      latestYear: maxIntegerYear([growth?.year, gdpPc?.year, realGdpV?.year, pppPc?.year, pppGdpV?.year, inv?.year, sav?.year]),
     };
   }
   return countries;
@@ -143,7 +152,7 @@ export function validate(data) {
   return typeof data?.countries === 'object' && Object.keys(data.countries).length >= 190;
 }
 
-export { CANONICAL_KEY, CACHE_TTL };
+export { CANONICAL_KEY, CACHE_TTL, SCHEMA_VERSION };
 
 export function declareRecords(data) {
   return Object.keys(data?.countries || {}).length;
@@ -158,8 +167,18 @@ if (process.argv[1]?.endsWith('seed-imf-growth.mjs')) {
     emptyDataIsFailure: true,
   
     declareRecords,
-    schemaVersion: 1,
+    // schemaVersion bumped 1→2 in Codex PR #3604 review fix: see
+    // seed-imf-external.mjs for the rationale (new `latestYear` field).
+    // Bump 2→3 because this seeder adds explicit `realGdpLcuB` naming while
+    // preserving the deprecated `realGdp` alias during rollout.
+    schemaVersion: SCHEMA_VERSION,
     maxStaleMin: 100800,
+
+    // ── Content-age contract (Sprint 4 IMF/WEO cohort) ──
+    // 18-month budget = 16mo steady-state ceiling + 2mo slack.
+    // See _imf-weo-content-age-helpers.mjs JSDoc for derivation.
+    contentMeta: imfWeoContentMeta,
+    maxContentAgeMin: IMF_WEO_MAX_CONTENT_AGE_MIN,
   }).catch((err) => {
     const _cause = err.cause ? ` (cause: ${err.cause.message || err.cause.code || err.cause})` : '';
     console.error('FATAL:', (err.message || err) + _cause);

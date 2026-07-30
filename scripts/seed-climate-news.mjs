@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 
 import { loadEnvFile, CHROME_UA, runSeed } from './_seed-utils.mjs';
+import { decodeHtmlEntities } from './_html-entities.mjs';
+// Pure contentMeta helper lives in its own module so tests can import the
+// real code (no replicas, no drift). See helpers module header for rationale.
+import { climateNewsContentMeta, CLIMATE_NEWS_MAX_CONTENT_AGE_MIN } from './_climate-news-helpers.mjs';
 
 loadEnvFile(import.meta.url);
 
@@ -25,16 +29,6 @@ function stableHash(str) {
   let h = 0;
   for (let i = 0; i < str.length; i++) h = (Math.imul(31, h) + str.charCodeAt(i)) | 0;
   return Math.abs(h).toString(36);
-}
-
-function decodeHtmlEntities(text) {
-  return text
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, ' ');
 }
 
 function extractTag(block, tagName) {
@@ -63,7 +57,9 @@ function extractLink(block) {
   return decodeHtmlEntities(href).trim();
 }
 
-function parseRssItems(xml, sourceName) {
+// Exported as a test seam (tests/climate-news-entity-decode.test.mjs); the
+// isMain guard below keeps importing this module from triggering a seed run.
+export function parseRssItems(xml, sourceName) {
   const bounded = xml.length > RSS_MAX_BYTES ? xml.slice(0, RSS_MAX_BYTES) : xml;
   const items = [];
   const seenIds = new Set();
@@ -196,7 +192,9 @@ export function declareRecords(data) {
   return Array.isArray(data?.items) ? data.items.length : 0;
 }
 
-runSeed('climate', 'news-intelligence', CANONICAL_KEY, fetchClimateNews, {
+const isMain = process.argv[1]?.endsWith('seed-climate-news.mjs');
+if (isMain) {
+  runSeed('climate', 'news-intelligence', CANONICAL_KEY, fetchClimateNews, {
   validateFn: validate,
   ttlSeconds: CACHE_TTL,
   sourceVersion: 'climate-rss-v1',
@@ -205,8 +203,20 @@ runSeed('climate', 'news-intelligence', CANONICAL_KEY, fetchClimateNews, {
   declareRecords,
   schemaVersion: 1,
   maxStaleMin: 90,
-}).catch((err) => {
-  const _cause = err.cause ? ` (cause: ${err.cause.message || err.cause.code || err.cause})` : '';
-  console.error('FATAL:', (err.message || err) + _cause);
-  process.exit(1);
-});
+
+  // ── Content-age contract (Sprint 3a of the 2026-05-04 health-readiness plan) ──
+  //
+  // 7-day budget chosen so a real upstream-aggregator outage (every climate
+  // feed's parse breaks simultaneously, e.g. a webpack bundle change in our
+  // RSS regex matching) trips STALE_CONTENT, while a normal holiday-weekend
+  // cadence dip across the listed sources does not. seed-climate-news.mjs
+  // already filters items with publishedAt=0 at parse time, so contentMeta
+  // can read item.publishedAt directly — no synthetic-tagging needed.
+  contentMeta: climateNewsContentMeta,
+  maxContentAgeMin: CLIMATE_NEWS_MAX_CONTENT_AGE_MIN,
+  }).catch((err) => {
+    const _cause = err.cause ? ` (cause: ${err.cause.message || err.cause.code || err.cause})` : '';
+    console.error('FATAL:', (err.message || err) + _cause);
+    process.exit(1);
+  });
+}

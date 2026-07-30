@@ -277,6 +277,18 @@ describe('buildDedupKey + simpleHash', () => {
     assert.match(key, /^wm:notif:scan-dedup:x:/);
   });
 
+  it('prefers an explicit stable dedupe lineage over mutable title text', () => {
+    const a = buildDedupKey({
+      eventType: 'x',
+      payload: { title: 'Original title', dedupe_key: 'stable-lineage' },
+    });
+    const b = buildDedupKey({
+      eventType: 'x',
+      payload: { title: 'Corrected title', dedupe_key: 'stable-lineage' },
+    });
+    assert.equal(a, b);
+  });
+
   it('simpleHash returns a non-empty base36 string for any input', () => {
     assert.ok(simpleHash('').length > 0);
     assert.ok(simpleHash('a').length > 0);
@@ -425,10 +437,10 @@ describe('publishEventWithOps — dedup rollback', () => {
     const deletedKeys = [];
     const ops = {
       setNx: async (key, _ttl) => {
-        if (setNxFails) return false;
-        if (dedupKeys[key]) return false;
+        if (setNxFails) return 'error';
+        if (dedupKeys[key]) return 'duplicate';
         dedupKeys[key] = true;
-        return true;
+        return 'new';
       },
       lpush: async (_key, value) => {
         if (lpushFails) return false;
@@ -459,6 +471,23 @@ describe('publishEventWithOps — dedup rollback', () => {
     assert.equal(mem.deletedKeys.length, 0);
   });
 
+  it('uses a caller policy cooldown within the bounded publisher range', async () => {
+    const seenTtls = [];
+    const mem = memoryOps();
+    const ops = {
+      ...mem.ops,
+      setNx: async (key, ttl) => {
+        seenTtls.push(ttl);
+        return mem.ops.setNx(key, ttl);
+      },
+    };
+    await publishEventWithOps({
+      ...sampleEvent,
+      cooldownSeconds: 12 * 60 * 60,
+    }, ops);
+    assert.deepEqual(seenTtls, [12 * 60 * 60]);
+  });
+
   it('dedup hit: returns dedupHit=true without touching the queue', async () => {
     const mem = memoryOps();
     // Pre-populate the dedup key so the second call hits it.
@@ -467,6 +496,33 @@ describe('publishEventWithOps — dedup rollback', () => {
     assert.deepEqual(outcome, { enqueued: false, dedupHit: true, rolledBack: false });
     assert.equal(mem.queue.length, 0);
     assert.equal(mem.deletedKeys.length, 0);
+  });
+
+  it('SETNX error fails open for the first high-priority alert, then fallback-suppresses repeats', async () => {
+    const mem = memoryOps({ setNxFails: true });
+    const event = {
+      ...sampleEvent,
+      payload: { title: `MENA: regime shift SETNX outage ${Date.now()}` },
+    };
+    const first = await publishEventWithOps(event, mem.ops);
+    assert.deepEqual(first, { enqueued: true, dedupHit: false, rolledBack: false });
+    assert.equal(mem.queue.length, 1);
+
+    const second = await publishEventWithOps(event, mem.ops);
+    assert.deepEqual(second, { enqueued: false, dedupHit: true, rolledBack: false });
+    assert.equal(mem.queue.length, 1);
+  });
+
+  it('SETNX error fails closed for low-priority injected test events', async () => {
+    const mem = memoryOps({ setNxFails: true });
+    const lowEvent = {
+      ...sampleEvent,
+      severity: 'low',
+      payload: { title: `MENA: low-priority SETNX outage ${Date.now()}` },
+    };
+    const outcome = await publishEventWithOps(lowEvent, mem.ops);
+    assert.deepEqual(outcome, { enqueued: false, dedupHit: false, rolledBack: false });
+    assert.equal(mem.queue.length, 0);
   });
 
   it('LPUSH failure: dedup key is rolled back via DEL', async () => {
@@ -501,7 +557,7 @@ describe('publishEventWithOps — dedup rollback', () => {
     assert.equal(mem.queue.length, 1);
   });
 
-  it('LPUSH failure + DEL failure still returns rolledBack=true (best-effort)', async () => {
+  it('LPUSH failure + DEL failure reports that rollback did not complete', async () => {
     const mem = memoryOps({ lpushFails: true });
     const opsWithBrokenDel = {
       setNx: mem.ops.setNx,
@@ -511,9 +567,61 @@ describe('publishEventWithOps — dedup rollback', () => {
       },
     };
     const outcome = await publishEventWithOps(sampleEvent, opsWithBrokenDel);
-    // We attempted rollback; del threw; still report rolledBack=true.
-    assert.equal(outcome.rolledBack, true);
+    assert.equal(outcome.rolledBack, false);
     assert.equal(outcome.enqueued, false);
+  });
+
+  it('atomic enqueue-once path never exposes a dedup key without its queue event', async () => {
+    const calls = [];
+    const outcome = await publishEventWithOps(sampleEvent, {
+      setNx: async () => { throw new Error('legacy path must not run'); },
+      lpush: async () => { throw new Error('legacy path must not run'); },
+      del: async () => { throw new Error('legacy path must not run'); },
+      enqueueOnce: async (...args) => {
+        calls.push(args);
+        return 'enqueued';
+      },
+    });
+    assert.deepEqual(outcome, { enqueued: true, dedupHit: false, rolledBack: false });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][2], 'wm:events:queue');
+    assert.match(calls[0][3], /"eventType":"regional_regime_shift"/);
+  });
+
+  it('enqueueOnce transport error falls back to the legacy SET NX → LPUSH path', async () => {
+    const mem = memoryOps();
+    const calls = [];
+    const outcome = await publishEventWithOps(sampleEvent, {
+      ...mem.ops,
+      enqueueOnce: async (...args) => {
+        calls.push(args);
+        return 'error';
+      },
+    });
+    assert.deepEqual(outcome, { enqueued: true, dedupHit: false, rolledBack: false });
+    assert.equal(calls.length, 1, 'enqueueOnce was attempted before falling back');
+    assert.equal(mem.queue.length, 1, 'the legacy path actually enqueued the event');
+  });
+
+  it('enqueueOnce transport error fails open for high-priority alerts when the legacy SET NX also errors', async () => {
+    const mem = memoryOps({ setNxFails: true });
+    const event = {
+      ...sampleEvent,
+      payload: { title: `MENA: regime shift double outage ${Date.now()}` },
+    };
+    const outcome = await publishEventWithOps(event, {
+      ...mem.ops,
+      enqueueOnce: async () => 'error',
+    });
+    assert.deepEqual(outcome, { enqueued: true, dedupHit: false, rolledBack: false });
+    assert.equal(mem.queue.length, 1, 'a high-priority alert is not silently dropped during a double outage');
+  });
+
+  it('enqueueOnce transport error drops the event when no legacy fallback ops are supplied', async () => {
+    const outcome = await publishEventWithOps(sampleEvent, {
+      enqueueOnce: async () => 'error',
+    });
+    assert.deepEqual(outcome, { enqueued: false, dedupHit: false, rolledBack: false });
   });
 
   it('swallows exceptions from setNx/lpush and returns a non-enqueued outcome', async () => {

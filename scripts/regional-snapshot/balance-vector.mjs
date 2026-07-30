@@ -4,6 +4,8 @@
 // docs/internal/pro-regional-intelligence-appendix-scoring.md.
 
 import { clip, num, weightedAverage, percentile } from './_helpers.mjs';
+import { sanitizeEvidenceString } from './_sanitize.mjs';
+import { CII_RISK_SCORE_CACHE_KEYS } from '../_cii-risk-cache-keys.mjs';
 // Use scripts/shared mirror (not repo-root shared/): Railway service has
 // rootDirectory=scripts so ../../shared/ escapes the deploy root. See #2954.
 import {
@@ -18,7 +20,13 @@ import iso3ToIso2Raw from '../shared/iso3-to-iso2.json' with { type: 'json' };
 /** @type {Record<string, string>} */
 const ISO3_TO_ISO2 = iso3ToIso2Raw;
 
-const SCORING_VERSION = '1.0.0';
+// 1.1.0: balance vector now consumes the cross-source-signals, forecasts,
+// national-debt, and transit-summaries inputs that were silently dropped while
+// they were stored as { _seed, data } envelopes but read flat (coercive_pressure
+// scored 0 for every region → flat 'calm'). Fixed at the loader via
+// unwrapEnvelope; bumped so the scoring_version in snapshot meta makes the
+// resulting score shift traceable.
+const SCORING_VERSION = '1.1.0';
 
 export { SCORING_VERSION };
 
@@ -109,7 +117,7 @@ function computeCoercivePressure(region, sources, drivers) {
       axis: 'coercive_pressure',
       description: `${criticalCount} critical, ${highCount} high cross-source signals in region`,
       magnitude: round(cSignal),
-      evidence_ids: inRegion.slice(0, 5).map((s) => String(s?.id ?? `xss:${s?.type ?? 'unknown'}`)),
+      evidence_ids: inRegion.slice(0, 5).map((s) => sanitizeEvidenceString(s?.id ?? `xss:${s?.type ?? 'unknown'}`)),
       orientation: 'pressure',
     });
   }
@@ -127,7 +135,7 @@ function computeCoercivePressure(region, sources, drivers) {
 }
 
 function computeDomesticFragility(countries, sources, drivers) {
-  const cii = sources['risk:scores:sebuf:stale:v1'];
+  const cii = sources[CII_RISK_SCORE_CACHE_KEYS.stale];
   const ciiScores = Array.isArray(cii?.ciiScores) ? cii.ciiScores : [];
   const inRegion = ciiScores.filter((s) => countries.has(String(s?.region ?? '')));
   if (!inRegion.length) return 0;
@@ -156,11 +164,12 @@ function computeDomesticFragility(countries, sources, drivers) {
     .map((c) => ({ ...c, contribution: c.norm * countryCriticality(c.iso) }))
     .sort((a, b) => b.contribution - a.contribution)[0];
   if (top && top.norm > 0.3) {
+    const safeIso = sanitizeEvidenceString(top.iso);
     drivers.push({
       axis: 'domestic_fragility',
-      description: `${top.iso} CII ${(top.norm * 100).toFixed(0)} (criticality ${countryCriticality(top.iso).toFixed(1)})`,
+      description: `${safeIso} CII ${(top.norm * 100).toFixed(0)} (criticality ${countryCriticality(top.iso).toFixed(1)})`,
       magnitude: round(top.contribution),
-      evidence_ids: [`cii:${top.iso}`],
+      evidence_ids: [`cii:${safeIso}`],
       orientation: 'pressure',
     });
   }
@@ -207,7 +216,7 @@ function computeCapitalStress(countries, sources, drivers) {
   if (cMacro > 0.6) {
     drivers.push({
       axis: 'capital_stress',
-      description: `Macro signals verdict: ${verdict}`,
+      description: `Macro signals verdict: ${sanitizeEvidenceString(verdict)}`,
       magnitude: round(cMacro),
       evidence_ids: ['macro:verdict'],
       orientation: 'pressure',
@@ -225,7 +234,7 @@ function computeCapitalStress(countries, sources, drivers) {
   if (cStress > 0.5) {
     drivers.push({
       axis: 'capital_stress',
-      description: `Global stress index: ${stressComposite.toFixed(0)} (${stress?.label ?? 'n/a'})`,
+      description: `Global stress index: ${stressComposite.toFixed(0)} (${sanitizeEvidenceString(stress?.label ?? 'n/a')})`,
       magnitude: round(cStress),
       evidence_ids: ['stress:composite'],
       orientation: 'pressure',
@@ -351,7 +360,7 @@ function computeMaritimeAccess(corridors, sources, drivers) {
     if (mThreat < 0.6) {
       drivers.push({
         axis: 'maritime_access',
-        description: `${corridor.label} threat level: ${threatLevel}`,
+        description: `${corridor.label} threat level: ${sanitizeEvidenceString(threatLevel)}`,
         magnitude: round(1 - mThreat),
         evidence_ids: [`chokepoint:${corridor.chokepointId}`],
         orientation: 'buffer',

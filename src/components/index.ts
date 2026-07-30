@@ -2,8 +2,13 @@ export * from './Panel';
 export * from './VirtualList';
 export { MapComponent } from './Map';
 export * from './MapPopup';
-export { DeckGLMap } from './DeckGLMap';
-export { MapContainer, type MapView, type TimeRange, type MapContainerState } from './MapContainer';
+// Type-only re-exports for the heavy WebGL map stack: emitting the values here
+// would drag MapContainer→DeckGLMap→maplibre-gl + @deck.gl/* into the entry's
+// static graph through every barrel consumer, undoing the dynamic-import in
+// panel-layout. Anyone needing the value must import directly from
+// '@/components/MapContainer' (currently: panel-layout via dynamic import).
+export type { DeckGLMap } from './DeckGLMap';
+export type { MapContainer, MapView, TimeRange, MapContainerState } from './MapContainer';
 export * from './NewsPanel';
 export * from './MarketPanel';
 export * from './StockAnalysisPanel';
@@ -19,6 +24,7 @@ export * from './EnergyComplexPanel';
 export * from './OilInventoriesPanel';
 export * from './SearchModal';
 export * from './MobileWarningModal';
+export * from './MobilePanelNav';
 export * from './PizzIntIndicator';
 export * from './LlmStatusIndicator';
 export * from './GdeltIntelPanel';
@@ -35,6 +41,7 @@ export * from './ServiceStatusPanel';
 export * from './InternetDisruptionsPanel';
 export * from './RuntimeConfigPanel';
 export * from './InsightsPanel';
+export * from './ThreatTimelinePanel';
 export * from './TechReadinessPanel';
 export * from './SatelliteFiresPanel';
 export * from './MacroSignalsPanel';
@@ -87,9 +94,14 @@ export * from './LiquidityShiftsPanel';
 export * from './PositioningPanel';
 export * from './GoldIntelligencePanel';
 export { HormuzPanel } from './HormuzPanel';
+export { ChokepointStripPanel } from './ChokepointStripPanel';
+export { PipelineStatusPanel } from './PipelineStatusPanel';
+export { StorageFacilityMapPanel } from './StorageFacilityMapPanel';
+export { FuelShortagePanel } from './FuelShortagePanel';
+export { EnergyDisruptionsPanel } from './EnergyDisruptionsPanel';
+export { EnergyRiskOverviewPanel } from './EnergyRiskOverviewPanel';
 export * from './ClimateNewsPanel';
 export * from './DiseaseOutbreaksPanel';
 export * from './SocialVelocityPanel';
 export * from './WsbTickerScannerPanel';
-export * from './ResilienceWidget';
 export * from './EnergyCrisisPanel';

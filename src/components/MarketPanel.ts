@@ -2,120 +2,57 @@ import { Panel } from './Panel';
 import { t } from '@/services/i18n';
 import type { MarketData, CryptoData, TokenData } from '@/types';
 import { formatPrice, formatChange, getChangeClass, getHeatmapClass } from '@/utils';
-import { escapeHtml } from '@/utils/sanitize';
+import { escapeHtml, unsafeRawHtml } from '@/utils/sanitize';
 import { miniSparkline } from '@/utils/sparkline';
 import { SITE_VARIANT } from '@/config';
+import { createWatchlistButton } from './watchlist-modal';
 import {
-  getMarketWatchlistEntries,
-  parseMarketWatchlistInput,
-  resetMarketWatchlist,
-  setMarketWatchlistEntries,
-} from '@/services/market-watchlist';
+  renderChinaCorporateDisclosureSignals,
+  type ChinaCorporateDisclosureSnapshot,
+} from './market-disclosures';
+import { composeMarketPanelContent } from './market-panel-content';
+import { openMarketChartModal } from './market-chart-modal';
+import {
+  bindMarketChartActivation,
+  getMarketChartRowAttributes,
+} from './market-chart-interactions';
 
 export class MarketPanel extends Panel {
-  private settingsBtn: HTMLButtonElement | null = null;
-  private overlay: HTMLElement | null = null;
+  private _markets: MarketData[] = [];
+  private _marketsRateLimited = false;
+  private _disclosures: ChinaCorporateDisclosureSnapshot | null = null;
 
   constructor() {
     super({ id: 'markets', title: t('panels.markets'), infoTooltip: t('components.markets.infoTooltip') });
-    this.createSettingsButton();
-  }
+    this.header.appendChild(createWatchlistButton());
 
-  private createSettingsButton(): void {
-    this.settingsBtn = document.createElement('button');
-    this.settingsBtn.className = 'live-news-settings-btn';
-    this.settingsBtn.title = 'Customize market watchlist';
-    this.settingsBtn.textContent = 'Watchlist';
-    this.settingsBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this.openWatchlistModal();
-    });
-    this.header.appendChild(this.settingsBtn);
-  }
-
-  private openWatchlistModal(): void {
-    if (this.overlay) return;
-
-    const current = getMarketWatchlistEntries();
-    const currentText = current.length
-      ? current.map((e) => (e.name ? `${e.symbol}|${e.name}` : e.symbol)).join('\n')
-      : '';
-
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay active';
-    overlay.id = 'marketWatchlistModal';
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) this.closeWatchlistModal();
-    });
-
-    const modal = document.createElement('div');
-    modal.className = 'modal unified-settings-modal';
-    modal.style.maxWidth = '680px';
-
-    modal.innerHTML = `
-      <div class="modal-header">
-        <span class="modal-title">Market watchlist</span>
-        <button class="modal-close" aria-label="Close">×</button>
-      </div>
-      <div style="padding:14px 16px 16px 16px">
-        <div style="color:var(--text-dim);font-size:12px;line-height:1.4;margin-bottom:10px">
-          Add extra tickers (comma or newline separated). Friendly labels supported: SYMBOL|Label.
-          Example: TSLA|Tesla, AAPL|Apple, ^GSPC|S&P 500
-          <br/>
-          Tip: keep it under ~30 unless you enjoy scrolling.
-        </div>
-        <textarea id="wmMarketWatchlistInput"
-          style="width:100%;min-height:120px;resize:vertical;background:rgba(255,255,255,0.04);border:1px solid var(--border);color:var(--text);border-radius:10px;padding:10px;font-family:inherit;font-size:12px;outline:none"
-          spellcheck="false"></textarea>
-        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
-          <button type="button" class="panels-reset-layout" id="wmMarketResetBtn">Reset</button>
-          <button type="button" class="panels-reset-layout" id="wmMarketCancelBtn">Cancel</button>
-          <button type="button" class="panels-reset-layout" id="wmMarketSaveBtn" style="border-color:var(--text-dim);color:var(--text)">Save</button>
-        </div>
-      </div>
-    `;
-
-    const closeBtn = modal.querySelector('.modal-close') as HTMLButtonElement | null;
-    closeBtn?.addEventListener('click', () => this.closeWatchlistModal());
-
-    overlay.appendChild(modal);
-    document.body.appendChild(overlay);
-    this.overlay = overlay;
-
-    const input = modal.querySelector<HTMLTextAreaElement>('#wmMarketWatchlistInput');
-    if (input) input.value = currentText;
-
-    modal.querySelector<HTMLButtonElement>('#wmMarketCancelBtn')?.addEventListener('click', () => this.closeWatchlistModal());
-    modal.querySelector<HTMLButtonElement>('#wmMarketResetBtn')?.addEventListener('click', () => {
-      resetMarketWatchlist();
-      if (input) input.value = ''; // defaults are always included automatically
-      this.closeWatchlistModal();
-    });
-    modal.querySelector<HTMLButtonElement>('#wmMarketSaveBtn')?.addEventListener('click', () => {
-      const raw = input?.value || '';
-      const parsed = parseMarketWatchlistInput(raw);
-      if (parsed.length === 0) resetMarketWatchlist();
-      else setMarketWatchlistEntries(parsed);
-      this.closeWatchlistModal();
-    });
-  }
-
-  private closeWatchlistModal(): void {
-    if (!this.overlay) return;
-    this.overlay.remove();
-    this.overlay = null;
+    // Delegated once on the persistent content element (each render only swaps
+    // innerHTML): click or Enter/Space on a plottable ticker opens its terminal chart.
+    bindMarketChartActivation(this.content, () => this._markets, openMarketChartModal);
   }
 
   public renderMarkets(data: MarketData[], rateLimited?: boolean): void {
-    if (data.length === 0) {
-      this.showRetrying(rateLimited ? t('common.rateLimitedMarket') : t('common.failedMarketData'));
-      return;
-    }
+    this._markets = data;
+    this._marketsRateLimited = Boolean(rateLimited);
+    this._renderMarketsAndDisclosures();
+  }
 
-    const html = data
-      .map(
-        (stock) => `
-      <div class="market-item">
+  public renderDisclosures(snapshot: ChinaCorporateDisclosureSnapshot | null | undefined): void {
+    this._disclosures = snapshot ?? null;
+    this._renderMarketsAndDisclosures();
+  }
+
+  private _renderMarketsAndDisclosures(): void {
+    const disclosureHtml = renderChinaCorporateDisclosureSignals(this._disclosures);
+    const marketsHtml = this._markets
+      .map((stock, idx) => {
+        const attrs = getMarketChartRowAttributes(
+          stock,
+          idx,
+          t('components.markets.chart.title', { symbol: stock.display }),
+        );
+        return `
+      <div${attrs}>
         <div class="market-info">
           <span class="market-name">${escapeHtml(stock.name)}</span>
           <span class="market-symbol">${escapeHtml(stock.display)}</span>
@@ -126,11 +63,25 @@ export class MarketPanel extends Panel {
           <span class="market-change ${getChangeClass(stock.change!)}">${formatChange(stock.change!)}</span>
         </div>
       </div>
-    `
-      )
+    `;
+      })
       .join('');
-
-    this.setContent(html);
+    const content = composeMarketPanelContent({
+      hasMarkets: this._markets.length > 0,
+      marketsHtml,
+      disclosureHtml,
+      unavailableMessage: this._marketsRateLimited
+        ? t('common.rateLimitedMarket')
+        : t('common.failedMarketData'),
+    });
+    if (content.kind === 'retry') {
+      this.showRetrying(content.message);
+      return;
+    }
+    this.setSafeContent(unsafeRawHtml(
+      content.html,
+      'legacy Panel.setContent() migration',
+    ));
   }
 }
 
@@ -205,11 +156,11 @@ export class HeatmapPanel extends Panel {
     const tabBar = this._buildTabBar();
 
     if (this._tab === 'valuations' && Object.keys(this._valuations).length > 0) {
-      this.setContent(tabBar + this._renderValuations());
+      this.setSafeContent(unsafeRawHtml(tabBar + this._renderValuations(), 'legacy Panel.setContent() migration'));
       return;
     }
 
-    this.setContent(tabBar + this._renderPerformance());
+    this.setSafeContent(unsafeRawHtml(tabBar + this._renderPerformance(), 'legacy Panel.setContent() migration'));
   }
 
   private _renderPerformance(): string {
@@ -559,25 +510,29 @@ export class CommoditiesPanel extends Panel {
           ${changeStr ? `<div class="commodity-change ${escapeHtml(changeClass)}">${escapeHtml(changeStr)}</div>` : ''}
         </div>`;
       }).join('');
-      this.setContent(tabBar + `<div class="commodities-grid">${items}</div><div style="margin-top:6px;font-size:9px;color:var(--text-dim)">Source: ECB</div>`);
+      this.setSafeContent(unsafeRawHtml(tabBar + `<div class="commodities-grid">${items}</div><div style="margin-top:6px;font-size:9px;color:var(--text-dim)">Source: ECB</div>`, 'legacy Panel.setContent() migration'));
       return;
     }
 
     if (this._tab === 'xau' && hasXau) {
-      this.setContent(tabBar + this._renderXau());
+      this.setSafeContent(unsafeRawHtml(tabBar + this._renderXau(), 'legacy Panel.setContent() migration'));
       return;
     }
 
-    // Metals/Commodities tab — exclude FX and spot gold symbols from the display grid
+    // Metals/Commodities tab — exclude FX and spot gold symbols from the display grid.
+    // Require a finite numeric price: the feed sometimes omits `price` (undefined),
+    // and `d.price !== null` lets undefined through to `formatPrice(c.price!)`
+    // (WORLDMONITOR-SH). A finite-price guard also keeps the adjacent `c.change!`
+    // row meaningful (a record with no price carries no usable change either).
     const validData = this._commodityData.filter(
-      (d) => d.price !== null && !d.symbol?.endsWith('=X'),
+      (d) => typeof d.price === 'number' && Number.isFinite(d.price) && !d.symbol?.endsWith('=X'),
     );
     if (validData.length === 0) {
       if (!hasFx) {
         this.showRetrying(t('common.failedCommodities'));
         return;
       }
-      this.setContent(tabBar + `<div style="padding:8px;color:var(--text-dim);font-size:12px">${t('common.failedCommodities')}</div>`);
+      this.setSafeContent(unsafeRawHtml(tabBar + `<div style="padding:8px;color:var(--text-dim);font-size:12px">${t('common.failedCommodities')}</div>`, 'legacy Panel.setContent() migration'));
       return;
     }
 
@@ -591,7 +546,7 @@ export class CommoditiesPanel extends Panel {
         </div>
       `).join('') + '</div>';
 
-    this.setContent(tabBar + grid);
+    this.setSafeContent(unsafeRawHtml(tabBar + grid, 'legacy Panel.setContent() migration'));
   }
 }
 
@@ -624,7 +579,7 @@ export class CryptoPanel extends Panel {
       )
       .join('');
 
-    this.setContent(html);
+    this.setSafeContent(unsafeRawHtml(html, 'legacy Panel.setContent() migration'));
   }
 }
 
@@ -654,7 +609,7 @@ export class CryptoHeatmapPanel extends Panel {
         .join('') +
       '</div>';
 
-    this.setContent(html);
+    this.setSafeContent(unsafeRawHtml(html, 'legacy Panel.setContent() migration'));
   }
 }
 
@@ -683,7 +638,7 @@ export class TokenListPanel extends Panel {
       )
       .join('');
 
-    this.setContent(rows);
+    this.setSafeContent(unsafeRawHtml(rows, 'legacy Panel.setContent() migration'));
   }
 }
 

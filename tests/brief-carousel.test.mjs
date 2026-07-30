@@ -1,14 +1,78 @@
-// Phase 8 — carousel URL parsing + page index helpers.
+// Phase 8 — carousel URL parsing + page index helpers + renderer smoke.
 //
-// We do NOT test the PNG render here — Satori needs a font buffer and
-// @resvg/resvg-wasm needs a WASM init, both of which require a
-// browser-or-edge runtime context. The render path is verified via
-// the smoke-test route during deploy validation. These tests lock
-// the pure plumbing: carousel URL derivation + page index mapping.
+// After the @vercel/og refactor (PR #3210), the full render path
+// actually runs cleanly in Node via tsx — ImageResponse wraps satori
+// + resvg-wasm and both work in plain Node. So in addition to the
+// pure plumbing tests (URL derivation + page index mapping) we now
+// end-to-end each of the three layouts, asserting PNG magic bytes
+// and a plausible byte range. This catches Satori tree-shape
+// regressions, font parsing breakage, and resvg-wasm init issues long
+// before they'd surface in a Vercel deploy.
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { pageFromIndex } from '../server/_shared/brief-carousel-render.ts';
+import { readFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { pageFromIndex, renderCarouselImageResponse } from '../server/_shared/brief-carousel-render.ts';
+
+const TEST_DIR = dirname(fileURLToPath(import.meta.url));
+const RENDERER_SOURCE_PATH = resolve(TEST_DIR, '../server/_shared/brief-carousel-render.ts');
+const LOCAL_RENDER_FONT_PATH = resolve(TEST_DIR, '../blog-site/scripts/fonts/inter-regular.ttf');
+const originalFetch = globalThis.fetch;
+
+let rendererSourcePromise;
+let rendererFontUrlPromise;
+let localFontPromise;
+let localFontFetchInstallPromise;
+
+function readRendererSource() {
+  rendererSourcePromise ??= readFile(RENDERER_SOURCE_PATH, 'utf-8');
+  return rendererSourcePromise;
+}
+
+async function rendererFontUrl() {
+  rendererFontUrlPromise ??= (async () => {
+    const src = await readRendererSource();
+    const fontUrlMatch = src.match(/const FONT_URL\s*=\s*['"]([^'"]+)['"]/);
+    assert.ok(fontUrlMatch, 'FONT_URL constant must exist');
+    return fontUrlMatch[1];
+  })();
+  return rendererFontUrlPromise;
+}
+
+function inputUrl(input) {
+  if (typeof input === 'string') return input;
+  if (input instanceof URL) return input.toString();
+  if (input && typeof input === 'object' && 'url' in input) return input.url;
+  return String(input);
+}
+
+async function installLocalFontFetch() {
+  localFontFetchInstallPromise ??= (async () => {
+    const [fontUrl, localFont] = await Promise.all([
+      rendererFontUrl(),
+      (localFontPromise ??= readFile(LOCAL_RENDER_FONT_PATH)),
+    ]);
+
+    globalThis.fetch = async (input, init) => {
+      if (inputUrl(input) === fontUrl) {
+        return new Response(localFont, {
+          status: 200,
+          headers: { 'Content-Type': 'font/ttf' },
+        });
+      }
+      return originalFetch(input, init);
+    };
+  })();
+
+  await localFontFetchInstallPromise;
+}
+
+async function renderCarouselImageResponseForTest(...args) {
+  await installLocalFontFetch();
+  return renderCarouselImageResponse(...args);
+}
 
 // Import the URL helper via dynamic eval of the private function.
 // The digest cron is .mjs; we re-declare the same logic here to lock
@@ -19,13 +83,13 @@ import { pageFromIndex } from '../server/_shared/brief-carousel-render.ts';
 function carouselUrlsFrom(magazineUrl) {
   try {
     const u = new URL(magazineUrl);
-    const m = u.pathname.match(/^\/api\/brief\/([^/]+)\/(\d{4}-\d{2}-\d{2})\/?$/);
+    const m = u.pathname.match(/^\/api\/brief\/([^/]+)\/(\d{4}-\d{2}-\d{2}-\d{4})\/?$/);
     if (!m) return null;
-    const [, userId, issueDate] = m;
+    const [, userId, issueSlot] = m;
     const token = u.searchParams.get('t');
     if (!token) return null;
     return [0, 1, 2].map(
-      (p) => `${u.origin}/api/brief/carousel/${userId}/${issueDate}/${p}?t=${token}`,
+      (p) => `${u.origin}/api/brief/carousel/${userId}/${issueSlot}/${p}?t=${token}`,
     );
   } catch {
     return null;
@@ -48,32 +112,36 @@ describe('pageFromIndex', () => {
 });
 
 describe('carouselUrlsFrom', () => {
-  const magazine = 'https://www.worldmonitor.app/api/brief/user_abc/2026-04-18?t=XXX';
+  const magazine = 'https://www.worldmonitor.app/api/brief/user_abc/2026-04-18-0800?t=XXX';
 
   it('derives three signed carousel URLs from a valid magazine URL', () => {
     const urls = carouselUrlsFrom(magazine);
     assert.ok(urls);
     assert.equal(urls.length, 3);
-    assert.equal(urls[0], 'https://www.worldmonitor.app/api/brief/carousel/user_abc/2026-04-18/0?t=XXX');
-    assert.equal(urls[1], 'https://www.worldmonitor.app/api/brief/carousel/user_abc/2026-04-18/1?t=XXX');
-    assert.equal(urls[2], 'https://www.worldmonitor.app/api/brief/carousel/user_abc/2026-04-18/2?t=XXX');
+    assert.equal(urls[0], 'https://www.worldmonitor.app/api/brief/carousel/user_abc/2026-04-18-0800/0?t=XXX');
+    assert.equal(urls[1], 'https://www.worldmonitor.app/api/brief/carousel/user_abc/2026-04-18-0800/1?t=XXX');
+    assert.equal(urls[2], 'https://www.worldmonitor.app/api/brief/carousel/user_abc/2026-04-18-0800/2?t=XXX');
   });
 
   it('preserves origin (localhost, preview deploys, etc.)', () => {
-    const urls = carouselUrlsFrom('http://localhost:3000/api/brief/user_a/2026-04-18?t=T');
-    assert.equal(urls[0], 'http://localhost:3000/api/brief/carousel/user_a/2026-04-18/0?t=T');
+    const urls = carouselUrlsFrom('http://localhost:3000/api/brief/user_a/2026-04-18-1300?t=T');
+    assert.equal(urls[0], 'http://localhost:3000/api/brief/carousel/user_a/2026-04-18-1300/0?t=T');
   });
 
   it('returns null for a URL without a token', () => {
-    assert.equal(carouselUrlsFrom('https://worldmonitor.app/api/brief/user_a/2026-04-18'), null);
+    assert.equal(carouselUrlsFrom('https://worldmonitor.app/api/brief/user_a/2026-04-18-0800'), null);
   });
 
   it('returns null when the path is not the magazine route', () => {
     assert.equal(carouselUrlsFrom('https://worldmonitor.app/dashboard?t=X'), null);
-    assert.equal(carouselUrlsFrom('https://worldmonitor.app/api/other/path/2026-04-18?t=X'), null);
+    assert.equal(carouselUrlsFrom('https://worldmonitor.app/api/other/path/2026-04-18-0800?t=X'), null);
   });
 
-  it('returns null when issueDate is not YYYY-MM-DD', () => {
+  it('returns null when the slot is date-only (no HHMM suffix)', () => {
+    assert.equal(carouselUrlsFrom('https://worldmonitor.app/api/brief/user_a/2026-04-18?t=X'), null);
+  });
+
+  it('returns null when slot is not YYYY-MM-DD-HHMM', () => {
     assert.equal(carouselUrlsFrom('https://worldmonitor.app/api/brief/user_a/today?t=X'), null);
   });
 
@@ -92,7 +160,7 @@ describe('carouselUrlsFrom — contract parity with seed-digest-notifications.mj
     const __d = dirname(fileURLToPath(import.meta.url));
     const src = readFileSync(resolve(__d, '../scripts/seed-digest-notifications.mjs'), 'utf-8');
     assert.match(src, /function carouselUrlsFrom\(magazineUrl\)/, 'cron must export carouselUrlsFrom');
-    assert.match(src, /\/api\/brief\/carousel\/\$\{userId\}\/\$\{issueDate\}\/\$\{p\}\?t=\$\{token\}/, 'cron path template must match test fixture');
+    assert.match(src, /\/api\/brief\/carousel\/\$\{userId\}\/\$\{issueSlot\}\/\$\{p\}\?t=\$\{token\}/, 'cron path template must match test fixture');
   });
 });
 
@@ -127,17 +195,7 @@ describe('carousel route — no placeholder PNG on failure', () => {
     // ttf / otf / woff only — a woff2 buffer throws on every render,
     // the route returns 503, the carousel never delivers. Lock the
     // format here so a future swap can't regress.
-    const { readFileSync } = await import('node:fs');
-    const { fileURLToPath } = await import('node:url');
-    const { dirname, resolve } = await import('node:path');
-    const __d = dirname(fileURLToPath(import.meta.url));
-    const src = readFileSync(
-      resolve(__d, '../server/_shared/brief-carousel-render.ts'),
-      'utf-8',
-    );
-    const fontUrlMatch = src.match(/const FONT_URL\s*=\s*['"]([^'"]+)['"]/);
-    assert.ok(fontUrlMatch, 'FONT_URL constant must exist');
-    const url = fontUrlMatch[1];
+    const url = await rendererFontUrl();
     assert.doesNotMatch(url, /\.woff2($|\?|#)/i, 'woff2 is NOT supported by Satori — use ttf/otf/woff');
     assert.match(url, /\.(ttf|otf|woff)($|\?|#)/i, 'FONT_URL must end in .ttf, .otf, or .woff');
   });
@@ -160,6 +218,116 @@ describe('carousel route — no placeholder PNG on failure', () => {
     assert.ok(
       hasHonestDependency || hasEmbeddedFallback,
       'font loading must EITHER declare the CDN dependency OR ship an embedded fallback',
+    );
+  });
+});
+
+// ── End-to-end renderer smoke ───────────────────────────────────────────
+//
+// Exercises @vercel/og's ImageResponse against each layout. Catches:
+//   - Satori tree-shape regressions (bad style/children keys throw)
+//   - Font parse breakage (wrong format, invalid bytes, etc.)
+//   - resvg-wasm init failure (rare but has happened)
+//   - PNG output corruption (wrong magic, zero bytes)
+//
+// The production renderer still has an honest CDN font dependency, but
+// the unit smoke replaces that exact URL with a local Satori-readable TTF
+// fixture. That keeps CI focused on renderer behavior instead of jsdelivr
+// latency while still exercising @vercel/og with real font bytes.
+
+const SAMPLE_ENVELOPE = {
+  version: 1,
+  issuedAt: Date.now(),
+  data: {
+    issue: '001',
+    dateLong: '19 April 2026',
+    user: { name: 'Test User' },
+    digest: {
+      greeting: 'Good morning',
+      lead: 'A sample lead line that gives the reader the day in one sentence.',
+      threads: [
+        { tag: 'MIDDLE EAST', teaser: 'Iran re-closes the Strait of Hormuz' },
+        { tag: 'UKRAINE', teaser: 'Kyiv authorities investigate terror attack' },
+        { tag: 'LEBANON', teaser: 'French UNIFIL peacekeeper killed in attack' },
+      ],
+    },
+    stories: [
+      {
+        category: 'Geopolitics',
+        country: 'IR',
+        threatLevel: 'HIGH',
+        headline: 'Iran closes Strait of Hormuz again, cites US blockade',
+        source: 'Reuters',
+      },
+    ],
+  },
+};
+
+const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+async function assertRendersPng(page) {
+  const res = await renderCarouselImageResponseForTest(SAMPLE_ENVELOPE, page);
+  assert.equal(res.status, 200, `${page}: status should be 200`);
+  assert.equal(
+    res.headers.get('content-type'),
+    'image/png',
+    `${page}: content-type must be image/png`,
+  );
+  const buf = new Uint8Array(await res.arrayBuffer());
+  assert.ok(buf.byteLength > 5_000, `${page}: PNG body should be > 5KB, got ${buf.byteLength}`);
+  assert.ok(buf.byteLength < 500_000, `${page}: PNG body should be < 500KB, got ${buf.byteLength}`);
+  for (let i = 0; i < PNG_MAGIC.length; i++) {
+    assert.equal(buf[i], PNG_MAGIC[i], `${page}: byte ${i} should be PNG magic 0x${PNG_MAGIC[i].toString(16)}, got 0x${buf[i].toString(16)}`);
+  }
+}
+
+describe('renderCarouselImageResponse', () => {
+  // PNG cold-render still initializes @vercel/og/resvg-wasm and can slow
+  // down under the full concurrent suite. Keep a bounded budget without
+  // relying on the live CDN font fetch that used to dominate this path.
+  const PNG_RENDER_TIMEOUT = 10_000;
+
+  it('renders the cover page to a valid PNG', { timeout: PNG_RENDER_TIMEOUT }, async () => {
+    await assertRendersPng('cover');
+  });
+
+  it('renders the threads page to a valid PNG', { timeout: PNG_RENDER_TIMEOUT }, async () => {
+    await assertRendersPng('threads');
+  });
+
+  it('renders the story page to a valid PNG', { timeout: PNG_RENDER_TIMEOUT }, async () => {
+    await assertRendersPng('story');
+  });
+
+  it('rejects a structurally empty envelope', async () => {
+    await assert.rejects(
+      () => renderCarouselImageResponseForTest({}, 'cover'),
+      /invalid envelope/,
+    );
+  });
+
+  it('threads the extraHeaders argument onto the Response', async () => {
+    const res = await renderCarouselImageResponseForTest(SAMPLE_ENVELOPE, 'cover', {
+      'X-Test-Marker': 'carousel-smoke',
+      'Referrer-Policy': 'no-referrer',
+    });
+    assert.equal(res.headers.get('x-test-marker'), 'carousel-smoke');
+    assert.equal(res.headers.get('referrer-policy'), 'no-referrer');
+  });
+
+  it('keeps @vercel/og default Cache-Control (extraHeaders must NOT override it)', async () => {
+    // ImageResponse APPENDS rather than overrides Cache-Control when
+    // the caller passes one via headers. Guards the route handler
+    // choice to rely on @vercel/og's 1-year immutable default instead
+    // of stacking our own. If @vercel/og ever changes this semantics,
+    // this test fails and the route needs a review.
+    const res = await renderCarouselImageResponseForTest(SAMPLE_ENVELOPE, 'cover', {
+      'Cache-Control': 'public, max-age=60',
+    });
+    const cc = res.headers.get('cache-control') ?? '';
+    assert.ok(
+      cc.includes('max-age=31536000'),
+      `expected @vercel/og's default 1-year cache to survive, got "${cc}"`,
     );
   });
 });

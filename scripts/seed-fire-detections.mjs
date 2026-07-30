@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 
 import { loadEnvFile, runSeed, CHROME_UA, sleep } from './_seed-utils.mjs';
+import { compactWildfireDashboardPayload } from './_wildfire-dashboard.mjs';
 
 loadEnvFile(import.meta.url);
 
 const CANONICAL_KEY = 'wildfire:fires:v1';
+const BOOTSTRAP_KEY = 'wildfire:fires-bootstrap:v1';
 const FIRMS_SOURCES = ['VIIRS_SNPP_NRT', 'VIIRS_NOAA20_NRT', 'VIIRS_NOAA21_NRT'];
 
 const MONITORED_REGIONS = {
@@ -123,17 +125,33 @@ export function declareRecords(data) {
 async function main() {
   const apiKey = process.env.NASA_FIRMS_API_KEY || process.env.FIRMS_API_KEY || '';
   if (!apiKey) {
-    console.log('NASA_FIRMS_API_KEY not set — skipping fire detections seed');
-    process.exit(0);
+    console.error('[seed-fire-detections] NASA_FIRMS_API_KEY (or FIRMS_API_KEY) is required but not set. Refusing to run.');
+    process.exit(1);
   }
 
   console.log('  FIRMS key configured');
 
   await runSeed('wildfire', 'fires', CANONICAL_KEY, () => fetchAllRegions(apiKey), {
     validateFn: (data) => Array.isArray(data?.fireDetections) && data.fireDetections.length > 0,
+    // 2h — deliberately BELOW the 6h health gate (maxStaleMin 360). Do NOT "fix" this
+    // by raising it to satisfy tests/seed-ttl-outlives-staleness-fleet: doing so DOWNGRADES
+    // a safety alarm. Verified against classifyKey with the seeder dead for 3h:
+    //
+    //   ttl 2h (this):  wildfires -> EMPTY (crit)   — ops is paged, panel blanks honestly
+    //   ttl 7h:         wildfires -> OK    (green)  — 3h-old fire data served, silently
+    //
+    // The canonical `wildfires` is NOT in EMPTY_DATA_OK_KEYS, so its key expiring at 2h is
+    // exactly what makes a dead fire feed loud. A longer TTL keeps stale data alive past
+    // the gate and turns that crit into a warn (and, inside the gate, into a green).
     ttlSeconds: 7200,
     lockTtlMs: 2_400_000, // 40 min — 27 slots × ~72s worst case (30s timeout + 6s backoff + 30s retry + 6s pace) ≈ 32.4 min; pad headroom. Next cron tick sees lock held and safely skips.
     sourceVersion: FIRMS_SOURCES.join('+'),
+    extraKeys: [{
+      key: BOOTSTRAP_KEY,
+      transform: compactWildfireDashboardPayload,
+      declareRecords,
+      metaKey: 'seed-meta:wildfire:fires-bootstrap',
+    }],
     declareRecords,
     schemaVersion: 1,
     maxStaleMin: 360,

@@ -1,5 +1,13 @@
 import { getCachedJson } from '../../../_shared/redis';
-import { sanitizeForPrompt, sanitizeHeadline } from '../../../_shared/llm-sanitize.js';
+// Issue #3724: all LLM-bound headline content goes through sanitizeForPrompt
+// (semantic + structural). The lighter sanitizeHeadline only strips structural
+// delimiters and was designed to preserve security-news semantics for display
+// surfaces — but here every string feeds the analyst's SYSTEM PROMPT, so a
+// compromised or attacker-influenced feed could embed instruction-override
+// phrases verbatim. We accept that legitimate "Anthropic warns: ignore previous
+// instructions…" headlines will be partly mangled in the analyst context — the
+// asymmetric cost favours hard sanitization at the prompt boundary.
+import { sanitizeForPrompt } from '../../../_shared/llm-sanitize.js';
 import { CHROME_UA } from '../../../_shared/constants';
 import { tokenizeForMatch, findMatchingKeywords } from '../../../../src/utils/keyword-match';
 import {
@@ -11,6 +19,7 @@ import {
   SPR_POLICIES_KEY,
   REFINERY_INPUTS_KEY,
   ENERGY_SPINE_KEY_PREFIX,
+  CII_RISK_SCORE_CACHE_KEYS,
 } from '../../../_shared/cache-keys';
 
 // TODO: multi-language digest search — currently only queries news:digest:v1:full:en.
@@ -69,26 +78,35 @@ function formatChange(n: number): string {
   return `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`;
 }
 
-function buildWorldBrief(data: unknown): string {
+export function buildWorldBrief(data: unknown): string {
   if (!data || typeof data !== 'object') return '';
   const d = data as Record<string, unknown>;
   const lines: string[] = [];
 
-  const briefText = safeStr(d.brief || d.summary || d.content || d.text);
+  // Production payload (news:insights:v1, see scripts/seed-insights.mjs) uses
+  // `worldBrief` for the LLM-generated paragraph and `topStories[].primaryTitle`
+  // for headlines. Pre-issue-#3724 review this code only read brief/headline,
+  // so production callers silently rendered an empty string. Fallback shapes
+  // (brief/summary/headline/title) retained for test fixtures and future
+  // payload variations. sanitizeForPrompt protects against feed-side prompt
+  // injection — both the brief and the headlines are untrusted upstream text
+  // that flows into the analyst's system prompt.
+  const briefText = sanitizeForPrompt(safeStr(d.worldBrief || d.brief || d.summary || d.content || d.text));
   if (briefText) lines.push(briefText.slice(0, 600));
 
   const stories = Array.isArray(d.topStories) ? d.topStories : Array.isArray(d.stories) ? d.stories : [];
   if (stories.length > 0) {
     lines.push('Top Events:');
     for (const s of stories.slice(0, 12)) {
-      const title = sanitizeHeadline(safeStr((s as Record<string, unknown>).headline || (s as Record<string, unknown>).title || s));
+      const story = s as Record<string, unknown>;
+      const title = sanitizeForPrompt(safeStr(story.primaryTitle || story.headline || story.title || s));
       if (title) lines.push(`- ${title}`);
     }
   }
   return lines.join('\n');
 }
 
-function buildRiskScores(data: unknown): string {
+export function buildRiskScores(data: unknown): string {
   if (!data || typeof data !== 'object') return '';
   const d = data as Record<string, unknown>;
   const scores = Array.isArray(d.scores) ? d.scores : Array.isArray(d.countries) ? d.countries : [];
@@ -133,7 +151,7 @@ function buildMarketImplications(data: unknown): string {
   return lines.length ? `AI Market Signals:\n${lines.join('\n')}` : '';
 }
 
-function buildForecasts(data: unknown): string {
+export function buildForecasts(data: unknown): string {
   if (!data || typeof data !== 'object') return '';
   const d = data as Record<string, unknown>;
   const predictions = Array.isArray(d.predictions) ? d.predictions : [];
@@ -152,7 +170,7 @@ function buildForecasts(data: unknown): string {
   return lines.length ? `Active Forecasts:\n${lines.join('\n')}` : '';
 }
 
-function buildMarketData(stocks: unknown, commodities: unknown): string {
+export function buildMarketData(stocks: unknown, commodities: unknown): string {
   const parts: string[] = [];
 
   if (stocks && typeof stocks === 'object') {
@@ -186,7 +204,7 @@ function buildMarketData(stocks: unknown, commodities: unknown): string {
   return parts.length ? `Market Data:\n${parts.join('\n')}` : '';
 }
 
-function buildMacroSignals(data: unknown): string {
+export function buildMacroSignals(data: unknown): string {
   if (!data || typeof data !== 'object') return '';
   const d = data as Record<string, unknown>;
   const verdict = safeStr(d.verdict || d.regime || d.signal);
@@ -214,7 +232,7 @@ function buildPredictionMarkets(data: unknown): string {
 
   const lines = all.map((m: unknown) => {
     const market = m as Record<string, unknown>;
-    const title = sanitizeHeadline(safeStr(market.title));
+    const title = sanitizeForPrompt(safeStr(market.title));
     const yes = safeNum(market.yesPrice);
     if (!title) return null;
     return `- "${title}" Yes: ${formatPct(yes > 1 ? yes : yes * 100)}`;
@@ -337,7 +355,7 @@ async function buildEnergyIntelligence(): Promise<string | undefined> {
     if (recent.length === 0) return undefined;
     return recent.map((item) => {
       const source = safeStr(item.source);
-      const title = sanitizeHeadline(safeStr(item.title));
+      const title = sanitizeForPrompt(safeStr(item.title));
       return source ? `${source}: ${title}` : title;
     }).join(' · ');
   } catch {
@@ -570,7 +588,7 @@ async function buildElectricityMix(iso2: string): Promise<string | undefined> {
   }
 }
 
-function buildCountryBrief(data: unknown): string {
+export function buildCountryBrief(data: unknown): string {
   if (!data || typeof data !== 'object') return '';
   const d = data as Record<string, unknown>;
   const brief = safeStr(d.brief || d.analysis || d.content || d.summary);
@@ -737,7 +755,7 @@ async function searchDigestByKeywords(keywords: string[]): Promise<string> {
   if (scored.length === 0) return '';
 
   const lines = scored.map(({ item }) => {
-    const title = sanitizeHeadline(safeStr(item.title));
+    const title = sanitizeForPrompt(safeStr(item.title));
     const source = safeStr(item.source).slice(0, 40);
     const ts = item.publishedAt ? new Date(item.publishedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
     const meta = [source, ts].filter(Boolean).join(', ');
@@ -781,7 +799,7 @@ export async function assembleAnalystContext(
 ): Promise<AnalystContext> {
   const keys = {
     insights: 'news:insights:v1',
-    riskScores: 'risk:scores:sebuf:stale:v1',
+    riskScores: CII_RISK_SCORE_CACHE_KEYS.stale,
     marketImplications: 'intelligence:market-implications:v1',
     forecasts: 'forecast:predictions:v2',
     stocks: 'market:stocks-bootstrap:v1',

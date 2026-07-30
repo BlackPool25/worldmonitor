@@ -8,6 +8,7 @@ import {
   validate as validateGrowth,
   CANONICAL_KEY as GROWTH_KEY,
   CACHE_TTL as GROWTH_TTL,
+  SCHEMA_VERSION as GROWTH_SCHEMA_VERSION,
 } from '../scripts/seed-imf-growth.mjs';
 
 import {
@@ -49,9 +50,10 @@ describe('seed-imf shared helpers', () => {
 });
 
 describe('seed-imf-growth', () => {
-  it('uses the v1 economic:imf:growth canonical key with 35-day TTL', () => {
+  it('uses the v1 economic:imf:growth canonical key with 35-day TTL and v3 schema', () => {
     assert.equal(GROWTH_KEY, 'economic:imf:growth:v1');
     assert.equal(GROWTH_TTL, 35 * 24 * 3600);
+    assert.equal(GROWTH_SCHEMA_VERSION, 3);
   });
 
   it('buildGrowthCountries maps ISO3 → ISO2, drops aggregates, and computes savings-investment gap', () => {
@@ -68,6 +70,8 @@ describe('seed-imf-growth', () => {
     assert.ok(countries.US, 'USA → US');
     assert.equal(countries.US.realGdpGrowthPct, 2.5);
     assert.equal(countries.US.gdpPerCapitaUsd, 80000);
+    assert.equal(countries.US.realGdpLcuB, 22000);
+    assert.equal(countries.US.realGdp, 22000);
     assert.equal(countries.US.savingsInvestmentGap, -3);
     assert.equal(countries.US.year, Number(YEAR));
 
@@ -106,20 +110,27 @@ describe('seed-imf-labor', () => {
     assert.equal(LABOR_TTL, 35 * 24 * 3600);
   });
 
-  it('buildLaborCountries surfaces unemployment and population per ISO2', () => {
+  it('buildLaborCountries surfaces unemployment and population per ISO2 (LP raw persons → millions)', () => {
+    // Plan 002 review fix: IMF SDMX `LP` returns Population in PERSONS
+    // (raw count), not millions. Mock here matches real upstream shape:
+    // US ≈ 333.3M people = 333_300_000 raw. The seeder now divides by 1e6
+    // so the field name (populationMillions) matches its semantic.
     const countries = buildLaborCountries({
       unemployment: { USA: { [YEAR]: 4.1 }, FRA: { [YEAR]: 7.5 } },
-      population:   { USA: { [YEAR]: 333.3 }, FRA: { [YEAR]: 67.9 }, ZAF: { [YEAR]: 60.2 } },
+      population:   { USA: { [YEAR]: 333_300_000 }, FRA: { [YEAR]: 67_900_000 }, ZAF: { [YEAR]: 60_200_000 } },
     });
+    // `latestYear` (Codex PR #3604 P2) is the max forecast year across
+    // all the country's indicators — populated by every IMF seeder so the
+    // content-age helper can prefer it over the priority-first `year`.
     assert.deepEqual(countries.US, {
-      unemploymentPct: 4.1, populationMillions: 333.3, year: Number(YEAR),
+      unemploymentPct: 4.1, populationMillions: 333.3, year: Number(YEAR), latestYear: Number(YEAR),
     });
     assert.deepEqual(countries.FR, {
-      unemploymentPct: 7.5, populationMillions: 67.9, year: Number(YEAR),
+      unemploymentPct: 7.5, populationMillions: 67.9, year: Number(YEAR), latestYear: Number(YEAR),
     });
     // South Africa: only population (no LUR); still included.
     assert.deepEqual(countries.ZA, {
-      unemploymentPct: null, populationMillions: 60.2, year: Number(YEAR),
+      unemploymentPct: null, populationMillions: 60.2, year: Number(YEAR), latestYear: Number(YEAR),
     });
   });
 

@@ -15,6 +15,7 @@ import { strict as assert } from 'node:assert';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { BOOTSTRAP_CACHE_KEYS, BOOTSTRAP_TIERS } from '../shared/bootstrap-tier-keys.js';
 
 import {
   parseEurostatSeries,
@@ -175,15 +176,13 @@ describe('Seeder validator (issue #3028)', () => {
 });
 
 describe('Registry wiring (issue #3028)', () => {
-  it('bootstrap.js exposes the three new Eurostat overlay keys', async () => {
-    const src = await readFile(resolve(ROOT, 'api/bootstrap.js'), 'utf8');
-    assert.match(src, /eurostatHousePrices:\s*'economic:eurostat:house-prices:v1'/);
-    assert.match(src, /eurostatGovDebtQ:\s*'economic:eurostat:gov-debt-q:v1'/);
-    assert.match(src, /eurostatIndProd:\s*'economic:eurostat:industrial-production:v1'/);
-    // Must also be registered in the SLOW_KEYS tier.
-    assert.match(src, /'eurostatHousePrices'/);
-    assert.match(src, /'eurostatGovDebtQ'/);
-    assert.match(src, /'eurostatIndProd'/);
+  it('canonical bootstrap registry exposes the three Eurostat overlay keys on demand', () => {
+    assert.equal(BOOTSTRAP_CACHE_KEYS.eurostatHousePrices, 'economic:eurostat:house-prices:v1');
+    assert.equal(BOOTSTRAP_CACHE_KEYS.eurostatGovDebtQ, 'economic:eurostat:gov-debt-q:v1');
+    assert.equal(BOOTSTRAP_CACHE_KEYS.eurostatIndProd, 'economic:eurostat:industrial-production:v1');
+    assert.equal(BOOTSTRAP_TIERS.eurostatHousePrices, 'on-demand');
+    assert.equal(BOOTSTRAP_TIERS.eurostatGovDebtQ, 'on-demand');
+    assert.equal(BOOTSTRAP_TIERS.eurostatIndProd, 'on-demand');
   });
 
   it('health.js maps each new key to a seed-meta freshness check', async () => {
@@ -194,7 +193,7 @@ describe('Registry wiring (issue #3028)', () => {
   });
 
   it('MCP tool registry exposes the three new EU overlay tools', async () => {
-    const src = await readFile(resolve(ROOT, 'api/mcp.ts'), 'utf8');
+    const src = await readFile(resolve(ROOT, 'api/mcp/registry/cache-tools.ts'), 'utf8');
     assert.match(src, /name: 'get_eu_housing_cycle'/);
     assert.match(src, /name: 'get_eu_quarterly_gov_debt'/);
     assert.match(src, /name: 'get_eu_industrial_production'/);

@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { buildImfEconomicIndicators, type ImfCountryBundle } from '../src/services/imf-country-data.ts';
+import {
+  buildImfEconomicIndicators,
+  buildCountryInflationRows,
+  type ImfCountryBundle,
+  type ImfMacroEntry,
+} from '../src/services/imf-country-data.ts';
 
 function bundle(overrides: Partial<ImfCountryBundle> = {}): ImfCountryBundle {
   return {
@@ -19,7 +24,7 @@ describe('buildImfEconomicIndicators (panel rendering)', () => {
     assert.deepEqual(buildImfEconomicIndicators(bundle()), []);
   });
 
-  it('renders real GDP growth + inflation + unemployment + GDP/capita rows', () => {
+  it('renders real GDP growth + inflation + unemployment + GDP/capita + revenue rows', () => {
     const rows = buildImfEconomicIndicators(bundle({
       macro: {
         inflationPct: 3.4, currentAccountPct: -2.1, govRevenuePct: 30,
@@ -27,7 +32,7 @@ describe('buildImfEconomicIndicators (panel rendering)', () => {
         year: 2025,
       },
       growth: {
-        realGdpGrowthPct: 2.7, gdpPerCapitaUsd: 78500, realGdp: null,
+        realGdpGrowthPct: 2.7, gdpPerCapitaUsd: 78500, realGdpLcuB: null,
         gdpPerCapitaPpp: null, gdpPpp: null, investmentPct: null, savingsPct: null,
         savingsInvestmentGap: null, year: 2025,
       },
@@ -36,7 +41,7 @@ describe('buildImfEconomicIndicators (panel rendering)', () => {
       },
     }));
     assert.deepEqual(rows.map(r => r.label), [
-      'Real GDP Growth', 'CPI Inflation', 'Unemployment', 'GDP / Capita',
+      'Real GDP Growth', 'CPI Inflation', 'Unemployment', 'GDP / Capita', 'Gov Revenue',
     ]);
     assert.equal(rows[0].value, '+2.7%');
     assert.equal(rows[0].trend, 'up');
@@ -56,7 +61,7 @@ describe('buildImfEconomicIndicators (panel rendering)', () => {
         year: 2025,
       },
       growth: {
-        realGdpGrowthPct: -1.4, gdpPerCapitaUsd: null, realGdp: null,
+        realGdpGrowthPct: -1.4, gdpPerCapitaUsd: null, realGdpLcuB: null,
         gdpPerCapitaPpp: null, gdpPpp: null, investmentPct: null, savingsPct: null,
         savingsInvestmentGap: null, year: 2025,
       },
@@ -81,7 +86,7 @@ describe('buildImfEconomicIndicators (panel rendering)', () => {
   it('formats sub-$1k GDP/capita with the dollar prefix', () => {
     const rows = buildImfEconomicIndicators(bundle({
       growth: {
-        realGdpGrowthPct: null, gdpPerCapitaUsd: 850, realGdp: null,
+        realGdpGrowthPct: null, gdpPerCapitaUsd: 850, realGdpLcuB: null,
         gdpPerCapitaPpp: null, gdpPpp: null, investmentPct: null, savingsPct: null,
         savingsInvestmentGap: null, year: 2025,
       },
@@ -90,14 +95,245 @@ describe('buildImfEconomicIndicators (panel rendering)', () => {
     assert.equal(gdp.value, '$850');
   });
 
-  it('skips rows whose values are null or non-finite', () => {
+  it('renders public spending %GDP with a flat trend (level is descriptive, not directional)', () => {
     const rows = buildImfEconomicIndicators(bundle({
       macro: {
-        inflationPct: NaN, currentAccountPct: null, govRevenuePct: null,
+        inflationPct: null, currentAccountPct: null, govRevenuePct: null,
+        cpiIndex: null, cpiEopPct: null, govExpenditurePct: 57.2, primaryBalancePct: null,
+        year: 2024,
+      },
+    }));
+    const spend = rows.find(r => r.label === 'Public Spending')!;
+    assert.equal(spend.value, '57.2% GDP');
+    assert.equal(spend.trend, 'flat');
+    assert.equal(spend.source, 'IMF WEO');
+  });
+
+  it('renders gov revenue %GDP with a flat trend', () => {
+    const rows = buildImfEconomicIndicators(bundle({
+      macro: {
+        inflationPct: null, currentAccountPct: null, govRevenuePct: 32.5,
         cpiIndex: null, cpiEopPct: null, govExpenditurePct: null, primaryBalancePct: null,
+        year: 2024,
+      },
+    }));
+    const rev = rows.find(r => r.label === 'Gov Revenue')!;
+    assert.equal(rev.value, '32.5% GDP');
+    assert.equal(rev.trend, 'flat');
+    assert.equal(rev.source, 'IMF WEO');
+  });
+
+  it('marks meaningful primary surplus (>+1) with an upward trend and signed value', () => {
+    const rows = buildImfEconomicIndicators(bundle({
+      macro: {
+        inflationPct: null, currentAccountPct: null, govRevenuePct: null,
+        cpiIndex: null, cpiEopPct: null, govExpenditurePct: null, primaryBalancePct: 2.1,
+        year: 2024,
+      },
+    }));
+    const pb = rows.find(r => r.label === 'Primary Balance')!;
+    assert.equal(pb.value, '+2.1% GDP');
+    assert.equal(pb.trend, 'up');
+    assert.equal(pb.source, 'IMF WEO');
+  });
+
+  it('keeps primary balance flat for small surplus (between 0 and +1)', () => {
+    const rows = buildImfEconomicIndicators(bundle({
+      macro: {
+        inflationPct: null, currentAccountPct: null, govRevenuePct: null,
+        cpiIndex: null, cpiEopPct: null, govExpenditurePct: null, primaryBalancePct: 0.5,
+        year: 2024,
+      },
+    }));
+    const pb = rows.find(r => r.label === 'Primary Balance')!;
+    assert.equal(pb.value, '+0.5% GDP');
+    assert.equal(pb.trend, 'flat');
+  });
+
+  it('keeps primary balance flat for mild deficit (between -3 and 0)', () => {
+    const rows = buildImfEconomicIndicators(bundle({
+      macro: {
+        inflationPct: null, currentAccountPct: null, govRevenuePct: null,
+        cpiIndex: null, cpiEopPct: null, govExpenditurePct: null, primaryBalancePct: -1.0,
+        year: 2024,
+      },
+    }));
+    const pb = rows.find(r => r.label === 'Primary Balance')!;
+    assert.equal(pb.value, '-1.0% GDP');
+    assert.equal(pb.trend, 'flat');
+  });
+
+  it('orders directional rows before flat context rows so Primary Balance survives the caller\'s 6-row slice', () => {
+    // When all 7 IMF rows fire, the consumer (CountryDeepDivePanel via
+    // country-intel.ts:1288) caps the indicators array at 6. If Primary
+    // Balance — the most informative directional fiscal signal — were
+    // emitted last, it would be the first row sliced off. Order asserts
+    // the priority: directional macro rows first (growth / inflation /
+    // unemployment / primary balance), then flat context rows
+    // (gdp-per-capita / public spending / gov revenue).
+    const rows = buildImfEconomicIndicators(bundle({
+      macro: {
+        inflationPct: 3.4, currentAccountPct: -2.1, govRevenuePct: 30,
+        cpiIndex: null, cpiEopPct: null, govExpenditurePct: 57.2, primaryBalancePct: -2.5,
+        year: 2024,
+      },
+      growth: {
+        realGdpGrowthPct: 0.7, gdpPerCapitaUsd: 47800, realGdpLcuB: null,
+        gdpPerCapitaPpp: null, gdpPpp: null, investmentPct: null, savingsPct: null,
+        savingsInvestmentGap: null, year: 2024,
+      },
+      labor: {
+        unemploymentPct: 7.4, populationMillions: 65.5, year: 2024,
+      },
+    }));
+    assert.deepEqual(rows.map(r => r.label), [
+      'Real GDP Growth',
+      'CPI Inflation',
+      'Unemployment',
+      'Primary Balance',
+      'GDP / Capita',
+      'Public Spending',
+      'Gov Revenue',
+    ]);
+  });
+
+  it('marks severe primary deficit (<-3) with a downward trend', () => {
+    const rows = buildImfEconomicIndicators(bundle({
+      macro: {
+        inflationPct: null, currentAccountPct: null, govRevenuePct: null,
+        cpiIndex: null, cpiEopPct: null, govExpenditurePct: null, primaryBalancePct: -4.0,
+        year: 2024,
+      },
+    }));
+    const pb = rows.find(r => r.label === 'Primary Balance')!;
+    assert.equal(pb.value, '-4.0% GDP');
+    assert.equal(pb.trend, 'down');
+  });
+
+  it('keeps primary balance flat at the exact upper boundary (+1.0)', () => {
+    // Pins the inclusivity of `> 1` so a future refactor to `>= 1`
+    // would be caught (greptile P2: PR #3668).
+    const rows = buildImfEconomicIndicators(bundle({
+      macro: {
+        inflationPct: null, currentAccountPct: null, govRevenuePct: null,
+        cpiIndex: null, cpiEopPct: null, govExpenditurePct: null, primaryBalancePct: 1.0,
+        year: 2024,
+      },
+    }));
+    const pb = rows.find(r => r.label === 'Primary Balance')!;
+    assert.equal(pb.value, '+1.0% GDP');
+    assert.equal(pb.trend, 'flat');
+  });
+
+  it('keeps primary balance flat at the exact lower boundary (-3.0)', () => {
+    // Pins the inclusivity of `< -3` so a future refactor to `<= -3`
+    // would be caught (greptile P2: PR #3668).
+    const rows = buildImfEconomicIndicators(bundle({
+      macro: {
+        inflationPct: null, currentAccountPct: null, govRevenuePct: null,
+        cpiIndex: null, cpiEopPct: null, govExpenditurePct: null, primaryBalancePct: -3.0,
+        year: 2024,
+      },
+    }));
+    const pb = rows.find(r => r.label === 'Primary Balance')!;
+    assert.equal(pb.value, '-3.0% GDP');
+    assert.equal(pb.trend, 'flat');
+  });
+
+  it('skips rows whose values are null or non-finite (covers all 7 IMF fields)', () => {
+    // Covers Number.isFinite guards across every IMF field — not just
+    // inflation. Catches a future regression where the guard is dropped
+    // on one of the new fiscal fields (greptile P2: PR #3668).
+    const rows = buildImfEconomicIndicators(bundle({
+      macro: {
+        inflationPct: NaN,
+        currentAccountPct: null,
+        govRevenuePct: Infinity,
+        cpiIndex: null,
+        cpiEopPct: null,
+        govExpenditurePct: NaN,
+        primaryBalancePct: -Infinity,
+        year: 2025,
+      },
+      growth: {
+        realGdpGrowthPct: NaN,
+        gdpPerCapitaUsd: Infinity,
+        realGdpLcuB: null,
+        gdpPerCapitaPpp: null,
+        gdpPpp: null,
+        investmentPct: null,
+        savingsPct: null,
+        savingsInvestmentGap: null,
+        year: 2025,
+      },
+      labor: {
+        unemploymentPct: NaN,
+        populationMillions: null,
         year: 2025,
       },
     }));
     assert.equal(rows.length, 0);
+  });
+});
+
+function macro(overrides: Partial<ImfMacroEntry> = {}): Partial<ImfMacroEntry> {
+  return {
+    inflationPct: null, currentAccountPct: null, govRevenuePct: null,
+    cpiIndex: null, cpiEopPct: null, govExpenditurePct: null, primaryBalancePct: null,
+    year: 2025, ...overrides,
+  };
+}
+
+describe('buildCountryInflationRows (World tab)', () => {
+  it('returns an empty list for undefined / empty input', () => {
+    assert.deepEqual(buildCountryInflationRows(undefined), []);
+    assert.deepEqual(buildCountryInflationRows({}), []);
+  });
+
+  it('sorts by year-over-year inflation, highest first', () => {
+    const rows = buildCountryInflationRows({
+      US: macro({ inflationPct: 3.1 }),
+      AR: macro({ inflationPct: 120.0 }),
+      JP: macro({ inflationPct: 2.0 }),
+    });
+    assert.deepEqual(rows.map((r) => r.iso2), ['AR', 'US', 'JP']);
+    assert.equal(rows[0].inflationPct, 120);
+  });
+
+  it('drops countries with no inflation reading at all, keeps EOP-only rows', () => {
+    const rows = buildCountryInflationRows({
+      US: macro({ inflationPct: 3.1, cpiEopPct: 3.4 }),
+      ZZ: macro({ inflationPct: null, cpiEopPct: null }), // dropped
+      EG: macro({ inflationPct: null, cpiEopPct: 28.0 }), // kept (EOP only)
+    });
+    const codes = rows.map((r) => r.iso2);
+    assert.ok(codes.includes('US'));
+    assert.ok(codes.includes('EG'));
+    assert.ok(!codes.includes('ZZ'));
+  });
+
+  it('sorts null-YoY rows last regardless of EOP value', () => {
+    const rows = buildCountryInflationRows({
+      US: macro({ inflationPct: 3.1 }),
+      EG: macro({ inflationPct: null, cpiEopPct: 99.0 }),
+    });
+    assert.deepEqual(rows.map((r) => r.iso2), ['US', 'EG']);
+    assert.equal(rows[1].inflationPct, null);
+    assert.equal(rows[1].cpiEopPct, 99);
+  });
+
+  it('treats NaN / Infinity as missing', () => {
+    const rows = buildCountryInflationRows({
+      US: macro({ inflationPct: Number.NaN, cpiEopPct: Number.POSITIVE_INFINITY }),
+      JP: macro({ inflationPct: 2.0 }),
+    });
+    assert.deepEqual(rows.map((r) => r.iso2), ['JP']);
+  });
+
+  it('uppercases the ISO2 code and resolves a human-readable name', () => {
+    const rows = buildCountryInflationRows({ us: macro({ inflationPct: 3.1 }) });
+    assert.equal(rows[0].iso2, 'US');
+    assert.ok(rows[0].name.length > 0);
+    assert.notEqual(rows[0].name, 'US'); // Intl.DisplayNames → "United States"
   });
 });

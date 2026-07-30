@@ -1,7 +1,7 @@
 /**
  * Public brief magazine endpoint.
  *
- * GET /api/brief/{userId}/{issueDate}?t={token}
+ * GET /api/brief/{userId}/{issueSlot}?t={token}
  *   -> 200 text/html (rendered magazine)
  *   -> 403 on bad token (generic message, no userId echo)
  *   -> 404 on Redis miss (minimal "expired" HTML)
@@ -12,21 +12,26 @@
  * the magazine. URLs are delivered to users via already-authenticated
  * channels (push, email, dashboard panel).
  *
- * The Redis key brief:{userId}:{issueDate} is per-user and written by
- * the Phase 3 composer (not yet shipped). Until then every request
- * will 404 with a neutral expired page. That is intentional and
- * correct behaviour — the route is safe to deploy ahead of the
- * composer.
+ * The Redis key brief:{userId}:{issueSlot} is per-user and written by
+ * the digest composer. The file/variable name still says issueDate for
+ * backwards-compatible route plumbing; the value is the slot string
+ * (YYYY-MM-DD-HHMM), matching the signing helpers and share API.
  */
 
 export const config = { runtime: 'edge' };
 
 // @ts-expect-error — JS module, no declaration file
 import { getCorsHeaders, isDisallowedOrigin } from '../../_cors.js';
-import { renderBriefMagazine } from '../../../server/_shared/brief-render.js';
 // @ts-expect-error — JS module, no declaration file
-import { readRawJsonFromUpstash } from '../../_upstash-json.js';
+import { captureSilentError } from '../../_sentry-edge.js';
+import { renderBriefMagazine } from '../../../server/_shared/brief-render.js';
+import { readRawJsonFromUpstash, redisPipeline } from '../../_upstash-json.js';
 import { verifyBriefToken, BriefUrlError } from '../../../server/_shared/brief-url';
+import {
+  BRIEF_PUBLIC_POINTER_PREFIX,
+  buildPublicBriefUrl,
+  encodePublicPointer,
+} from '../../../server/_shared/brief-share-url';
 
 const HTML_HEADERS = {
   'Content-Type': 'text/html; charset=utf-8',
@@ -88,7 +93,66 @@ const UNAVAILABLE_PAGE = renderErrorPage(
   'The brief service is not fully configured. Please try again shortly.',
 );
 
-export default async function handler(req: Request): Promise<Response> {
+const FOLLOWED_COUNTRIES_TIMEOUT_MS = 500;
+
+/**
+ * Best-effort edge-runtime fetch of the recipient's followed-country
+ * watchlist for U11 telemetry stamping. This intentionally differs
+ * from the cron helper: it uses a much smaller latency budget and emits
+ * a Sentry breadcrumb on relay-auth 401 because this route sits on the
+ * reader-facing TTFB path. Never throws — every soft failure path
+ * returns `[]` so the magazine still renders even when the relay is
+ * unavailable. The watchlist is telemetry-only: missing relay data
+ * degrades `data-followed` to "unknown encoded as false" and never
+ * affects visible magazine content.
+ */
+async function fetchFollowedCountriesEdge(
+  userId: string,
+  ctx?: { waitUntil: (p: Promise<unknown>) => void },
+): Promise<string[]> {
+  const convexSiteUrl =
+    process.env.CONVEX_SITE_URL
+    ?? (process.env.CONVEX_URL ?? '').replace('.convex.cloud', '.convex.site');
+  const relaySecret = process.env.RELAY_SHARED_SECRET ?? '';
+  if (!convexSiteUrl || !relaySecret) return [];
+  if (typeof userId !== 'string' || userId.length === 0) return [];
+  try {
+    const res = await fetch(`${convexSiteUrl}/relay/followed-countries`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${relaySecret}`,
+        'User-Agent': 'worldmonitor-brief-render/1.0',
+      },
+      body: JSON.stringify({ userId }),
+      signal: AbortSignal.timeout(FOLLOWED_COUNTRIES_TIMEOUT_MS),
+    });
+    if (res.status === 401) {
+      const err = new Error('followed-countries relay returned 401');
+      console.warn('[api/brief] followed-countries relay auth failed');
+      captureSilentError(err, {
+        tags: { route: 'api/brief', step: 'followed-countries-relay', status: '401' },
+        ctx,
+      });
+      return [];
+    }
+    if (!res.ok) return [];
+    const data = (await res.json()) as { countries?: unknown };
+    if (!data || typeof data !== 'object' || !Array.isArray(data.countries)) {
+      return [];
+    }
+    return (data.countries as unknown[]).filter(
+      (c): c is string => typeof c === 'string' && c.length > 0,
+    );
+  } catch {
+    return [];
+  }
+}
+
+export default async function handler(
+  req: Request,
+  ctx?: { waitUntil: (p: Promise<unknown>) => void },
+): Promise<Response> {
   if (isDisallowedOrigin(req)) {
     return new Response('Origin not allowed', { status: 403 });
   }
@@ -137,6 +201,11 @@ export default async function handler(req: Request): Promise<Response> {
     return htmlResponse(req, 403, FORBIDDEN_PAGE);
   }
 
+  // U11: start the telemetry-only watchlist lookup before the Redis
+  // envelope read so relay latency overlaps the required brief fetch.
+  // The promise never rejects and is bounded by FOLLOWED_COUNTRIES_TIMEOUT_MS.
+  const followedCountriesPromise = fetchFollowedCountriesEdge(userId, ctx);
+
   // The helper throws on infrastructure failure (Upstash down, config
   // missing, parse failure). Only a genuine miss returns null. We must
   // distinguish those two — a reader with a valid brief deserves a
@@ -147,24 +216,78 @@ export default async function handler(req: Request): Promise<Response> {
     envelope = await readRawJsonFromUpstash(`brief:${userId}:${issueDate}`);
   } catch (err) {
     console.error('[api/brief] Upstash read failed:', (err as Error).message);
+    captureSilentError(err, { tags: { route: 'api/brief', step: 'envelope-read' }, ctx });
+    ctx?.waitUntil(followedCountriesPromise);
     return htmlResponse(req, 503, UNAVAILABLE_PAGE);
   }
   if (!envelope) {
+    ctx?.waitUntil(followedCountriesPromise);
     return htmlResponse(req, 404, EXPIRED_PAGE);
   }
+
+  // Prepare the share URL (if BRIEF_SHARE_SECRET is set) so the Share
+  // button in the rendered magazine can navigator.share / clipboard
+  // the URL without having to make an authenticated fetch at click
+  // time. The HMAC token already verified this reader legitimately
+  // holds the per-user magazine URL, so deriving + materialising the
+  // share pointer here is as safe as rendering the magazine at all.
+  //
+  // If the secret isn't configured or the pointer write fails, we
+  // still render the magazine — the Share button just gracefully
+  // hides (renderer requires options.shareUrl to emit the button).
+  let shareUrl: string | undefined;
+  const shareSecret = process.env.BRIEF_SHARE_SECRET;
+  if (shareSecret) {
+    try {
+      const built = await buildPublicBriefUrl({
+        userId,
+        issueDate,
+        baseUrl: new URL(req.url).origin,
+        secret: shareSecret,
+      });
+      // Idempotent pointer write: same hash every call, so SET just
+      // refreshes the TTL. JSON-stringify so readRawJsonFromUpstash
+      // (which always JSON.parses) round-trips cleanly on the public
+      // route — a bare string would throw at parse and 503 there.
+      const pointerKey = `${BRIEF_PUBLIC_POINTER_PREFIX}${built.hash}`;
+      const pointerValue = JSON.stringify(encodePublicPointer(userId, issueDate));
+      const writeResult = await redisPipeline([
+        ['SET', pointerKey, pointerValue, 'EX', '604800'],
+      ]);
+      if (writeResult != null) {
+        shareUrl = built.url;
+      } else {
+        console.warn('[api/brief] pointer write failed; Share button will be hidden');
+      }
+    } catch (err) {
+      console.warn('[api/brief] share URL derive failed:', (err as Error).message);
+      captureSilentError(err, { tags: { route: 'api/brief', step: 'share-url-derive', severity: 'warn' }, ctx });
+    }
+  }
+
+  // Stamp source-link anchors with `data-followed` so the inline tracker
+  // can emit `brief-thread-open` events with per-thread follow state.
+  // Best-effort telemetry only: a relay outage, missing config, or
+  // empty watchlist yields an empty list, so all stories stamp
+  // `followed=false`. Visible content and story order are unchanged.
+  const followedCountries = await followedCountriesPromise;
 
   // Cast to BriefEnvelope; renderBriefMagazine runs its own
   // assertBriefEnvelope at the top and will throw on any shape
   // mismatch, which we catch below.
   let html: string;
   try {
-    html = renderBriefMagazine(envelope as Parameters<typeof renderBriefMagazine>[0]);
+    html = renderBriefMagazine(
+      envelope as Parameters<typeof renderBriefMagazine>[0],
+      { shareUrl, followedCountries },
+    );
   } catch (err) {
     // Malformed envelope in Redis (composer bug, version drift, etc.)
     // We treat this as an expired brief from the reader's perspective
     // and log the details server-side. The renderer's assertion
     // message is safe to log (no secrets, no user content).
     console.error('[api/brief] malformed envelope for brief:*:*:', (err as Error).message);
+    captureSilentError(err, { tags: { route: 'api/brief', step: 'malformed-envelope' }, ctx });
     // Distinct log tag so ops can grep composer-bug vs Redis-miss. User
     // still sees the neutral "expired" page.
     return htmlResponse(req, 404, EXPIRED_PAGE);

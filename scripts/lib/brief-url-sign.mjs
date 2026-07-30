@@ -15,7 +15,10 @@
 // and Tauri if ever needed from a non-cron path.
 
 const USER_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
-const ISSUE_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+// YYYY-MM-DD-HHMM issue slot (local hour+minute of the compose run,
+// in the user's tz). Slot-per-run gives each digest dispatch its own
+// frozen magazine URL; same-day reruns no longer collide.
+const ISSUE_DATE_RE = /^\d{4}-\d{2}-\d{2}-\d{4}$/;
 
 export class BriefUrlError extends Error {
   constructor(code, message) {
@@ -30,7 +33,7 @@ function assertShape(userId, issueDate) {
     throw new BriefUrlError('invalid_user_id', 'userId must match [A-Za-z0-9_-]{1,128}');
   }
   if (!ISSUE_DATE_RE.test(issueDate)) {
-    throw new BriefUrlError('invalid_issue_date', 'issueDate must match YYYY-MM-DD');
+    throw new BriefUrlError('invalid_issue_date', 'issueDate must match YYYY-MM-DD-HHMM');
   }
 }
 
@@ -53,9 +56,12 @@ async function hmacSha256(secret, message) {
 }
 
 /**
- * Deterministically sign `${userId}:${issueDate}` and return a
- * base64url-encoded token (43 chars, no padding).
- * @param {string} userId @param {string} issueDate @param {string} secret
+ * Deterministically sign `${userId}:${issueSlot}` and return a
+ * base64url-encoded token (43 chars, no padding). The parameter is
+ * still named issueDate for parity with the edge helper, but the value
+ * is the frozen issue slot.
+ * @param {string} userId @param {string} issueDate issueSlot-shaped value
+ * @param {string} secret
  * @returns {Promise<string>}
  */
 export async function signBriefToken(userId, issueDate, secret) {
@@ -69,6 +75,8 @@ export async function signBriefToken(userId, issueDate, secret) {
 
 /**
  * @param {{ userId: string; issueDate: string; baseUrl: string; secret: string }} opts
+ *   issueDate is the legacy property name for the issueSlot-shaped
+ *   value (`YYYY-MM-DD-HHMM`).
  * @returns {Promise<string>}
  */
 export async function signBriefUrl({ userId, issueDate, baseUrl, secret }) {

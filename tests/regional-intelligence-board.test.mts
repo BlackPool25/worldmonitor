@@ -495,6 +495,67 @@ describe('buildBoardHtml', () => {
     assert.match(html, /&lt;script&gt;bad/);
   });
 
+  it('escapes XSS payloads embedded in narrative + evidence text (issue #3730)', () => {
+    // Defense-in-depth end-to-end check: even if a hostile upstream payload
+    // bypassed the writer-side strip in scripts/regional-snapshot/_sanitize.mjs,
+    // the renderer's escapeHtml wrapping MUST neutralize raw <script>/<img>
+    // payloads anywhere in the snapshot text fields.
+    const XSS = '<script>alert("x")</script>';
+    const malicious = snapshotFixture({
+      regime: {
+        label: 'coercive_stalemate',
+        previousLabel: `prior${XSS}`,
+        transitionedAt: 1_700_000_000_000,
+        transitionDriver: `driver${XSS}`,
+      },
+      transmissionPaths: [{
+        start: `start${XSS}`,
+        mechanism: `mech${XSS}`,
+        end: `end${XSS}`,
+        severity: `high${XSS}`,
+        corridorId: `corr${XSS}`,
+        confidence: 0.9,
+        latencyHours: 1,
+        impactedAssetClass: 'commodity',
+        impactedRegions: ['mena'],
+        magnitudeLow: 0,
+        magnitudeHigh: 0,
+        magnitudeUnit: 'pct',
+        templateId: 't',
+        templateVersion: '1',
+      }],
+      triggers: {
+        active: [{
+          id: `trg${XSS}`,
+          description: `desc${XSS}`,
+          threshold: undefined,
+          activated: true,
+          activatedAt: 0,
+          scenarioLane: 'escalation',
+          evidenceIds: [],
+        }],
+        watching: [],
+        dormant: [],
+      },
+      narrative: {
+        situation: { text: `Situation ${XSS}`, evidenceIds: [`ev${XSS}`] },
+        balanceAssessment: { text: `Assessment ${XSS}`, evidenceIds: [] },
+        outlook24h: { text: `Outlook ${XSS}`, evidenceIds: [] },
+        outlook7d: { text: '', evidenceIds: [] },
+        outlook30d: { text: '', evidenceIds: [] },
+        watchItems: [{ text: `Watch ${XSS}`, evidenceIds: [] }],
+      },
+    });
+
+    const html = buildBoardHtml(malicious);
+    assert.doesNotMatch(
+      html,
+      /<script>alert\("x"\)<\/script>/,
+      'raw <script> tag survived the renderer',
+    );
+    assert.match(html, /&lt;script&gt;alert\(&quot;x&quot;\)&lt;\/script&gt;/);
+  });
+
   it('renders a mostly-empty snapshot without throwing', () => {
     const bare = snapshotFixture({
       actors: [],
@@ -647,6 +708,27 @@ describe('loadCurrent race simulation', () => {
     }
     await loadCurrent('mena', Promise.resolve('snap'));
     assert.deepEqual(state.rendered, ['mena:snap']);
+  });
+
+  it('drops an in-flight response after premium revocation invalidates the sequence', async () => {
+    const state = { latestSequence: 0, rendered: [] as string[] };
+    let resolveSnapshot: (value: string) => void;
+    const snapshot = new Promise<string>((resolve) => { resolveSnapshot = resolve; });
+
+    async function loadCurrent(promise: Promise<string>) {
+      state.latestSequence += 1;
+      const mySeq = state.latestSequence;
+      const result = await promise;
+      if (!isLatestSequence(mySeq, state.latestSequence)) return;
+      state.rendered.push(result);
+    }
+
+    const load = loadCurrent(snapshot);
+    state.latestSequence += 1;
+    resolveSnapshot!('premium-snapshot');
+    await load;
+
+    assert.deepEqual(state.rendered, []);
   });
 });
 

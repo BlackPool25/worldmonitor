@@ -10,6 +10,13 @@ export const config = { runtime: 'edge' };
 
 // @ts-expect-error — JS module, no declaration file
 import { getCorsHeaders } from './_cors.js';
+// @ts-expect-error — JS module, no declaration file
+import { captureSilentError } from './_sentry-edge.js';
+import {
+  beginStandaloneIdempotency,
+  completeStandaloneIdempotency,
+  getIdempotencyKey,
+} from './_idempotency.js';
 import { validateBearerToken } from '../server/auth-session';
 
 const CONVEX_SITE_URL =
@@ -28,7 +35,10 @@ function json(body: unknown, status: number, cors: Record<string, string>): Resp
   });
 }
 
-export default async function handler(req: Request): Promise<Response> {
+export default async function handler(
+  req: Request,
+  ctx?: { waitUntil: (p: Promise<unknown>) => void },
+): Promise<Response> {
   const cors = getCorsHeaders(req) as Record<string, string>;
 
   if (req.method === 'OPTIONS') {
@@ -37,7 +47,7 @@ export default async function handler(req: Request): Promise<Response> {
       headers: {
         ...cors,
         'Access-Control-Allow-Methods': 'POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, Idempotency-Key',
       },
     });
   }
@@ -55,8 +65,26 @@ export default async function handler(req: Request): Promise<Response> {
     return json({ error: 'Unauthorized' }, 401, cors);
   }
 
+  const idempotencyKey = getIdempotencyKey(req);
+  const idempotency = idempotencyKey
+    ? await beginStandaloneIdempotency({
+      request: req,
+      pathname: '/api/customer-portal',
+      scope: `user:${session.userId}`,
+      idempotencyKey,
+      corsHeaders: cors,
+    })
+    : null;
+  if (
+    idempotency &&
+    idempotency.kind !== 'proceed' &&
+    idempotency.kind !== 'disabled'
+  ) {
+    return idempotency.response;
+  }
+
   if (!CONVEX_SITE_URL || !RELAY_SHARED_SECRET) {
-    return json({ error: 'Service unavailable' }, 503, cors);
+    return completeStandaloneIdempotency(idempotency, json({ error: 'Service unavailable' }, 503, cors));
   }
 
   try {
@@ -73,12 +101,16 @@ export default async function handler(req: Request): Promise<Response> {
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) {
       console.error('[customer-portal] Relay error:', resp.status, data);
-      return json({ error: data?.error || 'Customer portal unavailable' }, resp.status === 404 ? 404 : 502, cors);
+      return completeStandaloneIdempotency(
+        idempotency,
+        json({ error: data?.error || 'Customer portal unavailable' }, resp.status === 404 ? 404 : 502, cors),
+      );
     }
 
-    return json(data, 200, cors);
+    return completeStandaloneIdempotency(idempotency, json(data, 200, cors));
   } catch (err) {
     console.error('[customer-portal] Relay failed:', (err as Error).message);
-    return json({ error: 'Customer portal unavailable' }, 502, cors);
+    captureSilentError(err, { tags: { route: 'api/customer-portal', step: 'relay' }, ctx });
+    return completeStandaloneIdempotency(idempotency, json({ error: 'Customer portal unavailable' }, 502, cors));
   }
 }

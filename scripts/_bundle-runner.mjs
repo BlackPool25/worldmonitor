@@ -8,7 +8,7 @@
  *
  * Usage from a bundle script:
  *   import { runBundle } from './_bundle-runner.mjs';
- *   await runBundle('ecb-eu', [ { label, script, seedMetaKey, intervalMs, timeoutMs } ]);
+ *   await runBundle('ecb-eu', [ { label, script, seedMetaKey, freshnessMetaKey, completionMetaKey, intervalMs, timeoutMs } ]);
  *
  * Budget (opt-in): Railway cron services SIGKILL the container at 10min. If
  * the sum of timeoutMs for sections that happen to be due exceeds ~9min, we
@@ -24,7 +24,7 @@
 import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadEnvFile } from './_seed-utils.mjs';
+import { GRACEFUL_FETCH_FAILURE_EXIT_CODE, loadEnvFile } from './_seed-utils.mjs';
 import { unwrapEnvelope } from './_seed-envelope-source.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -57,25 +57,45 @@ async function readRedisKey(key) {
 /**
  * Read section freshness for the interval gate.
  *
- * Returns `{ fetchedAt }` or null. Prefers envelope-form data when the section
- * declares `canonicalKey` (PR 2+); falls back to the legacy `seed-meta:<key>`
- * read used by every bundle file today. PR 1 keeps legacy as the ONLY live
- * path — `unwrapEnvelope` here is behavior-preserving because legacy seed-meta
- * values have no `_seed` field and pass through as `data` unchanged. When PR 2
- * migrates bundles to `canonicalKey`, this function starts reading envelopes.
+ * Returns `{ fetchedAt }` or null. A declared `freshnessMetaKey` is authoritative
+ * for sources whose canonical envelope may be republished from retained
+ * last-good data. When `completionMetaKey` is also declared, its timestamp must
+ * be at or after source transport success; an older completion belongs to a
+ * prior run and cannot attest a newer pre-publication heartbeat. Otherwise
+ * prefer envelope-form data when `canonicalKey` is declared, then fall back to
+ * the legacy `seed-meta:<key>` read.
  */
-async function readSectionFreshness(section) {
+export async function readSectionFreshness(section, readKey = readRedisKey) {
+  if (section.freshnessMetaKey) {
+    if (section.requireCanonical && section.canonicalKey) {
+      const canonical = await readKey(section.canonicalKey);
+      if (!unwrapEnvelope(canonical)._seed?.fetchedAt) return null;
+    }
+    const raw = await readKey(section.freshnessMetaKey);
+    const meta = unwrapEnvelope(raw).data;
+    if (!Number.isFinite(meta?.fetchedAt)) return null;
+    if (!section.completionMetaKey) return { fetchedAt: meta.fetchedAt };
+    const completionRaw = await readKey(section.completionMetaKey);
+    const completion = unwrapEnvelope(completionRaw).data;
+    if (!Number.isFinite(completion?.fetchedAt)) return null;
+    if (completion.fetchedAt < meta.fetchedAt) return null;
+    return { fetchedAt: meta.fetchedAt };
+  }
   // Try the envelope path first when a canonicalKey is declared. If the canonical
   // key isn't yet written as an envelope (PR 2 writer migration lagging reader
   // migration, or a legacy payload still present), fall through to the legacy
   // seed-meta read so the bundle doesn't over-run during the transition.
   if (section.canonicalKey) {
-    const raw = await readRedisKey(section.canonicalKey);
+    const raw = await readKey(section.canonicalKey);
     const { _seed } = unwrapEnvelope(raw);
     if (_seed?.fetchedAt) return { fetchedAt: _seed.fetchedAt };
+    // Version migrations can opt out of the legacy seed-meta fallback. A
+    // fresh meta entry for the old version must never suppress the first
+    // publish of a newly required canonical envelope.
+    if (section.requireCanonical) return null;
   }
   if (section.seedMetaKey) {
-    const raw = await readRedisKey(`seed-meta:${section.seedMetaKey}`);
+    const raw = await readKey(`seed-meta:${section.seedMetaKey}`);
     // Legacy seed-meta is `{ fetchedAt, recordCount, sourceVersion }` at top
     // level. It has no `_seed` wrapper so unwrapEnvelope returns it as data.
     const meta = unwrapEnvelope(raw).data;
@@ -107,15 +127,38 @@ function streamLines(stream, onLine) {
   stream.on('error', (err) => onLine(`<stdio error: ${err.message}>`));
 }
 
-function spawnSeed(scriptPath, { timeoutMs, label }) {
+function spawnSeed(scriptPath, { timeoutMs, label, bundleStartedAtMs }) {
   return new Promise((resolve) => {
     const t0 = Date.now();
+    // Capture the child's structured `seed_complete` event if emitted, so
+    // the parent can re-emit the key fields on a single bundle-level line.
+    // Railway log ingestion drops child-stdout lines when many seeders log
+    // at similar timestamps (observed across Storage-Facilities /
+    // Energy-Disruptions / Pipelines-Gas in PR #3294 launch run: each
+    // dropped a different subset of Run ID / Mode / seed_complete lines
+    // despite identical code paths). Bundle-level lines survive reliably.
+    let lastSeedComplete = null;
+    // BUNDLE_RUN_STARTED_AT_MS lets consumer seeders detect when a cohort
+    // peer's seed-meta predates the current bundle run and fall back to a
+    // hard default instead of reading a stale peer key. See plan
+    // 2026-04-24-003 §"Phase 2 — SWF seeder" bundle-freshness guard.
     const child = spawn(process.execPath, [scriptPath], {
-      env: process.env,
+      env: {
+        ...process.env,
+        BUNDLE_RUN_STARTED_AT_MS: String(bundleStartedAtMs ?? Date.now()),
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
-    streamLines(child.stdout, (line) => console.log(`  [${label}] ${line}`));
+    streamLines(child.stdout, (line) => {
+      console.log(`  [${label}] ${line}`);
+      const idx = line.indexOf('{"event":"seed_complete"');
+      if (idx >= 0) {
+        try {
+          lastSeedComplete = JSON.parse(line.slice(idx));
+        } catch { /* malformed JSON — keep previous */ }
+      }
+    });
     streamLines(child.stderr, (line) => console.warn(`  [${label}] ${line}`));
 
     let settled = false;
@@ -156,7 +199,14 @@ function spawnSeed(scriptPath, { timeoutMs, label }) {
         // Terminal reason already logged by softKill — just record the outcome.
         settle({ elapsed, ok: false, reason: `timeout after ${Math.round(timeoutMs / 1000)}s (signal ${signal || 'SIGTERM'})`, alreadyLogged: true });
       } else if (code === 0) {
-        settle({ elapsed, ok: true });
+        settle({ elapsed, ok: true, seedComplete: lastSeedComplete });
+      } else if (code === GRACEFUL_FETCH_FAILURE_EXIT_CODE) {
+        settle({
+          elapsed,
+          ok: false,
+          status: 'GRACEFUL_FAIL',
+          reason: `graceful fetch failure (exit ${GRACEFUL_FETCH_FAILURE_EXIT_CODE})`,
+        });
       } else {
         settle({ elapsed, ok: false, reason: `exit ${code ?? 'null'}${signal ? ` (signal ${signal})` : ''}` });
       }
@@ -170,21 +220,87 @@ function spawnSeed(scriptPath, { timeoutMs, label }) {
  *   label: string,
  *   script: string,
  *   seedMetaKey?: string,    // legacy (pre-contract); reads `seed-meta:<key>`
+ *   freshnessMetaKey?: string, // authoritative explicit seed-meta key
+ *   completionMetaKey?: string, // optional completed-run key paired with freshnessMetaKey
  *   canonicalKey?: string,   // PR 2+: reads envelope from the canonical data key
+ *   requireCanonical?: boolean, // do not fall back to legacy meta when canonical is absent
  *   intervalMs: number,
  *   timeoutMs?: number,
+ *   dependsOn?: string[],    // labels that MUST run earlier in the array
+ *   requiredEnv?: string[],  // deployment config required before any section runs
  * }>} sections
  * @param {{ maxBundleMs?: number }} [opts]
  */
 export async function runBundle(label, sections, opts = {}) {
+  const missingEnvBySection = new Map();
+  for (const section of sections) {
+    if (section.requiredEnv == null) continue;
+    if (!Array.isArray(section.requiredEnv)) {
+      throw new Error(`[Bundle:${label}] section '${section.label}' requiredEnv must be an array`);
+    }
+    const missing = [];
+    for (const requirement of section.requiredEnv) {
+      // A nested array is an any-of group: the section needs at least one of
+      // those variables, not all of them. Sources that resolve a routing value
+      // as `SOURCE_SPECIFIC || SHARED` must declare it that way, or the gate is
+      // stricter than the runtime it guards and hard-fails a section the seeder
+      // would have run.
+      const alternatives = Array.isArray(requirement) ? requirement : [requirement];
+      if (alternatives.length === 0) {
+        throw new Error(`[Bundle:${label}] section '${section.label}' has an empty requiredEnv group`);
+      }
+      for (const name of alternatives) {
+        if (typeof name !== 'string' || !/^[A-Z][A-Z0-9_]*$/.test(name)) {
+          throw new Error(`[Bundle:${label}] section '${section.label}' has invalid requiredEnv name '${name}'`);
+        }
+      }
+      const satisfied = alternatives.some(
+        (name) => String(process.env[name] ?? '').trim(),
+      );
+      if (!satisfied) missing.push(alternatives.join(' or '));
+    }
+    if (missing.length > 0) missingEnvBySection.set(section.label, missing);
+  }
+
+  // Topological-order assertion. A consumer seeder reading a peer's
+  // Redis output in-bundle depends on the peer running first; if a
+  // future edit (e.g. alphabetizing sections) reorders them, the
+  // consumer reads last-bundle's stale output. The freshness-guard in
+  // the consumer is a safety net; this assertion is the contract.
+  // Throws on violation so misconfiguration surfaces before any cron
+  // tick runs.
+  const labelIndex = new Map(sections.map((s, i) => [s.label, i]));
+  for (let i = 0; i < sections.length; i++) {
+    const deps = sections[i].dependsOn;
+    if (!Array.isArray(deps)) continue;
+    for (const depLabel of deps) {
+      const depIdx = labelIndex.get(depLabel);
+      if (depIdx == null) {
+        throw new Error(`[Bundle:${label}] section '${sections[i].label}' dependsOn unknown label '${depLabel}'`);
+      }
+      if (depIdx >= i) {
+        throw new Error(`[Bundle:${label}] section '${sections[i].label}' dependsOn '${depLabel}' but '${depLabel}' is at index ${depIdx} (must be < ${i})`);
+      }
+    }
+  }
+
   const t0 = Date.now();
   const maxBundleMs = opts.maxBundleMs ?? Infinity;
   const budgetLabel = Number.isFinite(maxBundleMs) ? `, budget ${Math.round(maxBundleMs / 1000)}s` : '';
   console.log(`[Bundle:${label}] Starting (${sections.length} sections${budgetLabel})`);
 
-  let ran = 0, skipped = 0, deferred = 0, failed = 0;
+  let ran = 0, skipped = 0, deferred = 0, failed = 0, gracefulFailed = 0;
 
   for (const section of sections) {
+    const missingEnv = missingEnvBySection.get(section.label);
+    if (missingEnv) {
+      const reason = `missing required environment configuration: ${missingEnv.join(', ')}`;
+      console.error(`  [${section.label}] Failed configuration: ${reason}`);
+      console.error(`[Bundle:${label}] section=${section.label} status=CONFIG_ERROR reason=${reason}`);
+      failed++;
+      continue;
+    }
+
     const scriptPath = join(__dirname, section.script);
     const timeout = section.timeoutMs || 300_000;
 
@@ -212,19 +328,51 @@ export async function runBundle(label, sections, opts = {}) {
       continue;
     }
 
-    const result = await spawnSeed(scriptPath, { timeoutMs: timeout, label: section.label });
+    const result = await spawnSeed(scriptPath, { timeoutMs: timeout, label: section.label, bundleStartedAtMs: t0 });
     if (result.ok) {
       console.log(`  [${section.label}] Done (${result.elapsed}s)`);
+      // Bundle-level per-section summary — emitted from parent stdout so
+      // Railway log ingestion captures it reliably even when child lines
+      // drop. Observability tools should key off this line, not per-section
+      // Run ID / Mode / seed_complete lines which are best-effort only.
+      const sc = result.seedComplete;
+      if (sc && typeof sc === 'object') {
+        console.log(`[Bundle:${label}] section=${section.label} status=OK durationMs=${sc.durationMs ?? ''} records=${sc.recordCount ?? ''} state=${sc.state || 'OK'}`);
+      } else {
+        // Seeder didn't emit seed_complete (legacy non-contract seeders, or
+        // the child's event line was dropped before parsing).
+        console.log(`[Bundle:${label}] section=${section.label} status=OK elapsed=${result.elapsed}s`);
+      }
       ran++;
     } else {
       if (!result.alreadyLogged) {
         console.error(`  [${section.label}] Failed after ${result.elapsed}s: ${result.reason}`);
       }
-      failed++;
+      // Emit the FAILED summary to stderr (same stream as the Failed line
+      // and SIGKILL escalation log) so chronological ordering in combined
+      // output is preserved. If we went to stdout here, the line would
+      // appear before those stderr lines when consumers concatenate
+      // stdout+stderr, breaking tests (and log readers) that rely on
+      // signal-escalation ordering.
+      const status = result.status || 'FAILED';
+      console.error(`[Bundle:${label}] section=${section.label} status=${status} elapsed=${result.elapsed}s reason=${(result.reason || 'unknown').replace(/\s+/g, ' ')}`);
+      // A GRACEFUL_FAIL (child exit 75) extended the last-good TTL and lost no
+      // data — a transient upstream blip (e.g. a rate-limited source). Counting
+      // it as a hard failure would crash the whole bundle (exit 1 → Railway
+      // "Deploy Crashed!") over a benign per-member skip. Track it separately so
+      // only HARD failures gate the exit code; the skip stays fully logged above.
+      if (status === 'GRACEFUL_FAIL') gracefulFailed++;
+      else failed++;
     }
   }
 
   const totalSec = ((Date.now() - t0) / 1000).toFixed(1);
-  console.log(`[Bundle:${label}] Finished in ${totalSec}s, ran:${ran} skipped:${skipped} deferred:${deferred} failed:${failed}`);
+  console.log(`[Bundle:${label}] Finished in ${totalSec}s, ran:${ran} skipped:${skipped} deferred:${deferred} failed:${failed} graceful:${gracefulFailed}`);
+  // Graceful-only run (transient skips, no hard failures): exit 0 so Railway
+  // does not paint CRASHED and fire a spurious alert. Real staleness is caught
+  // independently by the /api/health freshness monitor keyed on seed-meta TTL.
+  if (failed === 0 && gracefulFailed > 0) {
+    console.log(`[Bundle:${label}] ${gracefulFailed} graceful fetch skip(s), no hard failures — no data lost, exiting 0 (not a crash)`);
+  }
   process.exit(failed > 0 ? 1 : 0);
 }

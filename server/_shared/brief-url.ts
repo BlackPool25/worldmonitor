@@ -1,7 +1,7 @@
 /**
  * HMAC-signed URL helpers for the WorldMonitor Brief magazine route.
  *
- * The hosted magazine at /api/brief/{userId}/{issueDate} is auth-less
+ * The hosted magazine at /api/brief/{userId}/{issueSlot} is auth-less
  * in the traditional sense (no Clerk session, no cookie). The signed
  * token IS the credential: a recipient with the URL can read the
  * magazine; without it, no. This matches the push / email delivery
@@ -28,7 +28,10 @@
  */
 
 const USER_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
-const ISSUE_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+// YYYY-MM-DD-HHMM issue slot — hour+minute of the compose run in the
+// user's tz. The token binds userId + slot so each digest dispatch
+// gets its own frozen magazine URL.
+const ISSUE_DATE_RE = /^\d{4}-\d{2}-\d{2}-\d{4}$/;
 const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/; // base64url(sha256) = 43 chars, no padding
 
 export class BriefUrlError extends Error {
@@ -46,7 +49,7 @@ function assertShape(userId: string, issueDate: string): void {
     throw new BriefUrlError('invalid_user_id', 'userId must match [A-Za-z0-9_-]{1,128}');
   }
   if (!ISSUE_DATE_RE.test(issueDate)) {
-    throw new BriefUrlError('invalid_issue_date', 'issueDate must match YYYY-MM-DD');
+    throw new BriefUrlError('invalid_issue_date', 'issueDate must match YYYY-MM-DD-HHMM');
   }
 }
 
@@ -77,9 +80,11 @@ function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 /**
- * Deterministically sign `${userId}:${issueDate}` and return a
- * base64url-encoded token. Throws BriefUrlError on malformed inputs or
- * missing secret.
+ * Deterministically sign `${userId}:${issueSlot}` and return a
+ * base64url-encoded token. The parameter is still named issueDate for
+ * compatibility with earlier callers, but the accepted value is the
+ * frozen issue slot. Throws BriefUrlError on malformed inputs or missing
+ * secret.
  */
 export async function signBriefToken(
   userId: string,
@@ -95,13 +100,14 @@ export async function signBriefToken(
 }
 
 /**
- * Verify a token against userId + issueDate. Accepts the primary
+ * Verify a token against userId + issueSlot. Accepts the primary
  * secret and (if provided) a previous secret during rotation. Returns
  * `true` only on a byte-for-byte match under either secret.
  *
  * The token is rejected without ever touching crypto if its shape is
- * invalid (wrong length, illegal chars). userId and issueDate are
- * shape-validated before any HMAC computation to prevent probing.
+ * invalid (wrong length, illegal chars). userId and the slot-shaped
+ * issueDate parameter are shape-validated before any HMAC computation to
+ * prevent probing.
  */
 export async function verifyBriefToken(
   userId: string,
@@ -151,11 +157,12 @@ function base64urlDecode(token: string): Uint8Array | null {
  * Compose the full magazine URL with signed token.
  *
  * Producers should always go through this helper rather than string-
- * concatenating URLs by hand. Example:
+ * concatenating URLs by hand. `issueDate` is the legacy property name
+ * for the issueSlot-shaped value (`YYYY-MM-DD-HHMM`). Example:
  *
  *   const url = await signBriefUrl({
  *     userId: 'user_abc',
- *     issueDate: '2026-04-17',
+ *     issueDate: '2026-04-17-0800',
  *     baseUrl: 'https://worldmonitor.app',
  *     secret: process.env.BRIEF_URL_SIGNING_SECRET!,
  *   });
@@ -167,6 +174,7 @@ export async function signBriefUrl({
   secret,
 }: {
   userId: string;
+  /** Legacy name for the frozen issueSlot (`YYYY-MM-DD-HHMM`). */
   issueDate: string;
   baseUrl: string;
   secret: string;

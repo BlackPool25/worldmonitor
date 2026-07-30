@@ -13,11 +13,20 @@ export const config = { runtime: 'edge' };
 import { getCorsHeaders, isDisallowedOrigin } from './_cors.js';
 // @ts-expect-error — JS module, no declaration file
 import { jsonResponse } from './_json-response.js';
+import {
+  beginStandaloneIdempotency,
+  completeStandaloneIdempotency,
+  getIdempotencyKey,
+} from './_idempotency.js';
 import { validateBearerToken } from '../server/auth-session';
-import { getEntitlements } from '../server/_shared/entitlement-check';
+import { checkTierProEntitlement } from '../server/_shared/pro-entitlement';
 
 const VALID_SEVERITIES = new Set(['critical', 'high', 'medium', 'low', 'info']);
-const INTERNAL_EVENT_TYPES = new Set(['flush_quiet_held', 'channel_welcome']);
+const INTERNAL_EVENT_TYPES = new Set(['flush_quiet_held', 'channel_welcome', 'watchlist_story_alert']);
+
+export function isInternalNotifyEventType(eventType: string): boolean {
+  return INTERNAL_EVENT_TYPES.has(eventType);
+}
 
 export default async function handler(req: Request): Promise<Response> {
   if (isDisallowedOrigin(req)) {
@@ -45,8 +54,18 @@ export default async function handler(req: Request): Promise<Response> {
     return jsonResponse({ error: 'UNAUTHENTICATED' }, 401, cors);
   }
 
-  const ent = await getEntitlements(session.userId);
-  if (!ent || ent.features.tier < 1) {
+  const idempotencyRequest = req.clone();
+
+  const proAccess = await checkTierProEntitlement(session.userId, cors);
+  if (!proAccess.allowed) {
+    // #5600: an entitlement the backend could not VERIFY is not a confirmed
+    // free user. Answer the shared retryable contract (503 + Retry-After) for
+    // those states before falling back to the terminal upsell. Note this covers
+    // lookup failure and renewal verification only — the day-0 poisoned-marker
+    // cohort arrives as a plain tier-0 answer and still gets the 403; that
+    // window is bounded by NOT_APPLICABLE_VERIFICATION_TTL_SECONDS instead.
+    const { billingDenial } = proAccess;
+    if (billingDenial) return billingDenial;
     return jsonResponse({ error: 'pro_required', message: 'Event publishing is available on the Pro plan.', upgradeUrl: 'https://worldmonitor.app/pro' }, 403, cors);
   }
 
@@ -64,8 +83,10 @@ export default async function handler(req: Request): Promise<Response> {
   // Reject internal relay control events. These are dispatched by Railway
   // cron scripts (seed-digest-notifications, quiet-hours) and must never be
   // user-submittable. flush_quiet_held would let a Pro user force-drain their
-  // held queue on demand, bypassing batch_on_wake behaviour.
-  if (INTERNAL_EVENT_TYPES.has(body.eventType)) {
+  // held queue on demand, bypassing batch_on_wake behaviour. watchlist_story_alert
+  // is produced by the digest scanner after ticker extraction, importance gating,
+  // and scan dedup; user-submitted copies would bypass that pipeline.
+  if (isInternalNotifyEventType(body.eventType)) {
     return jsonResponse({ error: 'Reserved event type' }, 403, cors);
   }
 
@@ -78,6 +99,24 @@ export default async function handler(req: Request): Promise<Response> {
 
   if (!upstashUrl || !upstashToken) {
     return jsonResponse({ error: 'Service unavailable' }, 503, cors);
+  }
+
+  const idempotencyKey = getIdempotencyKey(req);
+  const idempotency = idempotencyKey
+    ? await beginStandaloneIdempotency({
+      request: idempotencyRequest,
+      pathname: '/api/notify',
+      scope: `user:${session.userId}`,
+      idempotencyKey,
+      corsHeaders: cors,
+    })
+    : null;
+  if (
+    idempotency &&
+    idempotency.kind !== 'proceed' &&
+    idempotency.kind !== 'disabled'
+  ) {
+    return idempotency.response;
   }
 
   const { eventType } = body;
@@ -109,8 +148,8 @@ export default async function handler(req: Request): Promise<Response> {
   );
 
   if (!res.ok) {
-    return jsonResponse({ error: 'Publish failed' }, 502, cors);
+    return completeStandaloneIdempotency(idempotency, jsonResponse({ error: 'Publish failed' }, 502, cors));
   }
 
-  return jsonResponse({ ok: true }, 200, cors);
+  return completeStandaloneIdempotency(idempotency, jsonResponse({ ok: true }, 200, cors));
 }

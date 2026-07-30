@@ -60,15 +60,15 @@ describe('notification-relay shadowLogScore discipline', () => {
 });
 
 describe('shadow-log key version', () => {
-  it('uses the v3 JSON-member key (weight rebalance clean dataset)', () => {
+  it('uses the v4 JSON-member key (prompt upgrade clean dataset)', () => {
     assert.match(
       relaySrc,
-      /SHADOW_SCORE_LOG_KEY\s*=\s*['"]shadow:score-log:v3['"]/,
-      'notification-relay must write to shadow:score-log:v3 after the weight rebalance',
+      /SHADOW_SCORE_LOG_KEY\s*=\s*['"]shadow:score-log:v5['"]/,
+      'notification-relay must write to shadow:score-log:v5 after the prompt upgrade',
     );
     assert.ok(
-      !/SHADOW_SCORE_LOG_KEY\s*=\s*['"]shadow:score-log:v[12]['"]/.test(relaySrc),
-      'legacy v1/v2 keys must not be active',
+      !/SHADOW_SCORE_LOG_KEY\s*=\s*['"]shadow:score-log:v[1234]['"]/.test(relaySrc),
+      'legacy v1/v2/v3/v4 keys must not be active',
     );
   });
 

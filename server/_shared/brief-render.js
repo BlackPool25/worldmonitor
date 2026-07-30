@@ -21,7 +21,7 @@
 //   - Brainstorm: docs/brainstorms/2026-04-17-worldmonitor-brief-magazine-requirements.md
 //   - Plan: docs/plans/2026-04-17-003-feat-worldmonitor-brief-magazine-plan.md
 
-import { BRIEF_ENVELOPE_VERSION } from '../../shared/brief-envelope.js';
+import { BRIEF_ENVELOPE_VERSION, SUPPORTED_ENVELOPE_VERSIONS } from '../../shared/brief-envelope.js';
 
 /**
  * @typedef {import('../../shared/brief-envelope.js').BriefEnvelope} BriefEnvelope
@@ -113,7 +113,16 @@ function isFiniteNumber(v) {
 const ALLOWED_ENVELOPE_KEYS = new Set(['version', 'issuedAt', 'data']);
 const ALLOWED_DATA_KEYS = new Set(['user', 'issue', 'date', 'dateLong', 'digest', 'stories']);
 const ALLOWED_USER_KEYS = new Set(['name', 'tz']);
-const ALLOWED_DIGEST_KEYS = new Set(['greeting', 'lead', 'numbers', 'threads', 'signals']);
+// publicLead / publicSignals / publicThreads: optional v3+ fields.
+// Hold non-personalised content the public-share renderer uses in
+// place of the personalised lead/signals/threads. v2 envelopes (no
+// publicLead) still pass — the validator's optional-key pattern is
+// "in the allow list, but isString/array check is skipped when
+// undefined" (see validateBriefDigest below).
+const ALLOWED_DIGEST_KEYS = new Set([
+  'greeting', 'lead', 'numbers', 'threads', 'signals',
+  'publicLead', 'publicSignals', 'publicThreads',
+]);
 const ALLOWED_NUMBERS_KEYS = new Set(['clusters', 'multiSource', 'surfaced']);
 const ALLOWED_THREAD_KEYS = new Set(['tag', 'teaser']);
 const ALLOWED_STORY_KEYS = new Set([
@@ -123,8 +132,53 @@ const ALLOWED_STORY_KEYS = new Set([
   'headline',
   'description',
   'source',
+  'sourceUrl',
+  // v4+ stable per-story-cluster identity (see shared/brief-envelope.js
+  // version-history doc-block). Required on v4 envelopes — checked
+  // below in the per-story validator. Optional on v1-v3 envelopes
+  // still in TTL.
+  'clusterId',
   'whyMatters',
 ]);
+
+// Closed list of URL schemes we will interpolate into `href=`. A source
+// record with an unknown scheme is a composer bug, not something to
+// render — the story is dropped at envelope-validation time rather than
+// shipping with an unlinked / broken source.
+const ALLOWED_SOURCE_URL_SCHEMES = new Set(['https:', 'http:']);
+
+/**
+ * Parses and validates a story source URL. Returns the normalised URL
+ * string on success; throws a descriptive error otherwise. The renderer
+ * validator wraps this in a per-story path-prefixed error so composer
+ * bugs are easy to locate.
+ *
+ * @param {unknown} raw
+ * @returns {string}
+ */
+function validateSourceUrl(raw) {
+  if (typeof raw !== 'string' || raw.length === 0) {
+    throw new Error('must be a non-empty string');
+  }
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error(`must be a parseable absolute URL (got ${JSON.stringify(raw)})`);
+  }
+  if (!ALLOWED_SOURCE_URL_SCHEMES.has(parsed.protocol)) {
+    throw new Error(`scheme ${JSON.stringify(parsed.protocol)} is not allowed (http/https only)`);
+  }
+  // Bar `javascript:`-style smuggling via credentials or a Unicode host
+  // that renders like a legitimate outlet. These aren't exploitable
+  // through the renderer (we only emit the URL in an href with
+  // rel=noopener and we escape it), but they're always a composer bug
+  // so flag at write time.
+  if (parsed.username || parsed.password) {
+    throw new Error('must not include userinfo credentials');
+  }
+  return parsed.toString();
+}
 
 /**
  * @param {Record<string, unknown>} obj
@@ -165,9 +219,15 @@ export function assertBriefEnvelope(envelope) {
   const env = /** @type {Record<string, unknown>} */ (envelope);
   assertNoExtraKeys(env, ALLOWED_ENVELOPE_KEYS, 'envelope');
 
-  if (env.version !== BRIEF_ENVELOPE_VERSION) {
+  // Accept any version in SUPPORTED_ENVELOPE_VERSIONS. The composer
+  // only ever writes the current BRIEF_ENVELOPE_VERSION; older
+  // versions are tolerated on READ so links issued in the 7-day TTL
+  // window survive a renderer rollout. Unknown versions are still
+  // rejected — an unexpected shape would lead the renderer to
+  // interpolate garbage.
+  if (typeof env.version !== 'number' || !SUPPORTED_ENVELOPE_VERSIONS.has(env.version)) {
     throw new Error(
-      `renderBriefMagazine: envelope.version=${JSON.stringify(env.version)} does not match renderer version=${BRIEF_ENVELOPE_VERSION}. Deploy a matching renderer before producing envelopes at this version.`,
+      `renderBriefMagazine: envelope.version=${JSON.stringify(env.version)} is not in supported set [${[...SUPPORTED_ENVELOPE_VERSIONS].join(', ')}]. Deploy a matching renderer before producing envelopes at this version.`,
     );
   }
   if (!isFiniteNumber(env.issuedAt)) {
@@ -197,6 +257,38 @@ export function assertBriefEnvelope(envelope) {
   assertNoExtraKeys(digest, ALLOWED_DIGEST_KEYS, 'envelope.data.digest');
   if (!isNonEmptyString(digest.greeting)) throw new Error('envelope.data.digest.greeting must be a non-empty string');
   if (!isNonEmptyString(digest.lead)) throw new Error('envelope.data.digest.lead must be a non-empty string');
+  // publicLead: optional v3+ field. When present, MUST be a non-empty
+  // string (typed contract enforcement); when absent, the renderer's
+  // public-mode lead block omits the pull-quote entirely (per the
+  // "never fall back to personalised lead" rule).
+  if (digest.publicLead !== undefined && !isNonEmptyString(digest.publicLead)) {
+    throw new Error('envelope.data.digest.publicLead, when present, must be a non-empty string');
+  }
+  // publicSignals + publicThreads: optional v3+. When present, MUST
+  // match the signals/threads contracts (array of non-empty strings,
+  // array of {tag, teaser}). Absent siblings are OK — public render
+  // path falls back to "omit signals page" / "category-derived
+  // threads stub" rather than serving the personalised version.
+  if (digest.publicSignals !== undefined) {
+    if (!Array.isArray(digest.publicSignals)) {
+      throw new Error('envelope.data.digest.publicSignals, when present, must be an array');
+    }
+    digest.publicSignals.forEach((s, i) => {
+      if (!isNonEmptyString(s)) throw new Error(`envelope.data.digest.publicSignals[${i}] must be a non-empty string`);
+    });
+  }
+  if (digest.publicThreads !== undefined) {
+    if (!Array.isArray(digest.publicThreads)) {
+      throw new Error('envelope.data.digest.publicThreads, when present, must be an array');
+    }
+    digest.publicThreads.forEach((t, i) => {
+      if (!isObject(t)) throw new Error(`envelope.data.digest.publicThreads[${i}] must be an object`);
+      const th = /** @type {Record<string, unknown>} */ (t);
+      assertNoExtraKeys(th, ALLOWED_THREAD_KEYS, `envelope.data.digest.publicThreads[${i}]`);
+      if (!isNonEmptyString(th.tag)) throw new Error(`envelope.data.digest.publicThreads[${i}].tag must be a non-empty string`);
+      if (!isNonEmptyString(th.teaser)) throw new Error(`envelope.data.digest.publicThreads[${i}].teaser must be a non-empty string`);
+    });
+  }
 
   if (!isObject(digest.numbers)) throw new Error('envelope.data.digest.numbers is required');
   const numbers = /** @type {Record<string, unknown>} */ (digest.numbers);
@@ -240,6 +332,44 @@ export function assertBriefEnvelope(envelope) {
     if (typeof st.threatLevel !== 'string' || !VALID_THREAT_LEVELS.has(/** @type {BriefThreatLevel} */ (st.threatLevel))) {
       throw new Error(
         `envelope.data.stories[${i}].threatLevel must be one of critical|high|medium|low (got ${JSON.stringify(st.threatLevel)})`,
+      );
+    }
+    // sourceUrl is required from v2 onward and absent on v1. When
+    // present on v1, it must still parse cleanly — a malformed URL
+    // would break the href. A v1 envelope that somehow carries a
+    // sourceUrl is still validated (cheap defence against composer
+    // regressions).
+    //
+    // Codex PR #3614 P2 — pre-fix used `env.version === BRIEF_ENVELOPE_VERSION`
+    // which only required sourceUrl on the LATEST version. Pre-U1
+    // (when BRIEF_ENVELOPE_VERSION === 3) v2 envelopes were already
+    // exempted; the v4 bump made it worse by also exempting v3. Both
+    // are wrong per the v2+ contract. Switched to `env.version >= 2`
+    // so every supported v2/v3/v4/... envelope enforces sourceUrl.
+    if (env.version >= 2 || st.sourceUrl !== undefined) {
+      try {
+        validateSourceUrl(st.sourceUrl);
+      } catch (err) {
+        throw new Error(
+          `envelope.data.stories[${i}].sourceUrl ${/** @type {Error} */ (err).message}`,
+        );
+      }
+    }
+    // clusterId is REQUIRED on v4 (the canonical-contract bump that
+    // wires per-cluster identity into the delivered-log + CI invariant)
+    // and OPTIONAL on v1-v3 envelopes still in the 7-day TTL window.
+    // When present on any version it must be a non-empty string —
+    // empty strings would silently collapse delivered-log keys across
+    // clusters and break the `digest.cards ⊆ brief.cards` invariant.
+    if (env.version === BRIEF_ENVELOPE_VERSION) {
+      if (!isNonEmptyString(st.clusterId)) {
+        throw new Error(
+          `envelope.data.stories[${i}].clusterId must be a non-empty string on v${BRIEF_ENVELOPE_VERSION} envelopes (got ${JSON.stringify(st.clusterId)})`,
+        );
+      }
+    } else if (st.clusterId !== undefined && !isNonEmptyString(st.clusterId)) {
+      throw new Error(
+        `envelope.data.stories[${i}].clusterId, when present on v${env.version}, must be a non-empty string (got ${JSON.stringify(st.clusterId)})`,
       );
     }
   });
@@ -317,9 +447,21 @@ function digestRunningHead(dateShort, label) {
 // ── Page renderers ───────────────────────────────────────────────────────────
 
 /**
- * @param {{ dateLong: string; issue: string; storyCount: number; pageIndex: number; totalPages: number }} opts
+ * Strip the trailing period from envelope.data.digest.greeting
+ * ("Good afternoon." → "Good afternoon") so the cover's mono-cased
+ * salutation stays consistent with the historical no-period style.
+ * Defensive: if the envelope ever produces an unexpected value, fall
+ * back to a generic "Hello" rather than hardcoding a wrong time-of-day.
  */
-function renderCover({ dateLong, issue, storyCount, pageIndex, totalPages }) {
+function coverGreeting(greeting) {
+  if (typeof greeting !== 'string' || greeting.length === 0) return 'Hello';
+  return greeting.replace(/\.+$/, '').trim() || 'Hello';
+}
+
+/**
+ * @param {{ dateLong: string; issue: string; storyCount: number; pageIndex: number; totalPages: number; greeting: string }} opts
+ */
+function renderCover({ dateLong, issue, storyCount, pageIndex, totalPages, greeting }) {
   const blurb =
     storyCount === 1
       ? 'One thread that shaped the world today.'
@@ -339,7 +481,7 @@ function renderCover({ dateLong, issue, storyCount, pageIndex, totalPages }) {
     `<p class="blurb">${escapeHtml(blurb)}</p>` +
     '</div>' +
     '<div class="meta-bottom">' +
-    '<span class="mono">Good evening</span>' +
+    `<span class="mono">${escapeHtml(coverGreeting(greeting))}</span>` +
     '<span class="mono">Swipe / ↔ to begin</span>' +
     '</div>' +
     `<div class="page-number mono">${pad2(pageIndex)} / ${pad2(totalPages)}</div>` +
@@ -351,13 +493,22 @@ function renderCover({ dateLong, issue, storyCount, pageIndex, totalPages }) {
  * @param {{ greeting: string; lead: string; dateShort: string; pageIndex: number; totalPages: number }} opts
  */
 function renderDigestGreeting({ greeting, lead, dateShort, pageIndex, totalPages }) {
+  // Public-share fail-safe: when `lead` is empty, omit the pull-quote
+  // entirely. Reached via redactForPublic when the envelope lacks a
+  // non-empty `publicLead` — NEVER serve the personalised lead on the
+  // public surface. Page still reads as a complete editorial layout
+  // (greeting + horizontal rule), just without the italic blockquote.
+  // Codex Round-2 High (security on share-URL surface).
+  const blockquote = typeof lead === 'string' && lead.length > 0
+    ? `<blockquote>${escapeHtml(lead)}</blockquote>`
+    : '';
   return (
     '<section class="page digest">' +
     digestRunningHead(dateShort, 'Digest / 01') +
     '<div class="body">' +
     '<div class="label mono">At The Top Of The Hour</div>' +
     `<h2>${escapeHtml(greeting)}</h2>` +
-    `<blockquote>${escapeHtml(lead)}</blockquote>` +
+    blockquote +
     '<hr class="rule" />' +
     '</div>' +
     `<div class="page-number mono">${pad2(pageIndex)} / ${pad2(totalPages)}</div>` +
@@ -455,11 +606,82 @@ function renderDigestSignals({ signals, dateShort, pageIndex, totalPages }) {
 }
 
 /**
- * @param {{ story: BriefStory; rank: number; palette: 'light' | 'dark'; pageIndex: number; totalPages: number }} opts
+ * Build a tracked outgoing URL for the source line. Adds utm_source /
+ * utm_medium / utm_campaign / utm_content only when absent — if the
+ * upstream feed already embeds UTM (many publisher RSS do), we keep
+ * their attribution intact and just append ours after.
+ *
+ * Returns the original `raw` on URL parse failure. This path is
+ * unreachable in practice because assertBriefEnvelope already proved
+ * the URL parses, but fail-safe is cheap.
+ *
+ * @param {string} raw           validated absolute https URL
+ * @param {string} issueDate     envelope.data.date (YYYY-MM-DD)
+ * @param {number} rank          1-indexed story rank
  */
-function renderStoryPage({ story, rank, palette, pageIndex, totalPages }) {
+function buildTrackedSourceUrl(raw, issueDate, rank) {
+  try {
+    const u = new URL(raw);
+    if (!u.searchParams.has('utm_source')) u.searchParams.set('utm_source', 'worldmonitor');
+    if (!u.searchParams.has('utm_medium')) u.searchParams.set('utm_medium', 'brief');
+    if (!u.searchParams.has('utm_campaign')) u.searchParams.set('utm_campaign', issueDate);
+    if (!u.searchParams.has('utm_content')) u.searchParams.set('utm_content', `story-${pad2(rank)}`);
+    return u.toString();
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * Extract ISO-2 country tokens from a `BriefStory.country` string.
+ * The contract allows composite forms like "IL / LB" and "IL/LB" —
+ * we split on whitespace and `/` and keep tokens that are exactly
+ * two ASCII letters. Used solely to compute the `data-followed`
+ * stamp on the magazine source-link; never affects visible content.
+ *
+ * @param {string} country
+ * @returns {string[]} uppercase ISO-2 tokens (may be empty)
+ */
+function extractIso2Tokens(country) {
+  if (typeof country !== 'string' || country.length === 0) return [];
+  /** @type {string[]} */
+  const out = [];
+  for (const raw of country.split(/[\s/]+/)) {
+    if (raw.length === 2 && /^[a-zA-Z]{2}$/.test(raw)) {
+      out.push(raw.toUpperCase());
+    }
+  }
+  return out;
+}
+
+/**
+ * @param {{ story: BriefStory; rank: number; palette: 'light' | 'dark'; pageIndex: number; totalPages: number; issueDate: string; followedSet: Set<string> }} opts
+ */
+function renderStoryPage({ story, rank, palette, pageIndex, totalPages, issueDate, followedSet }) {
   const threatClass = HIGHLIGHTED_LEVELS.has(story.threatLevel) ? ' crit' : '';
   const threatLabel = THREAT_LABELS[story.threatLevel];
+  // U11 telemetry stamps. Pick the first ISO-2 token as the primary
+  // country (composite stories like "IL / LB" still get a single
+  // primary-country event property; a secondary country whose only
+  // role is to qualify the headline is dropped to keep the analytics
+  // dimension cardinality bounded). `followed` is true when ANY
+  // token in the story's country field appears in the recipient's
+  // watchlist — composite stories that mention a followed country
+  // count as followed even if the primary token doesn't.
+  const iso2Tokens = extractIso2Tokens(story.country);
+  const primaryCountry = iso2Tokens[0] ?? '';
+  const followed = iso2Tokens.some((c) => followedSet.has(c));
+  const dataAttrs =
+    ' data-thread-open="1"' +
+    (primaryCountry ? ` data-country="${escapeHtml(primaryCountry)}"` : '') +
+    ` data-severity="${escapeHtml(story.threatLevel)}"` +
+    ` data-followed="${followed ? '1' : '0'}"`;
+  // v1 envelopes don't carry sourceUrl — render the source as plain
+  // text (matching pre-v2 appearance). v2 envelopes always have a
+  // validated URL, so we wrap in a UTM-tracked anchor.
+  const sourceBlock = story.sourceUrl
+    ? `<a class="source-link" href="${escapeHtml(buildTrackedSourceUrl(story.sourceUrl, issueDate, rank))}" target="_blank" rel="noopener noreferrer"${dataAttrs}>${escapeHtml(story.source)}</a>`
+    : escapeHtml(story.source);
   return (
     `<section class="page story ${palette}">` +
     '<div class="left">' +
@@ -472,7 +694,7 @@ function renderStoryPage({ story, rank, palette, pageIndex, totalPages }) {
     '</div>' +
     `<h3>${escapeHtml(story.headline)}</h3>` +
     `<p class="desc">${escapeHtml(story.description)}</p>` +
-    `<div class="source">Source · ${escapeHtml(story.source)}</div>` +
+    `<div class="source">Source · ${sourceBlock}</div>` +
     '</div>' +
     '</div>' +
     '<div class="right">' +
@@ -490,20 +712,43 @@ function renderStoryPage({ story, rank, palette, pageIndex, totalPages }) {
   );
 }
 
-/** @param {{ tz: string; pageIndex: number; totalPages: number }} opts */
-function renderBackCover({ tz, pageIndex, totalPages }) {
+/**
+ * @param {{
+ *   tz: string;
+ *   pageIndex: number;
+ *   totalPages: number;
+ *   publicMode: boolean;
+ *   refCode: string;
+ * }} opts
+ */
+function renderBackCover({ tz, pageIndex, totalPages, publicMode, refCode }) {
+  const ctaHref = publicMode
+    ? `https://worldmonitor.app/pro${refCode ? `?ref=${encodeURIComponent(refCode)}` : ''}`
+    : 'https://worldmonitor.app';
+  const kicker = publicMode
+    ? 'You\u2019re reading a shared brief'
+    : 'Thank you for reading';
+  const headline = publicMode
+    ? 'Get your own<br/>daily brief.'
+    : 'End of<br/>Transmission.';
+  const metaLeft = publicMode
+    ? `<a href="${escapeHtml(ctaHref)}" class="mono back-cta" target="_blank" rel="noopener">Subscribe \u2192</a>`
+    : '<span class="mono">worldmonitor.app</span>';
+  const metaRight = publicMode
+    ? '<span class="mono">worldmonitor.app</span>'
+    : `<span class="mono">Next brief \u00b7 08:00 ${escapeHtml(tz)}</span>`;
   return (
     '<section class="page cover back">' +
     '<div class="hero">' +
     '<div class="centered-logo">' +
     logoRef({ size: 80, color: 'var(--bone)' }) +
     '</div>' +
-    '<div class="kicker">Thank you for reading</div>' +
-    '<h1>End of<br/>Transmission.</h1>' +
+    `<div class="kicker">${kicker}</div>` +
+    `<h1>${headline}</h1>` +
     '</div>' +
     '<div class="meta-bottom">' +
-    '<span class="mono">worldmonitor.app</span>' +
-    `<span class="mono">Next brief · 08:00 ${escapeHtml(tz)}</span>` +
+    metaLeft +
+    metaRight +
     '</div>' +
     `<div class="page-number mono">${pad2(pageIndex)} / ${pad2(totalPages)}</div>` +
     '</section>'
@@ -552,7 +797,22 @@ const STYLE_BLOCK = `<style>
   .page {
     flex: 0 0 100vw; width: 100vw; height: 100vh;
     padding: 6vh 6vw 10vh;
-    position: relative; overflow: hidden;
+    /* overflow-y: auto so pages whose content exceeds 100vh become
+       internally scrollable instead of silently clipping (user-reported
+       on desktop where vw-scaled body copy can be ~10-20% taller than
+       viewport; iPhone Pro Max responsive mode "worked" because narrow
+       viewport scaled the vw text down until it fit). overflow-x stays
+       hidden so the deck-level horizontal carousel isn't fought by a
+       per-page horizontal scrollbar. Pair with the wheel handler in
+       NAV_SCRIPT which now defers to native scroll when the current
+       page has remaining scroll in the wheel direction. */
+    position: relative; overflow-x: hidden; overflow-y: auto;
+    /* Smooth out the deck-level transform vs in-page scroll interaction
+       on touch + trackpad: contain scroll within the page so a fast
+       trackpad flick doesn't bubble to the body (body has overflow:hidden
+       anyway, but overscroll-behavior also disables the iOS rubber-band
+       effect that visually fights the deck transform). */
+    overscroll-behavior: contain;
     display: flex; flex-direction: column;
   }
   .mono {
@@ -577,8 +837,9 @@ const STYLE_BLOCK = `<style>
   }
   .cover .hero h1 {
     font-family: 'Playfair Display', serif; font-weight: 900;
-    font-size: 10vw; line-height: 0.92; letter-spacing: -0.03em;
+    font-size: clamp(72px, 10vw, 156px); line-height: 0.92; letter-spacing: -0.03em;
     margin-bottom: 6vh;
+    overflow-wrap: anywhere;
   }
   .cover .hero .kicker {
     font-family: 'IBM Plex Mono', monospace;
@@ -592,7 +853,7 @@ const STYLE_BLOCK = `<style>
   .cover.back { align-items: center; justify-content: center; text-align: center; }
   .cover.back .hero { align-items: center; flex: 0; }
   .cover.back .centered-logo { margin-bottom: 5vh; opacity: 0.9; }
-  .cover.back .hero h1 { font-size: 8vw; }
+  .cover.back .hero h1 { font-size: clamp(64px, 8vw, 132px); }
   .cover.back .meta-bottom {
     width: 100%; position: absolute; bottom: 6vh; left: 0; padding: 0 6vw;
   }
@@ -612,14 +873,16 @@ const STYLE_BLOCK = `<style>
   .digest .label { color: var(--sienna); margin-bottom: 5vh; }
   .digest h2 {
     font-family: 'Playfair Display', serif; font-weight: 900;
-    font-size: 7vw; line-height: 0.98; letter-spacing: -0.02em;
+    font-size: clamp(54px, 7vw, 112px); line-height: 0.98; letter-spacing: -0.02em;
     margin-bottom: 6vh; max-width: 18ch;
+    overflow-wrap: anywhere;
   }
   .digest blockquote {
     font-family: 'Source Serif 4', serif; font-style: italic;
-    font-size: 2vw; line-height: 1.38; max-width: 32ch;
+    font-size: clamp(20px, 2vw, 34px); line-height: 1.38; max-width: 32ch;
     margin-bottom: 5vh; padding-left: 2vw;
     border-left: 3px solid var(--sienna);
+    overflow-wrap: anywhere;
   }
   .digest .rule {
     border: none; height: 2px; background: var(--sienna);
@@ -634,19 +897,21 @@ const STYLE_BLOCK = `<style>
   .digest .stat-row:last-child { border-bottom: none; }
   .digest .stat-num {
     font-family: 'Playfair Display', serif; font-weight: 900;
-    font-size: 11vw; line-height: 0.9; color: var(--cream-ink);
+    font-size: clamp(84px, 11vw, 168px); line-height: 0.9; color: var(--cream-ink);
   }
   .digest .stat-label {
     font-family: 'Source Serif 4', serif; font-style: italic;
     font-size: max(18px, 1.7vw); line-height: 1.3;
     color: var(--cream-ink); opacity: 0.85;
+    overflow-wrap: anywhere;
   }
   .digest .footer-caption { margin-top: 4vh; color: var(--sienna); opacity: 0.85; }
   .digest .threads { display: flex; flex-direction: column; gap: 3.2vh; max-width: 62ch; }
   .digest .thread {
     font-family: 'Source Serif 4', serif;
-    font-size: max(17px, 1.55vw); line-height: 1.45;
+    font-size: clamp(17px, 1.55vw, 28px); line-height: 1.45;
     color: var(--cream-ink);
+    overflow-wrap: anywhere;
   }
   .digest .thread .tag {
     font-family: 'IBM Plex Mono', monospace; font-weight: 600;
@@ -655,9 +920,10 @@ const STYLE_BLOCK = `<style>
   .digest .signals { display: flex; flex-direction: column; gap: 3.5vh; max-width: 60ch; }
   .digest .signal {
     font-family: 'Source Serif 4', serif;
-    font-size: max(18px, 1.65vw); line-height: 1.45;
+    font-size: clamp(18px, 1.65vw, 30px); line-height: 1.45;
     color: var(--cream-ink); padding-left: 2vw;
     border-left: 2px solid var(--sienna);
+    overflow-wrap: anywhere;
   }
   .digest .end-marker {
     margin-top: 5vh; display: flex; align-items: center; gap: 1.5vw;
@@ -690,18 +956,21 @@ const STYLE_BLOCK = `<style>
     font-size: max(11px, 0.85vw); font-weight: 600;
     letter-spacing: 0.22em; text-transform: uppercase;
     padding: 0.5em 1em; border: 1px solid currentColor; opacity: 0.82;
+    max-width: 100%; overflow-wrap: anywhere;
   }
   .story .tag.crit { background: currentColor; color: var(--paper); }
   .story.dark .tag.crit { background: var(--bone); color: var(--ink); border-color: var(--bone); }
   .story h3 {
     font-family: 'Playfair Display', serif; font-weight: 900;
-    font-size: 5vw; line-height: 0.98; letter-spacing: -0.02em;
+    font-size: clamp(44px, 5vw, 86px); line-height: 0.98; letter-spacing: -0.02em;
     margin-bottom: 5vh; max-width: 18ch;
+    overflow-wrap: anywhere;
   }
   .story .desc {
     font-family: 'Source Serif 4', serif;
-    font-size: max(17px, 1.55vw); line-height: 1.45;
+    font-size: clamp(17px, 1.55vw, 28px); line-height: 1.45;
     max-width: 40ch; margin-bottom: 4vh; opacity: 0.88;
+    overflow-wrap: anywhere;
   }
   .story.dark .desc { opacity: 0.85; }
   /* Source line — the one editorial accent on story pages. Sits at
@@ -712,9 +981,21 @@ const STYLE_BLOCK = `<style>
     font-family: 'IBM Plex Mono', monospace;
     font-size: max(11px, 0.9vw); letter-spacing: 0.2em;
     text-transform: uppercase;
+    overflow-wrap: anywhere;
   }
   .story.light .source { color: var(--sienna); }
   .story.dark  .source { color: var(--mint); }
+  /* Outgoing source anchor — inherit the palette colour from .source,
+     underline for affordance. rel=noopener noreferrer and target=_blank
+     are set in HTML; this is purely visual. */
+  .story .source-link {
+    color: inherit;
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 0.18em;
+    transition: text-decoration-thickness 160ms ease;
+  }
+  .story .source-link:hover { text-decoration-thickness: 2px; }
   /* Logo ekg dot: mint on every page so the brand "signal" pulse
      shows across the whole magazine. Light pages use the muted mint
      so it doesn't glare against #fafafa. */
@@ -743,7 +1024,8 @@ const STYLE_BLOCK = `<style>
   }
   .story .callout .note {
     font-family: 'Source Serif 4', serif;
-    font-size: max(17px, 1.55vw); line-height: 1.5; opacity: 0.82;
+    font-size: clamp(17px, 1.55vw, 28px); line-height: 1.5; opacity: 0.82;
+    overflow-wrap: anywhere;
   }
   .nav-dots {
     position: fixed; bottom: 3.5vh; left: 50%;
@@ -823,7 +1105,174 @@ const STYLE_BLOCK = `<style>
     .story .callout .label { font-size: 11px; margin-bottom: 1.5vh; opacity: 0.7; }
     .story .callout .note { font-size: max(16px, 4.2vw); line-height: 1.5; }
   }
+
+  /* ── Share button (non-public views) ─────────────────────────────
+     Floating action pill in the top-right chrome. Separate from the
+     page-number so it doesn't disappear during mobile stacking
+     overrides. Hidden entirely in public views because a public
+     reader shouldn't see a "Share" UI (the button relies on the
+     authenticated /api/brief/share-url endpoint). */
+  .wm-share {
+    position: fixed;
+    top: 3vh; right: 3vw;
+    z-index: 30;
+    display: inline-flex; align-items: center; gap: 0.5em;
+    padding: 0.55em 1em;
+    background: rgba(20, 20, 20, 0.65);
+    color: var(--bone);
+    border: 1px solid rgba(242, 237, 228, 0.25);
+    border-radius: 999px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: max(11px, 0.8vw);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    cursor: pointer;
+    backdrop-filter: blur(8px);
+    transition: transform 160ms ease, background 160ms ease;
+    mix-blend-mode: normal;
+  }
+  .wm-share:hover { background: rgba(20, 20, 20, 0.85); transform: translateY(-1px); }
+  .wm-share[data-state="sharing"] { opacity: 0.6; cursor: progress; }
+  .wm-share[data-state="copied"]::after { content: ' \u00b7 copied'; opacity: 0.75; }
+  .wm-share[data-state="error"]::after { content: ' \u00b7 error'; opacity: 0.75; color: #ff9b9b; }
+
+  /* ── Public view: Subscribe banner ─────────────────────────────── */
+  .wm-public-strip {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 30;
+    display: flex; align-items: center; justify-content: center;
+    gap: 1em;
+    padding: 0.8em 1.2em;
+    background: var(--ink);
+    color: var(--bone);
+    border-bottom: 1px solid rgba(242, 237, 228, 0.2);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: max(11px, 0.75vw);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+  }
+  .wm-public-strip a {
+    color: var(--mint, #4ade80);
+    text-decoration: none;
+    border-bottom: 1px solid currentColor;
+  }
+  @media (max-width: 640px) {
+    .wm-public-strip { font-size: 11px; padding: 0.7em 1em; gap: 0.6em; flex-wrap: wrap; }
+  }
 </style>`;
+
+/**
+ * Inline share-button client. The hosted magazine route has already
+ * derived the share URL server-side (it has the userId, issueSlot,
+ * and BRIEF_SHARE_SECRET — the same inputs the share-url endpoint
+ * uses) and embedded it as `data-share-url` on the button. At click
+ * time we just invoke navigator.share with a clipboard fallback.
+ *
+ * No network, no auth — the per-user magazine route's HMAC token
+ * check already proved this reader is authorised to share the brief
+ * they are viewing. Deriving the URL at render time instead of click
+ * time also means the button works in a fresh tab with no Clerk
+ * session context (common path: reader opened the magazine from an
+ * email link in a browser they're not signed into).
+ *
+ * Emitted only for non-public views AND only when data-share-url is
+ * present on the button (i.e. BRIEF_SHARE_SECRET was configured).
+ */
+const SHARE_SCRIPT = `<script>
+(function() {
+  var btn = document.querySelector('.wm-share');
+  if (!btn) return;
+  var shareUrl = btn.dataset.shareUrl;
+  if (!shareUrl) return;
+  btn.addEventListener('click', async function() {
+    if (btn.dataset.state === 'sharing') return;
+    btn.dataset.state = 'sharing';
+    try {
+      var shareTitle = 'WorldMonitor Brief';
+      var shareText = 'My WorldMonitor Brief for today:';
+      if (navigator.share) {
+        try {
+          await navigator.share({ title: shareTitle, text: shareText, url: shareUrl });
+          btn.dataset.state = 'copied';
+          return;
+        } catch (err) {
+          if (err && (err.name === 'AbortError' || /abort/i.test(String(err.message)))) {
+            btn.dataset.state = '';
+            return;
+          }
+          // Fall through to clipboard on non-abort share errors.
+        }
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(shareUrl);
+        btn.dataset.state = 'copied';
+      } else {
+        // Ancient browser. Show the URL so the user can copy manually.
+        window.prompt('Copy the link below:', shareUrl);
+        btn.dataset.state = 'copied';
+      }
+    } catch (err) {
+      btn.dataset.state = 'error';
+      try { console.warn('[brief] share failed:', err); } catch (_) {}
+    } finally {
+      setTimeout(function() { if (btn.dataset.state !== 'sharing') btn.dataset.state = ''; }, 2400);
+    }
+  });
+})();
+</script>`;
+
+// Umami analytics loader, mirroring the production snippet in
+// index.html. Hosted magazine pages are served from worldmonitor.app
+// (the auth'd route) and the public-share hash mirror — both within
+// `data-domains`. The `async` script never blocks rendering; if it's
+// blocked by an extension, BRIEF_THREAD_OPEN_SCRIPT silently no-ops.
+// Same data-website-id as the dashboard so events land in the same
+// project — segmentation is via event properties, not website ids.
+const UMAMI_LOADER = '<script async src="https://abacus.worldmonitor.app/script.js" data-website-id="e8800335-c853-46a8-8497-c993ed2f58bc" data-domains="worldmonitor.app,tech.worldmonitor.app,finance.worldmonitor.app,commodity.worldmonitor.app,happy.worldmonitor.app"></script>';
+
+/**
+ * U11 telemetry: emit a `brief-thread-open` event whenever a story
+ * source-link is clicked from inside the magazine. Properties are
+ * baked at render time as `data-*` attributes on the anchor:
+ *   - data-country  : ISO-2 (or absent on stories without one)
+ *   - data-severity : 'critical' | 'high' | 'medium' | 'low'
+ *   - data-followed : '1' | '0' (renderer reads recipient watchlist)
+ *
+ * Fire-and-forget. `window.umami?.track(...)` short-circuits when
+ * the script blocked / hasn't loaded — the click then proceeds to
+ * navigation as if no tracker existed. We do NOT preventDefault
+ * even on transient analytics failure: the user clicked a source
+ * link and they get the source.
+ */
+const BRIEF_THREAD_OPEN_SCRIPT = `<script>
+(function() {
+  function emit(el) {
+    try {
+      if (!window.umami || typeof window.umami.track !== 'function') return;
+      var country = el.dataset.country || null;
+      var severity = el.dataset.severity || null;
+      var followed = el.dataset.followed === '1';
+      window.umami.track('brief-thread-open', {
+        country: country,
+        followed: followed,
+        severity: severity,
+        source: 'magazine',
+      });
+    } catch (e) { /* swallow — never break navigation */ }
+  }
+  document.addEventListener('click', function(ev) {
+    var el = ev.target;
+    while (el && el.nodeType === 1) {
+      if (el.dataset && el.dataset.threadOpen === '1') {
+        emit(el);
+        return;
+      }
+      el = el.parentNode;
+    }
+  }, { capture: true });
+})();
+</script>`;
 
 const NAV_SCRIPT = `<script>
 (function() {
@@ -856,15 +1305,50 @@ const NAV_SCRIPT = `<script>
   function next() { go(current + 1); }
   function prev() { go(current - 1); }
   window.addEventListener('keydown', function(e) {
-    if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { e.preventDefault(); next(); }
-    else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); prev(); }
+    // ArrowRight/Left are the deck axis — always paginate, no scroll
+    // conflict. PageDown/PageUp/Space conventionally scroll a long page
+    // in normal browsers; defer to native page scroll when the current
+    // page has remaining scroll in that direction, paginate only at the
+    // scroll edge. Matches the wheel-handler behaviour so keyboard and
+    // mouse users see the same model.
+    if (e.key === 'ArrowRight') { e.preventDefault(); next(); }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); prev(); }
+    else if (e.key === 'PageDown' || e.key === ' ') {
+      if (pageCanScrollVertical(pages[current], 1)) return;
+      e.preventDefault(); next();
+    } else if (e.key === 'PageUp') {
+      if (pageCanScrollVertical(pages[current], -1)) return;
+      e.preventDefault(); prev();
+    }
     else if (e.key === 'Home') { e.preventDefault(); go(0); }
     else if (e.key === 'End') { e.preventDefault(); go(total - 1); }
   });
+  // Wheel handler defers to per-page native scroll first. The page CSS
+  // is overflow-y: auto, so content longer than 100vh scrolls inside the
+  // page. Only advance/retreat the deck when the user is wheeling
+  // PAST the scroll edge in that direction — otherwise a long page is
+  // unreachable past 100vh because every wheel tick paginates instead
+  // of scrolling (user-reported: "if I try to scroll down to read it,
+  // it just goes to the next page instead"). Vertical wheel falls
+  // through to the page; horizontal wheel still paginates immediately
+  // (the deck axis IS horizontal, no scroll conflict to resolve).
+  function pageCanScrollVertical(page, deltaY) {
+    if (!page) return false;
+    var maxScroll = page.scrollHeight - page.clientHeight;
+    if (maxScroll <= 0) return false;   // page content fits — paginate
+    if (deltaY > 0) return page.scrollTop < maxScroll - 1;   // room to scroll down
+    if (deltaY < 0) return page.scrollTop > 1;               // room to scroll up
+    return false;
+  }
   window.addEventListener('wheel', function(e) {
     if (wheelLock) return;
-    var delta = Math.abs(e.deltaY) > Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+    var isVertical = Math.abs(e.deltaY) > Math.abs(e.deltaX);
+    var delta = isVertical ? e.deltaY : e.deltaX;
     if (Math.abs(delta) < 12) return;
+    if (isVertical && pageCanScrollVertical(pages[current], e.deltaY)) {
+      // Let the native scroll on .page take this wheel event.
+      return;
+    }
     wheelLock = true;
     if (delta > 0) next(); else prev();
     setTimeout(function() { wheelLock = false; }, 620);
@@ -882,12 +1366,135 @@ const NAV_SCRIPT = `<script>
 // ── Main entry ───────────────────────────────────────────────────────────────
 
 /**
+ * Replace per-user / personal fields with generic placeholders so a
+ * brief can be rendered on the unauth'd public share mirror without
+ * leaking the recipient's name or the LLM-generated whyMatters (which
+ * is framed as direct advice to that specific reader).
+ *
+ * Runs AFTER assertBriefEnvelope so the full contract is still
+ * enforced on the input — we never loosen validation for the public
+ * path, only redact the output.
+ *
+ * Lead-field handling (v3, 2026-04-25): the personalised `digest.lead`
+ * can carry profile context (watched assets, region preferences) and
+ * MUST NEVER be served on the public surface. v3 envelopes carry
+ * `digest.publicLead` — a non-personalised parallel synthesis from
+ * generateDigestProsePublic — which we substitute into the `lead`
+ * slot so all downstream renderers stay agnostic to the public/
+ * personalised distinction. When `publicLead` is absent (v2
+ * envelopes still in the 7-day TTL window, or v3 envelopes where
+ * the publicLead generation failed), we substitute an EMPTY string
+ * — the renderer's pull-quote block reads "no pull-quote" for empty
+ * leads (per renderDigestGreeting), so the page renders without
+ * leaking personalised content. NEVER fall through to the original
+ * `lead`. Codex Round-2 High (security).
+ *
+ * @param {BriefData} data
+ * @returns {BriefData}
+ */
+function redactForPublic(data) {
+  const safeLead = typeof data.digest?.publicLead === 'string' && data.digest.publicLead.length > 0
+    ? data.digest.publicLead
+    : '';
+  // Public signals: substitute the publicSignals array (also produced
+  // by generateDigestProsePublic with profile=null) when present.
+  // When absent, EMPTY the signals array — the renderer's hasSignals
+  // gate then omits the entire "04 · Signals" page rather than
+  // serving the personalised forward-looking phrases (which can echo
+  // the user's watched assets / regions).
+  const safeSignals = Array.isArray(data.digest?.publicSignals) && data.digest.publicSignals.length > 0
+    ? data.digest.publicSignals
+    : [];
+  // Public threads: substitute publicThreads when present (preferred
+  // — the public synthesis still produces topic clusters from story
+  // content). When absent, fall back to category-derived stubs so
+  // the threads page still renders without leaking any personalised
+  // phrasing the original `threads` array might carry.
+  const safeThreads = Array.isArray(data.digest?.publicThreads) && data.digest.publicThreads.length > 0
+    ? data.digest.publicThreads
+    : derivePublicThreadsStub(data.stories);
+  return {
+    ...data,
+    user: { ...data.user, name: 'WorldMonitor' },
+    digest: {
+      ...data.digest,
+      lead: safeLead,
+      signals: safeSignals,
+      threads: safeThreads,
+    },
+    stories: data.stories.map((s) => ({
+      ...s,
+      whyMatters: 'Subscribe to WorldMonitor Brief to see the full editorial on this story.',
+    })),
+  };
+}
+
+/**
+ * Category-derived threads fallback for the public surface when the
+ * envelope lacks `publicThreads`. Mirrors deriveThreadsFromStories
+ * in shared/brief-filter.js (the composer's stub path) — keeps the
+ * fallback shape identical to what v2 envelopes already render with.
+ *
+ * @param {Array<{ category?: unknown }>} stories
+ * @returns {Array<{ tag: string; teaser: string }>}
+ */
+function derivePublicThreadsStub(stories) {
+  if (!Array.isArray(stories) || stories.length === 0) {
+    return [{ tag: 'World', teaser: 'One thread on the desk today.' }];
+  }
+  const byCategory = new Map();
+  for (const s of stories) {
+    const tag = typeof s?.category === 'string' && s.category.length > 0 ? s.category : 'World';
+    byCategory.set(tag, (byCategory.get(tag) ?? 0) + 1);
+  }
+  const sorted = [...byCategory.entries()].sort((a, b) => b[1] - a[1]);
+  return sorted.slice(0, 6).map(([tag, count]) => ({
+    tag,
+    teaser: count === 1 ? 'One thread on the desk today.' : `${count} threads on the desk today.`,
+  }));
+}
+
+/**
  * @param {BriefEnvelope} envelope
+ * @param {{ publicMode?: boolean; refCode?: string; shareUrl?: string }} [options]
  * @returns {string}
  */
-export function renderBriefMagazine(envelope) {
+export function renderBriefMagazine(envelope, options = {}) {
   assertBriefEnvelope(envelope);
-  const { user, issue, date, dateLong, digest, stories } = envelope.data;
+  const publicMode = options.publicMode === true;
+  // refCode shape is validated at the route boundary; the renderer
+  // still HTML-escapes it before interpolation so this is belt-and-
+  // suspenders against any accidental leak through that boundary.
+  const refCode = typeof options.refCode === 'string' ? options.refCode : '';
+  // shareUrl is expected to be an absolute https URL produced by
+  // buildPublicBriefUrl at the route level. We accept anything
+  // non-empty here and still escape it into the attribute; if the
+  // string is malformed the button's click handler simply fails open
+  // (prompt fallback). Suppressed entirely on publicMode.
+  const shareUrl = !publicMode && typeof options.shareUrl === 'string' && options.shareUrl.length > 0
+    ? options.shareUrl
+    : '';
+  // U11 telemetry plumbing. The auth'd magazine route fetches the
+  // recipient's followed-countries via the relay and passes them
+  // here; the public-mirror route MUST NOT (no recipient identity).
+  // Defensive filter: each entry must be a non-empty string we can
+  // upper-case — anything else (null, number, the symbol-shaped
+  // entry an upstream regression once produced) gets dropped before
+  // the Set is built so a renderer crash can't leak from a relay bug.
+  const rawFollowed = Array.isArray(options.followedCountries)
+    ? options.followedCountries
+    : [];
+  /** @type {Set<string>} */
+  const followedSet = new Set();
+  if (!publicMode) {
+    for (const entry of rawFollowed) {
+      if (typeof entry === 'string' && entry.length > 0) {
+        followedSet.add(entry.toUpperCase());
+      }
+    }
+  }
+  const rawData = publicMode ? redactForPublic(envelope.data) : envelope.data;
+  const { user, issue, date, dateLong, digest, stories } = rawData;
   const [, month, day] = date.split('-');
   const dateShort = `${day}.${month}`;
 
@@ -919,6 +1526,7 @@ export function renderBriefMagazine(envelope) {
       storyCount: stories.length,
       pageIndex: ++p,
       totalPages,
+      greeting: digest.greeting,
     }),
   );
 
@@ -986,6 +1594,8 @@ export function renderBriefMagazine(envelope) {
         palette: i % 2 === 0 ? 'light' : 'dark',
         pageIndex: ++p,
         totalPages,
+        issueDate: date,
+        followedSet,
       }),
     );
   });
@@ -995,10 +1605,42 @@ export function renderBriefMagazine(envelope) {
       tz: user.tz,
       pageIndex: ++p,
       totalPages,
+      publicMode,
+      refCode,
     }),
   );
 
   const title = `WorldMonitor Brief · ${escapeHtml(dateLong)}`;
+
+  // In public view: the per-hash mirror is noindexed via the HTTP
+  // header AND a meta tag, and we prepend a subscribe strip pointing
+  // at /pro (with optional referral attribution).
+  const publicStripHref = `https://worldmonitor.app/pro${refCode ? `?ref=${encodeURIComponent(refCode)}` : ''}`;
+  const publicStripHtml = publicMode
+    ? '<div class="wm-public-strip">'
+      + '<span>WorldMonitor Brief \u00b7 shared issue</span>'
+      // Match renderBackCover's pattern: escapeHtml on the full href
+      // even though encodeURIComponent already handles HTML-special
+      // chars inside refCode — consistency for anyone auditing XSS
+      // hygiene, and a safety net if the route boundary loosens.
+      + `<a href="${escapeHtml(publicStripHref)}" target="_blank" rel="noopener">`
+      + 'Subscribe \u2192</a>'
+      + '</div>'
+    : '';
+
+  // Only render the Share button on authenticated (non-public) views
+  // AND only when the route was able to derive a share URL (i.e.
+  // BRIEF_SHARE_SECRET is configured and the pointer write
+  // succeeded). The URL is embedded as data-share-url and read at
+  // click time by SHARE_SCRIPT — no fetch, no auth required
+  // client-side.
+  const shareButtonHtml = shareUrl
+    ? `<button class="wm-share" type="button" data-share-url="${escapeHtml(shareUrl)}" data-issue-date="${escapeHtml(date)}" aria-label="Share this brief">Share</button>`
+    : '';
+
+  const headMeta = publicMode
+    ? '<meta name="robots" content="noindex,nofollow">'
+    : '';
 
   return (
     '<!DOCTYPE html>' +
@@ -1006,19 +1648,25 @@ export function renderBriefMagazine(envelope) {
     '<head>' +
     '<meta charset="UTF-8" />' +
     '<meta name="viewport" content="width=device-width, initial-scale=1.0" />' +
+    headMeta +
     `<title>${title}</title>` +
     '<link rel="preconnect" href="https://fonts.googleapis.com">' +
     '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>' +
     `<link href="${FONTS_HREF}" rel="stylesheet">` +
+    UMAMI_LOADER +
     STYLE_BLOCK +
     '</head>' +
     '<body>' +
     LOGO_SYMBOL +
+    publicStripHtml +
+    shareButtonHtml +
     `<div class="deck" id="deck" data-digest-indexes='${JSON.stringify(digestIndexes)}'>` +
     pagesHtml.join('') +
     '</div>' +
     '<div class="nav-dots" id="navDots"></div>' +
     '<div class="hint">← → / swipe / scroll</div>' +
+    (shareUrl ? SHARE_SCRIPT : '') +
+    BRIEF_THREAD_OPEN_SCRIPT +
     NAV_SCRIPT +
     '</body>' +
     '</html>'
