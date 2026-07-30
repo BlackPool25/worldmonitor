@@ -88,6 +88,10 @@ function statusToCode(status: number, body: CheckoutErrorBody | undefined): Chec
   if (status === 401) return 'unauthorized';
   if (status === 409 && body?.error === ACTIVE_SUBSCRIPTION_EXISTS) return 'duplicate_subscription';
   if (status === 409 && body?.error === PAYMENT_IN_PROGRESS) return 'payment_in_progress';
+  // Dodo can rate-limit checkout-session creation. The relay preserves 429 so
+  // the transport does not auto-retry it as a generic 502 and amplify the
+  // provider cooldown. This remains a temporary, user-retryable failure.
+  if (status === 429) return 'service_unavailable';
   // 403 from /api/create-checkout is infrastructure (Vercel firewall / WAF / edge
   // bot-protection) — neither the edge gateway nor the Convex relay handler
   // ever emits 403 on this route. Treat as retryable service unavailability so

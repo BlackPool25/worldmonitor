@@ -71,6 +71,15 @@ describe('classifyHttpCheckoutError', () => {
     assert.equal(err.httpStatus, 403);
   });
 
+  it('maps 429 to service_unavailable without treating it as an invalid product', () => {
+    const err = classifyHttpCheckoutError(429, {
+      error: 'CHECKOUT_RATE_LIMITED',
+    });
+    assert.equal(err.code, 'service_unavailable');
+    assert.equal(err.retryable, true);
+    assert.equal(err.httpStatus, 429);
+  });
+
   it('maps 500 to service_unavailable', () => {
     const err = classifyHttpCheckoutError(500);
     assert.equal(err.code, 'service_unavailable');

@@ -16,6 +16,7 @@ import { checkout } from "../lib/dodo";
 import { requireUserId, resolveUserIdentity } from "../lib/auth";
 import { ANON_ID_V4_REGEX, signAnonClaimToken, signUserId } from "../lib/identitySigning";
 import { resolveProductToPlan } from "../config/productCatalog";
+import { checkoutRateLimitedOutcomeFromError } from "./checkoutRateLimit";
 
 const ACTIVE_SUBSCRIPTION_EXISTS = "ACTIVE_SUBSCRIPTION_EXISTS";
 const PAYMENT_IN_PROGRESS = "PAYMENT_IN_PROGRESS";
@@ -242,6 +243,13 @@ async function _createCheckoutSession(
       : result;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    const rateLimited = checkoutRateLimitedOutcomeFromError(err);
+    if (rateLimited) {
+      console.warn(
+        `[checkout] Dodo rate limited checkout creation for user=${user.userId} product=${args.productId}; retry after ${rateLimited.retryAfterSeconds}s`,
+      );
+      return rateLimited;
+    }
     console.error(
       `[checkout] createCheckout failed for user=${user.userId} product=${args.productId}: ${msg}`,
     );
