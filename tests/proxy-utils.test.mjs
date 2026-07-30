@@ -30,14 +30,35 @@ describe('proxy utilities', () => {
     // host:port:user:pass branch returns the host verbatim, so an operator's
     // casing reaches the compare un-normalized -- a case-sensitive prefix
     // match silently leaves the caller pointed at the CONNECT endpoint.
-    for (const equivalentHost of ['gate.decodo.com', 'GATE.DECODO.COM', 'Gate.Decodo.Com']) {
-      assert.match(
+    for (const equivalentHost of [
+      'gate.decodo.com',
+      'GATE.DECODO.COM',
+      'Gate.Decodo.Com',
+      'gate.decodo.com.',
+    ]) {
+      assert.equal(
         resolveProxyString(`${equivalentHost}:10001:proxy-user:proxy-secret`),
-        /^proxy-user:proxy-secret@us\.[Dd][Ee][Cc][Oo][Dd][Oo]\.[Cc][Oo][Mm]:10001$/u,
+        'proxy-user:proxy-secret@us.decodo.com:10001',
         equivalentHost,
       );
     }
-    // A non-Decodo provider keeps its configured route untouched.
+
+    // Only the Decodo gateway is rewritten. A prefix match would send these to a
+    // Decodo endpoint with their credentials attached, so each must pass through
+    // untouched: a same-prefix foreign host, its uppercase spelling, and a host
+    // that merely contains `gate.` away from the start.
+    for (const foreignHost of [
+      'gate.proxy.test',
+      'GATE.PROXY.TEST',
+      'proxy.gate.example.com',
+    ]) {
+      assert.equal(
+        resolveProxyString(`${foreignHost}:10001:proxy-user:proxy-secret`),
+        `proxy-user:proxy-secret@${foreignHost}:10001`,
+        foreignHost,
+      );
+    }
+
     assert.equal(
       resolveProxyString('https://proxy-user:proxy-secret@proxy.test:443'),
       'proxy-user:proxy-secret@proxy.test:443',
