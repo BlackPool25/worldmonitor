@@ -104,8 +104,16 @@ async function fireHydrationTrigger(page: Page): Promise<void> {
   );
 }
 
+async function mountDeferredPanel(page: Page, panelKey: string) {
+  const panel = page.locator(`[data-panel="${panelKey}"]`);
+  await panel.scrollIntoViewIfNeeded();
+  await expect(panel).toBeVisible();
+  await expect(panel).not.toHaveAttribute('data-deferred-panel', 'true');
+  return panel;
+}
+
 /**
- * Category keys currently stored in the `digest:last-good` persistent entry.
+ * Snapshot stored under one exact `digest:last-good:<variant>:<lang>` key.
  *
  * Reads the same IndexedDB envelope `src/services/persistent-cache.ts` writes,
  * because this is the thing being protected: the entry `loadPersistedDigest`
@@ -117,8 +125,16 @@ async function fireHydrationTrigger(page: Page): Promise<void> {
  * entry" from "an entry with no categories" — collapsing the two would let the
  * poisoning assertion pass against a cache that was never written at all.
  */
-async function readPersistedDigestCategories(page: Page): Promise<string[] | null> {
-  return page.evaluate(async () => {
+type PersistedDigestSnapshot = {
+  categories: string[];
+  headlines: string[];
+};
+
+async function readPersistedDigest(
+  page: Page,
+  key = 'digest:last-good:full:en',
+): Promise<PersistedDigestSnapshot | null> {
+  return page.evaluate(async (exactKey) => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       // Deliberately versionless: opening at a pinned version throws VersionError
       // the day persistent-cache.ts bumps CACHE_DB_VERSION, which would red this
@@ -137,28 +153,26 @@ async function readPersistedDigestCategories(page: Page): Promise<string[] | nul
       request.onerror = () => reject(request.error);
     });
     if (!db.objectStoreNames.contains('entries')) return null;
-    // Match by PREFIX rather than the exact key: data-loader.ts scopes the entry
-    // by variant and language (`digest:last-good:<variant>:<lang>`), and pinning
-    // the resolved locale here would make this spec fail on a default-language
-    // change rather than on the behaviour it asserts.
-    const entries = await new Promise<Array<{ key: string; data?: { categories?: Record<string, unknown> } }>>(
+    const entry = await new Promise<{
+      key: string;
+      data?: { categories?: Record<string, { items?: Array<{ title?: string }> }> };
+    } | undefined>(
       (resolve, reject) => {
         const tx = db.transaction('entries', 'readonly');
-        const request = tx.objectStore('entries').getAll();
-        request.onsuccess = () => resolve(request.result ?? []);
+        const request = tx.objectStore('entries').get(exactKey);
+        request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error);
       },
     );
-    const digests = entries.filter((entry) => entry.key?.startsWith('digest:last-good'));
-    if (digests.length === 0) return null;
-    // More than one means the scoping produced entries this spec cannot reason
-    // about (two locales, or an unmigrated global key alongside a scoped one).
-    // Surface it rather than silently picking the first and asserting on it.
-    if (digests.length > 1) {
-      throw new Error(`expected one digest:last-good entry, found: ${digests.map((d) => d.key).join(', ')}`);
-    }
-    return Object.keys(digests[0].data?.categories ?? {});
-  });
+    if (!entry) return null;
+    const categories = entry.data?.categories ?? {};
+    return {
+      categories: Object.keys(categories),
+      headlines: Object.values(categories)
+        .flatMap((category) => category.items ?? [])
+        .map((item) => item.title ?? ''),
+    };
+  }, key);
 }
 
 async function seedFreshAnonymousFullVariant(
@@ -185,10 +199,25 @@ async function seedFreshAnonymousFullVariant(
 
 /** Categories the healthy stub digest covers. */
 const HEALTHY_DIGEST_CATEGORIES = ['politics', 'intel'];
+const HEALTHY_POLITICS_HEADLINE = 'Healthy last-good politics headline';
+const PARTIAL_POLITICS_HEADLINE = 'Fresh partial politics headline';
 
-function digestBody(categoryKeys: readonly string[]): string {
+function digestBody(categoryKeys: readonly string[], politicsHeadline?: string): string {
   return JSON.stringify({
-    categories: Object.fromEntries(categoryKeys.map((key) => [key, { items: [] }])),
+    categories: Object.fromEntries(categoryKeys.map((key) => [
+      key,
+      {
+        items: key === 'politics' && politicsHeadline
+          ? [{
+              source: 'BBC World',
+              title: politicsHeadline,
+              link: `https://example.com/${encodeURIComponent(politicsHeadline)}`,
+              publishedAt: Date.now(),
+              isAlert: false,
+            }]
+          : [],
+      },
+    ])),
     feedStatuses: {},
     generatedAt: new Date(0).toISOString(),
   });
@@ -208,6 +237,9 @@ async function installNewsRequestAccounting(
      * than HEALTHY_DIGEST_CATEGORIES is the partial one.
      */
     degradeDigestAfter?: { after: number; categories: readonly string[] };
+    healthyPoliticsHeadline?: string;
+    degradedPoliticsHeadline?: string;
+    failDigestLanguages?: readonly string[];
   } = {},
 ): Promise<NewsRequestLog> {
   const log: NewsRequestLog = { digestUrls: [], rssProxyUrls: [] };
@@ -223,6 +255,11 @@ async function installNewsRequestAccounting(
   // bearing bucket would exercise rendering, not the request budget.
   await page.route(DIGEST_GLOB, async (route) => {
     log.digestUrls.push(route.request().url());
+    const requestLanguage = new URL(route.request().url()).searchParams.get('lang') ?? 'en';
+    if (options.failDigestLanguages?.includes(requestLanguage)) {
+      await route.fulfill({ status: 503, contentType: 'text/plain', body: 'digest unavailable' });
+      return;
+    }
     // Fail only the first N attempts. The data loader's own circuit breaker opens
     // after 2 consecutive failures and then serves from cache WITHOUT a network
     // request, so an always-failing stub would stop producing observable attempts
@@ -240,13 +277,17 @@ async function installNewsRequestAccounting(
     }
     const degrade = options.degradeDigestAfter;
     if (degrade && log.digestUrls.length > degrade.after) {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: digestBody(degrade.categories) });
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: digestBody(degrade.categories, options.degradedPoliticsHeadline),
+      });
       return;
     }
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: digestBody(HEALTHY_DIGEST_CATEGORIES),
+      body: digestBody(HEALTHY_DIGEST_CATEGORIES, options.healthyPoliticsHeadline),
     });
   });
 
@@ -412,6 +453,7 @@ test.describe('dashboard news request budget (#5376)', () => {
     // that overwrites, which a degraded-then-recovering stub can never produce.
     const log = await installNewsRequestAccounting(page, {
       degradeDigestAfter: { after: 1, categories: [] },
+      healthyPoliticsHeadline: HEALTHY_POLITICS_HEADLINE,
     });
 
     const firstDigest = page.waitForRequest(DIGEST_GLOB);
@@ -426,7 +468,7 @@ test.describe('dashboard news request budget (#5376)', () => {
     // written. persistDigest is fire-and-forget, so poll rather than assume.
     await expect
       .poll(
-        async () => (await readPersistedDigestCategories(page))?.length ?? 0,
+        async () => (await readPersistedDigest(page))?.categories.length ?? 0,
         { message: 'the healthy digest must land in digest:last-good before it can be poisoned' },
       )
       .toBe(2);
@@ -449,11 +491,17 @@ test.describe('dashboard news request budget (#5376)', () => {
     ).toBeGreaterThanOrEqual(2);
 
     expect(
-      (await readPersistedDigestCategories(page))?.sort(),
+      (await readPersistedDigest(page))?.categories.sort(),
       `a 200 carrying no categories must not replace digest:last-good — it is the fallback ` +
         `every later page load reads when the digest is unreachable, and overwriting it with ` +
         `an empty body renders every preset category empty for up to 6 hours (#5877)`,
     ).toEqual(['intel', 'politics']);
+
+    const politicsPanel = await mountDeferredPanel(page, 'politics');
+    await expect(
+      politicsPanel,
+      'the reload must consume the cached fallback, not merely leave it intact in IndexedDB',
+    ).toContainText(HEALTHY_POLITICS_HEADLINE);
 
     // The empty body must never have been treated as a fetched digest. Only the
     // healthy first response may log an acceptance, and only with real coverage —
@@ -488,6 +536,8 @@ test.describe('dashboard news request budget (#5376)', () => {
     // Healthy (2 categories) first, then 1 of the 2 — shrunken, not empty.
     const log = await installNewsRequestAccounting(page, {
       degradeDigestAfter: { after: 1, categories: ['politics'] },
+      healthyPoliticsHeadline: HEALTHY_POLITICS_HEADLINE,
+      degradedPoliticsHeadline: PARTIAL_POLITICS_HEADLINE,
     });
 
     const firstDigest = page.waitForRequest(DIGEST_GLOB);
@@ -499,7 +549,7 @@ test.describe('dashboard news request budget (#5376)', () => {
 
     await expect
       .poll(
-        async () => (await readPersistedDigestCategories(page))?.length ?? 0,
+        async () => (await readPersistedDigest(page))?.categories.length ?? 0,
         { message: 'the healthy digest must land in digest:last-good before it can be shrunk' },
       )
       .toBe(2);
@@ -526,10 +576,53 @@ test.describe('dashboard news request budget (#5376)', () => {
     ).toEqual(['[News] Digest fetched: 2 categories', '[News] Digest fetched: 1 categories']);
 
     expect(
-      (await readPersistedDigestCategories(page))?.sort(),
+      (await readPersistedDigest(page))?.categories.sort(),
       `the cached last-good digest must keep its wider coverage — a 1-category digest ` +
         `written over a 2-category entry is a strict loss for the next page load (#5877)`,
     ).toEqual(['intel', 'politics']);
+
+    const politicsPanel = await mountDeferredPanel(page, 'politics');
+    await expect(
+      politicsPanel,
+      'the current load must render the accepted partial digest even while retaining the richer fallback',
+    ).toContainText(PARTIAL_POLITICS_HEADLINE);
+  });
+
+  test('a failing language scope never falls back to another language digest', async ({ page }) => {
+    await seedFreshAnonymousFullVariant(page);
+    const log = await installNewsRequestAccounting(page, {
+      healthyPoliticsHeadline: HEALTHY_POLITICS_HEADLINE,
+      failDigestLanguages: ['fr'],
+    });
+
+    await page.goto('/?lang=en');
+    await expect
+      .poll(
+        async () => (await readPersistedDigest(page, 'digest:last-good:full:en'))?.headlines ?? [],
+        { message: 'the English digest must be persisted under its exact scope' },
+      )
+      .toContain(HEALTHY_POLITICS_HEADLINE);
+
+    await page.goto('/?lang=fr');
+    await page.waitForFunction(
+      () => document.documentElement.dataset.wmEventHandlersReady === 'true',
+    );
+    await page.waitForTimeout(SECOND_LOAD_SETTLE_MS);
+
+    expect(
+      log.digestUrls.some((url) => new URL(url).searchParams.get('lang') === 'fr'),
+      'the French scope must actually request its own digest before fallback isolation is asserted',
+    ).toBe(true);
+    const politicsPanel = await mountDeferredPanel(page, 'politics');
+    await expect(
+      politicsPanel,
+      'French digest failure must not render the English last-good entry',
+    ).not.toContainText(HEALTHY_POLITICS_HEADLINE);
+    expect(await readPersistedDigest(page, 'digest:last-good:full:fr')).toBeNull();
+    expect(
+      (await readPersistedDigest(page, 'digest:last-good:full:en'))?.headlines,
+      'the English entry remains isolated under its own exact key',
+    ).toContain(HEALTHY_POLITICS_HEADLINE);
   });
 
   // A news panel that mounts AFTER the load (below the fold, deferred) is backfilled

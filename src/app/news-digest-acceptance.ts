@@ -46,9 +46,60 @@ export interface DigestAcceptance {
   skipPersistReason: 'fewer-categories-than-cached' | null;
 }
 
+export interface ScopedDigest<T extends DigestCategoryCarrier> {
+  key: string;
+  data: T;
+}
+
+export interface DigestPersistenceEnvelope<T> {
+  data: T;
+  updatedAt: number;
+}
+
+export interface DigestPersistenceQueueOptions<T extends DigestCategoryCarrier> {
+  cacheMaxAgeMs: number;
+  read: (key: string) => Promise<DigestPersistenceEnvelope<T> | null>;
+  write: (key: string, data: T) => Promise<void>;
+  now?: () => number;
+  onSkipPersist?: (fetchedCategoryCount: number, cachedCategoryCount: number) => void;
+}
+
 /** Categories a digest covers. Presence, not item count — an empty bucket is still coverage. */
 export function countDigestCategories(digest: DigestCategoryCarrier | null | undefined): number {
   return Object.keys(digest?.categories ?? {}).length;
+}
+
+/** The persistent and in-memory scope shared by a digest request. */
+export function digestCacheKey(variant: string, language: string): string {
+  return `digest:last-good:${variant}:${language}`;
+}
+
+/** Return a retained digest only when it belongs to the exact request scope. */
+export function getScopedDigest<T extends DigestCategoryCarrier>(
+  retained: ScopedDigest<T> | null,
+  key: string,
+): T | null {
+  return retained?.key === key ? retained.data : null;
+}
+
+/**
+ * Retain the widest accepted digest for a scope.
+ *
+ * A partial response is still returned to the current load by the caller, but
+ * it cannot trade down the richer in-memory fallback used by a later failure.
+ */
+export function retainRicherScopedDigest<T extends DigestCategoryCarrier>(
+  retained: ScopedDigest<T> | null,
+  key: string,
+  fetched: T,
+): ScopedDigest<T> {
+  if (
+    retained?.key === key
+    && countDigestCategories(retained.data) > countDigestCategories(fetched)
+  ) {
+    return retained;
+  }
+  return { key, data: fetched };
 }
 
 /**
@@ -111,4 +162,61 @@ export function evaluateFetchedDigest({
   }
 
   return { accept: true, persist: true, rejectReason: null, skipPersistReason: null };
+}
+
+/**
+ * Serialize the cache read/decision/write transaction within this tab.
+ *
+ * IndexedDB has no conditional write primitive at this abstraction layer. A
+ * queue keeps overlapping loads from both reading the same old value and then
+ * letting the smaller response land last. Read failures deliberately fail open
+ * to the write, and every transaction absorbs its own failure so one rejected
+ * write cannot poison the queue for later loads.
+ */
+export class DigestPersistenceQueue<T extends DigestCategoryCarrier> {
+  private chain: Promise<void> = Promise.resolve();
+  private readonly now: () => number;
+
+  constructor(private readonly options: DigestPersistenceQueueOptions<T>) {
+    this.now = options.now ?? Date.now;
+  }
+
+  enqueue(key: string, data: T): void {
+    this.chain = this.chain
+      .then(async () => {
+        let cached: DigestPersistenceEnvelope<T> | null = null;
+        try {
+          cached = await this.options.read(key);
+        } catch {
+          // Preserve the existing liveness contract: a storage read failure
+          // must not suppress all future writes.
+        }
+
+        const fetchedCategoryCount = countDigestCategories(data);
+        const cachedSummary = cached
+          ? {
+              categoryCount: countDigestCategories(cached.data),
+              ageMs: this.now() - cached.updatedAt,
+            }
+          : null;
+        const decision = evaluateFetchedDigest({
+          fetchedCategoryCount,
+          cached: cachedSummary,
+          cacheMaxAgeMs: this.options.cacheMaxAgeMs,
+        });
+        if (!decision.persist) {
+          this.options.onSkipPersist?.(
+            fetchedCategoryCount,
+            cachedSummary?.categoryCount ?? 0,
+          );
+          return;
+        }
+        await this.options.write(key, data);
+      })
+      .catch(() => {});
+  }
+
+  whenIdle(): Promise<void> {
+    return this.chain;
+  }
 }

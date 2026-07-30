@@ -3,7 +3,11 @@ import assert from 'node:assert/strict';
 
 import {
   countDigestCategories,
+  DigestPersistenceQueue,
+  digestCacheKey,
   evaluateFetchedDigest,
+  getScopedDigest,
+  retainRicherScopedDigest,
   type CachedDigestSummary,
 } from '../src/app/news-digest-acceptance';
 
@@ -157,5 +161,114 @@ describe('evaluateFetchedDigest: the partial digest', () => {
     // itself: 0 is never greater than a fetched count that cleared the floor.
     const decision = evaluate(1, { categoryCount: 0, ageMs: 60_000 });
     assert.equal(decision.persist, true);
+  });
+});
+
+describe('scoped in-memory last-good digest', () => {
+  const richer = { categories: { politics: {}, intel: {} } };
+  const partial = { categories: { politics: {} } };
+
+  it('uses a partial response without replacing the richer retained fallback', () => {
+    const key = digestCacheKey('full', 'en');
+    const retained = retainRicherScopedDigest(null, key, richer);
+    const afterPartial = retainRicherScopedDigest(retained, key, partial);
+
+    assert.equal(afterPartial, retained);
+    assert.equal(getScopedDigest(afterPartial, key), richer);
+    assert.equal(partial.categories.politics != null, true);
+  });
+
+  it('never returns a retained digest from another language scope', () => {
+    const englishKey = digestCacheKey('full', 'en');
+    const frenchKey = digestCacheKey('full', 'fr');
+    const retained = retainRicherScopedDigest(null, englishKey, richer);
+
+    assert.equal(getScopedDigest(retained, frenchKey), null);
+    assert.equal(englishKey, 'digest:last-good:full:en');
+    assert.equal(frenchKey, 'digest:last-good:full:fr');
+  });
+});
+
+describe('DigestPersistenceQueue', () => {
+  type Digest = { categories: Record<string, unknown> };
+  const rich: Digest = { categories: { politics: {}, intel: {} } };
+  const small: Digest = { categories: { politics: {} } };
+
+  it('serializes compare-and-write operations so a later partial digest cannot win', async () => {
+    let stored: { data: Digest; updatedAt: number } | null = null;
+    let releaseFirstWrite!: () => void;
+    const firstWriteBlocked = new Promise<void>((resolve) => { releaseFirstWrite = resolve; });
+    const writes: number[] = [];
+    const queue = new DigestPersistenceQueue<Digest>({
+      cacheMaxAgeMs: CACHE_MAX_AGE_MS,
+      now: () => 10_000,
+      read: async () => stored,
+      write: async (_key, data) => {
+        writes.push(countDigestCategories(data));
+        if (writes.length === 1) await firstWriteBlocked;
+        stored = { data, updatedAt: 10_000 };
+      },
+    });
+
+    queue.enqueue('digest:last-good:full:en', rich);
+    queue.enqueue('digest:last-good:full:en', small);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(writes, [2], 'the second transaction must wait for the first write');
+
+    releaseFirstWrite();
+    await queue.whenIdle();
+    assert.deepEqual(writes, [2]);
+    assert.equal(countDigestCategories(stored?.data), 2);
+  });
+
+  it('allows a richer digest queued after a partial one to replace it', async () => {
+    let stored: { data: Digest; updatedAt: number } | null = null;
+    const writes: number[] = [];
+    const queue = new DigestPersistenceQueue<Digest>({
+      cacheMaxAgeMs: CACHE_MAX_AGE_MS,
+      now: () => 10_000,
+      read: async () => stored,
+      write: async (_key, data) => {
+        writes.push(countDigestCategories(data));
+        stored = { data, updatedAt: 10_000 };
+      },
+    });
+
+    queue.enqueue('digest:last-good:full:en', small);
+    queue.enqueue('digest:last-good:full:en', rich);
+    await queue.whenIdle();
+
+    assert.deepEqual(writes, [1, 2]);
+    assert.equal(countDigestCategories(stored?.data), 2);
+  });
+
+  it('fails open when the real cache read rejects and still attempts the write', async () => {
+    let writes = 0;
+    const queue = new DigestPersistenceQueue<Digest>({
+      cacheMaxAgeMs: CACHE_MAX_AGE_MS,
+      read: async () => { throw new Error('IndexedDB unavailable'); },
+      write: async () => { writes += 1; },
+    });
+
+    queue.enqueue('digest:last-good:full:en', small);
+    await queue.whenIdle();
+    assert.equal(writes, 1);
+  });
+
+  it('recovers after a write rejection so later queued persistence still runs', async () => {
+    let attempts = 0;
+    const queue = new DigestPersistenceQueue<Digest>({
+      cacheMaxAgeMs: CACHE_MAX_AGE_MS,
+      read: async () => null,
+      write: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('quota failure');
+      },
+    });
+
+    queue.enqueue('digest:last-good:full:en', small);
+    queue.enqueue('digest:last-good:full:en', rich);
+    await queue.whenIdle();
+    assert.equal(attempts, 2);
   });
 });
