@@ -193,6 +193,45 @@ function withBudget(operation, budgetMs, fallback, onTimeout) {
   return Promise.race([pending, budget]).finally(() => clearTimeout(timer));
 }
 
+// Stalest-first article order (issue #5848). GDELT's sustained load shedding
+// lets at most one DOC request through before the run circuit opens, and fixed
+// array order always awarded that success to INTEL_TOPICS[0] — production ran
+// with military 5h old while the other five coasted 18-29 days. Sorting
+// ascending by the previous snapshot's per-topic fetchedAt hands the scarce
+// success to whichever topic needs it most, and self-balances as topics refresh.
+// Only a topic that actually holds articles counts as fetched. Absent from the
+// snapshot, articleless, or an unparseable stamp all mean "no evidence of ever
+// succeeding" and sort oldest; equal staleness (including a cold start with no
+// snapshot) falls back to canonical order. The articleless case matters because
+// the cache-merge only coasts fetchedAt for entries it can backfill from, so a
+// topic that 429'd with nothing cached keeps the placeholder stamp of the run
+// that skipped it — trusting that would rank the one topic holding real articles
+// as the stalest and re-award it every success, reviving the monopoly on a cold
+// start.
+export function orderTopicsByStaleness(topics, previous) {
+  const previousFetchedAt = new Map();
+  for (const topic of previous?.topics ?? []) {
+    if (topic?.id && topic.articles?.length > 0) {
+      previousFetchedAt.set(topic.id, Date.parse(topic.fetchedAt));
+    }
+  }
+  return topics
+    .map((topic, index) => {
+      const parsed = previousFetchedAt.get(topic.id);
+      return {
+        topic,
+        index,
+        fetchedAtMs: Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY,
+      };
+    })
+    .sort((a, b) => (
+      a.fetchedAtMs === b.fetchedAtMs
+        ? a.index - b.index
+        : a.fetchedAtMs - b.fetchedAtMs
+    ))
+    .map((entry) => entry.topic);
+}
+
 // Exported for tests. Deps are injectable so the soft-budget + cache-merge
 // behaviour can be driven without a real GDELT/Redis.
 export async function fetchAllTopics(deps = {}) {
@@ -217,6 +256,23 @@ export async function fetchAllTopics(deps = {}) {
   const deadlineAt = runStartedAt + _softBudgetMs;
   const remaining = () => deadlineAt - _now();
 
+  // The previous snapshot drives BOTH the stalest-first fetch order and the
+  // cache-merge backfill below, and it is read at most once per run — the
+  // ordering must not add a second Redis GET. It is read after the budget clock
+  // starts so a slow/retrying Redis eats article budget (degrading to more
+  // cached topics) instead of pushing the fetch phase past the hard #4786
+  // deadline into a graceful exit-75 crash.
+  let previousSnapshot = null;
+  let previousSnapshotRead = false;
+  const loadPreviousOnce = async () => {
+    if (!previousSnapshotRead) {
+      previousSnapshot = await _loadPrevious();
+      previousSnapshotRead = true;
+    }
+    return previousSnapshot;
+  };
+  const fetchOrder = orderTopicsByStaleness(INTEL_TOPICS, await loadPreviousOnce());
+
   const topics = [];
   let failureCode = null;
   let freshTopicCount = 0;
@@ -234,13 +290,14 @@ export async function fetchAllTopics(deps = {}) {
     return true;
   };
 
-  for (let i = 0; i < INTEL_TOPICS.length; i++) {
+  for (let i = 0; i < fetchOrder.length; i++) {
+    const topic = fetchOrder[i];
     // Stop fetching once we can't plausibly finish another topic in time — the
     // cache-merge below backfills every topic we skip from the prior snapshot,
     // so the run publishes partial+cached data and exits 0 instead of churning
     // past the hard #4786 deadline into a graceful exit-75 crash (issue #4864).
     if (remaining() < _minRequestBudgetMs) {
-      console.log(`  Soft budget (${Math.round(_softBudgetMs / 1000)}s) reached after ${i}/${INTEL_TOPICS.length} topic(s) — remaining ${INTEL_TOPICS.length - i} will fall back to cached snapshot`);
+      console.log(`  Soft budget (${Math.round(_softBudgetMs / 1000)}s) reached after ${i}/${fetchOrder.length} topic(s) — remaining ${fetchOrder.length - i} will fall back to cached snapshot`);
       failureCode = 'GDELT_FETCH_BUDGET_EXCEEDED';
       break;
     }
@@ -248,13 +305,13 @@ export async function fetchAllTopics(deps = {}) {
       failureCode = 'GDELT_FETCH_BUDGET_EXCEEDED';
       break;
     }
-    console.log(`  Fetching ${INTEL_TOPICS[i].id}...`);
-    const emptyTopic = () => ({ id: INTEL_TOPICS[i].id, articles: [], fetchedAt: new Date().toISOString() });
+    console.log(`  Fetching ${topic.id}...`);
+    const emptyTopic = () => ({ id: topic.id, articles: [], fetchedAt: new Date().toISOString() });
     const result = await withBudget(
-      () => _fetchArticles(INTEL_TOPICS[i]),
+      () => _fetchArticles(topic),
       remaining(),
       { ...emptyTopic(), budgetExceeded: true },
-      () => console.warn(`    ${INTEL_TOPICS[i].id}: article budget reached — falling back to cached`),
+      () => console.warn(`    ${topic.id}: article budget reached — falling back to cached`),
     );
     console.log(`    ${result.articles.length} articles`);
     for (const series of TIMELINE_SERIES) {
@@ -264,7 +321,7 @@ export async function fetchAllTopics(deps = {}) {
 
     if (result.budgetExceeded || result.failureCode) {
       failureCode = result.failureCode || 'GDELT_FETCH_BUDGET_EXCEEDED';
-      console.warn(`    ${INTEL_TOPICS[i].id}: opening run circuit (${failureCode}); remaining DOC requests will use cached data`);
+      console.warn(`    ${topic.id}: opening run circuit (${failureCode}); remaining DOC requests will use cached data`);
       break;
     }
 
@@ -333,7 +390,7 @@ export async function fetchAllTopics(deps = {}) {
   // the previous snapshot's articles rather than publishing empty over good cached data.
   const emptyTopics = topics.filter((t) => t.articles.length === 0);
   if (emptyTopics.length > 0) {
-    const previous = await _loadPrevious();
+    const previous = await loadPreviousOnce();
     if (previous && Array.isArray(previous.topics)) {
       const prevMap = new Map(previous.topics.map((t) => [t.id, t]));
       for (const topic of topics) {
@@ -723,7 +780,7 @@ export function declareRecords(data) {
 // fetchedAt survives the merge unchanged (the backfill copies the previous
 // snapshot's value), making it the honest coasting signal:
 //   newestItemAt = most recently fetched topic — ages only when EVERY topic
-//                  is coasting (topic[0] is fetched first each run, so any
+//                  is coasting (a topic is always attempted first, so any
 //                  GDELT success at all keeps this fresh);
 //   oldestItemAt = most starved topic, for operator visibility.
 export function contentMeta(data) {
@@ -752,9 +809,9 @@ export const RUN_SEED_OPTS = {
   schemaVersion: 1,
   maxStaleMin: 420,
   contentMeta,
-  // 24h = 6× the 4h cadence. Normal runs refresh at least topic[0] every
-  // tick, so only a real brownout (every topic failing every run for a day)
-  // flips health to STALE_CONTENT (warn).
+  // 24h = 6× the 4h cadence. Normal runs refresh at least the stalest topic
+  // every tick, so only a real brownout (every topic failing every run for a
+  // day) flips health to STALE_CONTENT (warn).
   maxContentAgeMin: 1440,
 };
 
