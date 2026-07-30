@@ -1,4 +1,4 @@
-import { getCachedJson } from '../../../_shared/redis';
+import { getCachedJson, readCachedJson } from '../../../_shared/redis';
 // Issue #3724: all LLM-bound headline content goes through sanitizeForPrompt
 // (semantic + structural). The lighter sanitizeHeadline only strips structural
 // delimiters and was designed to preserve security-news semantics for display
@@ -8,7 +8,8 @@ import { getCachedJson } from '../../../_shared/redis';
 // instructions…" headlines will be partly mangled in the analyst context — the
 // asymmetric cost favours hard sanitization at the prompt boundary.
 import { sanitizeForPrompt } from '../../../_shared/llm-sanitize.js';
-import { CHROME_UA } from '../../../_shared/constants';
+// @ts-expect-error — JS module, no declaration file
+import { captureSilentError } from '../../../../api/_sentry-edge.js';
 import { tokenizeForMatch, findMatchingKeywords } from '../../../../src/utils/keyword-match';
 import {
   GAS_STORAGE_COUNTRIES_KEY,
@@ -25,14 +26,6 @@ import {
 // TODO: multi-language digest search — currently only queries news:digest:v1:full:en.
 // When multi-language digests are available, fan out to news:digest:v1:full:<lang>
 // and merge results before scoring.
-
-const GDELT_TOPICS: Record<string, string> = {
-  geo: 'geopolitical conflict crisis diplomacy',
-  market: 'financial markets economy trade stocks',
-  military: 'military conflict war airstrike',
-  economic: 'economy sanctions trade monetary policy',
-  all: 'geopolitical conflict markets economy',
-};
 
 export interface AnalystContext {
   timestamp: string;
@@ -639,42 +632,190 @@ export function extractKeywords(query: string): string[] {
   return result.slice(0, MAX_KEYWORDS);
 }
 
-// ── GDELT live headlines ──────────────────────────────────────────────────────
+// ── GDELT headlines (materialized, never fetched at request time) ─────────────
+//
+// Issue #5850 (#5843 M3). This used to build a DOC-API ArtList query and fetch
+// it live from Vercel on every chat-analyst request, with a 2.5s hot-path
+// timeout and a bare `catch { return '' }`. Three things were wrong with that:
+// GDELT's DOC API is supply-side load-shed, so the fetch had been silently
+// returning '' for weeks; the per-user fan-out from Vercel egress IPs is the
+// uncoordinated-consumer pattern #5843 exists to remove; and even a healthy
+// GDELT taxed every request 2.5s for marginal context. Headlines now come from
+// the canonical key scripts/seed-gdelt-intel.mjs materializes — Railway writes,
+// Vercel reads, same as every other source in this assembler.
+
+const GDELT_INTEL_KEY = 'intelligence:gdelt-intel:v1';
+const MAX_LIVE_HEADLINES = 5;
+
+// The seeder's topic ids (INTEL_TOPICS in scripts/seed-gdelt-intel.mjs) are the
+// vocabulary for topic scoping below.
+const ALL_TOPIC_IDS = ['military', 'cyber', 'nuclear', 'sanctions', 'intelligence', 'maritime'] as const;
+
+// Which materialized topics are in scope per analyst domain focus, mapped from
+// the free-text DOC queries this replaced. `cyber` stays out of the
+// market/economic scopes deliberately: the old 'financial markets economy trade
+// stocks' query would not have surfaced a ransomware story either.
+const DOMAIN_TOPIC_IDS: Record<string, readonly string[]> = {
+  geo: ['military', 'nuclear', 'sanctions', 'intelligence', 'maritime'],
+  market: ['sanctions', 'maritime'],
+  military: ['military', 'nuclear', 'maritime'],
+  economic: ['sanctions', 'maritime'],
+  all: ALL_TOPIC_IDS,
+};
+
+interface SeededGdeltArticle {
+  title?: unknown;
+  source?: unknown;
+  date?: unknown;
+}
+
+interface SeededGdeltTopic {
+  id?: unknown;
+  articles?: unknown;
+  fetchedAt?: unknown;
+}
+
+/**
+ * GDELT stores seendate as `YYYYMMDDTHHMMSSZ`, which `Date.parse` rejects.
+ * Returns NaN for anything that isn't a full 14-digit stamp.
+ */
+function parseSeenDate(raw: unknown): number {
+  const digits = safeStr(raw).replace(/[^0-9]/g, '');
+  if (digits.length < 14) return Number.NaN;
+  const iso = `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`
+    + `T${digits.slice(8, 10)}:${digits.slice(10, 12)}:${digits.slice(12, 14)}Z`;
+  return Date.parse(iso);
+}
+
+/**
+ * Collapse every whitespace run — newlines included — to a single space.
+ *
+ * sanitizeForPrompt deliberately preserves lone newlines (it only collapses
+ * runs of 2+ whitespace), which is fine for prose blocks but not here: this
+ * block is newline-delimited, so a single `\n` inside a feed-supplied title or
+ * source domain would forge an extra `- headline` line that the analyst reads
+ * as a real story. Sanitizing content is not enough when the delimiter is
+ * itself part of the content's alphabet.
+ */
+function toSingleLine(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Coarse age label so the analyst can discount a 3-day-old headline instead of
+ * treating every line in the block as breaking news.
+ */
+function formatHeadlineAge(timestampMs: number, nowMs: number): string {
+  if (!Number.isFinite(timestampMs)) return '';
+  const minutes = Math.floor((nowMs - timestampMs) / 60_000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+/**
+ * Pure selection + formatting over a materialized `intelligence:gdelt-intel:v1`
+ * payload. Kept separate from the Redis read so the selection rules are
+ * testable without a cache stub.
+ */
+export function buildHeadlinesFromGdeltIntel(
+  payload: unknown,
+  domainFocus: string,
+  keywords: string[],
+  nowMs: number,
+): string {
+  if (!payload || typeof payload !== 'object') return '';
+  const rawTopics = (payload as { topics?: unknown }).topics;
+  if (!Array.isArray(rawTopics)) return '';
+
+  const snapshotFetchedAt = Date.parse(safeStr((payload as { fetchedAt?: unknown }).fetchedAt));
+  const inScope = new Set<string>(DOMAIN_TOPIC_IDS[domainFocus] ?? ALL_TOPIC_IDS);
+
+  const candidates: Array<{ title: string; source: string; topic: string; at: number; score: number }> = [];
+  for (const rawTopic of rawTopics as SeededGdeltTopic[]) {
+    if (!rawTopic || typeof rawTopic !== 'object') continue;
+    const topicId = safeStr(rawTopic.id);
+    if (!inScope.has(topicId)) continue;
+    if (!Array.isArray(rawTopic.articles)) continue;
+
+    // Per-topic fetchedAt is the seeder's own staleness marker: it coasts to
+    // the previous snapshot's value when a topic's fetch came back empty, so
+    // it is the honest fallback when an article carries no usable seendate.
+    const topicFetchedAt = Date.parse(safeStr(rawTopic.fetchedAt));
+
+    for (const rawArticle of rawTopic.articles as SeededGdeltArticle[]) {
+      if (!rawArticle || typeof rawArticle !== 'object') continue;
+      const title = toSingleLine(sanitizeForPrompt(safeStr(rawArticle.title)));
+      if (!title) continue;
+      const seenAt = parseSeenDate(rawArticle.date);
+      const at = Number.isFinite(seenAt)
+        ? seenAt
+        : Number.isFinite(topicFetchedAt) ? topicFetchedAt : snapshotFetchedAt;
+      candidates.push({
+        title,
+        // Sanitized like the title: the #3724 policy at the top of this file is
+        // that ALL feed-derived text reaching the system prompt goes through
+        // sanitizeForPrompt, and the source domain is feed-derived. (`topic` is
+        // not — it can only be one of the ids in the allowlist above.)
+        source: toSingleLine(sanitizeForPrompt(safeStr(rawArticle.source))).slice(0, 40),
+        topic: topicId,
+        at,
+        score: keywords.length > 0 ? scoreArticle(title, keywords) : 0,
+      });
+    }
+  }
+
+  if (candidates.length === 0) return '';
+
+  // Keyword matches lead. When nothing matches, fall back to the most recent
+  // articles in scope rather than emptying the block: this section is ambient
+  // context, not a search result — `relevantArticles` is the keyword-search
+  // surface — and the old DOC query returned topic articles too.
+  const matched = candidates.filter((c) => c.score > 0);
+  const pool = matched.length > 0 ? matched : candidates;
+
+  const selected = pool
+    .sort((a, b) => (b.score - a.score) || (b.at - a.at))
+    .slice(0, MAX_LIVE_HEADLINES);
+
+  const lines = selected.map((c) => {
+    const meta = [c.source, c.topic, formatHeadlineAge(c.at, nowMs)].filter(Boolean).join(', ');
+    return `- ${c.title}${meta ? ` (${meta})` : ''}`;
+  });
+
+  return lines.length ? `Latest Headlines:\n${lines.join('\n')}` : '';
+}
 
 async function buildLiveHeadlines(domainFocus: string, keywords: string[]): Promise<string> {
-  const baseTopic = GDELT_TOPICS[domainFocus] ?? 'geopolitical conflict markets economy';
-  // Append up to 3 user keywords to surface topic-relevant live articles.
-  const extraTerms = keywords.slice(0, 3).join(' ');
-  const topic = extraTerms ? `${baseTopic} ${extraTerms}` : baseTopic;
-  try {
-    const url = new URL('https://api.gdeltproject.org/api/v2/doc/doc');
-    url.searchParams.set('mode', 'ArtList');
-    url.searchParams.set('maxrecords', '5');
-    url.searchParams.set('query', topic);
-    url.searchParams.set('format', 'json');
-    url.searchParams.set('timespan', '2h');
-    url.searchParams.set('sort', 'DateDesc');
-
-    const res = await fetch(url.toString(), {
-      headers: { 'User-Agent': CHROME_UA },
-      signal: AbortSignal.timeout(2_500),
+  // readCachedJson, not getCachedJson: a Redis failure must not be
+  // indistinguishable from an absent key here. Silently swallowing the failure
+  // is precisely what kept the dead GDELT fetch invisible for weeks.
+  const read = await readCachedJson(GDELT_INTEL_KEY, true);
+  if (read.status === 'error') {
+    // Log AND report: a Vercel-log-only warning is still effectively invisible
+    // (nobody greps logs for a degraded prompt section), and invisibility is
+    // the failure mode this issue exists to remove.
+    const msg = read.error instanceof Error ? read.error.message : String(read.error);
+    console.warn(`[chat-analyst] ${GDELT_INTEL_KEY} read failed, dropping live headlines: ${msg}`);
+    void captureSilentError(read.error, {
+      tags: { route: 'intelligence/chat-analyst-context', step: 'gdelt-intel-seed-read' },
     });
+    return '';
+  }
+  if (read.status === 'miss') return '';
 
-    if (!res.ok) return '';
-
-    const data = await res.json() as { articles?: Array<{ title?: string; domain?: string; seendate?: string }> };
-    const articles = (data.articles ?? []).slice(0, 5);
-    if (articles.length === 0) return '';
-
-    const lines = articles.map((a) => {
-      const title = sanitizeForPrompt(safeStr(a.title)) ?? '';
-      const source = safeStr(a.domain).slice(0, 40);
-      if (!title) return null;
-      return `- ${title}${source ? ` (${source})` : ''}`;
-    }).filter((l): l is string => l !== null);
-
-    return lines.length ? `Latest Headlines:\n${lines.join('\n')}` : '';
-  } catch {
+  try {
+    return buildHeadlinesFromGdeltIntel(read.value, domainFocus, keywords, Date.now());
+  } catch (err) {
+    console.warn(
+      `[chat-analyst] ${GDELT_INTEL_KEY} payload unusable, dropping live headlines: `,
+      err instanceof Error ? err.message : err,
+    );
+    void captureSilentError(err, {
+      tags: { route: 'intelligence/chat-analyst-context', step: 'gdelt-intel-format' },
+    });
     return '';
   }
 }
