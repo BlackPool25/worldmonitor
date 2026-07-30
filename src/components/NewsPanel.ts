@@ -73,6 +73,8 @@ export class NewsPanel extends Panel {
    * partial and a panel that lies about being complete.
    */
   private sourceCoverage: SourceCoverage | null = null;
+  private refreshDegraded = false;
+  private renderedBadgeState: 'none' | 'live' | 'cached' | 'unavailable' = 'none';
 
   // Panel summary feature
   private summaryBtn: HTMLButtonElement | null = null;
@@ -422,6 +424,7 @@ export class NewsPanel extends Panel {
   public override showError(message?: string, onRetry?: () => void, autoRetrySeconds?: number): void {
     this.lastRawClusters = null;
     this.lastRawItems = null;
+    this.renderedBadgeState = 'unavailable';
     super.showError(message, onRetry, autoRetrySeconds);
   }
 
@@ -435,21 +438,42 @@ export class NewsPanel extends Panel {
    */
   public setSourceCoverage(coverage: SourceCoverage | null): void {
     this.sourceCoverage = coverage;
+    if (this.renderedBadgeState === 'live' || this.renderedBadgeState === 'cached') {
+      this.renderCurrentDataBadge();
+    }
+  }
+
+  /**
+   * Retained headlines remain useful when a refresh window fails, but they
+   * must not be relabelled LIVE by time-range or sort re-renders.
+   */
+  public setRefreshDegraded(degraded: boolean): void {
+    this.refreshDegraded = degraded;
+    if (this.renderedBadgeState === 'live' || this.renderedBadgeState === 'cached') {
+      this.renderCurrentDataBadge();
+    }
   }
 
   private coverageString(key: CoverageStringKey): string | undefined {
     return coverageBadgeString(this.sourceCoverage, key, (path, vars) => t(path, vars));
   }
 
+  private renderCurrentDataBadge(): void {
+    const state = this.refreshDegraded ? 'cached' : 'live';
+    this.renderedBadgeState = state;
+    this.setDataBadge(state, this.coverageString('sourceCoverage'), this.coverageString('sourceCoverageHint'));
+  }
+
   public renderNews(items: NewsItem[]): void {
     if (items.length === 0) {
       this.renderRequestId += 1; // Cancel in-flight clustering from previous renders.
+      this.renderedBadgeState = 'unavailable';
       this.setDataBadge('unavailable');
       this.showError(t('common.noNewsAvailable'));
       return;
     }
 
-    this.setDataBadge('live', this.coverageString('sourceCoverage'), this.coverageString('sourceCoverageHint'));
+    this.renderCurrentDataBadge();
 
     // Always show flat items immediately for instant visual feedback,
     // then upgrade to clustered view in the background when ready.
@@ -464,7 +488,7 @@ export class NewsPanel extends Panel {
     this.renderRequestId += 1; // Cancel in-flight clustering from previous renders.
     this.lastRawClusters = null;
     this.lastRawItems = null;
-    this.setDataBadge('live', this.coverageString('sourceCoverage'), this.coverageString('sourceCoverageHint'));
+    this.renderCurrentDataBadge();
     this.setCount(0);
     this.relatedAssetContext.clear();
     this.currentHeadlines = [];

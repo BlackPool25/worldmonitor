@@ -435,6 +435,14 @@ export class DataLoaderManager implements AppModule {
    * a digest-backed category.
    */
   private readonly customCategoryMergedItemLimit = 40;
+  /**
+   * Reachable source count for custom categories.
+   *
+   * Coverage is derived when the category is rendered, after the active time
+   * range has filtered its items. Keeping only the denominator here prevents a
+   * stale pre-filter count from surviving time-range changes.
+   */
+  private readonly customNewsSourceTotals = new Map<string, number>();
   private lastGoodDigest: ScopedDigest<ListFeedDigestResponse> | null = null;
   private readonly digestPersistenceQueue = new DigestPersistenceQueue<ListFeedDigestResponse>({
     cacheMaxAgeMs: this.persistedDigestMaxAgeMs,
@@ -1343,11 +1351,32 @@ export class DataLoaderManager implements AppModule {
     return labels[range];
   }
 
+  private newsPanelKey(category: string): string {
+    return this.ctx.newsCategoryPanelKeys.get(category) ?? category;
+  }
+
+  private clearNewsSourceCoverage(category: string): void {
+    this.customNewsSourceTotals.delete(category);
+    this.callPanel(this.newsPanelKey(category), 'setSourceCoverage', null);
+  }
+
+  private setNewsRefreshDegraded(category: string, degraded: boolean): void {
+    this.callPanel(this.newsPanelKey(category), 'setRefreshDegraded', degraded);
+  }
+
   renderNewsForCategory(category: string, items: NewsItem[]): void {
     this.ctx.newsByCategory[category] = items;
+    const filteredItems = this.filterItemsByTimeRange(items);
+    const sourceTotal = this.customNewsSourceTotals.get(category);
+    if (sourceTotal !== undefined) {
+      this.callPanel(this.newsPanelKey(category), 'setSourceCoverage', {
+        covered: countRepresentedSources(filteredItems),
+        total: sourceTotal,
+      });
+    }
+
     const panel = this.ctx.newsPanels[category];
     if (!panel) return;
-    const filteredItems = this.filterItemsByTimeRange(items);
     if (filteredItems.length === 0 && items.length > 0) {
       panel.renderFilteredEmpty(`No items in ${this.getTimeRangeLabel()}`);
       return;
@@ -1392,8 +1421,8 @@ export class DataLoaderManager implements AppModule {
       const enabledFeeds = (feeds ?? []).filter(f => !this.ctx.disabledSources.has(f.name));
       if (enabledFeeds.length === 0) {
         delete this.ctx.newsByCategory[category];
+        this.clearNewsSourceCoverage(category);
         if (panel) {
-          panel.setSourceCoverage(null);
           panel.showError(t('common.allSourcesDisabled'));
         }
         this.ctx.statusPanel?.updateFeed(category.charAt(0).toUpperCase() + category.slice(1), {
@@ -1415,13 +1444,17 @@ export class DataLoaderManager implements AppModule {
       // digest-backed, and `enabledNames` (which filters digest items by source)
       // must stay language-blind because the server does not language-filter.
       const reachableFeeds = isCustom ? filterFeedsByLanguage(enabledFeeds, getCurrentLanguage()) : enabledFeeds;
+      if (isCustom) {
+        this.customNewsSourceTotals.set(category, reachableFeeds.length);
+      }
 
       // Digest branch: server already aggregated feeds — map proto items to client types
       if (digest?.categories && category in digest.categories) {
         // The digest carries every enabled source for the category, so there is
         // no partial coverage to disclose — clear any badge a prior custom-path
         // load left behind.
-        panel?.setSourceCoverage(null);
+        this.clearNewsSourceCoverage(category);
+        this.setNewsRefreshDegraded(category, false);
         const items = (digest.categories[category]?.items ?? [])
           .map(protoItemToNewsItem)
           .filter(i => enabledNames.has(i.source));
@@ -1478,21 +1511,16 @@ export class DataLoaderManager implements AppModule {
        * What to actually paint for a given set of freshly fetched items.
        *
        * Identity for a preset category — its fallback replaces wholesale, as
-       * before. For a custom one it merges onto the carry-over and republishes
-       * the resulting source coverage, so the panel states how much of its
-       * source list it is showing instead of silently claiming to be complete.
+       * before. For a custom one it merges onto the carry-over. Source coverage
+       * is published by renderNewsForCategory after time-range filtering, so
+       * the badge describes what is actually visible.
        */
       const mergeForRender = (freshItems: NewsItem[]): NewsItem[] => {
         if (!isCustom) return freshItems;
-        const merged = mergeRotatedNewsItems(carryOver, freshItems, {
+        return mergeRotatedNewsItems(carryOver, freshItems, {
           maxItems: this.customCategoryMergedItemLimit,
           enabledSources: enabledNames,
         });
-        panel?.setSourceCoverage({
-          covered: countRepresentedSources(merged),
-          total: reachableFeeds.length,
-        });
-        return merged;
       };
 
       // Per-feed fallback: fetch each feed individually (first load or digest unavailable)
@@ -1610,6 +1638,10 @@ export class DataLoaderManager implements AppModule {
       // fetch would report this cycle's three sources as the whole category and
       // hand clustering a set the user isn't looking at.
       const items = mergeForRender(fetchedItems);
+      const failures = getFeedFailures();
+      const failedFeeds = fallbackFeeds.filter(f => failures.has(f.name));
+      const windowFailed = fallbackFeeds.length > 0 && failedFeeds.length === fallbackFeeds.length;
+      this.setNewsRefreshDegraded(category, windowFailed);
       this.renderNewsForCategory(category, items);
       if (panel) {
         if (renderTimeout) {
@@ -1618,16 +1650,12 @@ export class DataLoaderManager implements AppModule {
           pendingItems = null;
         }
 
-        if (items.length === 0) {
-          const failures = getFeedFailures();
-          const failedFeeds = fallbackFeeds.filter(f => failures.has(f.name));
-          if (failedFeeds.length > 0) {
-            const names = failedFeeds.map(f => f.name).join(', ');
-            panel.showError(`${t('common.noNewsAvailable')} (${names} failed)`);
-          }
+        if (items.length === 0 && failedFeeds.length > 0) {
+          const names = failedFeeds.map(f => f.name).join(', ');
+          panel.showError(`${t('common.noNewsAvailable')} (${names} failed)`);
         }
 
-        if (options.recordBaselineSample) {
+        if (options.recordBaselineSample && !windowFailed) {
           try {
             const baseline = await updateBaseline(`news:${category}`, items.length);
             const deviation = calculateDeviation(items.length, baseline);
@@ -1636,11 +1664,22 @@ export class DataLoaderManager implements AppModule {
         }
       }
 
-      this.ctx.statusPanel?.updateFeed(category.charAt(0).toUpperCase() + category.slice(1), {
-        status: 'ok',
-        itemCount: items.length,
-      });
-      this.ctx.statusPanel?.updateApi('RSS2JSON', { status: 'ok' });
+      const feedLabel = category.charAt(0).toUpperCase() + category.slice(1);
+      if (windowFailed) {
+        const names = failedFeeds.map(f => f.name).join(', ');
+        this.ctx.statusPanel?.updateFeed(feedLabel, {
+          status: 'error',
+          itemCount: items.length,
+          errorMessage: `${names} failed`,
+        });
+        this.ctx.statusPanel?.updateApi('RSS2JSON', { status: 'error' });
+      } else {
+        this.ctx.statusPanel?.updateFeed(feedLabel, {
+          status: 'ok',
+          itemCount: items.length,
+        });
+        this.ctx.statusPanel?.updateApi('RSS2JSON', { status: 'ok' });
+      }
 
       return items;
     } catch (error) {
@@ -1659,8 +1698,18 @@ export class DataLoaderManager implements AppModule {
       // error — a chunk-load hiccup is enough — silently restarts the hour it
       // takes to cover a ten-source panel. Keep them: the next cycle merges
       // onto them, and the status panel already reports the error.
-      if (!isCustom) delete this.ctx.newsByCategory[category];
-      return [];
+      if (!isCustom) {
+        delete this.ctx.newsByCategory[category];
+        return [];
+      }
+
+      this.setNewsRefreshDegraded(category, true);
+      const enabledNames = new Set(
+        (feeds ?? [])
+          .filter(feed => !this.ctx.disabledSources.has(feed.name))
+          .map(feed => feed.name),
+      );
+      return this.getStaleNewsItems(category).filter(item => enabledNames.has(item.source));
     }
   }
 
