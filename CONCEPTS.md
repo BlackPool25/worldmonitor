@@ -102,7 +102,13 @@ This project's standard of evidence that a guard actually guards: deliberately b
 
 ### Feed Digest
 
-The server-side pre-aggregation of a variant's news categories into one response, so a client can render headlines without fetching any feed itself. It is per-variant and per-language, and the categories it carries are the ones that variant's preset declares — which makes "is this category in the digest?" the same question as "is this category in the active variant's preset?". Distinct from the brief's digest *cadence*, which is a delivery schedule and shares only the word. Its failure modes are asymmetric: a refused request is obvious, but a successful response carrying no categories is a degraded answer that still looks like data, so any consumer testing the digest for presence rather than for coverage will read an outage as a completed load. See also: Custom Category, Variant Host.
+The server-side pre-aggregation of a variant's news categories into one response, so a client can render headlines without fetching any feed itself. It is per-variant and per-language, and the categories it carries are the ones that variant's preset declares — which makes "is this category in the digest?" the same question as "is this category in the active variant's preset?". Distinct from the brief's digest *cadence*, which is a delivery schedule and shares only the word. Its failure modes are asymmetric: a refused request is obvious, but a successful response carrying no categories is a degraded answer that still looks like data, so any consumer testing the digest for presence rather than for coverage will read an outage as a completed load — and coverage governs not only whether a load landed but whether the response is fit to become the Last-Good Digest. See also: Custom Category, Last-Good Digest, Variant Host.
+
+### Last-Good Digest
+
+The most recent Feed Digest a client retains locally so it can still render news when the live digest is unreachable. It is the fallback that exists to survive degradation, which makes what may *enter* it a stricter question than what may be rendered from it, and it is scoped to the variant and language it was built for — an entry from another scope describes a different category set and is not a substitute for one.
+
+Three rules follow, each easy to get wrong in the permissive direction. Eligibility is decided by coverage rather than by a response merely being well-formed, so a degraded answer carrying no categories must not enter however successful it looks. *Using* a response and *retaining* it are separate decisions: one covering fewer categories than the retained entry is still real data for the categories it names and may be rendered, but replacing a wider entry with it trades the fallback down for every later session — so it is used without being retained, a veto that holds only while the retained entry is itself still servable, letting a genuinely narrowed digest take over within one retention window rather than being locked out forever. And because retention is conditional on the entry already there, writing one is a compare-and-swap: concurrent writers that each read the pre-write state will otherwise let the loser land last. See also: Feed Digest, Variant Host.
 
 ### Custom Category
 
@@ -119,6 +125,14 @@ A term — an ordinary word, a vulnerability identifier, or a threat-group desig
 ### Sampled Span
 
 The stretch of time a derived statistic was *actually* computed over, as distinct from the retention horizon of the store it drew from. The two diverge whenever a bounded read — a row cap, a page size, a top-N — returns fewer rows than the horizon contains, and the divergence is silent: the read succeeds, the arithmetic runs, and only the result is wrong. Any rate, baseline, or per-unit-time figure must be divided by the span its rows demonstrably cover, and a consumer-facing statistic should report that measured span rather than the horizon constant, since a caller has no other way to tell the two apart. Truncation is also biased rather than random — a newest-first read starves the historical side of a recent-versus-baseline comparison, an oldest-first read starves the recent side. See also: Story Accumulator, Keyword Spike.
+
+## Prediction Markets
+
+### Market Pool
+
+One of the named category buckets a published prediction-market payload is divided into — geopolitical, tech, finance — where every market belongs to exactly one.
+
+The pools are a *partition*, not a set of overlapping views: membership is a single primary category assigned by a fixed precedence, so no market appears twice and no market is dropped. That property is load-bearing rather than incidental, because every consumer selects a pool **by name** — a site variant, an agent-facing category argument, a prompt builder — and a pool that quietly contains everything makes all of those selections meaningless while still looking healthy. Precedence, not tag exclusivity, is what resolves a market carrying signals from several categories; reordering the categories therefore moves real markets between pools. The complete set of markets is deliberately *not* a pool: a reader wanting every market asks for the union explicitly, because reaching for a single pool to mean "all" is only ever correct by accident. See also: Seed-Owned Key.
 
 ## MCP & Agent Discovery
 
@@ -261,3 +275,7 @@ Provenance is what makes staleness detectable at all: a translation whose record
 A translated value whose English source has changed since the translation was made.
 
 Distinct from a *missing* translation, which has no value at all, and from an *orphaned* one, which is a value the current English no longer has a key for. The distinction is load-bearing because only the stale class is fixable by retranslation — no translation of a source string that no longer exists can be correct, so orphans must be pruned instead. Inserting an element into an English list makes every later entry stale at once, since each index then points at a different source string; removing the last element produces an orphan instead, leaving every earlier index matching so nothing registers as stale. See also: Translation Provenance.
+
+## Flagged ambiguities
+
+- *"Pool"* had been used for both a labelled market category and the complete set of markets — these are distinct. A pool is always a labelled subset; the complete set has no pool and must be requested as an explicit union.
