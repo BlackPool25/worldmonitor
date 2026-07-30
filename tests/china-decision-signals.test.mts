@@ -329,9 +329,30 @@ describe('China decision-signal final composition (#5580)', () => {
     assert.equal(Object.hasOwn(nonCorporateUpstream?.metadata ?? {}, 'rejectedItemCount'), false);
     assert.match(nonCorporateUpstream?.reason ?? '', /^upstream_unavailable:/);
 
-    const indeterminate = composeChinaDecisionSignals({ generatedAt })
-      .groups.find((candidate) => candidate.id === 'macro');
-    assert.equal(indeterminate?.metadata.unavailableCause, 'unknown');
+    const explicitNull = composeChinaDecisionSignals({
+      generatedAt,
+      macro: null,
+      policy: null,
+      crossStrait: null,
+    });
+    for (const id of ['macro', 'policy-enforcement', 'cross-strait-activity']) {
+      const group = explicitNull.groups.find((candidate) => candidate.id === id);
+      assert.equal(group?.metadata.unavailableCause, 'upstream_unavailable');
+      assert.match(group?.reason ?? '', /^upstream_unavailable:/);
+    }
+
+    for (const malformed of [undefined, 'not-a-snapshot']) {
+      const indeterminate = composeChinaDecisionSignals({
+        generatedAt,
+        macro: malformed,
+        policy: malformed,
+        crossStrait: malformed,
+      });
+      for (const id of ['macro', 'policy-enforcement', 'cross-strait-activity']) {
+        const group = indeterminate.groups.find((candidate) => candidate.id === id);
+        assert.equal(group?.metadata.unavailableCause, 'unknown');
+      }
+    }
 
     const nowcast = composeChinaDecisionSignals({
       generatedAt,
@@ -434,6 +455,14 @@ describe('China decision-signal final composition (#5580)', () => {
     assert.deepEqual(
       nowcast?.metadata.missingInputFamilies,
       validMissingInputs.slice(0, 16).map((candidate) => candidate.family.slice(0, 80)),
+    );
+    assert.deepEqual(
+      nowcast?.metadata.missingInputs,
+      validMissingInputs.slice(0, 16).map((candidate) => ({
+        family: candidate.family.slice(0, 80),
+        seriesId: candidate.seriesId.slice(0, 120),
+        reason: candidate.reason.slice(0, 120),
+      })),
     );
     assert.equal(new TextEncoder().encode(JSON.stringify(snapshot)).byteLength <= CHINA_DECISION_SIGNAL_MAX_SERIALIZED_BYTES, true);
 

@@ -233,4 +233,72 @@ describe('China decision-signal access tiers (#5580)', () => {
       groupCounts,
     );
   });
+
+  it('omits both per-group diagnostics when either bounded projection is malformed', async () => {
+    const validGroupStates = {
+      macro: 'available',
+      'policy-enforcement': 'partial',
+      'cross-strait-activity': 'stale',
+      'corporate-disclosures': 'unavailable',
+      'corridor-conditions': 'available',
+      'activity-nowcast': 'unavailable',
+    };
+    const validGroupCounts = {
+      populated: 4,
+      partial: 1,
+      stale: 1,
+      unavailable: 2,
+    };
+    const malformedDiagnostics = [
+      {
+        name: 'invalid state',
+        groupStates: { ...validGroupStates, macro: 'healthy' },
+        groupCounts: validGroupCounts,
+      },
+      {
+        name: 'missing canonical group',
+        groupStates: {
+          macro: 'available',
+          'policy-enforcement': 'partial',
+          'cross-strait-activity': 'stale',
+          'corporate-disclosures': 'unavailable',
+          'corridor-conditions': 'available',
+        },
+        groupCounts: validGroupCounts,
+      },
+      {
+        name: 'fractional count',
+        groupStates: validGroupStates,
+        groupCounts: { ...validGroupCounts, populated: 1.5 },
+      },
+      {
+        name: 'negative count',
+        groupStates: validGroupStates,
+        groupCounts: { ...validGroupCounts, partial: -1 },
+      },
+      {
+        name: 'count above group total',
+        groupStates: validGroupStates,
+        groupCounts: { ...validGroupCounts, unavailable: 7 },
+      },
+    ];
+
+    for (const malformed of malformedDiagnostics) {
+      const { response, body } = await readSeedHealth({
+        fetchedAt: Date.now() - 60_000,
+        recordCount: 4,
+        groupStates: malformed.groupStates,
+        groupCounts: malformed.groupCounts,
+      });
+      const seedEntry = body.seeds['intelligence:china-decision-signals'];
+
+      assert.equal(response.status, 200, malformed.name);
+      assert.equal(body.overall, 'warning', malformed.name);
+      assert.equal(seedEntry.status, 'coverage_partial', malformed.name);
+      assert.equal(seedEntry.recordCount, 4, malformed.name);
+      assert.equal(seedEntry.minRecordCount, 6, malformed.name);
+      assert.equal(Object.hasOwn(seedEntry, 'groupStates'), false, malformed.name);
+      assert.equal(Object.hasOwn(seedEntry, 'groupCounts'), false, malformed.name);
+    }
+  });
 });

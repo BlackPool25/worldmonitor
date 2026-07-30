@@ -312,6 +312,11 @@ function compactGroupMetadata(
     group.metadata.serializationOmittedItemCount,
     0,
   );
+  const missingInputs = boundedNowcastMissingInputs(
+    Array.isArray(group.metadata.missingInputs)
+      ? { missingInputs: group.metadata.missingInputs }
+      : null,
+  );
   return {
     totalValidItems: nonNegativeInteger(
       group.metadata.totalValidItems,
@@ -330,6 +335,9 @@ function compactGroupMetadata(
     ...(Array.isArray(group.metadata.missingInputFamilies)
       ? { missingInputFamilies: group.metadata.missingInputFamilies }
       : {}),
+    ...(Array.isArray(group.metadata.missingInputs)
+      ? { missingInputs }
+      : {}),
     metadataOmittedForSerialization: true,
   };
 }
@@ -342,6 +350,7 @@ function isCompactGroupMetadata(metadata: Record<string, unknown>): boolean {
       'serializationOmittedItemCount',
       'unavailableCause',
       'missingInputFamilies',
+      'missingInputs',
       'metadataOmittedForSerialization',
     ].includes(key));
 }
@@ -635,6 +644,14 @@ export function composeChinaDecisionSignals(
       },
     })),
     bool(macro?.unavailable) ? 'unavailable' : null,
+    {
+      unavailableDiagnostic: input.macro === null
+        ? {
+            cause: 'upstream_unavailable',
+            reason: 'upstream_unavailable: The macro upstream snapshot is unavailable.',
+          }
+        : undefined,
+    },
   );
 
   const policyGroup = group(
@@ -656,6 +673,14 @@ export function composeChinaDecisionSignals(
     Object.values(record(policy?.agencies) ?? {}).some((agency) => record(agency)?.status !== 'ok')
       ? 'degraded'
       : null,
+    {
+      unavailableDiagnostic: input.policy === null
+        ? {
+            cause: 'upstream_unavailable',
+            reason: 'upstream_unavailable: The policy-enforcement upstream snapshot is unavailable.',
+          }
+        : undefined,
+    },
   );
 
   const crossStraitGroup = group(
@@ -677,6 +702,12 @@ export function composeChinaDecisionSignals(
         baselineBands: distillBaselineBands(crossStrait),
         coverage: record(crossStrait?.coverage),
       },
+      unavailableDiagnostic: input.crossStrait === null
+        ? {
+            cause: 'upstream_unavailable',
+            reason: 'upstream_unavailable: The cross-Strait upstream snapshot is unavailable.',
+          }
+        : undefined,
     },
   );
 
