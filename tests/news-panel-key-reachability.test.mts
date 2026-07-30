@@ -561,7 +561,31 @@ describe('news panel key reachability (#5871)', () => {
     );
   });
 
-  it('panel-layout resolves the panel key through newsPanelKeyForCategory', () => {
+  it('panel-layout binds the production resolver and lookup adapter', () => {
+    const lookupStart = layoutSrc.lastIndexOf('const newsPanelKeyLookups =', loopIndex);
+    assert.notEqual(lookupStart, -1, 'newsPanelKeyLookups construction not found before the loop');
+    const lookupEnd = layoutSrc.indexOf('});', lookupStart);
+    assert.notEqual(lookupEnd, -1, 'newsPanelKeyLookups construction has no closing object');
+    const lookupRegion = layoutSrc.slice(lookupStart, lookupEnd + 3);
+    assert.match(
+      lookupRegion,
+      /newsPanelKeyLookupsFor\(\{/,
+      'panel-layout must build the production lookups through newsPanelKeyLookupsFor',
+    );
+    for (const binding of [
+      'canonicalFeeds: CANONICAL_FEEDS',
+      'panels: this.ctx.panels',
+      'lazyPanelRegistrations: this.lazyPanelRegistrations',
+      'newsCategoryPanelKeys: this.ctx.newsCategoryPanelKeys',
+      'panelSettings: this.ctx.panelSettings',
+      'lateRegisteredPanelKeys: LATE_REGISTERED_PANEL_KEYS',
+    ]) {
+      assert.ok(
+        lookupRegion.includes(binding),
+        `newsPanelKeyLookupsFor must receive the live production binding: ${binding}`,
+      );
+    }
+
     const createCall = layoutSrc.indexOf('createNewsPanelWithLabel(panelKey', loopIndex);
     assert.notEqual(createCall, -1, 'createNewsPanelWithLabel call not found inside the loop');
     const loopRegion = layoutSrc.slice(loopIndex, createCall);
@@ -576,12 +600,6 @@ describe('news panel key reachability (#5871)', () => {
       /COLLIDING_NEWS_PANEL_KEYS/,
       'the hardcoded collision set is what omitted `commodities` (#5871); the collision is derived ' +
         'from the live registry now',
-    );
-    assert.match(
-      layoutSrc,
-      /newsPanelKeyLookupsFor\(/,
-      'panel-layout must build the lookups through newsPanelKeyLookupsFor — an inline adapter here ' +
-        'would be the half no test can reach, and consulting only ctx.panels reproduces #5871',
     );
   });
 });
