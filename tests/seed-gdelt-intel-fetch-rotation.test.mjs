@@ -23,7 +23,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { fetchAllTopics, rankTopicsForFetch, publishTransform } from '../scripts/seed-gdelt-intel.mjs';
+import { fetchAllTopics, rankTopicsForFetch, RUN_SEED_OPTS } from '../scripts/seed-gdelt-intel.mjs';
 
 const TOPIC_IDS = ['military', 'cyber', 'nuclear', 'sanctions', 'intelligence', 'maritime'];
 
@@ -54,7 +54,7 @@ function snapshotOf(fetchedAtById) {
 // is exactly what the seeder's own publish transform emits. Reuse it rather than
 // re-listing its redactions, so this harness cannot drift from production.
 function asPublishedSnapshot(out) {
-  return publishTransform(out);
+  return RUN_SEED_OPTS.publishTransform(out);
 }
 
 // `_now` is the run's WALL clock, not just a budget counter: the ordering clamps
@@ -500,10 +500,13 @@ describe('rankTopicsForFetch input domain', () => {
   });
 
   it('treats a non-array articles value as no evidence of a successful fetch', () => {
+    // The non-array entry carries the NEWER stamp on purpose: if the guard were
+    // missing, `'not-an-array'.length > 0` would count it as fetched and its newer
+    // stamp would sort it LAST, so this can only pass when the value is rejected.
     const previous = {
       topics: [
-        { id: 'military', articles: 'not-an-array', fetchedAt: '2026-06-01T00:00:00.000Z' },
-        withArticles('cyber', { fetchedAt: '2026-07-29T00:00:00.000Z' }),
+        { id: 'military', articles: 'not-an-array', fetchedAt: '2026-07-29T00:00:00.000Z' },
+        withArticles('cyber', { fetchedAt: '2026-06-01T00:00:00.000Z' }),
       ],
     };
 

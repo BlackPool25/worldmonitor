@@ -52,6 +52,12 @@ const GDELT_DOC_API = 'https://api.gdeltproject.org/api/v2/doc/doc';
 // At the 30s transport ceiling plus seven pacing gaps that sweep needs at most
 // ~279s. Five minutes bounds it without retries, and the runSeed deadline keeps
 // 90s for cache merge and fetch-phase cleanup.
+// The fetch-order read (issue #5848) is a second consumer of this budget, bounded
+// separately to MIN_REQUEST_BUDGET_MS. In the worst case — a throttled Upstash on
+// a day GDELT is healthy enough for the full ~279s sweep — the two together can
+// exceed the soft budget, which truncates the tail of the sweep (the run still
+// publishes partial+cached and exits 0). That needs two coincident degradations;
+// the alternative, an unbounded ordering read, could cost several topics.
 const FETCH_SOFT_BUDGET_MS = 300_000;
 const MIN_REQUEST_BUDGET_MS = 35_000; // 30s curl ceiling plus scheduling headroom
 
@@ -245,7 +251,12 @@ export function rankTopicsForFetch(topics, previous, nowMs) {
         topic,
         index,
         attemptedAtMs: prev ? stampMs(prev.attemptedAt) : Number.NEGATIVE_INFINITY,
-        fetchedAtMs: prev?.articles?.length > 0 ? stampMs(prev.fetchedAt) : Number.NEGATIVE_INFINITY,
+        // Array.isArray, matching contentMeta's filter: a truthy non-array
+        // `articles` (a string) has a positive .length and would otherwise count
+        // as a successful fetch.
+        fetchedAtMs: Array.isArray(prev?.articles) && prev.articles.length > 0
+          ? stampMs(prev.fetchedAt)
+          : Number.NEGATIVE_INFINITY,
       };
     })
     // Never subtract two equal keys — both can be -Infinity, and -Inf - -Inf is
@@ -509,9 +520,9 @@ function validate(data) {
 // Strip transport/timeline implementation fields before writing the canonical
 // Redis payload. They are consumed only by afterPublish and seed-meta.
 // `attemptedAt` deliberately survives: the next run reads it back out of this
-// payload to drive the fetch rotation. Exported for tests so a harness that
-// simulates successive runs mirrors this redaction instead of re-listing it.
-export function publishTransform(data) {
+// payload to drive the fetch rotation. Reachable to tests via RUN_SEED_OPTS, so a
+// harness simulating successive runs mirrors this redaction instead of re-listing it.
+function publishTransform(data) {
   const {
     _gdeltFailureCode: _failure,
     _freshTopicCount: _fresh,
