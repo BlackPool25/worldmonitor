@@ -173,6 +173,26 @@ function unionOfPresets(source: string, names: string[]): Set<string> {
   return out;
 }
 
+/**
+ * Every preset const of `type` actually declared in `source` — i.e. what
+ * FEED_PRESETS / PANEL_PRESETS above are supposed to name.
+ *
+ * Derived rather than listed, because a hand-maintained list that silently drifts
+ * from the registry it mirrors is the entire bug this file guards against, and a
+ * guard is not exempt from its own lesson. A preset here is a const of the right
+ * annotation assigned an object literal with at least one top-level key of its
+ * own — which excludes the derived aggregates for free: `ALL_PANELS` is an object
+ * literal but spreads-only (no keys), and `CANONICAL_FEEDS` / `DEFAULT_PANELS`
+ * are assigned function calls rather than literals.
+ */
+function declaredPresetConsts(source: string, type: string): string[] {
+  const re = new RegExp(`const\\s+(\\w+)\\s*:\\s*${type}\\s*=\\s*\\{`, 'g');
+  return [...source.matchAll(re)]
+    .map(m => m[1]!)
+    .filter(name => topLevelKeys(source, name).length > 0)
+    .sort();
+}
+
 /** CANONICAL_FEEDS keys — the union the pass iterates. */
 const feedCategories = unionOfPresets(feedsSrc, FEED_PRESETS);
 /** ALL_PANELS keys — every panel key any variant can put in `panelSettings`. */
@@ -404,6 +424,24 @@ describe('news panel key reachability (#5871)', () => {
     for (const key of ['commodities', 'commodities-news', 'markets', 'markets-news', 'climate-news']) {
       assert.ok(catalogPanelKeys.has(key), `expected '${key}' in the panel catalog`);
     }
+  });
+
+  it('names every feed and panel preset that actually exists', () => {
+    // Without this, FEED_PRESETS / PANEL_PRESETS are exactly the shape of the bug
+    // this file exists to catch: a hand-maintained list that drifts from the
+    // registry it mirrors. A renamed or newly-added preset would silently shrink
+    // the key sets, and the reachability assertion below would keep passing over
+    // a smaller world — the same way `commodities` fell off COLLIDING_NEWS_PANEL_KEYS.
+    assert.deepEqual(
+      declaredPresetConsts(feedsSrc, 'Record<string, Feed\\[\\]>'),
+      [...FEED_PRESETS].sort(),
+      'src/config/feeds.ts declares a different set of feed presets than FEED_PRESETS names',
+    );
+    assert.deepEqual(
+      declaredPresetConsts(panelsSrc, 'Record<string, PanelConfig>'),
+      [...PANEL_PRESETS].sort(),
+      'src/config/panels.ts declares a different set of panel presets than PANEL_PRESETS names',
+    );
   });
 
   it('every *-news catalog entry is reachable from a feed category', () => {
