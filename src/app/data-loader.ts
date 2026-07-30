@@ -18,9 +18,16 @@ import {
   MARKET_SYMBOLS,
   SITE_VARIANT,
   LAYER_TO_SOURCE,
+  STORAGE_KEYS,
   isPanelInVariantDefaults,
 } from '@/config';
 import { resolveNewsCategories, enabledNewsCategoryKeys, type ResolvedCategory } from '@/config/feed-resolution';
+import {
+  countRepresentedSources,
+  mergeRotatedNewsItems,
+  nextRotationCycle,
+  selectRotatingFeedWindow,
+} from '@/app/news-feed-rotation';
 import {
   runNewsLoadPass,
   newsWorkListSignature,
@@ -101,7 +108,7 @@ import { fetchOrefAlerts, startOrefPolling, stopOrefPolling, onOrefAlertsUpdate 
 import { getResilienceRanking } from '@/services/resilience';
 import { buildResilienceChoroplethMap } from '@/components/resilience-choropleth-utils';
 import { enrichEventsWithExposure } from '@/services/population-exposure';
-import { debounce, getCircuitBreakerCooldownInfo } from '@/utils';
+import { debounce, getCircuitBreakerCooldownInfo, loadFromStorage, saveToStorage } from '@/utils';
 import { isFeatureAvailable, isFeatureEnabled } from '@/services/runtime-config';
 import { hasPremiumAccess } from '@/services/panel-gating';
 import { isDesktopRuntime, toApiUrl } from '@/services/runtime';
@@ -407,6 +414,18 @@ export class DataLoaderManager implements AppModule {
   private readonly perFeedFallbackCategoryFeedLimit = 3;
   private readonly perFeedFallbackIntelFeedLimit = 6;
   private readonly perFeedFallbackBatchSize = 2;
+  /**
+   * Ceiling on a custom category's ACCUMULATED item set (#5873).
+   *
+   * A custom category rotates through its sources `perFeedFallbackCategoryFeedLimit`
+   * at a time and merges each cycle into what the panel already shows, so unlike
+   * every other path its item set is not one snapshot. 40 is twice the server
+   * digest's `MAX_ITEMS_PER_CATEGORY` (20) — enough headroom for a full rotation
+   * lap of a ten-source category to stay represented at once, while keeping the
+   * panel, `ctx.allNews` and the clustering input the same order of magnitude as
+   * a digest-backed category.
+   */
+  private readonly customCategoryMergedItemLimit = 40;
   private lastGoodDigest: ListFeedDigestResponse | null = null;
   /**
    * Work-list signature of the last news load that actually landed data, or
@@ -685,6 +704,51 @@ export class DataLoaderManager implements AppModule {
   private selectLimitedFeeds<T>(feeds: T[], maxFeeds: number): T[] {
     if (feeds.length <= maxFeeds) return feeds;
     return feeds.slice(0, maxFeeds);
+  }
+
+  /**
+   * Rotation cycle of a custom category's capped per-feed window, persisted so
+   * it survives a reload (#5873).
+   *
+   * In-memory-only state would restart every custom category at window 0 on
+   * every page load, which for the common short session is indistinguishable
+   * from the fixed prefix this replaced: sources 4..N would still never be
+   * fetched. Reads are defensive — a hand-edited or older-schema value must not
+   * reach `selectRotatingFeedWindow` as a NaN start.
+   */
+  private readNewsRotationCycles(): Record<string, number> {
+    const stored = loadFromStorage<Record<string, number>>(STORAGE_KEYS.newsFeedRotation, {});
+    return stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {};
+  }
+
+  private newsRotationCycle(category: string): number {
+    const cycle = this.readNewsRotationCycles()[category];
+    return typeof cycle === 'number' && Number.isFinite(cycle) && cycle >= 0 ? Math.trunc(cycle) : 0;
+  }
+
+  /**
+   * Advance and persist a custom category's rotation cycle.
+   *
+   * Written AFTER the window for this cycle has been selected, and pruned to
+   * the custom categories still in the work-list so a panel the user has since
+   * removed can't leave its entry behind forever.
+   */
+  private advanceNewsRotationCycle(category: string, feedCount: number): void {
+    const keep = new Set(
+      this.resolveEnabledNewsCategories()
+        .filter(({ isCustom }) => isCustom)
+        .map(({ key }) => key),
+    );
+    keep.add(category);
+
+    const next: Record<string, number> = {};
+    for (const [key, value] of Object.entries(this.readNewsRotationCycles())) {
+      if (keep.has(key) && typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+        next[key] = Math.trunc(value);
+      }
+    }
+    next[category] = nextRotationCycle(this.newsRotationCycle(category), feedCount);
+    saveToStorage(STORAGE_KEYS.newsFeedRotation, next);
   }
 
   private shouldShowIntelligenceNotifications(): boolean {
@@ -1224,6 +1288,14 @@ export class DataLoaderManager implements AppModule {
   // still capped by perFeedFallbackCategoryFeedLimit like any other per-feed
   // fallback, because nothing bounds how many custom categories a session has
   // (#5376). The cost is borne only by users who customize.
+  //
+  // That cap is a degraded-mode ceiling for a preset category but the STEADY
+  // STATE for a custom one, so the two diverge in how they spend it (#5873):
+  // a custom category rotates its window across cycles and merges each cycle
+  // into what the panel already shows, and reports the resulting source
+  // coverage on the panel badge. A preset category keeps the fixed prefix and
+  // whole-set replace — it is digest-backed in the normal case, and its
+  // fallback lasts only as long as the outage.
   private async loadNewsCategory(
     category: string,
     feeds: typeof FEEDS.politics,
@@ -1237,7 +1309,10 @@ export class DataLoaderManager implements AppModule {
       const enabledFeeds = (feeds ?? []).filter(f => !this.ctx.disabledSources.has(f.name));
       if (enabledFeeds.length === 0) {
         delete this.ctx.newsByCategory[category];
-        if (panel) panel.showError(t('common.allSourcesDisabled'));
+        if (panel) {
+          panel.setSourceCoverage(null);
+          panel.showError(t('common.allSourcesDisabled'));
+        }
         this.ctx.statusPanel?.updateFeed(category.charAt(0).toUpperCase() + category.slice(1), {
           status: 'ok',
           itemCount: 0,
@@ -1248,6 +1323,10 @@ export class DataLoaderManager implements AppModule {
 
       // Digest branch: server already aggregated feeds — map proto items to client types
       if (digest?.categories && category in digest.categories) {
+        // The digest carries every enabled source for the category, so there is
+        // no partial coverage to disclose — clear any badge a prior custom-path
+        // load left behind.
+        panel?.setSourceCoverage(null);
         const items = (digest.categories[category]?.items ?? [])
           .map(protoItemToNewsItem)
           .filter(i => enabledNames.has(i.source));
@@ -1282,6 +1361,45 @@ export class DataLoaderManager implements AppModule {
         return items;
       }
 
+      // Preset categories: serve last-known-good while the digest is briefly
+      // unavailable. Custom categories are NEVER in the digest, so this branch
+      // would fire on every refresh after the first load — getStaleNewsItems
+      // reads ctx.newsByCategory, which the prior cycle's direct fetch already
+      // populated — and freeze the panel on stale headlines. Skip it for them
+      // and fall through to the direct fetch; the panel keeps showing its
+      // current batch until fresh data lands (no blank flash).
+      const staleItems = this.getStaleNewsItems(category).filter(i => enabledNames.has(i.source));
+
+      // For a custom category that same set is not "stale headlines to freeze
+      // on" but the CARRY-OVER this cycle accumulates onto: the rotation window
+      // only ever fetches perFeedFallbackCategoryFeedLimit sources, so the
+      // sources it did NOT fetch this time live here (#5873). Snapshotted here,
+      // before any render — renderNewsForCategory overwrites
+      // ctx.newsByCategory, which is what getStaleNewsItems reads, so reading
+      // it later would fold each partial render back into itself.
+      const carryOver = isCustom ? staleItems : [];
+
+      /**
+       * What to actually paint for a given set of freshly fetched items.
+       *
+       * Identity for a preset category — its fallback replaces wholesale, as
+       * before. For a custom one it merges onto the carry-over and republishes
+       * the resulting source coverage, so the panel states how much of its
+       * source list it is showing instead of silently claiming to be complete.
+       */
+      const mergeForRender = (freshItems: NewsItem[]): NewsItem[] => {
+        if (!isCustom) return freshItems;
+        const merged = mergeRotatedNewsItems(carryOver, freshItems, {
+          maxItems: this.customCategoryMergedItemLimit,
+          enabledSources: enabledNames,
+        });
+        panel?.setSourceCoverage({
+          covered: countRepresentedSources(merged),
+          total: enabledFeeds.length,
+        });
+        return merged;
+      };
+
       // Per-feed fallback: fetch each feed individually (first load or digest unavailable)
       const renderIntervalMs = 100;
       let lastRenderTime = 0;
@@ -1297,7 +1415,10 @@ export class DataLoaderManager implements AppModule {
 
       const scheduleRender = (partialItems: NewsItem[]) => {
         if (!panel) return;
-        pendingItems = partialItems;
+        // Merge BEFORE queueing, not at flush time: rendering the raw partial
+        // would blank the carried-over sources for one frame and then bring
+        // them back, which is the churn the merge exists to avoid.
+        pendingItems = mergeForRender(partialItems);
         const elapsed = Date.now() - lastRenderTime;
         if (elapsed >= renderIntervalMs) {
           if (renderTimeout) {
@@ -1316,14 +1437,6 @@ export class DataLoaderManager implements AppModule {
         }
       };
 
-      // Preset categories: serve last-known-good while the digest is briefly
-      // unavailable. Custom categories are NEVER in the digest, so this branch
-      // would fire on every refresh after the first load — getStaleNewsItems
-      // reads ctx.newsByCategory, which the prior cycle's direct fetch already
-      // populated — and freeze the panel on stale headlines. Skip it for them
-      // and fall through to the direct fetch; the panel keeps showing its
-      // current batch until fresh data lands (no blank flash).
-      const staleItems = this.getStaleNewsItems(category).filter(i => enabledNames.has(i.source));
       if (!isCustom && staleItems.length > 0) {
         console.warn(`[News] Digest missing for "${category}", serving stale headlines (${staleItems.length})`);
         this.renderNewsForCategory(category, staleItems);
@@ -1355,11 +1468,26 @@ export class DataLoaderManager implements AppModule {
       // panels carried "no thundering-herd risk" — three of them firing on every
       // load, uncapped, was 19 direct proxy round-trips (#5376). Nothing bounds
       // how many custom categories a session can have, so the cap has to be
-      // unconditional; a custom category is also the ONLY consumer of its feeds
-      // (it is never in the digest), so the cap is what it steadily shows.
-      const fallbackFeeds = this.selectLimitedFeeds(enabledFeeds, this.perFeedFallbackCategoryFeedLimit);
+      // unconditional.
+      //
+      // WHICH feeds the cap buys is where the two diverge. A preset category
+      // takes the fixed prefix: its fallback is transient, and re-fetching the
+      // same feeds is what makes an outage's repeated attempts idempotent. A
+      // custom category is the ONLY consumer of its feeds and is never in the
+      // digest, so a fixed prefix made the cap PERMANENT — feeds 4..N were
+      // unreachable on every load and every refresh (#5873). It rotates
+      // instead: same request budget, advanced by the cap each cycle, so every
+      // source is reached within ceil(N / cap) cycles.
+      const rotationCycle = isCustom ? this.newsRotationCycle(category) : 0;
+      const fallbackFeeds = isCustom
+        ? selectRotatingFeedWindow(enabledFeeds, this.perFeedFallbackCategoryFeedLimit, rotationCycle)
+        : this.selectLimitedFeeds(enabledFeeds, this.perFeedFallbackCategoryFeedLimit);
       if (isCustom) {
-        console.warn(`[News] Custom category "${category}" (not in variant preset), fetching ${fallbackFeeds.length}/${enabledFeeds.length} feeds directly`);
+        // Advanced as soon as the window is claimed rather than after the fetch
+        // resolves, so a cycle that fails outright still moves on instead of
+        // retrying the same failing window forever.
+        this.advanceNewsRotationCycle(category, enabledFeeds.length);
+        console.warn(`[News] Custom category "${category}" (not in variant preset), fetching ${fallbackFeeds.length}/${enabledFeeds.length} feeds directly (rotation cycle ${rotationCycle})`);
       } else if (options.allowDigestPendingFallback) {
         console.warn(`[News] Digest still pending for "${category}", using limited per-feed fallback (${fallbackFeeds.length}/${enabledFeeds.length} feeds)`);
       } else if (fallbackFeeds.length < enabledFeeds.length) {
@@ -1369,15 +1497,24 @@ export class DataLoaderManager implements AppModule {
       }
 
       const { fetchCategoryFeeds, getFeedFailures } = await getRssModule();
-      const items = await fetchCategoryFeeds(fallbackFeeds, {
+      const fetchedItems = await fetchCategoryFeeds(fallbackFeeds, {
         batchSize: this.perFeedFallbackBatchSize,
         onBatch: (partialItems) => {
           scheduleRender(partialItems);
+          // Map flashes and breaking-news alerts fire on the FRESH batch only.
+          // Feeding them the merged set would re-flash and re-alert on every
+          // rotation cycle for headlines the user has already seen.
           this.flashMapForNews(partialItems);
           checkBatchForBreakingAlerts(partialItems);
         },
       });
 
+      // Everything downstream — render, empty-state, baseline, status count and
+      // the value that lands in ctx.allNews — reads the MERGED set, because for
+      // a custom category that is what the panel actually shows. Using the raw
+      // fetch would report this cycle's three sources as the whole category and
+      // hand clustering a set the user isn't looking at.
+      const items = mergeForRender(fetchedItems);
       this.renderNewsForCategory(category, items);
       if (panel) {
         if (renderTimeout) {
