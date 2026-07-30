@@ -112,6 +112,7 @@ import { debounce, getCircuitBreakerCooldownInfo, loadFromStorage, saveToStorage
 import { isFeatureAvailable, isFeatureEnabled } from '@/services/runtime-config';
 import { hasPremiumAccess } from '@/services/panel-gating';
 import { isDesktopRuntime, toApiUrl } from '@/services/runtime';
+import { filterFeedsByLanguage } from '@/services/feed-language';
 import { getAiFlowSettings } from '@/services/ai-flow-settings';
 import { t, getCurrentLanguage } from '@/services/i18n';
 import { getHydratedData } from '@/services/bootstrap';
@@ -1321,6 +1322,18 @@ export class DataLoaderManager implements AppModule {
       }
       const enabledNames = new Set(enabledFeeds.map(f => f.name));
 
+      // The feeds a direct fetch would actually attempt. `fetchCategoryFeeds`
+      // drops feeds whose declared `lang` isn't the current UI language, so for
+      // a rotating custom category the enabled set is the wrong denominator on
+      // both counts: `europe` declares 47 feeds but only 6 are fetchable for an
+      // English user, so rotating over all 47 would spend ~7 of every 8
+      // twenty-minute cycles fetching nothing, and the coverage badge would sit
+      // at "6/47 sources" permanently — a fresh version of the same lie #5873 is
+      // about. Preset categories keep the full enabled set: they are
+      // digest-backed, and `enabledNames` (which filters digest items by source)
+      // must stay language-blind because the server does not language-filter.
+      const reachableFeeds = isCustom ? filterFeedsByLanguage(enabledFeeds, getCurrentLanguage()) : enabledFeeds;
+
       // Digest branch: server already aggregated feeds — map proto items to client types
       if (digest?.categories && category in digest.categories) {
         // The digest carries every enabled source for the category, so there is
@@ -1395,7 +1408,7 @@ export class DataLoaderManager implements AppModule {
         });
         panel?.setSourceCoverage({
           covered: countRepresentedSources(merged),
-          total: enabledFeeds.length,
+          total: reachableFeeds.length,
         });
         return merged;
       };
@@ -1480,14 +1493,14 @@ export class DataLoaderManager implements AppModule {
       // source is reached within ceil(N / cap) cycles.
       const rotationCycle = isCustom ? this.newsRotationCycle(category) : 0;
       const fallbackFeeds = isCustom
-        ? selectRotatingFeedWindow(enabledFeeds, this.perFeedFallbackCategoryFeedLimit, rotationCycle)
+        ? selectRotatingFeedWindow(reachableFeeds, this.perFeedFallbackCategoryFeedLimit, rotationCycle)
         : this.selectLimitedFeeds(enabledFeeds, this.perFeedFallbackCategoryFeedLimit);
       if (isCustom) {
         // Advanced as soon as the window is claimed rather than after the fetch
         // resolves, so a cycle that fails outright still moves on instead of
         // retrying the same failing window forever.
-        this.advanceNewsRotationCycle(category, enabledFeeds.length);
-        console.warn(`[News] Custom category "${category}" (not in variant preset), fetching ${fallbackFeeds.length}/${enabledFeeds.length} feeds directly (rotation cycle ${rotationCycle})`);
+        this.advanceNewsRotationCycle(category, reachableFeeds.length);
+        console.warn(`[News] Custom category "${category}" (not in variant preset), fetching ${fallbackFeeds.length}/${reachableFeeds.length} feeds directly (rotation cycle ${rotationCycle})`);
       } else if (options.allowDigestPendingFallback) {
         console.warn(`[News] Digest still pending for "${category}", using limited per-feed fallback (${fallbackFeeds.length}/${enabledFeeds.length} feeds)`);
       } else if (fallbackFeeds.length < enabledFeeds.length) {
@@ -1554,7 +1567,17 @@ export class DataLoaderManager implements AppModule {
         errorMessage: String(error),
       });
       this.ctx.statusPanel?.updateApi('RSS2JSON', { status: 'error' });
-      delete this.ctx.newsByCategory[category];
+      // A preset category drops its items: its next successful load replaces
+      // them wholesale from the digest, so holding stale ones only risks
+      // presenting them as current.
+      //
+      // A custom category's stored items are its ACCUMULATED rotation coverage,
+      // built one capped window per 20-minute cycle (#5873). Dropping them
+      // sends the next cycle back to carry-over-less, so a single transient
+      // error — a chunk-load hiccup is enough — silently restarts the hour it
+      // takes to cover a ten-source panel. Keep them: the next cycle merges
+      // onto them, and the status panel already reports the error.
+      if (!isCustom) delete this.ctx.newsByCategory[category];
       return [];
     }
   }
