@@ -26,12 +26,6 @@
       "reason": "Japan MOD route returns proxy CONNECT 403; candidate country-specific routes return 407. Second cause independent of the #5689 Decodo exhaustion. No verified replacement endpoint installed."
     },
     {
-      "name": "gdeltIntel",
-      "status": "SEED_ERROR",
-      "issue": 5770,
-      "reason": "GDELT's DOC API is supply-side load-shed, not IP-blocked: a virgin residential IP 429s on its first-ever request and the dedicated GDELT_PROXY_URL exit from #5805 429s identically (#5843), so no proxy route can fix it. The bulk materializer (#5863) removes the DOC dependency entirely; this entry stays only until production reports gdeltIntel healthy on sourceVersion gdelt-bulk-v2, then it must be pruned."
-    },
-    {
       "name": "humanitarianSummary",
       "status": "SEED_ERROR",
       "issue": 5769,
