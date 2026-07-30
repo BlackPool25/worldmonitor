@@ -101,6 +101,14 @@ async function clickExportPdf(): Promise<void> {
 }
 
 describe('Export PDF click cycle — button to printed document', () => {
+  it('only exposes the formats selected by the entitlement-backed menu', () => {
+    panel.setAvailableFormats(['json']);
+
+    expect(root().querySelector<HTMLButtonElement>('[data-format="json"]')!.hidden).toBe(false);
+    expect(root().querySelector<HTMLButtonElement>('[data-format="csv"]')!.hidden).toBe(true);
+    expect(root().querySelector<HTMLButtonElement>('[data-format="pdf"]')!.hidden).toBe(true);
+  });
+
   it('prints a report built from the data the panel holds at CLICK time', async () => {
     // Not construction time: the dashboard mutates constantly, and a report
     // built from a stale snapshot is the whole reason getData is a callback.
