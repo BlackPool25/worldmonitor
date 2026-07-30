@@ -99,6 +99,31 @@ export function sanitizeForPrompt(input) {
 }
 
 /**
+ * Sanitize a string for safe inclusion in a *single line* of an LLM prompt.
+ *
+ * sanitizeForPrompt deliberately preserves a lone newline — it splits on '\n'
+ * to drop role-prefixed injection lines, rejoins, then collapses only runs of
+ * 2+ whitespace. That is right for prose blocks, and wrong everywhere the
+ * newline is the *delimiter* of the surrounding block: a `- ${title}` list
+ * joined with '\n', or a `Label: ${value}` line inside a section. There a
+ * single '\n' in feed text forges an extra bullet or section the model reads as
+ * a separate, real datum (#5850 for liveHeadlines, #5857 for its siblings).
+ *
+ * Sanitizing the content is not enough when the delimiter is part of the
+ * content's alphabet, so this variant also collapses every whitespace run —
+ * newlines, carriage returns and tabs included — to a single space.
+ *
+ * Use this at line-composing call sites; keep plain sanitizeForPrompt for prose
+ * bodies whose internal newlines are legitimate.
+ *
+ * @param {unknown} input
+ * @returns {string}
+ */
+export function sanitizeForPromptLine(input) {
+  return sanitizeForPrompt(input).replace(/\s+/g, ' ').trim();
+}
+
+/**
  * Sanitize an array of headline strings, dropping any that become empty
  * after sanitization.
  * @param {unknown[]} headlines
