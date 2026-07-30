@@ -508,9 +508,20 @@ function shouldProxySzseFailure(error) {
 
 function shouldRetrySzseProxyFailure(error) {
   const reason = transportFailureReason(error);
+  // A CONNECT-layer rejection is the gateway refusing the tunnel -- proxy auth,
+  // an exhausted account traffic limit, a provider policy block. Every sticky
+  // port on the same account answers identically, so retrying only burns the
+  // bounded budget. Socket-level codes still retry: those are transient.
+  if (error?.cause?.proxyConnect === true || error?.proxyConnect === true) {
+    return RETRYABLE_SZSE_PROXY_FAILURE_CODES.has(reason);
+  }
   return reason === 'FETCH_FAILED'
     || reason === 'TIMEOUT'
     || RETRYABLE_SZSE_PROXY_FAILURE_CODES.has(reason)
+    // The origin blocking this exit IP is the one failure a different sticky
+    // session can actually fix, and shouldProxySzseFailure already classifies
+    // HTTP_403 that way for the direct hop.
+    || reason === 'HTTP_403'
     || isRetryableSzseHttpStatus(reason);
 }
 
@@ -519,9 +530,11 @@ async function fetchViaConfiguredProxy(input, init, {
   attempt,
   maxBytes,
   proxyRequestFn,
+  onExitPort,
 }) {
   const proxyConfig = parseProxyConfigForAttempt(proxyUrl, attempt);
   if (!proxyConfig) throw sourceError('PROXY_NOT_CONFIGURED');
+  onExitPort?.(Number(proxyConfig.port));
   // init.headers carries the same Referer/User-Agent/Content-Type the direct
   // request used (requestInit() below), deliberately: we're routing the exact
   // same declared client through a different egress point, not masquerading
@@ -573,8 +586,10 @@ function edgeFailureDiagnostic(response, rawContentType = normalizedResponseCont
     : null;
   const safeCfRay = /^[a-f0-9]{8,32}-[A-Z]{3}$/u.test(cfRay) ? cfRay : null;
   const safeVercelId = /^[A-Za-z0-9:_-]{1,96}$/u.test(vercelId) ? vercelId : null;
-  if (!server && !safeCfRay && !safeVercelId) return null;
-
+  // contentType is emitted even when no intermediary identifies itself: it is
+  // already collapsed to the enum below, so it carries no intermediary-controlled
+  // text, and an unrecognised box terminating the connection is exactly the case
+  // where "did this come from our handler?" is hardest to answer from the code.
   const contentType = ['application/json', 'text/html', 'text/plain'].includes(rawContentType)
     ? rawContentType
     : rawContentType
@@ -588,10 +603,9 @@ function edgeFailureDiagnostic(response, rawContentType = normalizedResponseCont
   };
 }
 
-async function readEdgeEgressFailure(response, maxBytes) {
+async function readEdgeEgressFailure(response, maxBytes, diagnostic) {
   const fallback = `HTTP_${Number(response?.status) || 0}`;
   const contentType = normalizedResponseContentType(response);
-  const diagnostic = edgeFailureDiagnostic(response, contentType);
   if (contentType !== 'application/json') {
     try {
       await response?.body?.cancel?.();
@@ -618,6 +632,7 @@ async function fetchViaEdgeEgress(_input, init, {
   edgeEgress,
   maxBytes,
   edgeRequestFn,
+  onDiagnostic,
 }) {
   const response = await edgeRequestFn(edgeEgress.url, {
     method: 'POST',
@@ -630,8 +645,15 @@ async function fetchViaEdgeEgress(_input, init, {
     redirect: 'error',
     signal: init?.signal,
   });
+  // Captured before branching on status. A 2xx interstitial -- an HTML challenge
+  // page, or a 200 whose body is not the JSON envelope -- fails downstream in the
+  // caller's parser as MALFORMED_RESPONSE, and reporting it through onDiagnostic
+  // here is the only way that error reaches the decision log carrying the routing
+  // metadata that separates an intermediary from our own handler.
+  const diagnostic = edgeFailureDiagnostic(response);
+  if (diagnostic) onDiagnostic?.(diagnostic);
   if (!response.ok) {
-    const failure = await readEdgeEgressFailure(response, maxBytes);
+    const failure = await readEdgeEgressFailure(response, maxBytes, diagnostic);
     const error = sourceError(failure.code);
     if (failure.diagnostic) error.edgeFailureDiagnostic = failure.diagnostic;
     throw error;
@@ -763,6 +785,10 @@ async function fetchSzseAnnouncements(fetchFn, now, {
   let transportPath = 'direct';
   let fallbackReason = null;
   let proxyFailureReason = null;
+  // Gateway ports actually dialled, in attempt order. Routing metadata, not a
+  // credential -- it is what makes "the fix never engaged" distinguishable from
+  // "two distinct exits are both blocked" in the decision log.
+  const proxyExitPorts = [];
   try {
     fetched = await request(fetchFn, SZSE_DIRECT_TIMEOUT_MS);
   } catch (directError) {
@@ -775,7 +801,12 @@ async function fetchSzseAnnouncements(fetchFn, now, {
         requestCount += 1;
         try {
           fetched = await request(
-            (input, init) => proxyFetchFn(input, init, attempt),
+            (input, init) => proxyFetchFn(
+              input,
+              init,
+              attempt,
+              (port) => { proxyExitPorts.push(port); },
+            ),
             SZSE_PROXY_TIMEOUT_MS,
           );
           proxyError = null;
@@ -798,18 +829,25 @@ async function fetchSzseAnnouncements(fetchFn, now, {
     if (!fetched && edgeFetchFn) {
       transportPath = 'edge';
       requestCount += 1;
+      // A 2xx interstitial throws downstream of edgeFetchFn, so the diagnostic
+      // cannot ride on that error -- it is reported out through this sink while
+      // the response is still in hand.
+      let edgeDiagnostic = null;
       try {
-        fetched = await request(edgeFetchFn, SZSE_EDGE_TIMEOUT_MS);
+        fetched = await request(
+          (input, init) => edgeFetchFn(input, init, (entry) => { edgeDiagnostic = entry; }),
+          SZSE_EDGE_TIMEOUT_MS,
+        );
       } catch (edgeError) {
         const failure = sourceError(errorCodeFor(edgeError), edgeError);
         failure.requestCount = requestCount;
         failure.transportPath = transportPath;
         failure.fallbackReason = fallbackReason;
         if (proxyFailureReason) failure.proxyFailureReason = proxyFailureReason;
+        if (proxyExitPorts.length) failure.proxyExitPorts = [...proxyExitPorts];
         failure.edgeFailureReason = transportFailureReason(edgeError);
-        if (edgeError?.edgeFailureDiagnostic) {
-          failure.edgeFailureDiagnostic = edgeError.edgeFailureDiagnostic;
-        }
+        const diagnostic = edgeError?.edgeFailureDiagnostic ?? edgeDiagnostic;
+        if (diagnostic) failure.edgeFailureDiagnostic = diagnostic;
         throw failure;
       }
     }
@@ -820,6 +858,7 @@ async function fetchSzseAnnouncements(fetchFn, now, {
       failure.transportPath = transportPath;
       failure.fallbackReason = fallbackReason;
       failure.proxyFailureReason = proxyFailureReason;
+      if (proxyExitPorts.length) failure.proxyExitPorts = [...proxyExitPorts];
       throw failure;
     }
     if (!fetched) throw directError;
@@ -837,6 +876,7 @@ async function fetchSzseAnnouncements(fetchFn, now, {
     transportPath,
     ...(fallbackReason ? { fallbackReason } : {}),
     ...(proxyFailureReason ? { proxyFailureReason } : {}),
+    ...(proxyExitPorts.length ? { proxyExitPorts: [...proxyExitPorts] } : {}),
   };
 }
 
@@ -1499,21 +1539,23 @@ export async function fetchChinaCorporateDisclosureSnapshot({
   onDecision = (entry) => console.log(JSON.stringify({ event: 'china_corporate_disclosure_source', ...entry })),
 } = {}) {
   const resolvedProxyFetchFn = proxyUrl
-    ? (input, init, attempt = 0) => fetchViaConfiguredProxy(input, init, {
+    ? (input, init, attempt = 0, onExitPort = undefined) => fetchViaConfiguredProxy(input, init, {
         proxyUrl,
         attempt,
         maxBytes: OFFICIAL_EXCHANGE_SOURCE_CONTRACTS.szse.maxResponseBytes,
         proxyRequestFn,
+        onExitPort,
       })
     : null;
   const resolvedEdgeEgress = edgeEgress === undefined
     ? resolveChinaExchangeEdgeEgress()
     : edgeEgress;
   const resolvedEdgeFetchFn = resolvedEdgeEgress?.url && resolvedEdgeEgress?.secret
-    ? (input, init) => fetchViaEdgeEgress(input, init, {
+    ? (input, init, onDiagnostic = undefined) => fetchViaEdgeEgress(input, init, {
         edgeEgress: resolvedEdgeEgress,
         maxBytes: OFFICIAL_EXCHANGE_SOURCE_CONTRACTS.szse.maxResponseBytes,
         edgeRequestFn,
+        onDiagnostic,
       })
     : null;
   const outcomes = [];
@@ -1544,6 +1586,9 @@ export async function fetchChinaCorporateDisclosureSnapshot({
           : {}),
         ...(error?.edgeFailureDiagnostic
           ? { edgeFailureDiagnostic: error.edgeFailureDiagnostic }
+          : {}),
+        ...(error?.proxyExitPorts?.length
+          ? { proxyExitPorts: error.proxyExitPorts }
           : {}),
       };
       outcomes.push(outcome);
@@ -1592,6 +1637,12 @@ export async function fetchChinaCorporateDisclosureSnapshot({
         : {}),
       ...(outcome?.edgeFailureDiagnostic
         ? { edgeFailureDiagnostic: outcome.edgeFailureDiagnostic }
+        : {}),
+      ...(outcome?.proxyExitPorts?.length
+        ? {
+            proxyExitPorts: outcome.proxyExitPorts,
+            proxyExitRotated: new Set(outcome.proxyExitPorts).size > 1,
+          }
         : {}),
       ...(source.launchStatus === 'launched'
         ? {
