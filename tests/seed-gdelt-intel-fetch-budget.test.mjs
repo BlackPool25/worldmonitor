@@ -236,6 +236,7 @@ describe('seed-gdelt-intel fetchAllTopics soft budget (issue #4864)', () => {
   it('rotates the one refreshed timeline pair across UTC four-hour slots', async () => {
     const timelineCalls = [];
     const slotMs = 4 * 60 * 60_000;
+    const loadPrevious = countingSnapshotLoader();
     await fetchAllTopics({
       _now: () => 4 * slotMs,
       _softBudgetMs: 60_000,
@@ -249,9 +250,10 @@ describe('seed-gdelt-intel fetchAllTopics soft budget (issue #4864)', () => {
         timelineCalls.push(`${topic.id}/${mode}`);
         return { points: [{ date: '2026-07-29', value: 1 }], errorCode: null };
       },
-      _loadPrevious: countingSnapshotLoader(),
+      _loadPrevious: loadPrevious,
     });
 
+    assert.equal(loadPrevious.reads, 1, 'slot rotation must not re-read the snapshot per series');
     assert.deepEqual(timelineCalls, [
       'intelligence/TimelineTone',
       'intelligence/TimelineVol',

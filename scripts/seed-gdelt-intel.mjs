@@ -193,43 +193,75 @@ function withBudget(operation, budgetMs, fallback, onTimeout) {
   return Promise.race([pending, budget]).finally(() => clearTimeout(timer));
 }
 
-// Stalest-first article order (issue #5848). GDELT's sustained load shedding
-// lets at most one DOC request through before the run circuit opens, and fixed
-// array order always awarded that success to INTEL_TOPICS[0] — production ran
-// with military 5h old while the other five coasted 18-29 days. Sorting
-// ascending by the previous snapshot's per-topic fetchedAt hands the scarce
-// success to whichever topic needs it most, and self-balances as topics refresh.
-// Only a topic that actually holds articles counts as fetched. Absent from the
-// snapshot, articleless, or an unparseable stamp all mean "no evidence of ever
-// succeeding" and sort oldest; equal staleness (including a cold start with no
-// snapshot) falls back to canonical order. The articleless case matters because
-// the cache-merge only coasts fetchedAt for entries it can backfill from, so a
-// topic that 429'd with nothing cached keeps the placeholder stamp of the run
-// that skipped it — trusting that would rank the one topic holding real articles
-// as the stalest and re-award it every success, reviving the monopoly on a cold
-// start.
-export function orderTopicsByStaleness(topics, previous) {
-  const previousFetchedAt = new Map();
-  for (const topic of previous?.topics ?? []) {
-    if (topic?.id && topic.articles?.length > 0) {
-      previousFetchedAt.set(topic.id, Date.parse(topic.fetchedAt));
-    }
+// Fetch order (issue #5848). GDELT's sustained load shedding lets at most one
+// DOC request through before the run circuit opens, and fixed array order always
+// awarded that success to INTEL_TOPICS[0] — production ran with military 5h old
+// while the other five coasted 18-29 days.
+//
+// Two keys, in this order:
+//
+//   1. attemptedAt — LIVENESS. Advances whenever the loop touched the topic, even
+//      if the request 429'd or came back empty. This key is what makes the
+//      rotation safe: ordering on content freshness alone is an absorbing state,
+//      because a topic that never succeeds never advances and is therefore
+//      permanently the "neediest" — it pins itself first on every run, trips the
+//      circuit before anything else is tried, and starves all six indefinitely
+//      (one permanently-blocked query took freshTopicCount from 5/6 per run to 0).
+//   2. fetchedAt of an article-bearing entry — FAIRNESS. Among topics equally
+//      overdue for an attempt, the scarce success goes to the stalest content.
+//      Only an entry that actually holds articles counts as successfully fetched:
+//      the cache-merge coasts fetchedAt only for entries it can backfill from, so
+//      a topic that 429'd with nothing cached keeps the placeholder stamp of the
+//      run that skipped it, and trusting that would rank the one topic holding
+//      real articles as the stalest and re-award it every success.
+//
+// Missing or unparseable stamps mean "no evidence this ever happened" and sort
+// first; ties (including a cold start with no snapshot) fall back to canonical
+// order. Forward clock skew is clamped to the run clock so a bad stamp can only
+// ever make a topic look older — an uncorrected future stamp would sort a topic
+// last forever, and a topic that is never attempted never gets a corrected stamp.
+// Returns the ranked entries rather than bare topics so the run can LOG the
+// decision it just made. The starvation this fixes went unnoticed for 18-29 days
+// because the fetch order was only ever reconstructible from a sequence of
+// `Fetching x...` lines, never stated; emitting the ranking keys makes "why is
+// topic X still stale" answerable from the run log alone.
+export function rankTopicsForFetch(topics, previous, nowMs) {
+  const previousById = new Map();
+  // Array.isArray, not `?? []`: the cache-merge below already treats this cached
+  // payload as untrusted, and a non-null non-iterable topics value would throw
+  // here before a single DOC request went out.
+  for (const topic of Array.isArray(previous?.topics) ? previous.topics : []) {
+    if (topic?.id) previousById.set(topic.id, topic);
   }
+  const stampMs = (value) => {
+    const parsed = Date.parse(value);
+    if (!Number.isFinite(parsed)) return Number.NEGATIVE_INFINITY;
+    return Number.isFinite(nowMs) ? Math.min(parsed, nowMs) : parsed;
+  };
   return topics
     .map((topic, index) => {
-      const parsed = previousFetchedAt.get(topic.id);
+      const prev = previousById.get(topic.id);
       return {
         topic,
         index,
-        fetchedAtMs: Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY,
+        attemptedAtMs: prev ? stampMs(prev.attemptedAt) : Number.NEGATIVE_INFINITY,
+        fetchedAtMs: prev?.articles?.length > 0 ? stampMs(prev.fetchedAt) : Number.NEGATIVE_INFINITY,
       };
     })
+    // Never subtract two equal keys — both can be -Infinity, and -Inf - -Inf is
+    // NaN, which would make the comparator incoherent.
     .sort((a, b) => (
-      a.fetchedAtMs === b.fetchedAtMs
-        ? a.index - b.index
-        : a.fetchedAtMs - b.fetchedAtMs
-    ))
-    .map((entry) => entry.topic);
+      a.attemptedAtMs !== b.attemptedAtMs
+        ? a.attemptedAtMs - b.attemptedAtMs
+        : a.fetchedAtMs !== b.fetchedAtMs
+          ? a.fetchedAtMs - b.fetchedAtMs
+          : a.index - b.index
+    ));
+}
+
+// `-Infinity` is the "never happened" sentinel for both ranking keys.
+function rankStampIso(ms) {
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
 }
 
 // Exported for tests. Deps are injectable so the soft-budget + cache-merge
@@ -256,22 +288,56 @@ export async function fetchAllTopics(deps = {}) {
   const deadlineAt = runStartedAt + _softBudgetMs;
   const remaining = () => deadlineAt - _now();
 
-  // The previous snapshot drives BOTH the stalest-first fetch order and the
-  // cache-merge backfill below, and it is read at most once per run — the
-  // ordering must not add a second Redis GET. It is read after the budget clock
-  // starts so a slow/retrying Redis eats article budget (degrading to more
-  // cached topics) instead of pushing the fetch phase past the hard #4786
-  // deadline into a graceful exit-75 crash.
+  // The previous snapshot drives BOTH the fetch order and the cache-merge
+  // backfill below, so a healthy run reads it once and shares it — the ordering
+  // must not add a second Redis GET.
+  //
+  // Only a USABLE snapshot is memoized. `verifySeedKey` degrades a dead Upstash
+  // to null after its retries, so "Redis was unreachable" and "there is no
+  // previous snapshot" arrive as the same value; caching that for the whole run
+  // would let a blip at run start silently disable the cache-merge, which is the
+  // mechanism that keeps freshness alive through a GDELT brownout (issue #5437).
+  // Leaving null unmemoized costs a genuinely cold start one extra GET and buys
+  // the merge an independent attempt several minutes later.
   let previousSnapshot = null;
-  let previousSnapshotRead = false;
   const loadPreviousOnce = async () => {
-    if (!previousSnapshotRead) {
-      previousSnapshot = await _loadPrevious();
-      previousSnapshotRead = true;
-    }
+    if (previousSnapshot == null) previousSnapshot = await _loadPrevious();
     return previousSnapshot;
   };
-  const fetchOrder = orderTopicsByStaleness(INTEL_TOPICS, await loadPreviousOnce());
+
+  // Bound the ordering read: it sits on the critical path before the first DOC
+  // request, and the shared Redis helper's retry ladder (three aborts plus capped
+  // Retry-After waits) can burn well over a minute of the soft budget — time paid
+  // for in whole topics. Ordering is an optimisation, so on timeout fall back to
+  // canonical order rather than spending the article budget on it. The budget
+  // clock starts before the read either way, so a slow Redis degrades to more
+  // cached topics instead of pushing the fetch phase past the hard #4786 deadline
+  // into a graceful exit-75 crash.
+  // Rejection is swallowed for the same reason the timeout is: ordering must never
+  // be the thing that ends a run before a single DOC request goes out. The
+  // cache-merge keeps its own unguarded read, so a genuinely broken Redis still
+  // surfaces there exactly as it did before this rotation existed.
+  const orderingSnapshot = await withBudget(
+    () => loadPreviousOnce().catch((err) => {
+      console.warn(`  ordering: previous-snapshot read failed (${err?.message || err}) — fetching in canonical order this run`);
+      return null;
+    }),
+    Math.min(_minRequestBudgetMs, Math.max(0, remaining())),
+    null,
+    () => console.warn('  ordering: previous-snapshot read exceeded its budget — fetching in canonical order this run'),
+  );
+  const fetchRanking = rankTopicsForFetch(INTEL_TOPICS, orderingSnapshot, runStartedAt);
+  const fetchOrder = fetchRanking.map((entry) => entry.topic);
+  console.log(JSON.stringify({
+    event: 'gdelt_intel_fetch_order',
+    order: fetchOrder.map((topic) => topic.id),
+    // null = no evidence it ever happened, which is what sorts a topic first.
+    ranking: fetchRanking.map((entry) => ({
+      id: entry.topic.id,
+      lastAttemptedAt: rankStampIso(entry.attemptedAtMs),
+      lastFetchedAt: rankStampIso(entry.fetchedAtMs),
+    })),
+  }));
 
   const topics = [];
   let failureCode = null;
@@ -297,7 +363,10 @@ export async function fetchAllTopics(deps = {}) {
     // so the run publishes partial+cached data and exits 0 instead of churning
     // past the hard #4786 deadline into a graceful exit-75 crash (issue #4864).
     if (remaining() < _minRequestBudgetMs) {
-      console.log(`  Soft budget (${Math.round(_softBudgetMs / 1000)}s) reached after ${i}/${fetchOrder.length} topic(s) — remaining ${fetchOrder.length - i} will fall back to cached snapshot`);
+      // Name the skipped topics: before the rotation they were the canonical
+      // tail and an operator could infer them from a count, but now they are
+      // whichever topics this run ranked last.
+      console.log(`  Soft budget (${Math.round(_softBudgetMs / 1000)}s) reached after ${i}/${fetchOrder.length} topic(s) — falling back to cached snapshot for ${fetchOrder.slice(i).map((t) => t.id).join(', ')}`);
       failureCode = 'GDELT_FETCH_BUDGET_EXCEEDED';
       break;
     }
@@ -314,6 +383,14 @@ export async function fetchAllTopics(deps = {}) {
       () => console.warn(`    ${topic.id}: article budget reached — falling back to cached`),
     );
     console.log(`    ${result.articles.length} articles`);
+    // Liveness stamp: this run TOUCHED the topic. Recorded regardless of outcome,
+    // so a failed or empty attempt still moves the topic to the back of the
+    // rotation instead of letting it pin itself first forever. Deliberately
+    // separate from fetchedAt, which must keep coasting to the last successful
+    // fetch so the content-age health signal stays honest (issue #5478). Taken
+    // from the injected run clock, not `new Date()`, so a test can advance the
+    // cron cadence without every simulated run collapsing into one millisecond.
+    result.attemptedAt = new Date(_now()).toISOString();
     for (const series of TIMELINE_SERIES) {
       result[series.topicField] = [];
     }
@@ -387,20 +464,26 @@ export async function fetchAllTopics(deps = {}) {
   }
 
   // For topics that returned 0 articles (rate-limited or budget-skipped), preserve
-  // the previous snapshot's articles rather than publishing empty over good cached data.
+  // the previous snapshot's articles rather than publishing empty over good cached
+  // data — and carry each untouched topic's liveness stamp forward so it holds its
+  // place in the rotation instead of jumping back to the front. Both need the same
+  // previous snapshot, and a run that skipped a topic always has an empty one, so
+  // this single read covers both.
   const emptyTopics = topics.filter((t) => t.articles.length === 0);
   if (emptyTopics.length > 0) {
     const previous = await loadPreviousOnce();
     if (previous && Array.isArray(previous.topics)) {
       const prevMap = new Map(previous.topics.map((t) => [t.id, t]));
       for (const topic of topics) {
-        if (topic.articles.length === 0 && prevMap.has(topic.id)) {
-          const prev = prevMap.get(topic.id);
-          if (prev.articles?.length > 0) {
-            console.log(`    ${topic.id}: no fresh articles — using ${prev.articles.length} cached articles from previous snapshot`);
-            topic.articles = prev.articles;
-            topic.fetchedAt = prev.fetchedAt;
-          }
+        const prev = prevMap.get(topic.id);
+        if (!prev) continue;
+        if (!topic.attemptedAt && prev.attemptedAt) {
+          topic.attemptedAt = prev.attemptedAt;
+        }
+        if (topic.articles.length === 0 && prev.articles?.length > 0) {
+          console.log(`    ${topic.id}: no fresh articles — using ${prev.articles.length} cached articles from previous snapshot`);
+          topic.articles = prev.articles;
+          topic.fetchedAt = prev.fetchedAt;
         }
       }
     }
@@ -425,7 +508,10 @@ function validate(data) {
 
 // Strip transport/timeline implementation fields before writing the canonical
 // Redis payload. They are consumed only by afterPublish and seed-meta.
-function publishTransform(data) {
+// `attemptedAt` deliberately survives: the next run reads it back out of this
+// payload to drive the fetch rotation. Exported for tests so a harness that
+// simulates successive runs mirrors this redaction instead of re-listing it.
+export function publishTransform(data) {
   const {
     _gdeltFailureCode: _failure,
     _freshTopicCount: _fresh,
@@ -778,7 +864,9 @@ export function declareRecords(data) {
 // fresh envelope fetchedAt, so seed-meta age NEVER trips during a GDELT
 // brownout — 4 of 6 topics coasted for 3 weeks with zero alarms. Per-topic
 // fetchedAt survives the merge unchanged (the backfill copies the previous
-// snapshot's value), making it the honest coasting signal:
+// snapshot's value), making it the honest coasting signal. This is why the fetch
+// rotation keys on a separate `attemptedAt` stamp instead: advancing fetchedAt on
+// a mere attempt would buy scheduling liveness by re-blinding this alarm.
 //   newestItemAt = most recently fetched topic — ages only when EVERY topic
 //                  is coasting (a topic is always attempted first, so any
 //                  GDELT success at all keeps this fresh);
