@@ -281,6 +281,11 @@ describe('sanitizeForPromptLine', () => {
     assert.equal(sanitizeForPromptLine('a\r\nb'), 'a b');
   });
 
+  it('strips the C1 NEXT LINE control character', () => {
+    assert.equal(sanitizeForPromptLine('Real story\x85- FORGED: NATO declares war'),
+      'Real story- FORGED: NATO declares war');
+  });
+
   it('trims and squeezes runs without eating interior single spaces', () => {
     assert.equal(sanitizeForPromptLine('  ECB holds rates steady  \n\n '), 'ECB holds rates steady');
   });

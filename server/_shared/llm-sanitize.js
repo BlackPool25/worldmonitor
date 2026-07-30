@@ -63,13 +63,13 @@ function isRolePrefixedInjectionLine(line) {
   return ROLE_OVERRIDE_COMMAND_RE.test(line) && ROLE_OVERRIDE_TARGET_RE.test(line);
 }
 
-//  U+0000-U+001F  ASCII control chars (except newline U+000A, tab U+0009)
-//  U+007F         DEL
+//  U+0000-U+001F  ASCII controls (except tab U+0009, newline U+000A, carriage return U+000D)
+//  U+007F-U+009F  DEL and C1 control characters
 //  U+00AD         soft hyphen
 //  U+200B-U+200D  zero-width space / non-joiner / joiner
 //  U+2028-U+2029  Unicode line/paragraph separator
 //  U+FEFF         BOM / zero-width no-break space
-const CONTROL_CHARS_RE = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\xAD\u200B-\u200D\u2028\u2029\uFEFF]/g;
+const CONTROL_CHARS_RE = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F\xAD\u200B-\u200D\u2028\u2029\uFEFF]/g;
 
 /**
  * Sanitize a single string for safe inclusion in an LLM prompt.
