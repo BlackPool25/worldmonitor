@@ -106,7 +106,12 @@ function resolveProxyConfigWithFallback() {
 function resolveProxyString(raw = process.env.PROXY_URL || '') {
   const cfg = parseProxyConfig(raw);
   if (!cfg) return '';
-  const host = cfg.host.replace(/^gate\./, 'us.');
+  // Case-insensitive: the host:port:user:pass branch of parseProxyConfig returns
+  // parts[0] verbatim, so an operator's casing reaches this compare unchanged. A
+  // case-sensitive match would silently skip the rewrite and leave a curl caller
+  // pointed at the CONNECT endpoint. Only the matched prefix is replaced — the
+  // rest of the host keeps its spelling, and DNS is case-insensitive anyway.
+  const host = cfg.host.replace(/^gate\./i, 'us.');
   return cfg.auth ? `${cfg.auth}@${host}:${cfg.port}` : `${host}:${cfg.port}`;
 }
 
