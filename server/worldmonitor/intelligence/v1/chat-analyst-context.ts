@@ -10,6 +10,10 @@ import { getCachedJson, readCachedJson } from '../../../_shared/redis';
 import { sanitizeForPrompt } from '../../../_shared/llm-sanitize.js';
 // @ts-expect-error — JS module, no declaration file
 import { captureSilentError } from '../../../../api/_sentry-edge.js';
+// Pure, import-safe helper module (no Redis, no network, no top-level exec) —
+// shared with the seeder side so the GDELT seendate parser has one home
+// (#5856 review). esbuild inlines it for the edge bundle.
+import { gdeltSeenDateToMs } from '../../../../scripts/_conflict-gdelt.mjs';
 import { tokenizeForMatch, findMatchingKeywords } from '../../../../src/utils/keyword-match';
 import {
   GAS_STORAGE_COUNTRIES_KEY,
@@ -648,8 +652,10 @@ const GDELT_INTEL_KEY = 'intelligence:gdelt-intel:v1';
 const MAX_LIVE_HEADLINES = 5;
 
 // The seeder's topic ids (INTEL_TOPICS in scripts/seed-gdelt-intel.mjs) are the
-// vocabulary for topic scoping below.
-const ALL_TOPIC_IDS = ['military', 'cyber', 'nuclear', 'sanctions', 'intelligence', 'maritime'] as const;
+// vocabulary for topic scoping below. Exported so tests pin it against the
+// seeder's INTEL_TOPIC_IDS (#5856 review) — do not import the seeder here:
+// its transitive _seed-utils graph is not edge-runtime-safe.
+export const ALL_TOPIC_IDS = ['military', 'cyber', 'nuclear', 'sanctions', 'intelligence', 'maritime'] as const;
 
 // Which materialized topics are in scope per analyst domain focus, mapped from
 // the free-text DOC queries this replaced. `cyber` stays out of the
@@ -673,18 +679,6 @@ interface SeededGdeltTopic {
   id?: unknown;
   articles?: unknown;
   fetchedAt?: unknown;
-}
-
-/**
- * GDELT stores seendate as `YYYYMMDDTHHMMSSZ`, which `Date.parse` rejects.
- * Returns NaN for anything that isn't a full 14-digit stamp.
- */
-function parseSeenDate(raw: unknown): number {
-  const digits = safeStr(raw).replace(/[^0-9]/g, '');
-  if (digits.length < 14) return Number.NaN;
-  const iso = `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`
-    + `T${digits.slice(8, 10)}:${digits.slice(10, 12)}:${digits.slice(12, 14)}Z`;
-  return Date.parse(iso);
 }
 
 /**
@@ -749,7 +743,7 @@ export function buildHeadlinesFromGdeltIntel(
       if (!rawArticle || typeof rawArticle !== 'object') continue;
       const title = toSingleLine(sanitizeForPrompt(safeStr(rawArticle.title)));
       if (!title) continue;
-      const seenAt = parseSeenDate(rawArticle.date);
+      const seenAt = gdeltSeenDateToMs(safeStr(rawArticle.date));
       const at = Number.isFinite(seenAt)
         ? seenAt
         : Number.isFinite(topicFetchedAt) ? topicFetchedAt : snapshotFetchedAt;
@@ -769,12 +763,30 @@ export function buildHeadlinesFromGdeltIntel(
 
   if (candidates.length === 0) return '';
 
+  // Syndicated wire stories appear as N identical titles across source domains
+  // (live payload at review time: 4-6 copies per topic); dedup on normalized
+  // title, keeping the best-scored then newest copy, so one story cannot fill
+  // the 5-slot cap and read as multiple corroborating reports (#5856 review).
+  const byTitle = new Map<string, (typeof candidates)[number]>();
+  for (const candidate of candidates) {
+    const titleKey = candidate.title.toLowerCase();
+    const prev = byTitle.get(titleKey);
+    if (
+      !prev
+      || candidate.score > prev.score
+      || (candidate.score === prev.score && candidate.at > prev.at)
+    ) {
+      byTitle.set(titleKey, candidate);
+    }
+  }
+  const deduped = [...byTitle.values()];
+
   // Keyword matches lead. When nothing matches, fall back to the most recent
   // articles in scope rather than emptying the block: this section is ambient
   // context, not a search result — `relevantArticles` is the keyword-search
   // surface — and the old DOC query returned topic articles too.
-  const matched = candidates.filter((c) => c.score > 0);
-  const pool = matched.length > 0 ? matched : candidates;
+  const matched = deduped.filter((c) => c.score > 0);
+  const pool = matched.length > 0 ? matched : deduped;
 
   const selected = pool
     .sort((a, b) => (b.score - a.score) || (b.at - a.at))
@@ -798,6 +810,13 @@ async function buildLiveHeadlines(domainFocus: string, keywords: string[]): Prom
     // (nobody greps logs for a degraded prompt section), and invisibility is
     // the failure mode this issue exists to remove.
     const msg = read.error instanceof Error ? read.error.message : String(read.error);
+    // Keep the fleet-standard structured timeout tag: every other Redis-read
+    // path classifies TimeoutError/AbortError as [REDIS-TIMEOUT], and this
+    // consumer must not be the one hole in that operational signal (#5856
+    // review; the classifier in _shared/redis.ts is module-private).
+    if (read.error instanceof Error && (read.error.name === 'TimeoutError' || read.error.name === 'AbortError')) {
+      console.error(`[REDIS-TIMEOUT] readCachedJson key=${GDELT_INTEL_KEY}`);
+    }
     console.warn(`[chat-analyst] ${GDELT_INTEL_KEY} read failed, dropping live headlines: ${msg}`);
     void captureSilentError(read.error, {
       tags: { route: 'intelligence/chat-analyst-context', step: 'gdelt-intel-seed-read' },

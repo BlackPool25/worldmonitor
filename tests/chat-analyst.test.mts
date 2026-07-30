@@ -6,11 +6,13 @@ import { buildAnalystSystemPrompt } from '../server/worldmonitor/intelligence/v1
 import { buildActionEvents, VISUAL_INTENT_RE } from '../server/worldmonitor/intelligence/v1/chat-analyst-actions.ts';
 import { postProcessAnalystHtml } from '../src/utils/analyst-markdown.ts';
 import {
+  ALL_TOPIC_IDS,
   assembleAnalystContext,
   buildHeadlinesFromGdeltIntel,
   buildWorldBrief,
   extractKeywords,
 } from '../server/worldmonitor/intelligence/v1/chat-analyst-context.ts';
+import { readCachedJson, __resetKeyPrefixCacheForTests } from '../server/_shared/redis.ts';
 import type { AnalystContext } from '../server/worldmonitor/intelligence/v1/chat-analyst-context.ts';
 
 // ---------------------------------------------------------------------------
@@ -757,6 +759,8 @@ function gdeltIntelFixture() {
 interface RedisHarnessOptions {
   /** Cache keys whose Upstash GET should answer HTTP 500 (Redis-error path). */
   failKeys?: string[];
+  /** Cache keys whose Upstash GET should reject like AbortSignal.timeout(). */
+  timeoutKeys?: string[];
 }
 
 function withStubbedRedis(payloadByKey: Record<string, unknown>, opts: RedisHarnessOptions = {}) {
@@ -781,6 +785,9 @@ function withStubbedRedis(payloadByKey: Record<string, unknown>, opts: RedisHarn
       throw new Error(`unexpected request-time GDELT fetch: ${raw}`);
     }
     const key = decodeURIComponent(raw.split('/get/')[1] ?? '');
+    if (opts.timeoutKeys?.includes(key)) {
+      throw Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+    }
     if (opts.failKeys?.includes(key)) {
       return new Response('upstream error', { status: 500 });
     }
@@ -826,7 +833,7 @@ describe('assembleAnalystContext — liveHeadlines source of truth', { concurren
       assert.deepEqual(harness.gdeltCalls, [],
         'assembleAnalystContext must not fetch api.gdeltproject.org at request time');
       assert.match(ctx.liveHeadlines, /^Latest Headlines:/,
-        'header must stay stable — the analyst prompt keys off it');
+        'header text is opaque to the prompt builder but pinned here as the stable block marker');
       assert.match(ctx.liveHeadlines, /New export controls target Taiwan chip toolmakers/,
         'keyword-matching articles must come from the Redis snapshot');
       assert.ok(ctx.activeSources.includes('Live'),
@@ -873,6 +880,8 @@ describe('assembleAnalystContext — liveHeadlines source of truth', { concurren
         logs.lines.some((l) => /gdelt-intel/.test(l)),
         `a Redis read failure must be visible in logs; captured: ${JSON.stringify(logs.lines)}`,
       );
+      assert.deepEqual(harness.gdeltCalls, [],
+        'a Redis error must not fall back to a live DOC fetch');
     } finally {
       logs.restore();
       harness.restore();
@@ -962,5 +971,204 @@ describe('buildHeadlinesFromGdeltIntel — selection, cap and age qualification'
       'the request-time DOC-API URL construction must be gone');
     assert.ok(!/AbortSignal\.timeout\(2_?500\)/.test(src),
       'the 2.5s hot-path fetch timeout must be gone');
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// #5856 review round — verified-finding regression tests
+// ---------------------------------------------------------------------------
+
+/** 14-digit GDELT seendate stamp for a moment `msAgo` before NOW_MS. */
+function stampAgo(msAgo: number): string {
+  const d = new Date(NOW_MS - msAgo);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}T${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}Z`;
+}
+
+describe('buildHeadlinesFromGdeltIntel — #5856 review round', () => {
+  it('dedups syndicated copies of the same title so one wire story cannot fill the cap', () => {
+    // Live production payload carries 4-6 identical syndicated titles per
+    // topic; without dedup they sort adjacently and consume all 5 slots,
+    // presenting one story as multiple corroborating headlines.
+    const payload = {
+      fetchedAt: '2026-07-30T10:00:00.000Z',
+      topics: [{
+        id: 'military',
+        fetchedAt: '2026-07-30T10:00:00.000Z',
+        articles: [
+          gdeltArticle('Australia joins Pacific nations flexing military muscle', 'site-a.com', stampAgo(3 * 3_600_000)),
+          gdeltArticle('Australia joins Pacific nations flexing military muscle', 'site-b.com', stampAgo(2 * 3_600_000)),
+          gdeltArticle('Australia joins Pacific nations flexing military muscle', 'site-c.com', stampAgo(60 * 60_000)),
+          gdeltArticle('Australia joins Pacific nations flexing military muscle', 'site-d.com', stampAgo(30 * 60_000)),
+          gdeltArticle('A genuinely different second story', 'reuters.com', stampAgo(4 * 3_600_000)),
+        ],
+      }],
+    };
+    const out = buildHeadlinesFromGdeltIntel(payload, 'all', [], NOW_MS);
+    const bulletLines = out.split('\n').filter((l) => l.startsWith('- '));
+    assert.equal(bulletLines.length, 2, `4 syndicated copies + 1 distinct story must yield 2 bullets; got:\n${out}`);
+    const australiaLines = bulletLines.filter((l) => l.includes('Australia joins Pacific nations'));
+    assert.equal(australiaLines.length, 1, 'the syndicated story must appear exactly once');
+    assert.ok(australiaLines[0].includes('site-d.com'),
+      'dedup must keep the newest copy of a syndicated title');
+  });
+
+  it('selection is deterministic under the cap: score leads, recency breaks ties, oldest overflow drops', () => {
+    // >5 matched candidates with mixed scores/dates so both comparator arms and
+    // the slice are load-bearing — flipping either sort term reorders the output.
+    const mk = (title: string, minAgo: number) =>
+      gdeltArticle(title, 'reuters.com', stampAgo(minAgo * 60_000));
+    const payload = {
+      fetchedAt: '2026-07-30T10:00:00.000Z',
+      topics: [{
+        id: 'military',
+        fetchedAt: '2026-07-30T10:00:00.000Z',
+        articles: [
+          mk('Taiwan strait tensions rise sharply', 300), // both keywords + adjacent pair: highest score, old
+          mk('Taiwan patrol report one', 10),
+          mk('Taiwan patrol report two', 20),
+          mk('Taiwan patrol report three', 30),
+          mk('Taiwan patrol report four', 40),
+          mk('Taiwan patrol report five', 50),
+          mk('Taiwan patrol report six', 60),
+        ],
+      }],
+    };
+    const out = buildHeadlinesFromGdeltIntel(payload, 'all', ['taiwan', 'strait'], NOW_MS);
+    const bulletLines = out.split('\n').filter((l) => l.startsWith('- '));
+    assert.equal(bulletLines.length, 5, 'cap must hold with >5 matches');
+    assert.ok(bulletLines[0].includes('strait tensions rise'),
+      `highest keyword score must lead even when older; got leader: ${bulletLines[0]}`);
+    assert.ok(bulletLines[1].includes('report one'), 'ties must break by recency (newest first)');
+    assert.ok(!out.includes('report five') && !out.includes('report six'),
+      'the two oldest tie-scored articles must be the ones dropped by the cap');
+  });
+
+  it('renders age labels correctly at the branch boundaries', () => {
+    const cases: Array<[number, string]> = [
+      [30_000, 'just now'],          // <1m
+      [5 * 60_000, '5m ago'],        // 1-59m
+      [59 * 60_000, '59m ago'],      // last minute bucket
+      [60 * 60_000, '1h ago'],       // 60m boundary
+      [47 * 3_600_000, '47h ago'],   // last hour bucket
+      [48 * 3_600_000, '2d ago'],    // 48h boundary
+    ];
+    for (const [msAgo, expected] of cases) {
+      const payload = {
+        fetchedAt: '2026-07-30T10:00:00.000Z',
+        topics: [{
+          id: 'military',
+          fetchedAt: '2026-07-30T10:00:00.000Z',
+          articles: [gdeltArticle('Boundary check story', 'reuters.com', stampAgo(msAgo))],
+        }],
+      };
+      const out = buildHeadlinesFromGdeltIntel(payload, 'all', [], NOW_MS);
+      assert.ok(out.includes(`(reuters.com, military, ${expected})`),
+        `age ${msAgo}ms must render "${expected}"; got:\n${out}`);
+    }
+  });
+
+  it('falls back through topic fetchedAt then snapshot fetchedAt when an article date is unparseable', () => {
+    const twoHoursAgo = new Date(NOW_MS - 2 * 3_600_000).toISOString();
+    const threeHoursAgo = new Date(NOW_MS - 3 * 3_600_000).toISOString();
+    const viaTopic = buildHeadlinesFromGdeltIntel({
+      fetchedAt: threeHoursAgo,
+      topics: [{ id: 'military', fetchedAt: twoHoursAgo, articles: [gdeltArticle('Bad date story', 'reuters.com', 'not-a-date')] }],
+    }, 'all', [], NOW_MS);
+    assert.ok(viaTopic.includes('2h ago'),
+      `unparseable article date must fall back to the topic fetchedAt age; got:\n${viaTopic}`);
+
+    const viaSnapshot = buildHeadlinesFromGdeltIntel({
+      fetchedAt: threeHoursAgo,
+      topics: [{ id: 'military', fetchedAt: 'also-bad', articles: [gdeltArticle('Bad date story', 'reuters.com', 'not-a-date')] }],
+    }, 'all', [], NOW_MS);
+    assert.ok(viaSnapshot.includes('3h ago'),
+      `both bad must fall back to the snapshot fetchedAt age; got:\n${viaSnapshot}`);
+  });
+});
+
+describe('readCachedJson — key prefixing and envelope fidelity (#5856 review round)', () => {
+  it('raw=true reads the unprefixed seed key while raw=false applies the deployment prefix', async () => {
+    const originalFetch = globalThis.fetch;
+    const originalEnv = {
+      url: process.env.UPSTASH_REDIS_REST_URL,
+      token: process.env.UPSTASH_REDIS_REST_TOKEN,
+      vercelEnv: process.env.VERCEL_ENV,
+      sha: process.env.VERCEL_GIT_COMMIT_SHA,
+    };
+    process.env.UPSTASH_REDIS_REST_URL = 'https://redis.test';
+    process.env.UPSTASH_REDIS_REST_TOKEN = 'token';
+    process.env.VERCEL_ENV = 'preview';
+    process.env.VERCEL_GIT_COMMIT_SHA = 'abc12345deadbeef';
+    __resetKeyPrefixCacheForTests();
+    const requested: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      requested.push(decodeURIComponent(String(input).split('/get/')[1] ?? ''));
+      return new Response(JSON.stringify({ result: null }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      await readCachedJson(GDELT_INTEL_KEY, true);
+      await readCachedJson(GDELT_INTEL_KEY);
+      assert.equal(requested[0], GDELT_INTEL_KEY,
+        'raw=true must hit the exact unprefixed key the Railway seeder writes');
+      assert.equal(requested[1], `preview:abc12345:${GDELT_INTEL_KEY}`,
+        'raw=false must apply the deployment prefix — a dropped raw flag breaks every preview read');
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalEnv.url === undefined) delete process.env.UPSTASH_REDIS_REST_URL;
+      else process.env.UPSTASH_REDIS_REST_URL = originalEnv.url;
+      if (originalEnv.token === undefined) delete process.env.UPSTASH_REDIS_REST_TOKEN;
+      else process.env.UPSTASH_REDIS_REST_TOKEN = originalEnv.token;
+      if (originalEnv.vercelEnv === undefined) delete process.env.VERCEL_ENV;
+      else process.env.VERCEL_ENV = originalEnv.vercelEnv;
+      if (originalEnv.sha === undefined) delete process.env.VERCEL_GIT_COMMIT_SHA;
+      else process.env.VERCEL_GIT_COMMIT_SHA = originalEnv.sha;
+      __resetKeyPrefixCacheForTests();
+    }
+  });
+});
+
+describe('assembleAnalystContext — production payload shapes (#5856 review round)', { concurrency: 1 }, () => {
+  it('unwraps the runSeed contract envelope the production seeder actually writes', async () => {
+    const enveloped = {
+      _seed: { fetchedAt: NOW_MS - 2 * 3_600_000, recordCount: 3, sourceVersion: 'gdelt-doc-v2', schemaVersion: 1, state: 'OK' },
+      data: gdeltIntelFixture(),
+    };
+    const harness = withStubbedRedis({ [GDELT_INTEL_KEY]: enveloped });
+    try {
+      const ctx = await assembleAnalystContext(undefined, 'all', 'taiwan chip export controls');
+      assert.match(ctx.liveHeadlines, /New export controls target Taiwan chip toolmakers/,
+        'an envelope-wrapped payload must unwrap to the same headlines as a bare one');
+      assert.deepEqual(harness.gdeltCalls, []);
+    } finally {
+      harness.restore();
+    }
+  });
+
+  it('classifies a Redis timeout with the fleet-standard [REDIS-TIMEOUT] tag', async () => {
+    const harness = withStubbedRedis({ [GDELT_INTEL_KEY]: gdeltIntelFixture() }, {
+      timeoutKeys: [GDELT_INTEL_KEY],
+    });
+    const logs = captureConsole();
+    try {
+      const ctx = await assembleAnalystContext(undefined, 'all', 'taiwan');
+      assert.equal(ctx.liveHeadlines, '', 'a timeout degrades to an empty block');
+      assert.ok(
+        logs.lines.some((l) => l.includes('[REDIS-TIMEOUT]')),
+        `a Redis timeout must carry the fleet-standard structured tag; captured: ${JSON.stringify(logs.lines)}`,
+      );
+    } finally {
+      logs.restore();
+      harness.restore();
+    }
+  });
+});
+
+describe('topic-id vocabulary stays pinned to the seeder (#5856 review round)', () => {
+  it('ALL_TOPIC_IDS matches scripts/seed-gdelt-intel.mjs INTEL_TOPICS ids exactly', async () => {
+    const seeder = await import('../scripts/seed-gdelt-intel.mjs');
+    assert.deepEqual([...ALL_TOPIC_IDS], seeder.INTEL_TOPIC_IDS,
+      'a seeder topic rename would silently drop articles from analyst scoping — keep these in lockstep');
   });
 });
