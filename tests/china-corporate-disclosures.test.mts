@@ -62,7 +62,7 @@ describe('official China corporate disclosures (#5577)', () => {
       assert.equal(contract.launchStatus, 'launched');
       assert.equal(contract.preflight.environment, 'railway-production');
       assert.equal(contract.preflight.reachable, true);
-      assert.ok(contract.maxRequestsPerRun > 0 && contract.maxRequestsPerRun <= 4);
+      assert.ok(contract.maxRequestsPerRun > 0 && contract.maxRequestsPerRun <= 8);
       assert.ok(contract.maxResponseBytes >= 32_000 && contract.maxResponseBytes <= 262_144);
       assert.equal(contract.redirectPolicy, 'error');
       assert.equal(contract.documentRetrieval, 'lazy-link-only');
@@ -80,6 +80,14 @@ describe('official China corporate disclosures (#5577)', () => {
 
     const hkex = OFFICIAL_EXCHANGE_SOURCE_CONTRACTS.hkex;
     assert.equal(OFFICIAL_EXCHANGE_SOURCE_CONTRACTS.szse.transportRecoverySuccessRuns, 2);
+    assert.equal(OFFICIAL_EXCHANGE_SOURCE_CONTRACTS.sse.maxRequestsPerRun, 8);
+    assert.equal(OFFICIAL_EXCHANGE_SOURCE_CONTRACTS.sse.maxDirectRequestsPerRun, 4);
+    assert.equal(OFFICIAL_EXCHANGE_SOURCE_CONTRACTS.sse.maxProxyRequestsPerRun, 4);
+    assert.equal(
+      OFFICIAL_EXCHANGE_SOURCE_CONTRACTS.sse.fallbackPolicy,
+      'direct_then_proxy_on_transport_failure',
+    );
+    assert.equal(OFFICIAL_EXCHANGE_SOURCE_CONTRACTS.sse.proxyEnvironmentVariable, 'SSE_PROXY_URL');
     assert.equal(hkex.preflight.reachable, true);
     assert.equal(hkex.admissionDecision, 'rejected');
     assert.equal(hkex.blockedReason, 'TERMS_PROHIBIT_AUTOMATED_ACCESS');
@@ -96,7 +104,7 @@ describe('official China corporate disclosures (#5577)', () => {
     assert.ok(timeoutMatch, 'China disclosure bundle section must declare timeoutMs');
     const sectionTimeoutMs = Number(timeoutMatch[1].replaceAll('_', ''));
 
-    assert.equal(CHINA_CORPORATE_DISCLOSURE_MAX_NETWORK_MS, 115_250);
+    assert.equal(CHINA_CORPORATE_DISCLOSURE_MAX_NETWORK_MS, 119_250);
     assert.ok(
       sectionTimeoutMs - CHINA_CORPORATE_DISCLOSURE_MAX_NETWORK_MS >= 20_000,
       'network attempts must leave at least 20s for startup, parsing, publication, and shutdown',
@@ -1132,6 +1140,85 @@ describe('official China corporate disclosures (#5577)', () => {
       checkedAt: retrievedAt,
     });
     assert.doesNotMatch(JSON.stringify(decisions), /proxy-user|proxy-secret/);
+  });
+
+  it('falls back to the bounded China proxy route for each failed SSE issuer request', async () => {
+    const proxyCalls: Array<{
+      url: string;
+      port: number;
+      options: Record<string, unknown>;
+    }> = [];
+    const decisions: Array<Record<string, unknown>> = [];
+    const snapshot = await fetchChinaCorporateDisclosureSnapshot({
+      now: Date.parse(retrievedAt),
+      previousSnapshot: null,
+      proxyUrl: 'cn.decodo.com:30001:proxy-user:proxy-secret',
+      onDecision: (decision) => decisions.push(decision),
+      fetchFn: async (input) => {
+        const url = String(input);
+        if (url.includes('query.sse.com.cn')) {
+          throw Object.assign(new TypeError('fetch failed'), {
+            cause: Object.assign(new Error('connect timed out'), { code: 'ETIMEDOUT' }),
+          });
+        }
+        return new Response(JSON.stringify(fixture('szse.json')), { status: 200 });
+      },
+      proxyRequestFn: async (input, proxyConfig, options) => {
+        const url = String(input);
+        proxyCalls.push({ url, port: proxyConfig.port, options });
+        const productId = new URL(url).searchParams.get('productId');
+        const payload = productId === '600519'
+          ? fixture('sse.json')
+          : { pageHelp: { pageNo: 1, pageSize: 100, total: 0 }, result: [] };
+        return {
+          buffer: Buffer.from(JSON.stringify(payload)),
+          status: 200,
+          contentType: 'application/json',
+        };
+      },
+    });
+
+    assert.equal(snapshot.status, 'healthy');
+    assert.equal(proxyCalls.length, 4);
+    assert.deepEqual(proxyCalls.map((call) => call.port), [30001, 30001, 30001, 30001]);
+    assert.equal(
+      proxyCalls.every((call) => call.url.startsWith('https://query.sse.com.cn/')),
+      true,
+    );
+    assert.equal(
+      proxyCalls.every(
+        (call) => call.options.maxResponseBytes
+          === OFFICIAL_EXCHANGE_SOURCE_CONTRACTS.sse.maxResponseBytes,
+      ),
+      true,
+    );
+    assert.equal(proxyCalls.every((call) => call.options.timeoutMs === 12_000), true);
+
+    const sse = snapshot.sources.find((source) => source.id === 'sse');
+    assert.equal(sse?.transportStatus, 'fresh');
+    assert.equal(sse?.contentStatus, 'current');
+    assert.equal(sse?.requestCount, 8);
+    assert.equal(sse?.transportPath, 'proxy');
+    assert.equal(sse?.fallbackReason, 'ETIMEDOUT');
+    assert.deepEqual(
+      decisions.find((decision) => decision.sourceId === 'sse'),
+      {
+        sourceId: 'sse',
+        status: 'accepted',
+        requestCount: 8,
+        emptyResultCount: 0,
+        transportPath: 'proxy',
+        fallbackReason: 'ETIMEDOUT',
+        proxyExitPorts: [30001, 30001, 30001, 30001],
+        proxyExitRotated: false,
+        reliabilityStatus: 'stable',
+        requiredRecoverySuccesses: 1,
+        consecutiveTransportSuccesses: 1,
+        consecutiveTransportFailures: 0,
+        checkedAt: retrievedAt,
+      },
+    );
+    assert.doesNotMatch(JSON.stringify({ snapshot, decisions }), /proxy-user|proxy-secret/);
   });
 
   it('retries one transient proxy transport failure before degrading SZSE coverage', async () => {
