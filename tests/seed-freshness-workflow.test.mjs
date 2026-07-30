@@ -38,13 +38,43 @@ function runScheduledGate(gateState) {
   const tempDir = mkdtempSync(join(repoRoot, '.tmp-seed-freshness-gate-'));
   const fakeBin = join(tempDir, 'bin');
   const fakeGh = join(fakeBin, 'gh');
+  const nonGateStatuses = Array.from({ length: 100 }, (_, index) => ({
+    context: `railway-${index}`,
+    state: 'success',
+    updated_at: '2026-07-29T12:00:00Z',
+  }));
+  const gateStatuses = gateState === 'missing'
+    ? []
+    : [
+        {
+          context: 'gate',
+          state: gateState,
+          updated_at: '2026-07-29T12:01:00Z',
+        },
+        {
+          context: 'gate',
+          state: gateState === 'success' ? 'failure' : 'success',
+          updated_at: '2026-07-29T12:01:00Z',
+        },
+      ];
 
   try {
-    // The workflow's only external input is the latest `gate` commit status.
-    // Replacing gh at PATH level executes the exact checked-in shell block
-    // without relying on GitHub's API or duplicating its branching logic.
+    // Put the latest `gate` status on a second API page followed by an older
+    // status with the same second-resolution timestamp. GitHub returns status
+    // history newest-first, so this proves the workflow neither truncates the
+    // response nor reorders equal timestamps into stale state.
     mkdirSync(fakeBin);
-    writeFileSync(fakeGh, '#!/bin/sh\nprintf \'%s\\n\' "$FAKE_GATE_STATE"\n');
+    writeFileSync(
+      fakeGh,
+      [
+        '#!/bin/sh',
+        'case " $* " in *" --paginate "*) ;; *) exit 91 ;; esac',
+        'case " $* " in *" --slurp "*) ;; *) exit 92 ;; esac',
+        'case "$*" in *"/statuses?per_page=100"*) ;; *) exit 93 ;; esac',
+        'printf \'%s\\n\' "$FAKE_STATUS_PAGES"',
+        '',
+      ].join('\n'),
+    );
     chmodSync(fakeGh, 0o755);
 
     return spawnSync(
@@ -55,10 +85,48 @@ function runScheduledGate(gateState) {
         encoding: 'utf8',
         env: {
           ...process.env,
-          FAKE_GATE_STATE: gateState,
+          FAKE_STATUS_PAGES: JSON.stringify([nonGateStatuses, gateStatuses]),
           GH_TOKEN: 'test-token',
           GITHUB_REPOSITORY: 'koala73/worldmonitor',
           GITHUB_SHA: '0123456789abcdef',
+          PATH: `${fakeBin}:${process.env.PATH}`,
+        },
+      },
+    );
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function runRailwayContext({ token = 'project-token', projectId = 'project-123' } = {}) {
+  const tempDir = mkdtempSync(join(repoRoot, '.tmp-seed-freshness-railway-'));
+  const fakeBin = join(tempDir, 'bin');
+  const fakeRailway = join(fakeBin, 'railway');
+
+  try {
+    mkdirSync(fakeBin);
+    writeFileSync(
+      fakeRailway,
+      [
+        '#!/bin/sh',
+        '[ "$RAILWAY_TOKEN" = "project-token" ] || exit 91',
+        '[ "$*" = "status --project project-123 --environment production --json" ] || exit 92',
+        "printf '{}\\n'",
+        '',
+      ].join('\n'),
+    );
+    chmodSync(fakeRailway, 0o755);
+
+    return spawnSync(
+      'bash',
+      ['-e', '-c', stepNamed('Verify Railway production context').run],
+      {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          RAILWAY_TOKEN: token,
+          RAILWAY_PROJECT_ID: projectId,
           PATH: `${fakeBin}:${process.env.PATH}`,
         },
       },
@@ -91,6 +159,10 @@ describe('seed freshness workflow control plane', () => {
     assert.equal(gate['continue-on-error'], undefined);
     assert.equal(workflow.jobs.monitor['continue-on-error'], undefined);
     assert.doesNotMatch(gate.run, /should_run|Skipping seed freshness/);
+    assert.match(gate.run, /gh api --paginate --slurp/);
+    assert.match(gate.run, /statuses\?per_page=100/);
+    assert.match(gate.run, /map\(select\(\.context == "gate"\)\) \| first/);
+    assert.doesNotMatch(gate.run, /sort_by\(\.updated_at\)/);
     const acceptance = stepNamed('Check ingestion operational acceptance');
     assert.equal(
       acceptance.if,
@@ -123,8 +195,8 @@ describe('seed freshness workflow control plane', () => {
     const installIndex = monitorSteps.findIndex(
       (step) => step.name === 'Install pinned Railway CLI',
     );
-    const linkIndex = monitorSteps.findIndex(
-      (step) => step.name === 'Link Railway production context',
+    const contextIndex = monitorSteps.findIndex(
+      (step) => step.name === 'Verify Railway production context',
     );
     const auditIndex = monitorSteps.findIndex(
       (step) => step.name === 'Audit Railway ingestion deployment controls',
@@ -135,7 +207,7 @@ describe('seed freshness workflow control plane', () => {
 
     assert.ok(installIndex >= 0, 'workflow must install the Railway CLI');
     assert.ok(
-      installIndex < linkIndex && linkIndex < auditIndex && auditIndex < healthIndex,
+      installIndex < contextIndex && contextIndex < auditIndex && auditIndex < healthIndex,
       'Railway context and watch-path drift must be checked before compact health',
     );
 
@@ -145,14 +217,19 @@ describe('seed freshness workflow control plane', () => {
       'scheduled audits must use a deterministic Railway CLI version',
     );
 
-    const link = monitorSteps[linkIndex];
-    assert.equal(link.env.RAILWAY_TOKEN, '${{ secrets.RAILWAY_PRODUCTION_TOKEN }}');
-    assert.equal(link.env.RAILWAY_PROJECT_ID, '${{ vars.RAILWAY_PROJECT_ID }}');
-    assert.match(link.run, /RAILWAY_TOKEN/);
-    assert.match(link.run, /RAILWAY_PROJECT_ID/);
+    const context = monitorSteps[contextIndex];
+    assert.equal(context.env.RAILWAY_TOKEN, '${{ secrets.RAILWAY_PRODUCTION_TOKEN }}');
+    assert.equal(context.env.RAILWAY_PROJECT_ID, '${{ vars.RAILWAY_PROJECT_ID }}');
+    assert.match(context.run, /RAILWAY_TOKEN/);
+    assert.match(context.run, /RAILWAY_PROJECT_ID/);
     assert.match(
-      link.run,
-      /railway link --project "\$RAILWAY_PROJECT_ID" --environment production --json/,
+      context.run,
+      /railway status --project "\$RAILWAY_PROJECT_ID" --environment production --json > \/dev\/null/,
+    );
+    assert.doesNotMatch(
+      context.run,
+      /railway link/,
+      'project tokens resolve their own context and must not invoke account-scoped linking',
     );
 
     const audit = monitorSteps[auditIndex];
@@ -169,5 +246,21 @@ describe('seed freshness workflow control plane', () => {
       /RAILWAY_API_TOKEN/,
       'the workflow must not use an account-scoped Railway credential',
     );
+  });
+
+  it('validates the project token against the expected production context without linking', () => {
+    const success = runRailwayContext();
+    assert.equal(success.status, 0, success.stderr);
+    assert.match(success.stdout, /valid for the expected production context/);
+
+    for (const [label, options] of [
+      ['missing project token', { token: '' }],
+      ['missing project id', { projectId: '' }],
+      ['wrong project token', { token: 'wrong-token' }],
+      ['wrong project id', { projectId: 'wrong-project' }],
+    ]) {
+      const result = runRailwayContext(options);
+      assert.notEqual(result.status, 0, `${label} must fail before the Railway audit`);
+    }
   });
 });
