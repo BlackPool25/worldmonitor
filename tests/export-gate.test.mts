@@ -126,6 +126,24 @@ describe('resolveAvailableExportFormats — catalog-backed export menu', () => {
     );
   });
 
+  it('keeps every format for an entitled legacy row without exportFormats', () => {
+    assert.deepEqual(
+      resolveAvailableExportFormats(inputs({
+        features: { tier: 1, dataExport: true, maxDashboards: 25 },
+      })),
+      ['csv', 'json', 'pdf'],
+    );
+  });
+
+  it('keeps every format for a legacy tier-2 row without dataExport', () => {
+    assert.deepEqual(
+      resolveAvailableExportFormats(inputs({
+        features: { tier: 2, maxDashboards: 50 },
+      })),
+      ['csv', 'json', 'pdf'],
+    );
+  });
+
   it('filters unsupported catalog values and cannot expose formats to a known free row', () => {
     assert.deepEqual(
       resolveAvailableExportFormats(inputs({

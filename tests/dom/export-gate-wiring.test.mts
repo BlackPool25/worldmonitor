@@ -226,6 +226,18 @@ describe('setupExportPanel — aria-live announcements', () => {
     expect(container.querySelector<HTMLButtonElement>('[data-format="pdf"]')!.hidden).toBe(true);
   });
 
+  it('updates formats after an unlocked exporter is already attached', async () => {
+    manager.setupExportPanel();
+    await vi.waitFor(() => expect(formatOptions().length).toBeGreaterThan(0), { timeout: 5000 });
+
+    availableFormats.mockReturnValue(['json']);
+    emit({ locked: false, pendingActivation: false });
+
+    expect(container.querySelector<HTMLButtonElement>('[data-format="json"]')!.hidden).toBe(false);
+    expect(container.querySelector<HTMLButtonElement>('[data-format="csv"]')!.hidden).toBe(true);
+    expect(container.querySelector<HTMLButtonElement>('[data-format="pdf"]')!.hidden).toBe(true);
+  });
+
   it('puts the live region in the accessibility tree empty, before anything is announced', () => {
     // An aria-live region only announces content injected AFTER it is in the
     // tree — creating it together with its message announces nothing.
