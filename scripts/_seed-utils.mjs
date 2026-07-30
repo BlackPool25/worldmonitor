@@ -1032,8 +1032,8 @@ export function sleep(ms) {
 // ─── Proxy helpers for sources that block Railway container IPs ───
 const { resolveProxyString, resolveProxyStringConnect } = createRequire(import.meta.url)('./_proxy-utils.cjs');
 
-export function resolveProxy() {
-  return resolveProxyString();
+export function resolveProxy(raw = process.env.PROXY_URL || '') {
+  return resolveProxyString(raw);
 }
 
 // For HTTP CONNECT tunneling (httpsProxyFetchJson); keeps gate.decodo.com, not us.decodo.com.
@@ -1055,8 +1055,14 @@ export function redactProxyCredentials(text) {
 //
 // `exec` is an injection seam for tests ONLY — the credential scrubbing below lives in a
 // catch around execFileSync, and there is no other way to drive that branch deterministically.
-export function curlFetch(url, proxyAuth, headers = {}, { exec = execFileSync } = {}) {
-  const args = ['-sS', '--compressed', '--max-time', '15', '-L'];
+export function curlFetch(
+  url,
+  proxyAuth,
+  headers = {},
+  { exec = execFileSync, timeoutMs = 15_000 } = {},
+) {
+  const curlTimeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+  const args = ['-sS', '--compressed', '--max-time', String(curlTimeoutSeconds), '-L'];
   if (proxyAuth) {
     const proxyUrl = /^https?:\/\//i.test(proxyAuth) ? proxyAuth : `http://${proxyAuth}`;
     args.push('-x', proxyUrl);
@@ -1066,7 +1072,11 @@ export function curlFetch(url, proxyAuth, headers = {}, { exec = execFileSync } 
   args.push(url);
   let raw;
   try {
-    raw = exec('curl', args, { encoding: 'utf8', timeout: 20000, stdio: ['pipe', 'pipe', 'pipe'] });
+    raw = exec('curl', args, {
+      encoding: 'utf8',
+      timeout: timeoutMs + 5_000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
   } catch (err) {
     // SECURITY: when curl itself exits non-zero (SSL_ERROR_SYSCALL, "CONNECT tunnel
     // failed", DNS), execFileSync builds an Error whose message is the ENTIRE argv —
@@ -1076,12 +1086,10 @@ export function curlFetch(url, proxyAuth, headers = {}, { exec = execFileSync } 
     // with curl's own stderr, which names the failure without echoing the command.
     //
     // Dropping `.status` is load-bearing, not incidental: execFileSync sets it to curl's
-    // EXIT CODE (35, 56, 7…). _gdelt-fetch.mjs discriminates "upstream returned non-2xx"
-    // from "network/curl failure" purely on `typeof status === 'number'`, so leaking the
-    // exit code through made it read curl exit 35 as an HTTP status, find it absent from
-    // RETRYABLE_STATUSES, and refuse to retry the proxy — defeating the Decodo per-attempt
-    // IP rotation on exactly the TLS tears it exists to survive. Only a genuine HTTP
-    // status may carry `.status`.
+    // EXIT CODE (35, 56, 7…). _gdelt-fetch.mjs uses `.status` to distinguish upstream
+    // HTTP responses from transport failures, so leaking the exit code would classify
+    // curl exit 35 as an HTTP response and publish the wrong route diagnostic. Only a
+    // genuine HTTP status may carry `.status`.
     const stderr = redactProxyCredentials(err?.stderr || '').trim().split('\n').filter(Boolean).pop();
     throw Object.assign(
       new Error(`curl failed: ${stderr || redactProxyCredentials(err?.message) || 'unknown error'}`),
@@ -1729,6 +1737,7 @@ export async function runSeed(domain, resource, canonicalKey, fetchFn, opts = {}
     preserveKeys = [],
     beforePublish,
     afterPublish,
+    afterValidationSkip,
     afterPreservedValidationSkip,
     afterFreshness,
     publishTransform,
@@ -2012,6 +2021,20 @@ export async function runSeed(domain, resource, canonicalKey, fetchFn, opts = {}
       const durationMs = Date.now() - startMs;
       const preserved = await extendExistingTtl(preservationKeys(), ttlSeconds || 600);
       const strictFailure = Boolean(opts.emptyDataIsFailure);
+      const validationSkipContext = {
+        canonicalKey,
+        ttlSeconds,
+        recordCount: contractRecordCount,
+        runId,
+        preservationSucceeded: preserved,
+      };
+      // Some rejected snapshots carry failure evidence that must survive even
+      // when there is no complete last-good cohort to preserve. Keep this hook
+      // in the publish phase so its persistence cannot make withRetry(fetchFn)
+      // repeat upstream source requests.
+      if (!strictFailure && afterValidationSkip) {
+        await afterValidationSkip(data, validationSkipContext);
+      }
       if (strictFailure) {
         // Strict-floor seeders (e.g. IMF-External, floor=180 countries) treat
         // empty data as a real upstream failure. Do NOT refresh seed-meta —
@@ -2067,12 +2090,7 @@ export async function runSeed(domain, resource, canonicalKey, fetchFn, opts = {}
         }
       }
       if (!strictFailure && preserved && afterPreservedValidationSkip) {
-        await afterPreservedValidationSkip(data, {
-          canonicalKey,
-          ttlSeconds,
-          recordCount: contractRecordCount,
-          runId,
-        });
+        await afterPreservedValidationSkip(data, validationSkipContext);
       }
       console.log(`\n=== Done (${Math.round(durationMs)}ms, no write) ===`);
       await releaseLock(`${domain}:${resource}`, runId);
