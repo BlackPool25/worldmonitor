@@ -27,6 +27,11 @@ import {
   type NewsCategoryLoadOptions,
   type NewsIntelLoadOptions,
 } from '@/app/news-loader-sequencing';
+import {
+  countDigestCategories,
+  evaluateFetchedDigest,
+  type CachedDigestSummary,
+} from '@/app/news-digest-acceptance';
 import { INTEL_HOTSPOTS, CONFLICT_ZONES } from '@/config/geo';
 import { tokenizeForMatch, matchKeyword } from '@/utils/keyword-match';
 import { withTimeout } from '@/utils/with-timeout';
@@ -409,6 +414,19 @@ export class DataLoaderManager implements AppModule {
   private readonly perFeedFallbackBatchSize = 2;
   private lastGoodDigest: ListFeedDigestResponse | null = null;
   /**
+   * Serializes the read-decide-write in `persistDigest`.
+   *
+   * The coverage guard is a compare-and-swap over a store that has no atomic
+   * conditional write, so two overlapping digest fetches could each read the old
+   * entry, each decide to persist, and let the smaller one land last — exactly
+   * the downgrade the guard exists to prevent. `loadNews()` is reachable
+   * concurrently (loadAllData's news task and RefreshScheduler's news loop both
+   * call it), so the window is real. Chaining makes it a non-issue within this
+   * tab; cross-tab and desktop writers remain last-write-wins, which is the
+   * storage layer's pre-existing behaviour and bounded by the max age.
+   */
+  private digestPersistChain: Promise<void> = Promise.resolve();
+  /**
    * Work-list signature of the last news load that actually landed data, or
    * `null` if none has. Gates loadAllData()'s `news` task — see
    * `shouldHydrateNews`. Left unset when a load throws or comes back empty with
@@ -636,7 +654,14 @@ export class DataLoaderManager implements AppModule {
       );
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = await resp.json() as ListFeedDigestResponse;
-      const catCount = Object.keys(data.categories ?? {}).length;
+      const catCount = countDigestCategories(data);
+      // A 200 carrying no categories is an outage wearing a success status: every
+      // preset category renders empty behind it, because per-feed fallback is off
+      // on web. Throwing routes it into the catch below, which is the whole point
+      // — the breaker counts it, `lastGoodDigest` keeps the real digest it had, and
+      // `digest:last-good` is left alone instead of being poisoned for 6 hours with
+      // the empty body the fallback exists to survive (#5877).
+      if (catCount === 0) throw new Error('digest returned 0 categories');
       markLcpDebug('wm:data:feed-digest-ready', { categories: catCount });
       console.info(`[News] Digest fetched: ${catCount} categories`);
       this.lastGoodDigest = data;
@@ -655,13 +680,82 @@ export class DataLoaderManager implements AppModule {
     }
   }
 
+  /**
+   * Write the fresh digest to `digest:last-good`, unless that would shrink it.
+   *
+   * A PARTIAL digest is the second degraded shape (#5877): a 200 that covers
+   * some categories but fewer than the entry already cached. The response is
+   * real data, so the caller uses it for this load — but overwriting a richer
+   * `digest:last-good` with it is a strict loss for the NEXT page load, which is
+   * the one that falls back to this entry when the digest is unreachable.
+   *
+   * Deliberately fire-and-forget and off the fetch path: the comparison needs a
+   * persistent-cache READ, and `tryFetchDigest` sits on the news first-paint
+   * path, so awaiting an IndexedDB round trip there would buy correctness for
+   * the fallback at the cost of the load it is protecting. A read failure is
+   * treated as "nothing cached" and the write proceeds — the previous behaviour.
+   */
   private persistDigest(data: ListFeedDigestResponse): void {
-    setPersistentCache('digest:last-good', data).catch(() => {});
+    const key = this.digestCacheKey();
+    this.digestPersistChain = this.digestPersistChain.then(async () => {
+      const catCount = countDigestCategories(data);
+      const cachedSummary = await this.readPersistedDigestSummary(key);
+      const decision = evaluateFetchedDigest({
+        fetchedCategoryCount: catCount,
+        cached: cachedSummary,
+        cacheMaxAgeMs: this.persistedDigestMaxAgeMs,
+      });
+      if (!decision.persist) {
+        console.warn(
+          `[News] Digest covers ${catCount} categories, fewer than the ` +
+          `${cachedSummary?.categoryCount} already cached — keeping the cached last-good digest`,
+        );
+        return;
+      }
+      await setPersistentCache(key, data);
+    }).catch(() => {});
+  }
+
+  /**
+   * Coverage and age of the persisted last-good digest, or `null` when there is
+   * nothing usable to compare against — including on a read failure, so a
+   * broken storage layer degrades to the unconditional write rather than
+   * silently suppressing every future persist.
+   */
+  private async readPersistedDigestSummary(key: string): Promise<CachedDigestSummary | null> {
+    try {
+      const envelope = await getPersistentCache<ListFeedDigestResponse>(key);
+      if (!envelope) return null;
+      return {
+        categoryCount: countDigestCategories(envelope.data),
+        ageMs: Date.now() - envelope.updatedAt,
+      };
+    } catch { return null; }
+  }
+
+  /**
+   * Cache key for the last-good digest, scoped exactly like the request that
+   * produced it.
+   *
+   * The digest is fetched per `variant` and `lang`, but the entry used to be
+   * stored under one global key — so a variant or language switch compared, and
+   * fell back to, a digest built for a different category set entirely. That was
+   * survivable while every successful fetch overwrote the entry unconditionally;
+   * it is not survivable now that coverage decides whether to overwrite, because
+   * a wider digest from the OTHER variant would veto persisting the current
+   * one's for up to 6 hours (#5877).
+   *
+   * Scoping also retires every entry written under the old key, which is the
+   * migration path for a cache already poisoned by a degraded digest: those
+   * entries simply become unreachable rather than needing to be detected.
+   */
+  private digestCacheKey(): string {
+    return `digest:last-good:${SITE_VARIANT}:${getCurrentLanguage()}`;
   }
 
   private async loadPersistedDigest(): Promise<ListFeedDigestResponse | null> {
     try {
-      const envelope = await getPersistentCache<ListFeedDigestResponse>('digest:last-good');
+      const envelope = await getPersistentCache<ListFeedDigestResponse>(this.digestCacheKey());
       if (!envelope) return null;
       if (Date.now() - envelope.updatedAt > this.persistedDigestMaxAgeMs) return null;
       this.lastGoodDigest = envelope.data;
