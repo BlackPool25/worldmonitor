@@ -35,7 +35,14 @@ afterEach(() => {
   }
 });
 
-function installSeedHealthPipelineMock(chinaMeta: { fetchedAt: number; recordCount: number }) {
+type ChinaMeta = {
+  fetchedAt: number;
+  recordCount: number;
+  groupStates?: Record<string, string>;
+  groupCounts?: Record<string, number>;
+};
+
+function installSeedHealthPipelineMock(chinaMeta: ChinaMeta) {
   process.env.UPSTASH_REDIS_REST_URL = 'https://redis.example.test';
   process.env.UPSTASH_REDIS_REST_TOKEN = 'redis-token';
   process.env.WORLDMONITOR_VALID_KEYS = OPERATOR_KEY;
@@ -78,7 +85,7 @@ function installSeedHealthPipelineMock(chinaMeta: { fetchedAt: number; recordCou
   };
 }
 
-function classifyMainHealth(chinaMeta: { fetchedAt: number; recordCount: number }) {
+function classifyMainHealth(chinaMeta: ChinaMeta) {
   return healthTesting.classifyKey(
     'chinaDecisionSignals',
     CHINA_DATA_KEY,
@@ -93,7 +100,7 @@ function classifyMainHealth(chinaMeta: { fetchedAt: number; recordCount: number 
   );
 }
 
-async function readSeedHealth(chinaMeta: { fetchedAt: number; recordCount: number }) {
+async function readSeedHealth(chinaMeta: ChinaMeta) {
   installSeedHealthPipelineMock(chinaMeta);
   const response = await seedHealthHandler(new Request(
     'https://api.worldmonitor.app/api/seed-health',
@@ -193,5 +200,37 @@ describe('China decision-signal access tiers (#5580)', () => {
       assert.equal(seedEntry.recordCount, expectation.recordCount);
       assert.equal(seedEntry.minRecordCount, 6);
     }
+  });
+
+  it('projects bounded per-group diagnostics only through operator seed health', async () => {
+    const groupStates = {
+      macro: 'available',
+      'policy-enforcement': 'partial',
+      'cross-strait-activity': 'stale',
+      'corporate-disclosures': 'unavailable',
+      'corridor-conditions': 'available',
+      'activity-nowcast': 'unavailable',
+    };
+    const groupCounts = {
+      populated: 4,
+      partial: 1,
+      stale: 1,
+      unavailable: 2,
+    };
+    const { body } = await readSeedHealth({
+      fetchedAt: Date.now() - 60_000,
+      recordCount: 4,
+      groupStates,
+      groupCounts,
+    });
+
+    assert.deepEqual(
+      body.seeds['intelligence:china-decision-signals'].groupStates,
+      groupStates,
+    );
+    assert.deepEqual(
+      body.seeds['intelligence:china-decision-signals'].groupCounts,
+      groupCounts,
+    );
   });
 });
