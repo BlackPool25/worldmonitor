@@ -30,10 +30,12 @@ const cachedSnapshot = () => ({
 });
 
 // Since issue #5848 the previous snapshot is read up front to order the article
-// loop stalest-first, so a run reads it EXACTLY ONCE — the ordering must not add
-// a second Redis GET on top of the cache-merge's. These runs pin that count;
-// before #5848 a clean sweep read it zero times and asserted it was never
-// consulted. `cachedSnapshot`'s 'PREV' stamps are unparseable, so every topic
+// loop. These clean-sweep fixtures never produce a 0-article topic, so they pin
+// only the ORDERING read's count (exactly one on a clean sweep) — the
+// no-second-GET-on-the-degraded-path invariant is pinned by the dedicated
+// read-count tests in seed-gdelt-intel-fetch-rotation.test.mjs, not here
+// (#5859 review). Before #5848 a clean sweep read the snapshot zero times and
+// these asserted it was never consulted. `cachedSnapshot`'s 'PREV' stamps are unparseable, so every topic
 // ties as maximally stale and the fetch order stays canonical here.
 function countingSnapshotLoader(snapshot = cachedSnapshot()) {
   const loadPrevious = async () => {

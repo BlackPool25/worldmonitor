@@ -184,8 +184,10 @@ async function fetchArticlesOnce(topic) {
 
 // Start `operation` only when budget remains, and never let it run past
 // `budgetMs`; on timeout resolve to `fallback` (and run `onTimeout` for a log
-// line). The fallback opens the run-scoped circuit below, so the abandoned
-// bounded request is never overlapped by timeline or later-topic calls.
+// line). At the article/timeline call sites the fallback opens the run-scoped
+// circuit, so the abandoned bounded request is never overlapped by timeline or
+// later-topic calls; the ordering-read call site deliberately does NOT open a
+// circuit on its fallback — ordering is an optimisation (#5859 review).
 function withBudget(operation, budgetMs, fallback, onTimeout) {
   if (!(budgetMs > 0)) return Promise.resolve(fallback);
   let timer;
@@ -224,8 +226,12 @@ function withBudget(operation, budgetMs, fallback, onTimeout) {
 // Missing or unparseable stamps mean "no evidence this ever happened" and sort
 // first; ties (including a cold start with no snapshot) fall back to canonical
 // order. Forward clock skew is clamped to the run clock so a bad stamp can only
-// ever make a topic look older — an uncorrected future stamp would sort a topic
-// last forever, and a topic that is never attempted never gets a corrected stamp.
+// ever make a topic look older: the clamp keeps ordering sane among MULTIPLE
+// skewed stamps (they tie at the run clock and fall back to canonical order
+// instead of ranking by skew size) and keeps the logged stamps honest. It does
+// NOT shorten how long a single future stamp sorts its topic last — that equals
+// the skew either way; the attemptedAt lap rotation is what prevents permanent
+// exile (#5859 review).
 // Returns the ranked entries rather than bare topics so the run can LOG the
 // decision it just made. The starvation this fixes went unnoticed for 18-29 days
 // because the fetch order was only ever reconstructible from a sequence of
@@ -287,8 +293,17 @@ export async function fetchAllTopics(deps = {}) {
     // outage — when this read dies the run degrades to a no-write skip and
     // freshness silently rots (21h stale before the gate fired, issue #5437),
     // so its failure must be visible in the run log.
-    _loadPrevious = () => verifySeedKey(CANONICAL_KEY).catch((err) => {
-      console.warn(`  cache-merge: failed to load previous snapshot (${err?.message || err}) — topics will not be backfilled this run`);
+    // The phase label keeps the failure warn honest (#5859 review): an
+    // ordering-phase failure degrades to canonical order while the merge still
+    // gets its own attempt, so "topics will not be backfilled" is only true
+    // when the MERGE phase's read is the one that died.
+    _loadPrevious = (phase = 'cache-merge') => verifySeedKey(CANONICAL_KEY).catch((err) => {
+      console.warn(
+        `  ${phase}: failed to load previous snapshot (${err?.message || err})`
+        + (phase === 'cache-merge'
+          ? ' — topics will not be backfilled this run'
+          : ' — fetching in canonical order this run'),
+      );
       return null;
     }),
     _softBudgetMs = FETCH_SOFT_BUDGET_MS,
@@ -310,10 +325,29 @@ export async function fetchAllTopics(deps = {}) {
   // mechanism that keeps freshness alive through a GDELT brownout (issue #5437).
   // Leaving null unmemoized costs a genuinely cold start one extra GET and buys
   // the merge an independent attempt several minutes later.
+  // A caller that finds another phase's read still in flight WAITS it out and
+  // only fires its own read if that one settled unusable (#5859 review):
+  // withBudget abandons (never cancels) the ordering read on timeout, and
+  // racing a second verifySeedKey retry ladder against the abandoned one
+  // doubles Upstash load exactly when it is already degraded. Waiting keeps
+  // the #5437 contract intact — a null-settled read is still retried fresh.
   let previousSnapshot = null;
-  const loadPreviousOnce = async () => {
-    if (previousSnapshot == null) previousSnapshot = await _loadPrevious();
-    return previousSnapshot;
+  let previousSnapshotInFlight = null;
+  const loadPreviousOnce = async (phase = 'cache-merge') => {
+    if (previousSnapshot != null) return previousSnapshot;
+    if (previousSnapshotInFlight) {
+      await previousSnapshotInFlight;
+      if (previousSnapshot != null) return previousSnapshot;
+    }
+    const attempt = (async () => {
+      const snapshot = await _loadPrevious(phase);
+      if (snapshot != null) previousSnapshot = snapshot;
+      return snapshot;
+    })();
+    previousSnapshotInFlight = attempt.catch(() => null).then(() => {
+      previousSnapshotInFlight = null;
+    });
+    return attempt;
   };
 
   // Bound the ordering read: it sits on the critical path before the first DOC
@@ -329,7 +363,7 @@ export async function fetchAllTopics(deps = {}) {
   // cache-merge keeps its own unguarded read, so a genuinely broken Redis still
   // surfaces there exactly as it did before this rotation existed.
   const orderingSnapshot = await withBudget(
-    () => loadPreviousOnce().catch((err) => {
+    () => loadPreviousOnce('ordering').catch((err) => {
       console.warn(`  ordering: previous-snapshot read failed (${err?.message || err}) — fetching in canonical order this run`);
       return null;
     }),
@@ -398,10 +432,13 @@ export async function fetchAllTopics(deps = {}) {
     // so a failed or empty attempt still moves the topic to the back of the
     // rotation instead of letting it pin itself first forever. Deliberately
     // separate from fetchedAt, which must keep coasting to the last successful
-    // fetch so the content-age health signal stays honest (issue #5478). Taken
-    // from the injected run clock, not `new Date()`, so a test can advance the
-    // cron cadence without every simulated run collapsing into one millisecond.
-    result.attemptedAt = new Date(_now()).toISOString();
+    // fetch so the content-age health signal stays honest (issue #5478).
+    // Stamped from runStartedAt, NOT the advancing clock (#5859 review): all
+    // attempts in one run must TIE, or the ~27s per-attempt spread makes the
+    // sort remember intra-run positions and the modal first-succeeds regime
+    // locks into absorbing pairs — measured 3/6 topics refreshing forever while
+    // the other three never left the circuit-opening second slot.
+    result.attemptedAt = new Date(runStartedAt).toISOString();
     for (const series of TIMELINE_SERIES) {
       result[series.topicField] = [];
     }

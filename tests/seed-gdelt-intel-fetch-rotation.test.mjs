@@ -514,3 +514,116 @@ describe('rankTopicsForFetch input domain', () => {
     assert.ok(order.indexOf('military') < order.indexOf('cyber'), `got ${order}`);
   });
 });
+
+
+describe('seed-gdelt-intel fetch rotation — #5859 review round', () => {
+  it('rotation survives production timing: same-run stamps tie so pairs cannot absorb the rotation', async () => {
+    // ~22s transport + 5.5s pacing ADVANCE the clock within a run — the
+    // dimension every frozen-clock run above hides. With per-attempt stamps the
+    // modal first-succeeds regime locks into absorbing PAIRS (3 of 6 topics
+    // refresh forever, the other 3 are perpetually the circuit-opening second
+    // slot); stamping from runStartedAt makes same-run attempts tie, so the
+    // staleness tie-break rotates last lap's loser back to the front.
+    let fakeTime = 0;
+    let previous = snapshotOf(PRODUCTION_STALENESS);
+    const refreshed = [];
+    for (let run = 0; run < 12; run++) {
+      fakeTime = runClock(run);
+      const attempted = [];
+      const out = await fetchAllTopics({
+        _now: () => fakeTime,
+        _softBudgetMs: 300_000,
+        _sleep: async (ms) => { fakeTime += ms; },
+        _loadPrevious: async () => previous,
+        _fetchArticles: async (topic) => {
+          const callIndex = attempted.length;
+          attempted.push(topic.id);
+          fakeTime += 22_000;
+          if (callIndex === 0) {
+            return {
+              id: topic.id,
+              articles: [{ title: `fresh ${topic.id}`, url: `https://example.test/live/${topic.id}` }],
+              fetchedAt: new Date(fakeTime).toISOString(),
+            };
+          }
+          return { id: topic.id, articles: [], fetchedAt: new Date(fakeTime).toISOString(), failureCode: 'GDELT_SHARED_PROXY_HTTP_429' };
+        },
+        _fetchTimeline: async () => ({ points: [], errorCode: null }),
+      });
+      refreshed.push(attempted[0]);
+      previous = asPublishedSnapshot(out);
+    }
+    assert.equal(
+      new Set(refreshed).size,
+      TOPIC_IDS.length,
+      `12 advancing-clock single-success runs must reach all six topics; got ${JSON.stringify(refreshed)}`,
+    );
+  });
+
+  it('the cache-merge waits out an in-flight ordering read instead of racing a duplicate Redis ladder', async () => {
+    // withBudget abandons (never cancels) the ordering read on timeout. The
+    // merge must JOIN that still-pending read, not start a concurrent second
+    // retry ladder against an Upstash that is already degraded (#5859 review).
+    let calls = 0;
+    const gate = new Promise((resolve) => { setTimeout(resolve, 60); });
+    const out = await fetchAllTopics({
+      _softBudgetMs: 60_000,
+      _minRequestBudgetMs: 1, // ordering read times out instantly; its operation stays in flight
+      _sleep: async () => {},
+      _loadPrevious: async () => {
+        calls += 1;
+        await gate;
+        return snapshotOf(PRODUCTION_STALENESS);
+      },
+      _fetchArticles: async (topic) => ({ id: topic.id, articles: [], fetchedAt: 'NOW', failureCode: 'GDELT_SHARED_PROXY_HTTP_429' }),
+      _fetchTimeline: async () => ({ points: [], errorCode: null }),
+    });
+    assert.equal(calls, 1, 'the merge must join the abandoned ordering read, not start a concurrent duplicate');
+    assert.equal(
+      out.topics.find((t) => t.id === 'cyber').articles[0].title,
+      'cached cyber',
+      'the shared read late result must still feed the backfill',
+    );
+  });
+
+  it('emits the gdelt_intel_fetch_order event with per-topic ranking stamps', async () => {
+    // The PR designates this event as the primary post-deploy signal (the
+    // content-age alarm is blind per #5858), so its shape is a contract.
+    const logs = [];
+    const originalLog = console.log;
+    console.log = (...args) => { logs.push(args.join(' ')); };
+    try {
+      await runHealthy(snapshotOf(PRODUCTION_STALENESS));
+    } finally {
+      console.log = originalLog;
+    }
+    const line = logs.find((l) => l.includes('gdelt_intel_fetch_order'));
+    assert.ok(line, `the fetch-order event must be emitted; got: ${JSON.stringify(logs.slice(0, 5))}`);
+    const parsed = JSON.parse(line);
+    assert.deepEqual([...parsed.order].sort(), [...TOPIC_IDS].sort(), 'order must cover all six topics');
+    assert.equal(parsed.order[0], 'nuclear', 'order[0] must reflect the ranking (stalest first on a stamp-free snapshot)');
+    for (const entry of parsed.ranking) {
+      assert.equal(entry.lastAttemptedAt, null, 'a pre-#5848 snapshot has no attempt stamps — null means never-attempted');
+      assert.match(String(entry.lastFetchedAt), /^\d{4}-\d{2}-\d{2}T/, 'article-bearing entries carry an ISO lastFetchedAt');
+    }
+  });
+
+  it('clamps future stamps to the run clock so skewed entries rank canonically, not by skew size', () => {
+    // Discriminating clamp coverage (#5859 review): unclamped, cyber (2098)
+    // would outrank military (2099); clamped, both collapse to the run clock,
+    // tie, and fall back to canonical order — military before cyber.
+    const bareTopics = TOPIC_IDS.map((id) => ({ id }));
+    const ranked = rankTopicsForFetch(bareTopics, {
+      topics: [
+        { id: 'military', articles: [{ title: 'm' }], fetchedAt: '2099-01-01T00:00:00.000Z' },
+        { id: 'cyber', articles: [{ title: 'c' }], fetchedAt: '2098-01-01T00:00:00.000Z' },
+        { id: 'nuclear', articles: [{ title: 'n' }], fetchedAt: '2026-07-01T00:00:00.000Z' },
+      ],
+    }, FIRST_RUN_AT).map((entry) => entry.topic.id);
+
+    const militaryPos = ranked.indexOf('military');
+    const cyberPos = ranked.indexOf('cyber');
+    assert.ok(ranked.indexOf('nuclear') < militaryPos, 'a genuinely past stamp must outrank clamped future stamps');
+    assert.equal(cyberPos, militaryPos + 1, 'clamped future stamps must tie and fall back to canonical order (military before cyber)');
+  });
+});
