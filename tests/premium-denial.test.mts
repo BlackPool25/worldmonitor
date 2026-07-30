@@ -447,6 +447,20 @@ describe('premium panels route their denials through the classifier', () => {
       'the upsell string must sit under the upgrade_required case',
     );
   });
+
+  it('reports the only three client-side entitlement-desync decision sites', () => {
+    for (const rel of [
+      'src/components/LatestBriefPanel.ts',
+      'src/components/ChatAnalystPanel.ts',
+      'src/components/WidgetChatModal.ts',
+    ]) {
+      assert.match(
+        readSource(rel),
+        /reportEntitlementDesync\(/,
+        `${rel} must make its client-side desync decision observable`,
+      );
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

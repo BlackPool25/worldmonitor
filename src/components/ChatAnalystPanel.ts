@@ -13,6 +13,7 @@ import {
   PRO_VERIFICATION_RETRY_MESSAGE,
 } from '@/services/analyst-denial';
 import { classifyDenialResponse } from '@/services/premium-denial';
+import { reportEntitlementDesync } from '@/services/entitlement-desync-telemetry';
 import { trackAnalystControlAction } from '@/services/analytics';
 import { h, replaceChildren, setTrustedHtml, trustedHtml, type TrustedHtml } from '@/utils/dom-utils';
 import {
@@ -83,6 +84,7 @@ async function describeDenial(res: Response): Promise<string> {
     return PRO_VERIFICATION_RETRY_MESSAGE;
   }
   const verdict = await classifyDenialResponse(res, readClientEntitlementBelief(getAuthState()));
+  if (verdict === 'entitlement_desync') reportEntitlementDesync('chat-analyst');
   return analystDenialMessage(res.status, verdict);
 }
 

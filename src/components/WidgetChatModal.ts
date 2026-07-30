@@ -6,6 +6,7 @@ import { escapeHtml } from '@/utils/sanitize';
 import { widgetAgentHealthUrl, widgetAgentUrl } from '@/utils/proxy';
 import { wrapWidgetHtml, wrapProWidgetHtml } from '@/utils/widget-sanitizer';
 import { track } from '@/services/analytics';
+import { reportEntitlementDesync } from '@/services/entitlement-desync-telemetry';
 import { setTrustedHtml, trustedHtml } from '@/utils/dom-utils';
 
 
@@ -407,6 +408,7 @@ function resolvePreflightMessage(
   if (status === 403) {
     // Tester-key path: tell the operator to update the wm-*-key they actually have.
     if (usedTesterKey) return isPro ? t('widgets.preflightInvalidProKey') : t('widgets.preflightInvalidKey');
+    if (isPro) reportEntitlementDesync('widget-chat');
     // Clerk-auth path: split on isPro.
     //   isPro=true  — the modal believes the user is Pro; a 403 means either
     //                 (a) they just upgraded (entitlement still propagating)
