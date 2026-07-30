@@ -18,10 +18,14 @@ import {
 import { CHINA_COVERAGE_ENTRIES } from '../scripts/china-coverage-manifest.mjs';
 import { CHINA_POLICY_SOURCES } from '../scripts/china-policy/adapters.mjs';
 import { CHINA_POLICY_AGENCIES } from '../scripts/china-policy/normalize.mjs';
-import {
-  MIN_COUNTRY_COVERAGE,
-  REQUEST_BUDGET,
-} from '../scripts/seed-comtrade-bilateral-hs4.mjs';
+
+// The seeder resolves REQUEST_BUDGET from COMTRADE_REQUEST_BUDGET at module
+// evaluation, while the docs state the default contract. Clear the override
+// before a lazy import so an operator env cannot fail the docs assertion.
+delete process.env.COMTRADE_REQUEST_BUDGET;
+const { MIN_COUNTRY_COVERAGE, REQUEST_BUDGET } = await import(
+  '../scripts/seed-comtrade-bilateral-hs4.mjs'
+);
 
 const root = resolve(import.meta.dirname, '..');
 const read = (relativePath: string) =>
