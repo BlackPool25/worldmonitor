@@ -18,6 +18,8 @@ jobs:
       digest: ${{ steps.diff.outputs.digest }}
       validation: ${{ steps.diff.outputs.validation }}
       consumer_prices: ${{ steps.diff.outputs.consumer_prices }}
+      desktop_config: ${{ steps.diff.outputs.desktop_config }}
+      desktop_rust: ${{ steps.diff.outputs.desktop_rust }}
     steps:
       - id: diff
         env:
@@ -28,6 +30,8 @@ jobs:
             echo "digest=true" >> "$GITHUB_OUTPUT"
             echo "validation=true" >> "$GITHUB_OUTPUT"
             echo "consumer_prices=true" >> "$GITHUB_OUTPUT"
+            echo "desktop_config=true" >> "$GITHUB_OUTPUT"
+            echo "desktop_rust=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           FILES=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.number }}/files" \
@@ -78,6 +82,31 @@ jobs:
             END { print count + 0 }
           ')
           echo "consumer_prices=$( [ "$CONSUMER_PRICES" -gt 0 ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
+          # Desktop drift gates (#5902). The `code` filter above deliberately
+          # skips src-tauri/ (non-sidecar), so before these outputs existed a
+          # Rust/Tauri-config change ran zero PR CI and desktop breakage
+          # surfaced only at the next release build — months later.
+          # desktop-config also covers api/ because the sidecar bundles
+          # api/{domain}/v1/[rpc].ts handlers at release time; a handler that
+          # esbuild can no longer bundle is a desktop-only break no other job
+          # sees.
+          DESKTOP_CONFIG=$(echo "$FILES" | awk '
+            /^src-tauri\// { count++; next }
+            /^api\// { count++; next }
+            /^package(-lock)?\.json$/ { count++; next }
+            /^scripts\/(sync-desktop-version|build-sidecar-handlers|build-sidecar-sebuf)\.mjs$/ { count++; next }
+            /^scripts\/download-node\.sh$/ { count++; next }
+            /^\.github\/workflows\/(build-desktop|test-linux-app|test)\.yml$/ { count++ }
+            END { print count + 0 }
+          ')
+          echo "desktop_config=$( [ "$DESKTOP_CONFIG" -gt 0 ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
+          DESKTOP_RUST=$(echo "$FILES" | awk '
+            /^src-tauri\/sidecar\// { next }
+            /^src-tauri\// { count++; next }
+            /^\.github\/workflows\/test\.yml$/ { count++ }
+            END { print count + 0 }
+          ')
+          echo "desktop_rust=$( [ "$DESKTOP_RUST" -gt 0 ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
 
   docs-stats:
     # Always-on: guards the capability counts quoted in README / ARCHITECTURE /
@@ -169,6 +198,79 @@ jobs:
           cache: 'npm'
       - run: npm ci
       - run: npm run test:sidecar
+
+  # Desktop drift gates (#5902): path-conditional so unrelated PRs skip them
+  # (deploy-gate counts "skipped" as passing). desktop-config is the cheap
+  # node-only surface — version consistency, Tauri config/capability parse,
+  # and the sidecar handler bundle build that release builds run via
+  # `npm run build:desktop` but PR CI never exercised. desktop-rust compiles
+  # and unit-tests the Tauri crate, which was previously untested until a
+  # release build.
+  desktop-config:
+    needs: changes
+    if: needs.changes.outputs.desktop_config == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - name: Desktop version consistency
+        run: node scripts/sync-desktop-version.mjs --check
+      - name: Tauri config and capability files parse
+        run: |
+          node -e '
+            const { readFileSync, readdirSync } = require("node:fs");
+            const files = [
+              "src-tauri/tauri.conf.json",
+              "src-tauri/tauri.tech.conf.json",
+              "src-tauri/tauri.finance.conf.json",
+              ...readdirSync("src-tauri/capabilities").map((f) => `src-tauri/capabilities/${f}`),
+            ];
+            for (const f of files) {
+              JSON.parse(readFileSync(f, "utf8"));
+              console.log(`ok ${f}`);
+            }
+          '
+      - run: npm ci
+      - name: Sidecar handler bundles build
+        run: |
+          node scripts/build-sidecar-sebuf.mjs
+          node scripts/build-sidecar-handlers.mjs
+
+  desktop-rust:
+    needs: changes
+    if: needs.changes.outputs.desktop_rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7
+        with:
+          toolchain: stable
+      - name: Rust cache
+        uses: swatinem/rust-cache@ad397744b0d591a723ab90405b7247fac0e6b8db
+        with:
+          workspaces: './src-tauri -> target'
+          cache-on-failure: true
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+      - name: cargo test
+        working-directory: src-tauri
+        # tauri-build's generate_context! requires frontendDist (../dist) to
+        # exist at compile time; an empty dir is sufficient for unit tests.
+        run: |
+          mkdir -p ../dist
+          cargo test --locked
 
   convex-tests:
     needs: changes

@@ -1,7 +1,18 @@
-name: 'Test Linux App'
+name: 'Desktop Canary (Linux)'
+
+# Scheduled installed-app canary (#5902): builds the desktop app from current
+# main, launches the packaged AppImage, and asserts sidecar readiness plus
+# rendered (non-blank) content. A green `Build Desktop App` run alone proves
+# the bundle compiles, not that the installed app works — this canary is the
+# drift alarm between releases. Also dispatchable on demand.
 
 on:
   workflow_dispatch:
+  schedule:
+    # Twice weekly (Mon/Thu 05:23 UTC): frequent enough to surface desktop
+    # drift well inside a 30-day release-freshness target without paying the
+    # ~40min build on every merge.
+    - cron: '23 5 * * 1,4'
 
 concurrency:
   group: test-linux-app-${{ github.ref }}
@@ -94,6 +105,23 @@ jobs:
           APP_PID=$!
           sleep 20
 
+          # Sidecar readiness (#5902): the Rust shell spawns the bundled Node
+          # local API server on 127.0.0.1:46123 (DEFAULT_LOCAL_API_PORT in
+          # src-tauri/src/main.rs). Any HTTP status proves the sidecar is up
+          # and serving — unauthenticated requests may get 4xx, which is fine.
+          SIDECAR_STATUS=unreachable
+          for i in $(seq 1 12); do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
+              "http://127.0.0.1:46123/api/local-traffic-log" || echo 000)
+            if [ "$CODE" != "000" ]; then
+              SIDECAR_STATUS=ready
+              echo "sidecar responded with HTTP $CODE on attempt $i"
+              break
+            fi
+            sleep 5
+          done
+          echo "SIDECAR_STATUS=$SIDECAR_STATUS"
+
           # Screenshot via X11
           import -window root /tmp/screenshot.png 2>/dev/null || true
 
@@ -119,7 +147,7 @@ jobs:
           # --- Try 1: xwfb-run (Xwayland on headless Wayland compositor) ---
           if command -v xwfb-run &>/dev/null; then
             echo "=== Using xwfb-run (Xwayland + headless compositor) ==="
-            timeout 90 xwfb-run -- bash /tmp/smoke-test.sh 2>&1 | tee /tmp/display-server.log || RESULT=$?
+            timeout 180 xwfb-run -- bash /tmp/smoke-test.sh 2>&1 | tee /tmp/display-server.log || RESULT=$?
           else
             echo "xwfb-run not found, skipping"
             RESULT=1
@@ -148,19 +176,32 @@ jobs:
           if grep -q "APP_STATUS=running" /tmp/display-server.log 2>/dev/null; then
             echo "✅ AppImage launched successfully"
           else
-            echo "⚠️ Could not determine app status"
+            echo "❌ Could not determine app status"
+            exit 1
           fi
 
-          # --- Check screenshot has non-black content ---
-          if [ -f screenshot.png ]; then
-            COLORS=$(identify -verbose screenshot.png 2>/dev/null | grep "Colors:" | awk '{print $2}')
-            echo "Screenshot unique colors: ${COLORS:-unknown}"
-            if [ "${COLORS:-0}" -le 5 ]; then
-              echo "⚠️ Screenshot appears blank (only $COLORS colors). App may not have rendered."
-            else
-              echo "✅ Screenshot has content ($COLORS unique colors)"
-            fi
+          # --- Sidecar readiness is a hard gate (#5902): a rendered shell with
+          # a dead sidecar is exactly the drift this canary exists to catch ---
+          if grep -q "SIDECAR_STATUS=ready" /tmp/display-server.log 2>/dev/null; then
+            echo "✅ Sidecar responded on 127.0.0.1:46123"
+          else
+            echo "❌ Sidecar never responded on 127.0.0.1:46123"
+            exit 1
           fi
+
+          # --- Rendered content is a hard gate: a blank window is a failure,
+          # not a warning — a green run must mean the app actually drew ---
+          if [ ! -f screenshot.png ]; then
+            echo "❌ No screenshot captured — cannot verify rendered content"
+            exit 1
+          fi
+          COLORS=$(identify -verbose screenshot.png 2>/dev/null | grep "Colors:" | awk '{print $2}')
+          echo "Screenshot unique colors: ${COLORS:-unknown}"
+          if [ "${COLORS:-0}" -le 5 ]; then
+            echo "❌ Screenshot appears blank (only ${COLORS:-0} colors). App did not render."
+            exit 1
+          fi
+          echo "✅ Screenshot has content ($COLORS unique colors)"
 
       - name: Upload smoke test screenshot
         if: always()
