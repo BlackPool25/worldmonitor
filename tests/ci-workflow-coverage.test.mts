@@ -38,6 +38,8 @@ const REQUIRED_TEST_JOBS = [
   'convex-tests',
   'variant-smoke-full',
   'resilience-validation-smoke',
+  'desktop-config',
+  'desktop-rust',
 ] as const;
 
 const TIMEOUT_CAPPED_TEST_JOBS = [
@@ -46,6 +48,8 @@ const TIMEOUT_CAPPED_TEST_JOBS = [
   'convex-tests',
   'variant-smoke-full',
   'resilience-validation-smoke',
+  'desktop-config',
+  'desktop-rust',
 ] as const;
 
 const REQUIRED_GATE_WORKFLOWS = ['Test', 'Typecheck', 'Lint Code', 'Security Audit'] as const;
@@ -81,6 +85,22 @@ const REQUIRED_RESILIENCE_VALIDATION_INPUTS = [
   'scripts/validate-resilience-sensitivity.mjs',
   'scripts/seed-bundle-resilience-validation.mjs',
   'scripts/_bundle-runner.mjs',
+] as const;
+
+// Desktop drift gates (#5902): the literal awk patterns each change filter
+// must keep, so a filter refactor cannot silently un-gate a desktop-breaking
+// path class (the exact drift class #5902 exists to close).
+const REQUIRED_DESKTOP_CONFIG_INPUTS = [
+  'src-tauri/',
+  'package.json',
+  'scripts/sync-desktop-version.mjs',
+  '.github/workflows/(build-desktop|test-linux-app|test).yml',
+] as const;
+
+const REQUIRED_DESKTOP_RUST_INPUTS = [
+  'src-tauri/sidecar/',
+  'src-tauri/',
+  '.github/workflows/test.yml',
 ] as const;
 
 function escapeRegExp(value: string): string {
@@ -430,6 +450,39 @@ describe('CI workflow coverage', () => {
     for (const input of REQUIRED_RESILIENCE_VALIDATION_INPUTS) {
       assert.ok(testWorkflow.includes(workflowRegexNeedle(input)), `test.yml must cover ${input}`);
     }
+  });
+
+  it('keeps desktop drift-gate inputs in the CI change filter (#5902)', () => {
+    assert.ok(
+      testWorkflow.includes('desktop_config: ${{ steps.diff.outputs.desktop_config }}'),
+      'test.yml must expose a desktop_config change output',
+    );
+    assert.ok(
+      testWorkflow.includes('desktop_rust: ${{ steps.diff.outputs.desktop_rust }}'),
+      'test.yml must expose a desktop_rust change output',
+    );
+    for (const input of REQUIRED_DESKTOP_CONFIG_INPUTS) {
+      assert.ok(
+        testWorkflow.includes(workflowRegexNeedle(input)),
+        `test.yml desktop_config filter must cover ${input}`,
+      );
+    }
+    for (const input of REQUIRED_DESKTOP_RUST_INPUTS) {
+      assert.ok(
+        testWorkflow.includes(workflowRegexNeedle(input)),
+        `test.yml desktop_rust filter must cover ${input}`,
+      );
+    }
+    // The sidecar handler bundle build must live in the `unit` job: its
+    // esbuild input graph spans src/ and server/ via the @/ alias, and only
+    // the `code` filter tracks that whole surface (#5902). A refactor moving
+    // it back to a narrower path-gated job would silently re-open the
+    // "bundle-breaking change with green PR CI" gap.
+    assert.match(
+      testJobBlock('unit'),
+      /build-sidecar-handlers\.mjs/,
+      'unit job must run the sidecar handler bundle build',
+    );
   });
 
   it('runs scheduled and per-PR production dependency audits for every package lockfile', () => {
