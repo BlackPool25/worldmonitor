@@ -90,6 +90,17 @@ jobs:
           args: ''
           retryAttempts: 1
 
+      - name: Apply release AppImage post-processing
+        shell: bash
+        run: |
+          mapfile -t IMAGES < <(find src-tauri/target/release/bundle/appimage -name '*.AppImage')
+          if [ ${#IMAGES[@]} -ne 1 ]; then
+            echo "::error::Found ${#IMAGES[@]} AppImage files — expected exactly 1"
+            printf '  %s\n' "${IMAGES[@]}"
+            exit 1
+          fi
+          bash scripts/repack-linux-appimage.sh "${IMAGES[0]}" x86_64
+
       - name: Smoke-test AppImage
         shell: bash
         run: |
@@ -128,9 +139,9 @@ jobs:
           # reports a dead sidecar as ready.
           SIDECAR_STATUS=unreachable
           for i in $(seq 1 12); do
-            CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
-              "http://127.0.0.1:46123/api/local-traffic-log")
-            if [ "$CODE" != "000" ]; then
+            if CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
+              "http://127.0.0.1:46123/api/local-traffic-log") &&
+              [[ "$CODE" =~ ^[1-5][0-9][0-9]$ ]]; then
               SIDECAR_STATUS=ready
               echo "sidecar responded with HTTP $CODE on attempt $i"
               break
@@ -142,17 +153,27 @@ jobs:
           # Screenshot via X11
           import -window root /tmp/screenshot.png 2>/dev/null || true
 
-          # Verify app is still running
-          if kill -0 $APP_PID 2>/dev/null; then
+          # Window info
+          xdotool search --name "" getwindowname 2>/dev/null | head -5 || true
+
+          if FINAL_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
+            "http://127.0.0.1:46123/api/local-traffic-log") &&
+            [[ "$FINAL_CODE" =~ ^[1-5][0-9][0-9]$ ]]; then
+            echo "SIDECAR_FINAL_STATUS=alive"
+            echo "sidecar remained alive with HTTP $FINAL_CODE"
+          else
+            echo "SIDECAR_FINAL_STATUS=dead"
+          fi
+
+          # Verify the app immediately before teardown, after the final sidecar
+          # probe, so neither liveness result can be stale when we report green.
+          if kill -0 "$APP_PID" 2>/dev/null; then
             echo "APP_STATUS=running"
           else
             echo "APP_STATUS=crashed"
             echo "--- App log ---"
             tail -50 /tmp/app.log || true
           fi
-
-          # Window info
-          xdotool search --name "" getwindowname 2>/dev/null | head -5 || true
 
           kill $APP_PID 2>/dev/null || true
           SCRIPT
@@ -197,12 +218,21 @@ jobs:
             exit 1
           fi
 
-          # --- Sidecar readiness is a hard gate (#5902): a rendered shell with
-          # a dead sidecar is exactly the drift this canary exists to catch ---
+          # --- Sidecar readiness and final liveness are hard gates (#5902):
+          # a rendered shell with a dead sidecar is exactly the drift this
+          # canary exists to catch ---
           if grep -q "SIDECAR_STATUS=ready" /tmp/display-server.log 2>/dev/null; then
-            echo "✅ Sidecar responded on 127.0.0.1:46123"
+            echo "✅ Sidecar became ready on 127.0.0.1:46123"
           else
             echo "❌ Sidecar never responded on 127.0.0.1:46123"
+            echo "--- App log (last 50 lines) ---"
+            tail -50 /tmp/app.log 2>/dev/null || true
+            exit 1
+          fi
+          if grep -q "SIDECAR_FINAL_STATUS=alive" /tmp/display-server.log 2>/dev/null; then
+            echo "✅ Sidecar remained alive through the observation window"
+          else
+            echo "❌ Sidecar became unreachable after its readiness response"
             echo "--- App log (last 50 lines) ---"
             tail -50 /tmp/app.log 2>/dev/null || true
             exit 1

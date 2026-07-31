@@ -148,9 +148,10 @@ release-candidate checklist:
 
 ## Drift prevention (current state)
 
-- `desktop-config` (Test workflow): version consistency + Tauri config and
-  capability JSON parse — on any `src-tauri/**`, version-file, or
-  desktop-workflow change.
+- `desktop-config` (Test workflow): version consistency, release AppImage
+  post-processing script syntax, and Tauri config/capability JSON parse — on
+  any `src-tauri/**`, version-file, packaging-script, or desktop-workflow
+  change.
 - Sidecar handler bundle build + per-domain output assertion (Test workflow,
   `unit` job): runs on every code PR, because the bundled handlers' esbuild
   import graph spans `src/` and `server/` via the `@/` alias — a narrower

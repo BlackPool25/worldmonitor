@@ -197,8 +197,8 @@ Variant is set via `VITE_VARIANT` env var. Config lives in `src/config/variants/
 | `lint.yml` | PR (markdown changes) | markdownlint-cli2 |
 | `proto-check.yml` | PR (proto changes) | Generated code freshness |
 | `build-desktop.yml` | `v*` tag, manual | Tauri desktop build |
-| `test-linux-app.yml` | Twice-weekly schedule, manual | Desktop Canary (Linux): installed-app smoke — crash, sidecar readiness, rendered content |
-| `test.yml` (`desktop-config`, `desktop-rust` jobs) | PR touching desktop-coupled paths | Desktop version consistency, Tauri config/capability parse, `cargo test --locked` (#5902) |
+| `test-linux-app.yml` | Twice-weekly schedule, manual | Desktop Canary (Linux): release-processed AppImage smoke — crash, sidecar readiness/liveness, rendered content |
+| `test.yml` (`desktop-config`, `desktop-rust` jobs) | PR touching desktop-coupled paths | Desktop version consistency, AppImage post-processing syntax, Tauri config/capability parse, `cargo test --locked` (#5902) |
 
 ## Pre-Push Hook
 
