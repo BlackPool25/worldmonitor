@@ -406,44 +406,61 @@ export const CACHE_TOOLS: ToolDef[] = [
               : []),
           ]);
           const requestedSectorSymbols = symbols.filter((symbol) => allSectorSymbols.has(symbol));
-          if (requestedSectorSymbols.length > 0) {
-            if (valuations && typeof valuations === 'object' && !Array.isArray(valuations)) {
-              sector.valuations = Object.fromEntries(
-                Object.entries(valuations).filter(([symbol]) => requestedSectorSymbols.includes(symbol.toLowerCase())),
-              );
+          // symbols= is active: always project sector valuations/coverage to the
+          // requested sector subset (empty when the filter is equity-only).
+          if (valuations && typeof valuations === 'object' && !Array.isArray(valuations)) {
+            sector.valuations = Object.fromEntries(
+              Object.entries(valuations).filter(([symbol]) => requestedSectorSymbols.includes(symbol.toLowerCase())),
+            );
+          }
+          if (coverage && typeof coverage === 'object' && !Array.isArray(coverage)) {
+            const coverageRecord = coverage as Record<string, unknown>;
+            if (Array.isArray(coverageRecord.unavailableSymbols)) {
+              const filteredUnavailable = coverageRecord.unavailableSymbols
+                .filter((symbol): symbol is string => typeof symbol === 'string')
+                .filter((symbol) => requestedSectorSymbols.includes(symbol.toLowerCase()));
+              if (filteredUnavailable.length === 0) {
+                delete coverageRecord.unavailableSymbols;
+              } else {
+                coverageRecord.unavailableSymbols = filteredUnavailable;
+              }
             }
-            if (coverage && typeof coverage === 'object' && !Array.isArray(coverage)) {
-              const coverageRecord = coverage as Record<string, unknown>;
-              if (Array.isArray(coverageRecord.unavailableSymbols)) {
-                coverageRecord.unavailableSymbols = coverageRecord.unavailableSymbols
+            if (coverageRecord.lastGood && typeof coverageRecord.lastGood === 'object' && !Array.isArray(coverageRecord.lastGood)) {
+              const lastGoodRecord = coverageRecord.lastGood as Record<string, unknown>;
+              if (Array.isArray(lastGoodRecord.symbols)) {
+                lastGoodRecord.symbols = lastGoodRecord.symbols
                   .filter((symbol): symbol is string => typeof symbol === 'string')
                   .filter((symbol) => requestedSectorSymbols.includes(symbol.toLowerCase()));
               }
-              if (coverageRecord.lastGood && typeof coverageRecord.lastGood === 'object' && !Array.isArray(coverageRecord.lastGood)) {
-                const lastGoodRecord = coverageRecord.lastGood as Record<string, unknown>;
-                if (Array.isArray(lastGoodRecord.symbols)) {
-                  lastGoodRecord.symbols = lastGoodRecord.symbols
-                    .filter((symbol): symbol is string => typeof symbol === 'string')
-                    .filter((symbol) => requestedSectorSymbols.includes(symbol.toLowerCase()));
-                }
+              // Match seeder omit-empty: never leave lastGood with symbols:[].
+              if (!Array.isArray(lastGoodRecord.symbols) || lastGoodRecord.symbols.length === 0) {
+                delete coverageRecord.lastGood;
               }
-              if (Array.isArray(coverageRecord.valuationDiagnostics)) {
-                coverageRecord.valuationDiagnostics = coverageRecord.valuationDiagnostics.filter((diagnostic) => {
-                  if (!diagnostic || typeof diagnostic !== 'object' || Array.isArray(diagnostic)) return false;
-                  const symbol = (diagnostic as Record<string, unknown>).symbol;
-                  return typeof symbol === 'string' && requestedSectorSymbols.includes(symbol.toLowerCase());
-                });
+            }
+            if (Array.isArray(coverageRecord.valuationDiagnostics)) {
+              const filteredDiagnostics = coverageRecord.valuationDiagnostics.filter((diagnostic) => {
+                if (!diagnostic || typeof diagnostic !== 'object' || Array.isArray(diagnostic)) return false;
+                const symbol = (diagnostic as Record<string, unknown>).symbol;
+                return typeof symbol === 'string' && requestedSectorSymbols.includes(symbol.toLowerCase());
+              });
+              if (filteredDiagnostics.length === 0) {
+                delete coverageRecord.valuationDiagnostics;
+              } else {
+                coverageRecord.valuationDiagnostics = filteredDiagnostics;
               }
-              const filteredValuationCount = sector.valuations && typeof sector.valuations === 'object' && !Array.isArray(sector.valuations)
-                ? Object.keys(sector.valuations).length
-                : 0;
-              const expectedValuationCount = requestedSectorSymbols.length;
-              coverageRecord.valuationCount = filteredValuationCount;
-              coverageRecord.expectedValuationCount = expectedValuationCount;
-              coverageRecord.sourceStatus = filteredValuationCount === 0
+            }
+            const filteredValuationCount = sector.valuations && typeof sector.valuations === 'object' && !Array.isArray(sector.valuations)
+              ? Object.keys(sector.valuations).length
+              : 0;
+            const expectedValuationCount = requestedSectorSymbols.length;
+            coverageRecord.valuationCount = filteredValuationCount;
+            coverageRecord.expectedValuationCount = expectedValuationCount;
+            // Empty request set (no sector symbols matched): complete empty view, not degraded.
+            coverageRecord.sourceStatus = expectedValuationCount === 0
+              ? 'ok'
+              : filteredValuationCount === 0
                 ? 'degraded'
                 : filteredValuationCount < expectedValuationCount ? 'partial' : 'ok';
-            }
           }
         }
         narrowNested(data, 'etf-flows', 'etfs', (e) => matchesCode(e.ticker, symbols));

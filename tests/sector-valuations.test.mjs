@@ -225,6 +225,7 @@ describe('sector valuation collection', () => {
       upstashSet: async (key, value) => {
         lastGoodSetKey = key;
         lastGoodSetValue = value;
+        return true;
       },
     });
 
@@ -237,6 +238,36 @@ describe('sector valuation collection', () => {
     assert.deepEqual(result.valuationSources, ['yahoo_v7_quote'], 'should report v7 as fallback source');
     assert.equal(lastGoodSetKey, 'market:sectors:valuations:last-good', 'should persist last-good cache');
     assert.ok(lastGoodSetValue?.valuations?.XLK, 'last-good should contain XLK valuations');
+  });
+
+  it('logs when a complete last-good snapshot write returns false', async () => {
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => { warnings.push(args.join(' ')); };
+    try {
+      await collectSectorValuations({
+        symbols: ['XLK'],
+        fetchValue: async () => ({
+          value: {
+            trailingPE: 25,
+            forwardPE: 22,
+            ytdReturn: 0.08,
+            threeYearReturn: 0.12,
+            fiveYearReturn: 0.1,
+          },
+        }),
+        parseValue: (raw) => raw?.value ?? null,
+        sleepFn: async () => {},
+        upstashGet: async () => null,
+        upstashSet: async () => false,
+      });
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.ok(
+      warnings.some((message) => message.includes('last-good valuation snapshot write failed')),
+      'false upstashSet must surface a bounded warning',
+    );
   });
 
   it('falls back to v10 for symbols v7 did not cover', async () => {

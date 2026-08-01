@@ -38,12 +38,13 @@ const unauthorizedResponse = () => ({
   }),
 });
 
-const valuationResponse = () => ({
+const valuationResponse = (symbol = 'XLK') => ({
   status: 200,
   headers: {},
   body: JSON.stringify({
     quoteSummary: {
       result: [{
+        symbol,
         summaryDetail: {
           trailingPE: { raw: 31.2 },
           forwardPE: { raw: 27.4 },
@@ -59,6 +60,11 @@ const valuationResponse = () => ({
     },
   }),
 });
+
+function symbolFromSummaryUrl(url) {
+  const match = String(url).match(/\/quoteSummary\/([^?/]+)/);
+  return match ? decodeURIComponent(match[1]) : 'XLK';
+}
 
 const v7ValuationResponse = (symbol = 'XLK') => ({
   status: 200,
@@ -196,6 +202,44 @@ describe('parseQuoteSummary', () => {
     });
   });
 
+  it('rejects quoteSummary payloads for a different requested symbol', () => {
+    assert.deepEqual(parseQuoteSummary(JSON.stringify({
+      quoteSummary: {
+        result: [{
+          symbol: 'XLF',
+          summaryDetail: { trailingPE: { raw: 10 }, forwardPE: { raw: 9 } },
+          defaultKeyStatistics: {},
+        }],
+      },
+    }), 'XLK'), {
+      kind: 'identity_mismatch',
+      value: null,
+      failure: 'quote_symbol_mismatch',
+    });
+  });
+
+  it('accepts quoteSummary identity via price.symbol when top-level symbol is absent', () => {
+    const result = parseQuoteSummary(JSON.stringify({
+      quoteSummary: {
+        result: [{
+          price: { symbol: 'XLK' },
+          summaryDetail: {
+            trailingPE: { raw: 31.2 },
+            forwardPE: { raw: 27.4 },
+          },
+          defaultKeyStatistics: {
+            beta: { raw: 1.08 },
+            ytdReturn: { raw: 0.16 },
+            threeYearAverageReturn: { raw: 0.24 },
+            fiveYearAverageReturn: { raw: 0.18 },
+          },
+        }],
+      },
+    }), 'XLK');
+    assert.equal(result.kind, 'success');
+    assert.equal(result.value.trailingPE, 31.2);
+  });
+
   it('classifies a successful response with no PE fields as field-level loss', () => {
     assert.deepEqual(parseQuoteSummary(JSON.stringify({
       quoteSummary: {
@@ -280,7 +324,9 @@ describe('YahooQuoteSummaryClient', () => {
       }
       const isFreshSession = url.includes(`crumb=${transport}-crumb-${sessions[transport]}`)
         && sessions[transport] > 1;
-      return recovered && isFreshSession ? valuationResponse() : unauthorizedResponse();
+      return recovered && isFreshSession
+        ? valuationResponse(symbolFromSummaryUrl(url))
+        : unauthorizedResponse();
     };
 
     const client = new YahooQuoteSummaryClient({
@@ -381,7 +427,7 @@ describe('YahooQuoteSummaryClient', () => {
         const kind = requestKind(url);
         if (kind === 'cookie') return cookieResponse();
         if (kind === 'crumb') return crumbResponse();
-        return valuationResponse();
+        return valuationResponse(symbolFromSummaryUrl(url));
       },
       resolveProxyString: () => 'proxy-user:proxy-password@proxy.example:10000',
       sleepFn: async () => {},
@@ -425,7 +471,7 @@ describe('YahooQuoteSummaryClient', () => {
         const kind = requestKind(url);
         if (kind === 'cookie') return cookieResponse('A3=proxy-cookie');
         if (kind === 'crumb') return crumbResponse('proxy-crumb');
-        return valuationResponse();
+        return valuationResponse(symbolFromSummaryUrl(url));
       },
       resolveProxyString: () => 'proxy.example:10000',
       sleepFn: async () => {},
@@ -446,7 +492,7 @@ describe('YahooQuoteSummaryClient', () => {
         calls.push(kind);
         if (kind === 'cookie') return cookieResponse();
         if (kind === 'crumb') return crumbResponse();
-        return valuationResponse();
+        return valuationResponse(symbolFromSummaryUrl(url));
       },
       now: () => now,
       sessionTtlMs: 60_000,
@@ -472,7 +518,7 @@ describe('YahooQuoteSummaryClient', () => {
         const kind = requestKind(url);
         if (kind === 'cookie') return cookieResponse();
         if (kind === 'crumb') return crumbResponse();
-        return valuationResponse();
+        return valuationResponse(symbolFromSummaryUrl(url));
       },
       requestSpacingMs: 150,
       sleepFn: async (ms) => delays.push(ms),
@@ -504,7 +550,9 @@ describe('YahooQuoteSummaryClient', () => {
     assert.match(calls[2].url, /symbols=XLK&crumb=v7-crumb/);
   });
 
-  it('rejects a v7 response for a different requested symbol', async () => {
+  it('rejects a v7 response for a different requested symbol without cooling the route', async () => {
+    const warnings = [];
+    let now = 1_700_000_000_000;
     const client = new YahooQuoteSummaryClient({
       directRequest: async (url) => {
         const kind = requestKind(url);
@@ -513,13 +561,86 @@ describe('YahooQuoteSummaryClient', () => {
         return v7ValuationResponse('XLF');
       },
       sleepFn: async () => {},
-      logger: { warn() {} },
+      now: () => now,
+      logger: { warn: (message, context) => warnings.push({ message, context }) },
     });
 
     const result = await client.fetchV7Detailed('XLK');
-    assert.equal(result.kind, 'failed');
+    assert.equal(result.kind, 'identity_mismatch');
     assert.equal(result.diagnostic.responseClass, 'identity_mismatch');
     assert.equal(result.diagnostic.failure, 'quote_symbol_mismatch');
+    assert.equal(warnings.length, 0, 'identity mismatch must not arm a multi-minute cooldown');
+
+    // A second call immediately after must still attempt the network path
+    // (not short-circuit as cooldown).
+    const second = await client.fetchV7Detailed('XLK');
+    assert.equal(second.kind, 'identity_mismatch');
+    assert.equal(warnings.length, 0);
+    now += 1; // keep clock stable for readability
+  });
+
+  it('keeps quoteSummary usable after a v7Quote route cooldown', async () => {
+    let now = 1_700_000_000_000;
+    const calls = [];
+    const client = new YahooQuoteSummaryClient({
+      directRequest: async (url) => {
+        const kind = requestKind(url);
+        calls.push(kind);
+        if (kind === 'cookie') return cookieResponse('A3=shared-cookie');
+        if (kind === 'crumb') return crumbResponse('shared-crumb');
+        if (kind === 'v7') {
+          return {
+            status: 503,
+            headers: {},
+            body: JSON.stringify({ quoteResponse: { error: { description: 'upstream down' } } }),
+          };
+        }
+        return valuationResponse(symbolFromSummaryUrl(url));
+      },
+      sleepFn: async () => {},
+      now: () => now,
+      cooldownMs: 300_000,
+      logger: { warn() {} },
+    });
+
+    const v7 = await client.fetchV7Detailed('XLK');
+    assert.equal(v7.kind, 'failed');
+    assert.equal(v7.diagnostic.status, 503);
+
+    const summary = await client.fetchDetailed('XLK');
+    assert.equal(summary.kind, 'success', 'quoteSummary must not inherit the v7Quote cooldown');
+    assert.equal(summary.value.trailingPE, 31.2);
+    assert.ok(calls.includes('summary'), 'quoteSummary request must still fire after v7 failure');
+  });
+
+  it('preserves the shared session after a non-auth route failure', async () => {
+    let cookieBootstraps = 0;
+    const client = new YahooQuoteSummaryClient({
+      directRequest: async (url) => {
+        const kind = requestKind(url);
+        if (kind === 'cookie') {
+          cookieBootstraps += 1;
+          return cookieResponse(`A3=cookie-${cookieBootstraps}`);
+        }
+        if (kind === 'crumb') return crumbResponse(`crumb-${cookieBootstraps}`);
+        if (kind === 'v7') {
+          return {
+            status: 500,
+            headers: {},
+            body: '{}',
+          };
+        }
+        return valuationResponse(symbolFromSummaryUrl(url));
+      },
+      sleepFn: async () => {},
+      cooldownMs: 300_000,
+      logger: { warn() {} },
+    });
+
+    await client.fetchV7Detailed('XLK');
+    assert.equal(cookieBootstraps, 1);
+    await client.fetchDetailed('XLF');
+    assert.equal(cookieBootstraps, 1, '5xx on v7 must not force a full cookie re-bootstrap for quoteSummary');
   });
 });
 

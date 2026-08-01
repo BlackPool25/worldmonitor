@@ -407,15 +407,30 @@ function mergeReturnMetrics(freshVals, lastGoodValuations) {
   return usedSymbols;
 }
 
-function parseQuoteSummary(body) {
+function parseQuoteSummary(body, expectedSymbol = null) {
   let data;
   try {
     data = JSON.parse(body);
   } catch {
     return { kind: 'invalid_json', value: null };
   }
-  const result = data?.quoteSummary?.result?.[0];
-  if (!result) return { kind: 'no_data', value: null };
+  const results = data?.quoteSummary?.result;
+  if (!Array.isArray(results) || results.length === 0) return { kind: 'no_data', value: null };
+  if (results.length !== 1) {
+    return { kind: 'ambiguous_result', value: null, failure: 'multiple_quote_summary_results' };
+  }
+  const result = results[0];
+  if (expectedSymbol) {
+    const returnedSymbol = typeof result?.symbol === 'string'
+      ? result.symbol
+      : (typeof result?.price?.symbol === 'string' ? result.price.symbol : '');
+    if (!returnedSymbol) {
+      return { kind: 'identity_mismatch', value: null, failure: 'quote_symbol_missing' };
+    }
+    if (returnedSymbol.toUpperCase() !== String(expectedSymbol).toUpperCase()) {
+      return { kind: 'identity_mismatch', value: null, failure: 'quote_symbol_mismatch' };
+    }
+  }
   const summaryDetail = result.summaryDetail || {};
   const keyStatistics = result.defaultKeyStatistics || {};
   const value = {
@@ -433,6 +448,16 @@ function parseQuoteSummary(body) {
     value,
     ...(missingFields.length > 0 ? { missingFields } : {}),
   };
+}
+
+/** Parse kinds that are symbol-local (not evidence the route/session is dead). */
+function isNonDurableParseKind(kind) {
+  return kind === 'no_data'
+    || kind === 'missing_fields'
+    || kind === 'identity_mismatch'
+    || kind === 'ambiguous_result'
+    || kind === 'invalid_json'
+    || kind === 'upstream_error';
 }
 
 function boundedFailure(value, fallback = 'request failed') {
@@ -487,16 +512,42 @@ class YahooQuoteSummaryClient {
     this.requestSpacingMs = requestSpacingMs;
     this.sleep = sleepFn;
     this.logger = logger;
+    // Transport-level session only (cookie+crumb). Route cooldowns live in routeStates.
     this.states = {
-      direct: { session: null, sessionPromise: null, cooldownUntil: 0 },
-      proxy: { session: null, sessionPromise: null, cooldownUntil: 0 },
+      direct: { session: null, sessionPromise: null },
+      proxy: { session: null, sessionPromise: null },
     };
     this.routeStates = new Map();
   }
 
-  async _request(transport, url, headers, proxy, { timeoutMs } = {}) {
+  async _request(transport, url, headers, proxy, { timeoutMs, deadlineAt = null } = {}) {
     const request = transport === 'direct' ? this.directRequest : this.proxyRequest;
-    if (this.requestSpacingMs > 0) await this.sleep(this.requestSpacingMs);
+    let remainingMs = null;
+    if (deadlineAt != null) {
+      remainingMs = deadlineAt - this.now();
+      if (remainingMs <= 0) {
+        const err = new Error('valuation_budget_exceeded');
+        err.code = 'DEADLINE_EXCEEDED';
+        throw err;
+      }
+    }
+    if (this.requestSpacingMs > 0) {
+      const sleepMs = remainingMs == null
+        ? this.requestSpacingMs
+        : Math.min(this.requestSpacingMs, remainingMs);
+      if (sleepMs > 0) await this.sleep(sleepMs);
+      if (deadlineAt != null) {
+        remainingMs = deadlineAt - this.now();
+        if (remainingMs <= 0) {
+          const err = new Error('valuation_budget_exceeded');
+          err.code = 'DEADLINE_EXCEEDED';
+          throw err;
+        }
+        timeoutMs = Number.isFinite(timeoutMs)
+          ? Math.min(timeoutMs, remainingMs)
+          : remainingMs;
+      }
+    }
     const defaultTimeoutMs = transport === 'direct' ? 12_000 : 15_000;
     const boundedTimeoutMs = Number.isFinite(timeoutMs)
       ? Math.max(1, Math.min(defaultTimeoutMs, timeoutMs))
@@ -519,7 +570,7 @@ class YahooQuoteSummaryClient {
       YAHOO_COOKIE_URL,
       {},
       proxy,
-      { timeoutMs },
+      { timeoutMs, deadlineAt },
     );
     const cookie = cookieHeaderFromResponse(cookieResponse);
     if (!cookie) throw new Error(`cookie bootstrap HTTP ${cookieResponse?.status || 0}`);
@@ -529,7 +580,10 @@ class YahooQuoteSummaryClient {
       YAHOO_CRUMB_URL,
       { Cookie: cookie, Accept: 'text/plain,*/*' },
       proxy,
-      { timeoutMs: deadlineAt == null ? undefined : Math.max(1, deadlineAt - this.now()) },
+      {
+        timeoutMs: deadlineAt == null ? undefined : Math.max(1, deadlineAt - this.now()),
+        deadlineAt,
+      },
     );
     const crumb = crumbResponse?.status === 200 ? validCrumb(crumbResponse.body) : null;
     if (!crumb) throw new Error(`crumb bootstrap HTTP ${crumbResponse?.status || 0}`);
@@ -609,6 +663,7 @@ class YahooQuoteSummaryClient {
           proxy,
           {
             timeoutMs: deadlineAt == null ? undefined : deadlineAt - this.now(),
+            deadlineAt,
           },
         );
         const diagnostic = {
@@ -644,14 +699,19 @@ class YahooQuoteSummaryClient {
             diagnostic,
           };
         }
-        if (parsed.kind === 'no_data' || parsed.kind === 'missing_fields') {
+        // Symbol-local / parse-local outcomes must not cool the route or wipe the
+        // shared cookie session — a bad payload for one ticker is not route death.
+        if (isNonDurableParseKind(parsed.kind)) {
           return { ...parsed, diagnostic };
         }
         lastFailure = parsed.failure || parsed.kind;
         lastDiagnostic = diagnostic;
         break;
       } catch (error) {
-        if (deadlineAt != null && this.now() >= deadlineAt) {
+        if (
+          error?.code === 'DEADLINE_EXCEEDED'
+          || (deadlineAt != null && this.now() >= deadlineAt)
+        ) {
           return this._deadlineExceeded(route, transport);
         }
         lastFailure = transportFailure(error, transport);
@@ -665,7 +725,19 @@ class YahooQuoteSummaryClient {
       }
     }
 
-    this.states[transport].session = null;
+    // Budget already spent: report deadline, do not arm a multi-minute cooldown.
+    if (deadlineAt != null && this.now() >= deadlineAt) {
+      return this._deadlineExceeded(route, transport);
+    }
+
+    const authInvalidating = lastDiagnostic.status === 401;
+    // Shared transport session (cookie+crumb) is only invalidated on auth failure.
+    // Parse/5xx/timeout leave the session reusable by sibling routes under budget.
+    if (authInvalidating) {
+      this.states[transport].session = null;
+    }
+
+    // Durable route health failure: cool this route:transport only.
     routeState.cooldownUntil = this.now() + this.cooldownMs;
     this.logger.warn(
       `[Sector] Yahoo authenticated ${transport} ${route} route unavailable (${lastFailure}); cooldown ${Math.round(this.cooldownMs / 60_000)}min`,
@@ -946,8 +1018,14 @@ async function collectSectorValuations({
     && typeof upstashSet === 'function'
   ) {
     try {
-      await upstashSet(LAST_GOOD_KEY, { valuations, fetchedAt: now() }, LAST_GOOD_TTL);
-    } catch {}
+      const ok = await upstashSet(LAST_GOOD_KEY, { valuations, fetchedAt: now() }, LAST_GOOD_TTL);
+      // upstashSet resolves false on disable/timeout/non-OK without throwing.
+      if (!ok) {
+        console.warn('[Sector] last-good valuation snapshot write failed');
+      }
+    } catch {
+      console.warn('[Sector] last-good valuation snapshot write failed');
+    }
   }
 
   return {
