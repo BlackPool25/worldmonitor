@@ -20,10 +20,13 @@ describe('get_market_data sector valuation coverage contract', () => {
       [
         'expectedValuationCount',
         'fetchedAt',
+        'lastGood',
         'source',
         'sourceStatus',
         'stale',
+        'unavailableSymbols',
         'valuationCount',
+        'valuationDiagnostics',
       ],
     );
     assert.deepEqual(coverage.properties?.sourceStatus?.enum, ['ok', 'partial', 'degraded']);
@@ -61,5 +64,62 @@ describe('get_market_data sector valuation coverage contract', () => {
 
     applySectorValuationFreshness(data, now - 31 * 60_000);
     assert.equal(data.sectors.valuationCoverage.stale, false);
+  });
+
+  it('runs the freshness helper through the registered get_market_data post-filter', () => {
+    const tool = CACHE_TOOLS.find((candidate) => candidate.name === 'get_market_data');
+    assert.ok(tool?._postFilter);
+    const data = {
+      sectors: {
+        valuationCoverage: {
+          fetchedAt: Date.now() - 31 * 60_000,
+          stale: false,
+        },
+      },
+    };
+    tool._postFilter(data, { limit: 0 });
+    assert.equal(data.sectors.valuationCoverage.stale, true);
+  });
+
+  it('fails closed for legacy sector payloads without valuationCoverage', () => {
+    const tool = CACHE_TOOLS.find((candidate) => candidate.name === 'get_market_data');
+    assert.ok(tool?._postFilter);
+    const data = { sectors: { sectors: [] } };
+    tool._postFilter(data, { limit: 0 });
+    assert.deepEqual(data.sectors.valuationCoverage, {
+      sourceStatus: 'degraded',
+      stale: true,
+    });
+  });
+
+  it('keeps valuation coverage aligned with a filtered sector symbol request', () => {
+    const tool = CACHE_TOOLS.find((candidate) => candidate.name === 'get_market_data');
+    assert.ok(tool?._postFilter);
+    const data = {
+      sectors: {
+        sectors: [{ symbol: 'XLK' }, { symbol: 'XLF' }],
+        valuations: {
+          XLK: { trailingPE: 25 },
+          XLF: { trailingPE: 15 },
+        },
+        valuationCoverage: {
+          valuationCount: 2,
+          expectedValuationCount: 2,
+          sourceStatus: 'ok',
+          fetchedAt: Date.now(),
+          unavailableSymbols: ['SMH'],
+          valuationDiagnostics: [
+            { symbol: 'XLK', outcomes: [] },
+            { symbol: 'XLF', outcomes: [] },
+          ],
+        },
+      },
+    };
+    tool._postFilter(data, { symbols: ['XLK'], limit: 0 });
+    assert.deepEqual(Object.keys(data.sectors.valuations), ['XLK']);
+    assert.equal(data.sectors.valuationCoverage.valuationCount, 1);
+    assert.equal(data.sectors.valuationCoverage.expectedValuationCount, 1);
+    assert.equal(data.sectors.valuationCoverage.sourceStatus, 'ok');
+    assert.deepEqual(data.sectors.valuationCoverage.valuationDiagnostics.map((entry) => entry.symbol), ['XLK']);
   });
 });

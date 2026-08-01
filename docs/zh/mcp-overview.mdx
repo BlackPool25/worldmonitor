@@ -209,7 +209,7 @@ npx @modelcontextprotocol/inspector https://worldmonitor.app/mcp
 
 | 工具 | 描述 |
 |------|-------------|
-| `get_market_data` | 股票报价、商品价格（含黄金 GC=F）、加密货币、外汇、板块表现、ETF 资金流、海湾市场。 |
+| `get_market_data` | 股票报价、商品价格（含黄金 GC=F）、加密货币、外汇、板块表现及估值覆盖、ETF 资金流、海湾市场。板块覆盖将写入年龄与完整度分开，并提供有界的 unavailable/last-good/direct-proxy 诊断。 |
 | `get_economic_data` | Fed Funds、经济日历、燃料价格、ECB 外汇、欧盟收益率曲线、财报、COT、能源库存、BIS DSR + 房价。 |
 | `get_country_macro` | 每个国家一份的 IMF WEO 数据包：通胀、经常账户、人均 GDP、失业率、储蓄-投资缺口（约 210 个国家）。 |
 | `get_eu_housing_cycle` | Eurostat 年度房价指数（prc_hpi_a），每个欧盟成员国 + EA20/EU27 的 10 年迷你图。 |
