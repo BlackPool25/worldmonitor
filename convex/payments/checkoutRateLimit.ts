@@ -79,8 +79,8 @@ export const CHECKOUT_RATE_LIMIT_MAX_ATTEMPTS =
  * themselves are NOT retried. So a ladder that outlives this budget doesn't
  * dedupe anything; it just burns user-perceived latency and keeps issuing
  * orphaned provider calls (possibly alongside the client's one 502 retry)
- * against the already-limited shared key. Once the next wait would cross the
- * deadline, bail to the typed outcome instead.
+ * against the already-limited shared key. Once the next wait plus the following
+ * attempt's timeout would cross the deadline, bail to the typed outcome instead.
  */
 export const CHECKOUT_RATE_LIMIT_RETRY_BUDGET_MS = 8_000;
 
@@ -94,6 +94,12 @@ export const checkoutRetryClock = {
   sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
   random: () => Math.random(),
 };
+
+export interface CheckoutRateLimitRetryOptions {
+  /** Maximum wall-clock duration of the provider attempt admitted after a wait. */
+  attemptTimeoutMs: number;
+  onRetry?: (delayMs: number) => void;
+}
 
 type CheckoutAttemptResult<T> =
   | { value: T }
@@ -120,24 +126,35 @@ async function attemptCheckoutOnce<T>(
  * provider may have already accepted, and the existing error channel
  * (ConvexError) already covers it.
  *
- * Wait per retry: the ladder step is the floor; a LONGER advertised
- * Retry-After raises it (never lowers it), and the whole wait is jittered
- * +/-25% so concurrent checkouts on the shared key don't re-collide in
- * lockstep. A wait that would cross the budget deadline bails instead.
+ * Wait per retry: jitter the ladder step +/-25% so concurrent checkouts on the
+ * shared key don't re-collide in lockstep, then apply any advertised
+ * Retry-After as a hard provider floor. A retry is admitted only when both its
+ * wait and the following provider attempt's maximum timeout fit in the budget.
  */
 export async function runCheckoutWithRateLimitRetry<T>(
   attempt: () => Promise<T>,
-  onRetry?: (delayMs: number) => void,
+  options: CheckoutRateLimitRetryOptions,
 ): Promise<T | CheckoutRateLimitedOutcome> {
   const deadline = checkoutRetryClock.now() + CHECKOUT_RATE_LIMIT_RETRY_BUDGET_MS;
   let result = await attemptCheckoutOnce(attempt);
   for (const delayMs of CHECKOUT_RATE_LIMIT_RETRY_DELAYS_MS) {
     if ("value" in result) break;
-    const baseMs = Math.max(delayMs, result.retryAfterMs ?? 0);
-    const waitMs = Math.round(baseMs * (0.75 + checkoutRetryClock.random() * 0.5));
-    if (checkoutRetryClock.now() + waitMs >= deadline) break;
-    onRetry?.(waitMs);
+    const jitteredDelayMs = Math.round(
+      delayMs * (0.75 + checkoutRetryClock.random() * 0.5),
+    );
+    const providerFloorMs = Math.ceil(result.retryAfterMs ?? 0);
+    const waitMs = Math.max(jitteredDelayMs, providerFloorMs);
+    if (
+      checkoutRetryClock.now() + waitMs + options.attemptTimeoutMs > deadline
+    ) {
+      break;
+    }
+    options.onRetry?.(waitMs);
     await checkoutRetryClock.sleep(waitMs);
+    // Timers can wake late under event-loop pressure. Re-check the real clock
+    // after sleeping so an overshoot cannot admit an attempt that no longer
+    // fits inside the wall-clock budget.
+    if (checkoutRetryClock.now() + options.attemptTimeoutMs > deadline) break;
     result = await attemptCheckoutOnce(attempt);
   }
   return "value" in result ? result.value : result.rateLimited;

@@ -18,12 +18,17 @@ import {
 import schema from "../schema";
 
 vi.mock("../lib/dodo", () => ({
+  CHECKOUT_PROVIDER_ATTEMPT_TIMEOUT_MS: 3_500,
   createDodoCheckoutSession: vi.fn(),
 }));
 
 const modules = import.meta.glob("../**/*.ts");
 const TEST_SIGNING_SECRET = "checkout-rate-limit-test-signing-secret";
 const TEST_RELAY_SECRET = "checkout-rate-limit-test-relay-secret";
+const TEST_PROVIDER_ATTEMPT_TIMEOUT_MS = 3_500;
+const TEST_RETRY_OPTIONS = {
+  attemptTimeoutMs: TEST_PROVIDER_ATTEMPT_TIMEOUT_MS,
+} as const;
 const TEST_USER = {
   subject: "user_checkout_rate_limit",
   tokenIdentifier: "clerk|user_checkout_rate_limit",
@@ -235,6 +240,35 @@ describe("relay and public action contracts", () => {
     );
   });
 
+  test("a non-429 provider timeout remains relay HTTP 500 after one provider call", async () => {
+    process.env.DODO_IDENTITY_SIGNING_SECRET = TEST_SIGNING_SECRET;
+    process.env.RELAY_SHARED_SECRET = TEST_RELAY_SECRET;
+    const sleeps = pinRetryClock();
+    vi.mocked(createDodoCheckoutSession).mockRejectedValue(
+      Object.assign(new Error("Request timed out."), { name: "TimeoutError" }),
+    );
+    const t = convexTest(schema, modules);
+
+    const response = await t.fetch("/relay/create-checkout", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${TEST_RELAY_SECRET}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        userId: TEST_USER.subject,
+        productId: "prod_provider_timeout",
+      }),
+    });
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({
+      error: expect.stringContaining("Checkout failed: Request timed out."),
+    });
+    expect(createDodoCheckoutSession).toHaveBeenCalledTimes(1);
+    expect(sleeps).not.toHaveBeenCalled();
+  });
+
   test("the public action keeps provider rate limits on its error channel", async () => {
     process.env.DODO_IDENTITY_SIGNING_SECRET = TEST_SIGNING_SECRET;
     mockSustainedProviderRateLimit();
@@ -264,9 +298,10 @@ describe("runCheckoutWithRateLimitRetry", () => {
     const attempt = vi.fn().mockResolvedValue({ checkout_url: "https://x" });
     const retries: number[] = [];
 
-    const result = await runCheckoutWithRateLimitRetry(attempt, (ms) =>
-      retries.push(ms),
-    );
+    const result = await runCheckoutWithRateLimitRetry(attempt, {
+      ...TEST_RETRY_OPTIONS,
+      onRetry: (ms) => retries.push(ms),
+    });
 
     expect(result).toEqual({ checkout_url: "https://x" });
     expect(attempt).toHaveBeenCalledTimes(1);
@@ -279,9 +314,10 @@ describe("runCheckoutWithRateLimitRetry", () => {
     const attempt = vi.fn().mockRejectedValue(sdkRateLimitError());
     const retries: number[] = [];
 
-    const result = await runCheckoutWithRateLimitRetry(attempt, (ms) =>
-      retries.push(ms),
-    );
+    const result = await runCheckoutWithRateLimitRetry(attempt, {
+      ...TEST_RETRY_OPTIONS,
+      onRetry: (ms) => retries.push(ms),
+    });
 
     expect(isCheckoutRateLimitedOutcome(result)).toBe(true);
     expect(attempt).toHaveBeenCalledTimes(CHECKOUT_RATE_LIMIT_MAX_ATTEMPTS);
@@ -302,24 +338,31 @@ describe("runCheckoutWithRateLimitRetry", () => {
       .mockRejectedValueOnce(sdkRateLimitError())
       .mockResolvedValueOnce({ checkout_url: "https://x" });
 
-    await runCheckoutWithRateLimitRetry(attempt);
+    await runCheckoutWithRateLimitRetry(attempt, TEST_RETRY_OPTIONS);
 
     expect(sleeps.mock.calls).toEqual([
       [Math.round(CHECKOUT_RATE_LIMIT_RETRY_DELAYS_MS[0] * 1.25)],
     ]);
   });
 
-  test("an advertised Retry-After longer than the ladder step raises the wait", async () => {
-    const sleeps = pinRetryClock();
+  test("low jitter never reduces an advertised Retry-After provider floor", async () => {
+    const sleeps = vi
+      .spyOn(checkoutRetryClock, "sleep")
+      .mockResolvedValue(undefined);
+    vi.spyOn(checkoutRetryClock, "random").mockReturnValue(0);
     const attempt = vi
       .fn()
       .mockRejectedValueOnce(sdkRateLimitError({ "retry-after": "3" }))
       .mockResolvedValueOnce({ checkout_url: "https://x" });
 
-    const result = await runCheckoutWithRateLimitRetry(attempt);
+    const result = await runCheckoutWithRateLimitRetry(
+      attempt,
+      TEST_RETRY_OPTIONS,
+    );
 
     expect(result).toEqual({ checkout_url: "https://x" });
-    // max(1000, 3000) = 3000, jitter pinned to factor 1.0.
+    // random() = 0 jitters the 1000ms ladder step down to 750ms, but the
+    // provider's Retry-After remains a hard 3000ms floor.
     expect(sleeps.mock.calls).toEqual([[3000]]);
   });
 
@@ -329,7 +372,10 @@ describe("runCheckoutWithRateLimitRetry", () => {
       .fn()
       .mockRejectedValue(sdkRateLimitError({ "retry-after": "60" }));
 
-    const result = await runCheckoutWithRateLimitRetry(attempt);
+    const result = await runCheckoutWithRateLimitRetry(
+      attempt,
+      TEST_RETRY_OPTIONS,
+    );
 
     expect(isCheckoutRateLimitedOutcome(result)).toBe(true);
     expect(attempt).toHaveBeenCalledTimes(1);
@@ -346,9 +392,10 @@ describe("runCheckoutWithRateLimitRetry", () => {
     const attempt = vi.fn().mockRejectedValue(sdkRateLimitError());
     const retries: number[] = [];
 
-    const result = await runCheckoutWithRateLimitRetry(attempt, (ms) =>
-      retries.push(ms),
-    );
+    const result = await runCheckoutWithRateLimitRetry(attempt, {
+      ...TEST_RETRY_OPTIONS,
+      onRetry: (ms) => retries.push(ms),
+    });
 
     expect(isCheckoutRateLimitedOutcome(result)).toBe(true);
     expect(attempt).toHaveBeenCalledTimes(1);
@@ -358,19 +405,74 @@ describe("runCheckoutWithRateLimitRetry", () => {
 
   test("a mid-ladder budget exhaustion bails after the retries that fit", async () => {
     const sleeps = pinRetryClock();
-    // Deadline anchored at 0; first pre-wait check passes (0 + 1000 < 8000),
-    // second check sits at the deadline and bails before the 2500ms wait.
+    // Deadline anchored at 0; the first pre- and post-wait checks pass, then
+    // the second pre-wait check sits at the deadline and bails.
     vi.spyOn(checkoutRetryClock, "now")
+      .mockReturnValueOnce(0)
       .mockReturnValueOnce(0)
       .mockReturnValueOnce(0)
       .mockReturnValue(CHECKOUT_RATE_LIMIT_RETRY_BUDGET_MS);
     const attempt = vi.fn().mockRejectedValue(sdkRateLimitError());
 
-    const result = await runCheckoutWithRateLimitRetry(attempt);
+    const result = await runCheckoutWithRateLimitRetry(
+      attempt,
+      TEST_RETRY_OPTIONS,
+    );
 
     expect(isCheckoutRateLimitedOutcome(result)).toBe(true);
     expect(attempt).toHaveBeenCalledTimes(2);
     expect(sleeps.mock.calls).toEqual([[CHECKOUT_RATE_LIMIT_RETRY_DELAYS_MS[0]]]);
+  });
+
+  test("does not start a retry unless its wait and maximum attempt fit the deadline", async () => {
+    let nowMs = 0;
+    vi.spyOn(checkoutRetryClock, "now").mockImplementation(() => nowMs);
+    vi.spyOn(checkoutRetryClock, "random").mockReturnValue(0.5);
+    const sleeps = vi
+      .spyOn(checkoutRetryClock, "sleep")
+      .mockImplementation(async (ms) => {
+        nowMs += ms;
+      });
+    const attemptStarts: number[] = [];
+    const attempt = vi.fn().mockImplementation(async () => {
+      attemptStarts.push(nowMs);
+      nowMs += 3_000;
+      throw sdkRateLimitError();
+    });
+
+    const result = await runCheckoutWithRateLimitRetry(
+      attempt,
+      TEST_RETRY_OPTIONS,
+    );
+
+    expect(isCheckoutRateLimitedOutcome(result)).toBe(true);
+    expect(attemptStarts).toEqual([0, 4_000]);
+    expect(
+      attemptStarts[1] + TEST_PROVIDER_ATTEMPT_TIMEOUT_MS,
+    ).toBeLessThanOrEqual(CHECKOUT_RATE_LIMIT_RETRY_BUDGET_MS);
+    expect(attempt).toHaveBeenCalledTimes(2);
+    expect(sleeps.mock.calls).toEqual([[CHECKOUT_RATE_LIMIT_RETRY_DELAYS_MS[0]]]);
+  });
+
+  test("rechecks the deadline after a late timer wakeup before starting the attempt", async () => {
+    let nowMs = 0;
+    vi.spyOn(checkoutRetryClock, "now").mockImplementation(() => nowMs);
+    vi.spyOn(checkoutRetryClock, "random").mockReturnValue(0.5);
+    const sleeps = vi
+      .spyOn(checkoutRetryClock, "sleep")
+      .mockImplementation(async () => {
+        nowMs = 5_000;
+      });
+    const attempt = vi.fn().mockRejectedValue(sdkRateLimitError());
+
+    const result = await runCheckoutWithRateLimitRetry(
+      attempt,
+      TEST_RETRY_OPTIONS,
+    );
+
+    expect(isCheckoutRateLimitedOutcome(result)).toBe(true);
+    expect(attempt).toHaveBeenCalledTimes(1);
+    expect(sleeps).toHaveBeenCalledTimes(1);
   });
 
   test("rethrows a non-429 failure immediately without retrying", async () => {
@@ -381,9 +483,9 @@ describe("runCheckoutWithRateLimitRetry", () => {
         new Error("Failed to create checkout session: 503 no healthy upstream"),
       );
 
-    await expect(runCheckoutWithRateLimitRetry(attempt)).rejects.toThrow(
-      "503 no healthy upstream",
-    );
+    await expect(
+      runCheckoutWithRateLimitRetry(attempt, TEST_RETRY_OPTIONS),
+    ).rejects.toThrow("503 no healthy upstream");
     expect(attempt).toHaveBeenCalledTimes(1);
     expect(sleeps).not.toHaveBeenCalled();
   });
@@ -395,9 +497,9 @@ describe("runCheckoutWithRateLimitRetry", () => {
       .mockRejectedValueOnce(sdkRateLimitError())
       .mockRejectedValueOnce(new Error("Failed to create checkout session: 500"));
 
-    await expect(runCheckoutWithRateLimitRetry(attempt)).rejects.toThrow(
-      "500",
-    );
+    await expect(
+      runCheckoutWithRateLimitRetry(attempt, TEST_RETRY_OPTIONS),
+    ).rejects.toThrow("500");
     expect(attempt).toHaveBeenCalledTimes(2);
   });
 });

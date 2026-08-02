@@ -12,7 +12,10 @@
 import { v, ConvexError } from "convex/values";
 import { action, internalAction, type ActionCtx } from "../_generated/server";
 import { internal } from "../_generated/api";
-import { createDodoCheckoutSession } from "../lib/dodo";
+import {
+  CHECKOUT_PROVIDER_ATTEMPT_TIMEOUT_MS,
+  createDodoCheckoutSession,
+} from "../lib/dodo";
 import { requireUserId, resolveUserIdentity } from "../lib/auth";
 import { ANON_ID_V4_REGEX, signAnonClaimToken, signUserId } from "../lib/identitySigning";
 import { resolveProductToPlan } from "../config/productCatalog";
@@ -247,10 +250,13 @@ async function _createCheckoutSession(
             theme: "dark",
           },
         }),
-      (delayMs) =>
-        console.warn(
-          `[checkout] Dodo 429 for user=${user.userId} product=${args.productId}; retrying in ${delayMs}ms`,
-        ),
+      {
+        attemptTimeoutMs: CHECKOUT_PROVIDER_ATTEMPT_TIMEOUT_MS,
+        onRetry: (delayMs) =>
+          console.warn(
+            `[checkout] Dodo 429 for user=${user.userId} product=${args.productId}; retrying in ${delayMs}ms`,
+          ),
+      },
     );
     if (isCheckoutRateLimitedOutcome(result)) {
       console.warn(

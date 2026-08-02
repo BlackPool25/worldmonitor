@@ -76,16 +76,19 @@ Fix (PR #6032):
 1. Bypass the component for session creation and call the direct REST SDK with
    retries pinned off and a per-attempt timeout —
    `convex/lib/dodo.ts` `buildCheckoutClientOptions()` returns
-   `{ maxRetries: 0, timeout: CHECKOUT_PROVIDER_ATTEMPT_TIMEOUT_MS }`, exported
-   as a pure function so a contract test can assert it without network access.
+   `{ maxRetries: 0, timeout: CHECKOUT_PROVIDER_ATTEMPT_TIMEOUT_MS }`. A
+   no-network production-seam test mocks the SDK constructor, calls the real
+   `createDodoCheckoutSession()`, and asserts those options plus exactly one
+   `checkoutSessions.create()` call.
    The component's checkout handler was a stateless proxy (it ignores `ctx`
    entirely — zod validation + the same `checkoutSessions.create` call), so
    nothing stateful was lost; webhooks verify separately via
    `@dodopayments/core` and are untouched.
 2. The app-level ladder (`convex/payments/checkoutRateLimit.ts`,
    `runCheckoutWithRateLimitRetry`) is now the ONLY retry layer: bounded
-   delays, +/-25% jitter, an 8s wall-clock budget, and a capped honor of an
-   advertised Retry-After (raises a wait, never exceeds the budget).
+   delays, +/-25% jitter, an 8s wall-clock budget that reserves the next
+   attempt's full timeout before admitting a retry, and a provider Retry-After
+   floor applied after jitter (never reduced by low jitter).
 3. Classification is typed-first (`error.status === 429` from the SDK's
    APIError) instead of regex-only on the error message.
 
@@ -115,9 +118,9 @@ the component hid the client construction.
   `maxRetries: 2`, retry 429/408/409/5xx, and honor Retry-After verbatim.
   Grep the vendored package for `maxRetries`, `shouldRetry`, `retryRequest`.
 - **Pin `maxRetries: 0` (plus a per-attempt `timeout`) wherever an app-level
-  ladder owns retries**, and guard the contract with a test on a pure exported
-  options-builder (see `provider client retry contract` test in
-  `convex/__tests__/checkoutRateLimit.test.ts`) so a refactor or dependency
+  ladder owns retries**, and guard the production seam with a no-network test
+  that mocks the SDK constructor and calls the real wrapper (see
+  `convex/__tests__/dodoCheckoutClient.test.ts`) so a refactor or dependency
   bump cannot silently reintroduce nested retries.
 - **A Convex component that constructs its own client cannot be configured from
   the app** — if you need retry control, check whether the component's handler
