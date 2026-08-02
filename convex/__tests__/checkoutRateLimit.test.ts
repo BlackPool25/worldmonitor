@@ -2,7 +2,7 @@ import { convexTest } from "convex-test";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { api } from "../_generated/api";
-import { checkout } from "../lib/dodo";
+import { createDodoCheckoutSession } from "../lib/dodo";
 import {
   CHECKOUT_RATE_LIMITED,
   CHECKOUT_RATE_LIMIT_MAX_ATTEMPTS,
@@ -12,12 +12,13 @@ import {
   checkoutRateLimitedOutcomeFromError,
   checkoutRetryClock,
   isCheckoutRateLimitedOutcome,
+  retryAfterMsFromError,
   runCheckoutWithRateLimitRetry,
 } from "../payments/checkoutRateLimit";
 import schema from "../schema";
 
 vi.mock("../lib/dodo", () => ({
-  checkout: vi.fn(),
+  createDodoCheckoutSession: vi.fn(),
 }));
 
 const modules = import.meta.glob("../**/*.ts");
@@ -28,18 +29,32 @@ const TEST_USER = {
   tokenIdentifier: "clerk|user_checkout_rate_limit",
   email: "rate-limit@example.com",
 };
+// Matches ANON_ID_V4_REGEX (lowercase hex, version 4, variant [89ab]) so the
+// anonymous-claim-token merge path activates.
+const ANON_USER_ID = "1f2e3d4c-5b6a-4789-8abc-def012345678";
 
-// Persistent (not *Once) rejection: the action now retries 429s through the
-// bounded ladder, so a sustained provider limit must fail EVERY attempt to
-// exercise the exhaustion path.
-function mockObservedProviderRateLimit() {
-  vi.mocked(checkout).mockRejectedValue(
-    new Error("Failed to create checkout session: 429 status code (no body)"),
-  );
+/** SDK-shaped rate-limit error: typed status, no 429 wording in the message. */
+function sdkRateLimitError(headers?: Record<string, string>) {
+  return Object.assign(new Error("Rate limited by provider"), {
+    status: 429,
+    ...(headers ? { headers: new Headers(headers) } : {}),
+  });
 }
 
-/** Compress the retry ladder to zero wall-clock; every other path stays real. */
-function spyInstantRetrySleeps() {
+// Persistent (not *Once) rejection: the action retries 429s through the
+// bounded ladder, so a sustained provider limit must fail EVERY attempt to
+// exercise the exhaustion path.
+function mockSustainedProviderRateLimit() {
+  vi.mocked(createDodoCheckoutSession).mockRejectedValue(sdkRateLimitError());
+}
+
+/**
+ * Compress the retry ladder to zero wall-clock and pin jitter to its midpoint
+ * (factor 1.0), so waits equal their base values exactly; every other code
+ * path stays real.
+ */
+function pinRetryClock() {
+  vi.spyOn(checkoutRetryClock, "random").mockReturnValue(0.5);
   return vi.spyOn(checkoutRetryClock, "sleep").mockResolvedValue(undefined);
 }
 
@@ -47,16 +62,14 @@ afterEach(() => {
   vi.restoreAllMocks();
   // restoreAllMocks does not reset module-factory vi.fn()s — clear queued
   // once-values/implementations so no test inherits another's provider script.
-  vi.mocked(checkout).mockReset();
+  vi.mocked(createDodoCheckoutSession).mockReset();
   delete process.env.DODO_IDENTITY_SIGNING_SECRET;
   delete process.env.RELAY_SHARED_SECRET;
 });
 
-describe("checkout rate-limit outcome", () => {
-  test("recognizes the observed Dodo 429 error and returns a bounded retry hint", () => {
-    const result = checkoutRateLimitedOutcomeFromError(
-      new Error("Failed to create checkout session: 429 status code (no body)"),
-    );
+describe("checkout rate-limit classification", () => {
+  test("recognizes a typed SDK 429 by status even without 429 wording", () => {
+    const result = checkoutRateLimitedOutcomeFromError(sdkRateLimitError());
 
     expect(result).toEqual({
       checkoutFailed: true,
@@ -66,10 +79,23 @@ describe("checkout rate-limit outcome", () => {
     expect(isCheckoutRateLimitedOutcome(result)).toBe(true);
   });
 
+  test("keeps recognizing the legacy component-era 429 message shape", () => {
+    const result = checkoutRateLimitedOutcomeFromError(
+      new Error("Failed to create checkout session: 429 status code (no body)"),
+    );
+
+    expect(result).toMatchObject({ code: CHECKOUT_RATE_LIMITED });
+  });
+
   test("does not reclassify other upstream failures as rate limiting", () => {
     expect(
       checkoutRateLimitedOutcomeFromError(
         new Error("Failed to create checkout session: 503 no healthy upstream"),
+      ),
+    ).toBeNull();
+    expect(
+      checkoutRateLimitedOutcomeFromError(
+        Object.assign(new Error("Bad request"), { status: 400 }),
       ),
     ).toBeNull();
     expect(
@@ -81,18 +107,34 @@ describe("checkout rate-limit outcome", () => {
     ).toBe(false);
   });
 
+  test("extracts an advertised Retry-After in ms, seconds, or not at all", () => {
+    expect(
+      retryAfterMsFromError(sdkRateLimitError({ "retry-after-ms": "1500" })),
+    ).toBe(1500);
+    expect(
+      retryAfterMsFromError(sdkRateLimitError({ "retry-after": "3" })),
+    ).toBe(3000);
+    expect(retryAfterMsFromError(sdkRateLimitError())).toBeNull();
+    expect(
+      retryAfterMsFromError(sdkRateLimitError({ "retry-after": "soon" })),
+    ).toBeNull();
+    expect(retryAfterMsFromError(new Error("no headers"))).toBeNull();
+  });
+});
+
+describe("relay and public action contracts", () => {
   test("a transient provider 429 is absorbed by the bounded retry and checkout succeeds (#6027)", async () => {
     process.env.DODO_IDENTITY_SIGNING_SECRET = TEST_SIGNING_SECRET;
     process.env.RELAY_SHARED_SECRET = TEST_RELAY_SECRET;
-    const sleeps = spyInstantRetrySleeps();
+    const sleeps = pinRetryClock();
     // Local call counter instead of chained *Once mocks: an unconsumed once-
     // queue entry would leak into the next test (restoreAllMocks does not
     // clear module-factory vi.fn queues).
     let providerCalls = 0;
-    vi.mocked(checkout).mockImplementation(async () => {
+    vi.mocked(createDodoCheckoutSession).mockImplementation(async () => {
       providerCalls += 1;
       if (providerCalls === 1) {
-        throw new Error("Failed to create checkout session: 429 status code (no body)");
+        throw sdkRateLimitError();
       }
       return {
         checkout_url: "https://test.checkout.dodopayments.com/session/cks_transient",
@@ -120,11 +162,48 @@ describe("checkout rate-limit outcome", () => {
     expect(sleeps.mock.calls).toEqual([[CHECKOUT_RATE_LIMIT_RETRY_DELAYS_MS[0]]]);
   });
 
+  test("an anonymous user keeps the claim token through an absorbed 429", async () => {
+    process.env.DODO_IDENTITY_SIGNING_SECRET = TEST_SIGNING_SECRET;
+    process.env.RELAY_SHARED_SECRET = TEST_RELAY_SECRET;
+    pinRetryClock();
+    let providerCalls = 0;
+    vi.mocked(createDodoCheckoutSession).mockImplementation(async () => {
+      providerCalls += 1;
+      if (providerCalls === 1) {
+        throw sdkRateLimitError();
+      }
+      return {
+        checkout_url: "https://test.checkout.dodopayments.com/session/cks_anon",
+      };
+    });
+    const t = convexTest(schema, modules);
+
+    const response = await t.fetch("/relay/create-checkout", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${TEST_RELAY_SECRET}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        userId: ANON_USER_ID,
+        productId: "prod_rate_limited",
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      checkout_url: "https://test.checkout.dodopayments.com/session/cks_anon",
+    });
+    expect(typeof body.anonymous_claim_token).toBe("string");
+    expect(body.anonymous_claim_token.length).toBeGreaterThan(0);
+  });
+
   test("the internal relay preserves the real action outcome as HTTP 429", async () => {
     process.env.DODO_IDENTITY_SIGNING_SECRET = TEST_SIGNING_SECRET;
     process.env.RELAY_SHARED_SECRET = TEST_RELAY_SECRET;
-    mockObservedProviderRateLimit();
-    const sleeps = spyInstantRetrySleeps();
+    mockSustainedProviderRateLimit();
+    const sleeps = pinRetryClock();
     const t = convexTest(schema, modules);
 
     const response = await t.fetch("/relay/create-checkout", {
@@ -143,10 +222,13 @@ describe("checkout rate-limit outcome", () => {
     expect(response.headers.get("Retry-After")).toBe(
       String(CHECKOUT_RETRY_AFTER_SECONDS),
     );
-    expect(await response.json()).toEqual({
+    const body = await response.json();
+    expect(body).toEqual({
       error: CHECKOUT_RATE_LIMITED,
       message: "Checkout is temporarily rate limited. Retry shortly.",
     });
+    // The typed outcome must never leak an anonymous claim token.
+    expect(body.anonymous_claim_token).toBeUndefined();
     // The whole bounded ladder ran before the typed outcome surfaced.
     expect(sleeps.mock.calls).toEqual(
       CHECKOUT_RATE_LIMIT_RETRY_DELAYS_MS.map((ms) => [ms]),
@@ -155,8 +237,8 @@ describe("checkout rate-limit outcome", () => {
 
   test("the public action keeps provider rate limits on its error channel", async () => {
     process.env.DODO_IDENTITY_SIGNING_SECRET = TEST_SIGNING_SECRET;
-    mockObservedProviderRateLimit();
-    spyInstantRetrySleeps();
+    mockSustainedProviderRateLimit();
+    pinRetryClock();
     const t = convexTest(schema, modules);
 
     const request = t.withIdentity(TEST_USER).action(
@@ -177,13 +259,24 @@ describe("checkout rate-limit outcome", () => {
 });
 
 describe("runCheckoutWithRateLimitRetry", () => {
-  const RATE_LIMIT_ERROR = new Error(
-    "Failed to create checkout session: 429 status code (no body)",
-  );
+  test("a first-attempt success makes exactly one provider call and never sleeps", async () => {
+    const sleeps = pinRetryClock();
+    const attempt = vi.fn().mockResolvedValue({ checkout_url: "https://x" });
+    const retries: number[] = [];
+
+    const result = await runCheckoutWithRateLimitRetry(attempt, (ms) =>
+      retries.push(ms),
+    );
+
+    expect(result).toEqual({ checkout_url: "https://x" });
+    expect(attempt).toHaveBeenCalledTimes(1);
+    expect(retries).toEqual([]);
+    expect(sleeps).not.toHaveBeenCalled();
+  });
 
   test("returns the typed outcome only after exhausting every ladder step", async () => {
-    const sleeps = spyInstantRetrySleeps();
-    const attempt = vi.fn().mockRejectedValue(RATE_LIMIT_ERROR);
+    const sleeps = pinRetryClock();
+    const attempt = vi.fn().mockRejectedValue(sdkRateLimitError());
     const retries: number[] = [];
 
     const result = await runCheckoutWithRateLimitRetry(attempt, (ms) =>
@@ -198,14 +291,59 @@ describe("runCheckoutWithRateLimitRetry", () => {
     );
   });
 
-  test("stops retrying once the next sleep would cross the wall-clock budget", async () => {
-    const sleeps = spyInstantRetrySleeps();
+  test("jitter spreads the wait around the ladder step", async () => {
+    const sleeps = vi
+      .spyOn(checkoutRetryClock, "sleep")
+      .mockResolvedValue(undefined);
+    // random() = 1 -> factor 1.25 (upper jitter bound).
+    vi.spyOn(checkoutRetryClock, "random").mockReturnValue(1);
+    const attempt = vi
+      .fn()
+      .mockRejectedValueOnce(sdkRateLimitError())
+      .mockResolvedValueOnce({ checkout_url: "https://x" });
+
+    await runCheckoutWithRateLimitRetry(attempt);
+
+    expect(sleeps.mock.calls).toEqual([
+      [Math.round(CHECKOUT_RATE_LIMIT_RETRY_DELAYS_MS[0] * 1.25)],
+    ]);
+  });
+
+  test("an advertised Retry-After longer than the ladder step raises the wait", async () => {
+    const sleeps = pinRetryClock();
+    const attempt = vi
+      .fn()
+      .mockRejectedValueOnce(sdkRateLimitError({ "retry-after": "3" }))
+      .mockResolvedValueOnce({ checkout_url: "https://x" });
+
+    const result = await runCheckoutWithRateLimitRetry(attempt);
+
+    expect(result).toEqual({ checkout_url: "https://x" });
+    // max(1000, 3000) = 3000, jitter pinned to factor 1.0.
+    expect(sleeps.mock.calls).toEqual([[3000]]);
+  });
+
+  test("an advertised Retry-After beyond the budget bails to the typed outcome", async () => {
+    const sleeps = pinRetryClock();
+    const attempt = vi
+      .fn()
+      .mockRejectedValue(sdkRateLimitError({ "retry-after": "60" }));
+
+    const result = await runCheckoutWithRateLimitRetry(attempt);
+
+    expect(isCheckoutRateLimitedOutcome(result)).toBe(true);
+    expect(attempt).toHaveBeenCalledTimes(1);
+    expect(sleeps).not.toHaveBeenCalled();
+  });
+
+  test("stops retrying once the next wait would cross the wall-clock budget", async () => {
+    const sleeps = pinRetryClock();
     // First now() call anchors the deadline; every later check sits at the
-    // deadline, so even the first retry's sleep would cross it.
+    // deadline, so even the first retry's wait would cross it.
     vi.spyOn(checkoutRetryClock, "now")
       .mockReturnValueOnce(0)
       .mockReturnValue(CHECKOUT_RATE_LIMIT_RETRY_BUDGET_MS);
-    const attempt = vi.fn().mockRejectedValue(RATE_LIMIT_ERROR);
+    const attempt = vi.fn().mockRejectedValue(sdkRateLimitError());
     const retries: number[] = [];
 
     const result = await runCheckoutWithRateLimitRetry(attempt, (ms) =>
@@ -218,8 +356,25 @@ describe("runCheckoutWithRateLimitRetry", () => {
     expect(sleeps).not.toHaveBeenCalled();
   });
 
+  test("a mid-ladder budget exhaustion bails after the retries that fit", async () => {
+    const sleeps = pinRetryClock();
+    // Deadline anchored at 0; first pre-wait check passes (0 + 1000 < 8000),
+    // second check sits at the deadline and bails before the 2500ms wait.
+    vi.spyOn(checkoutRetryClock, "now")
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(0)
+      .mockReturnValue(CHECKOUT_RATE_LIMIT_RETRY_BUDGET_MS);
+    const attempt = vi.fn().mockRejectedValue(sdkRateLimitError());
+
+    const result = await runCheckoutWithRateLimitRetry(attempt);
+
+    expect(isCheckoutRateLimitedOutcome(result)).toBe(true);
+    expect(attempt).toHaveBeenCalledTimes(2);
+    expect(sleeps.mock.calls).toEqual([[CHECKOUT_RATE_LIMIT_RETRY_DELAYS_MS[0]]]);
+  });
+
   test("rethrows a non-429 failure immediately without retrying", async () => {
-    const sleeps = spyInstantRetrySleeps();
+    const sleeps = pinRetryClock();
     const attempt = vi
       .fn()
       .mockRejectedValue(
@@ -234,15 +389,43 @@ describe("runCheckoutWithRateLimitRetry", () => {
   });
 
   test("rethrows a non-429 failure that follows an absorbed 429", async () => {
-    spyInstantRetrySleeps();
+    pinRetryClock();
     const attempt = vi
       .fn()
-      .mockRejectedValueOnce(RATE_LIMIT_ERROR)
+      .mockRejectedValueOnce(sdkRateLimitError())
       .mockRejectedValueOnce(new Error("Failed to create checkout session: 500"));
 
     await expect(runCheckoutWithRateLimitRetry(attempt)).rejects.toThrow(
       "500",
     );
     expect(attempt).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("provider client retry contract", () => {
+  test("the checkout client pins maxRetries to 0 so the ladder is the only retry layer", async () => {
+    // The dodopayments SDK defaults to maxRetries=2, retries 429s, and honors
+    // Retry-After verbatim (uncapped). Composed under the action ladder that
+    // would mean up to 9 raw provider requests per checkout and unboundable
+    // in-flight attempts — the #6027 review's cross-model P1. This pins the
+    // contract: the ladder owns ALL retry policy.
+    const { buildCheckoutClientOptions, CHECKOUT_PROVIDER_ATTEMPT_TIMEOUT_MS } =
+      await vi.importActual<typeof import("../lib/dodo")>("../lib/dodo");
+
+    const options = buildCheckoutClientOptions({
+      DODO_API_KEY: "test-key",
+      DODO_PAYMENTS_ENVIRONMENT: "live_mode",
+    });
+
+    expect(options.maxRetries).toBe(0);
+    expect(options.timeout).toBe(CHECKOUT_PROVIDER_ATTEMPT_TIMEOUT_MS);
+    expect(options.bearerToken).toBe("test-key");
+    // live_mode omits the environment override (SDK default is live).
+    expect("environment" in options).toBe(false);
+
+    const testOptions = buildCheckoutClientOptions({ DODO_API_KEY: "k" });
+    expect(testOptions.environment).toBe("test_mode");
+
+    expect(() => buildCheckoutClientOptions({})).toThrow(/DODO_API_KEY/);
   });
 });

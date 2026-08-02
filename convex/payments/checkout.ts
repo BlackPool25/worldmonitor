@@ -12,7 +12,7 @@
 import { v, ConvexError } from "convex/values";
 import { action, internalAction, type ActionCtx } from "../_generated/server";
 import { internal } from "../_generated/api";
-import { checkout } from "../lib/dodo";
+import { createDodoCheckoutSession } from "../lib/dodo";
 import { requireUserId, resolveUserIdentity } from "../lib/auth";
 import { ANON_ID_V4_REGEX, signAnonClaimToken, signUserId } from "../lib/identitySigning";
 import { resolveProductToPlan } from "../config/productCatalog";
@@ -160,7 +160,6 @@ async function getCheckoutBlockingPendingPayment(
 }
 
 async function _createCheckoutSession(
-  ctx: ActionCtx,
   args: CheckoutArgs,
   user: UserInfo,
 ) {
@@ -229,23 +228,23 @@ async function _createCheckoutSession(
     // A 429 here is Dodo rate-limiting our shared API key (account-level, not
     // per-user/IP — see #6027), so absorb transient limits with the bounded
     // server-side ladder before falling back to the typed rate_limited outcome.
+    // The seam pins the SDK to maxRetries: 0 (lib/dodo.ts), so the ladder is
+    // the only retry layer — one attempt is exactly one provider request.
     const result = await runCheckoutWithRateLimitRetry(
       () =>
-        checkout(ctx, {
-          payload: {
-            product_cart: [{ product_id: args.productId, quantity: 1 }],
-            return_url: returnUrl,
-            // Note: deliberately not passing `customer` block — Dodo locks
-            // those fields as read-only. User identity is tracked via
-            // metadata.wm_user_id + HMAC signature instead.
-            ...(args.discountCode ? { discount_code: args.discountCode } : {}),
-            ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
-            feature_flags: {
-              allow_discount_code: true,
-            },
-            customization: {
-              theme: "dark",
-            },
+        createDodoCheckoutSession({
+          product_cart: [{ product_id: args.productId, quantity: 1 }],
+          return_url: returnUrl,
+          // Note: deliberately not passing `customer` block — Dodo locks
+          // those fields as read-only. User identity is tracked via
+          // metadata.wm_user_id + HMAC signature instead.
+          ...(args.discountCode ? { discount_code: args.discountCode } : {}),
+          ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+          feature_flags: {
+            allow_discount_code: true,
+          },
+          customization: {
+            theme: "dark",
           },
         }),
       (delayMs) =>
@@ -316,7 +315,7 @@ export const createCheckout = action({
         identity.name
       : undefined;
 
-    const result = await _createCheckoutSession(ctx, args, {
+    const result = await _createCheckoutSession(args, {
       userId,
       email: identity?.email,
       name: customerName,
@@ -374,7 +373,6 @@ export const internalCreateCheckout = internalAction({
       return buildPendingBlockedResponse(pending);
     }
     return _createCheckoutSession(
-      ctx,
       {
         productId: args.productId,
         returnUrl: args.returnUrl,

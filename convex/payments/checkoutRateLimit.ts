@@ -8,22 +8,51 @@ export interface CheckoutRateLimitedOutcome {
 }
 
 /**
- * Dodo's Convex component throws a plain Error for upstream HTTP failures.
- * Preserve only the observed, unambiguous 429 shape as a typed outcome so the
- * relay can return 429 instead of collapsing it into a retry-amplifying 502.
+ * Classify a provider failure as a rate limit. Primary signal is the typed
+ * SDK error's HTTP status (the direct REST client in lib/dodo.ts throws
+ * APIError with `status: 429`); the message regex is kept as a belt for
+ * wrapped/stringified shapes (e.g. the retired component path's
+ * "Failed to create checkout session: 429 status code (no body)").
  */
 export function checkoutRateLimitedOutcomeFromError(
   error: unknown,
 ): CheckoutRateLimitedOutcome | null {
-  const message = error instanceof Error ? error.message : String(error);
-  if (!/\b429\b.*(?:status code|too many requests|rate limit)/i.test(message)) {
-    return null;
-  }
-  return {
+  const rateLimited: CheckoutRateLimitedOutcome = {
     checkoutFailed: true,
     code: CHECKOUT_RATE_LIMITED,
     retryAfterSeconds: CHECKOUT_RETRY_AFTER_SECONDS,
   };
+  if ((error as { status?: unknown } | null)?.status === 429) {
+    return rateLimited;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  if (!/\b429\b.*(?:status code|too many requests|rate limit)/i.test(message)) {
+    return null;
+  }
+  return rateLimited;
+}
+
+/**
+ * Extract the provider's advertised wait from a typed SDK error, when present.
+ * Returns milliseconds, or null when no parseable Retry-After is advertised.
+ * Callers must cap it — a verbatim honor can be minutes (see billing.ts
+ * renewal reconciliation, which pins maxRetries: 0 for the same reason).
+ */
+export function retryAfterMsFromError(error: unknown): number | null {
+  const headers = (error as { headers?: unknown } | null)?.headers;
+  if (
+    typeof headers !== "object" ||
+    headers === null ||
+    typeof (headers as Headers).get !== "function"
+  ) {
+    return null;
+  }
+  const get = (name: string) => (headers as Headers).get(name);
+  const ms = Number.parseFloat(get("retry-after-ms") ?? "");
+  if (Number.isFinite(ms) && ms >= 0) return ms;
+  const seconds = Number.parseFloat(get("retry-after") ?? "");
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+  return null;
 }
 
 /**
@@ -32,13 +61,9 @@ export function checkoutRateLimitedOutcomeFromError(
  * Dodo's limit is keyed to our API key (one DODO_API_KEY shared by every
  * user), so a client-side retry re-enters the same shared bucket with no new
  * information — the server-side action is the right place to absorb a
- * transient limit. The ladder is deliberately short: the edge gateway aborts
- * its Convex fetch at 15s (api/create-checkout.ts) and the client attempt
- * budget is 15s (checkout-transport.ts), so worst case here adds ~3.5s of
- * delay plus two extra provider round-trips. We never honor a provider
- * Retry-After verbatim (see billing.ts renewal reconciliation — it can be
- * minutes and would blow the action budget); exhaustion falls back to the
- * typed outcome the relay already renders as HTTP 429.
+ * transient limit. The provider seam (lib/dodo.ts) pins the SDK to
+ * maxRetries: 0 with a per-attempt timeout, so this ladder is the ONLY retry
+ * layer and each attempt is individually bounded.
  */
 export const CHECKOUT_RATE_LIMIT_RETRY_DELAYS_MS: readonly number[] = [1_000, 2_500];
 
@@ -48,29 +73,31 @@ export const CHECKOUT_RATE_LIMIT_MAX_ATTEMPTS =
 
 /**
  * Wall-clock budget for the whole ladder, measured from ladder entry. The
- * edge gateway's 15s abort covers the SAME envelope as auth, the guard
- * queries, and HMAC signing that run before the ladder — so a retry that
- * cannot land well inside it is pure waste: the edge has already 502'd, the
- * client transport has already fired its single retry, and the orphaned
- * ladder just hammers the shared rate-limited key with a concurrent
- * duplicate. Once the next sleep would cross this deadline, bail to the
- * typed outcome instead.
+ * edge gateway aborts its Convex fetch at 15s (api/create-checkout.ts) and
+ * converts the abort to a 502, which the client transport
+ * (checkout-transport.ts) retries exactly once — client-side timeouts
+ * themselves are NOT retried. So a ladder that outlives this budget doesn't
+ * dedupe anything; it just burns user-perceived latency and keeps issuing
+ * orphaned provider calls (possibly alongside the client's one 502 retry)
+ * against the already-limited shared key. Once the next wait would cross the
+ * deadline, bail to the typed outcome instead.
  */
 export const CHECKOUT_RATE_LIMIT_RETRY_BUDGET_MS = 8_000;
 
 /**
  * Object seam (not bare functions) so tests can vi.spyOn the properties —
- * compressing the ladder to zero wall-clock or scripting the deadline —
- * while every other code path stays real.
+ * compressing the ladder to zero wall-clock, scripting the deadline, or
+ * pinning jitter — while every other code path stays real.
  */
 export const checkoutRetryClock = {
   now: () => Date.now(),
   sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+  random: () => Math.random(),
 };
 
 type CheckoutAttemptResult<T> =
   | { value: T }
-  | { rateLimited: CheckoutRateLimitedOutcome };
+  | { rateLimited: CheckoutRateLimitedOutcome; retryAfterMs: number | null };
 
 /** Single source for the absorb-vs-rethrow decision on a provider failure. */
 async function attemptCheckoutOnce<T>(
@@ -81,7 +108,7 @@ async function attemptCheckoutOnce<T>(
   } catch (err) {
     const outcome = checkoutRateLimitedOutcomeFromError(err);
     if (!outcome) throw err;
-    return { rateLimited: outcome };
+    return { rateLimited: outcome, retryAfterMs: retryAfterMsFromError(err) };
   }
 }
 
@@ -92,6 +119,11 @@ async function attemptCheckoutOnce<T>(
  * failure rethrows immediately: a retry there could duplicate work the
  * provider may have already accepted, and the existing error channel
  * (ConvexError) already covers it.
+ *
+ * Wait per retry: the ladder step is the floor; a LONGER advertised
+ * Retry-After raises it (never lowers it), and the whole wait is jittered
+ * +/-25% so concurrent checkouts on the shared key don't re-collide in
+ * lockstep. A wait that would cross the budget deadline bails instead.
  */
 export async function runCheckoutWithRateLimitRetry<T>(
   attempt: () => Promise<T>,
@@ -101,9 +133,11 @@ export async function runCheckoutWithRateLimitRetry<T>(
   let result = await attemptCheckoutOnce(attempt);
   for (const delayMs of CHECKOUT_RATE_LIMIT_RETRY_DELAYS_MS) {
     if ("value" in result) break;
-    if (checkoutRetryClock.now() + delayMs >= deadline) break;
-    onRetry?.(delayMs);
-    await checkoutRetryClock.sleep(delayMs);
+    const baseMs = Math.max(delayMs, result.retryAfterMs ?? 0);
+    const waitMs = Math.round(baseMs * (0.75 + checkoutRetryClock.random() * 0.5));
+    if (checkoutRetryClock.now() + waitMs >= deadline) break;
+    onRetry?.(waitMs);
+    await checkoutRetryClock.sleep(waitMs);
     result = await attemptCheckoutOnce(attempt);
   }
   return "value" in result ? result.value : result.rateLimited;
