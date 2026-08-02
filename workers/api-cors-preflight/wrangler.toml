@@ -44,8 +44,11 @@ id = "40d42ec8064b4813ac87e61b43fb697f"
 #     races origin instead, so those become origin fallbacks, i.e. today's behaviour.
 #   * slow tier p50 10ms / p95 286ms / p99 919ms; 99.53% under the 1200ms mobile budget,
 #     against the Redis incumbent's p95 1506ms and 87.76% under budget on the same window.
-#   * Removes ~21.1 GB/week of Upstash egress (measured: 0.62MB fast + 1.76MB slow per origin
-#     read x 24,683 origin executions/week). Redis still serves the origin — R2 is shadow-only.
+#   * Once both tiers are cut over, the Upstash egress reduction is
+#     (0.62MB x fast-origin reads) + (1.76MB x slow-origin reads), with the two read counts
+#     summing to 24,683 origin executions/week. The evidence does not expose that tier split,
+#     so it supports only ~15.3-43.4 GB/week (all-fast to all-slow), not a ~21.1 GB/week point
+#     estimate. Redis still serves the origin — R2 is shadow-only.
 #
 # Why slow first even though fast is the bigger egress win: slow carries 67 keys to fast's 26 and
 # is the tier whose payload is 3x larger, so a KV regression shows up there most clearly — while
