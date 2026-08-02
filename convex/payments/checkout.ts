@@ -18,8 +18,9 @@ import { ANON_ID_V4_REGEX, signAnonClaimToken, signUserId } from "../lib/identit
 import { resolveProductToPlan } from "../config/productCatalog";
 import {
   CHECKOUT_RATE_LIMITED,
-  checkoutRateLimitedOutcomeFromError,
+  CHECKOUT_RATE_LIMIT_MAX_ATTEMPTS,
   isCheckoutRateLimitedOutcome,
+  runCheckoutWithRateLimitRetry,
 } from "./checkoutRateLimit";
 
 const ACTIVE_SUBSCRIPTION_EXISTS = "ACTIVE_SUBSCRIPTION_EXISTS";
@@ -225,35 +226,44 @@ async function _createCheckoutSession(
   }
 
   try {
-    const result = await checkout(ctx, {
-      payload: {
-        product_cart: [{ product_id: args.productId, quantity: 1 }],
-        return_url: returnUrl,
-        // Note: deliberately not passing `customer` block — Dodo locks
-        // those fields as read-only. User identity is tracked via
-        // metadata.wm_user_id + HMAC signature instead.
-        ...(args.discountCode ? { discount_code: args.discountCode } : {}),
-        ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
-        feature_flags: {
-          allow_discount_code: true,
-        },
-        customization: {
-          theme: "dark",
-        },
-      },
-    });
+    // A 429 here is Dodo rate-limiting our shared API key (account-level, not
+    // per-user/IP — see #6027), so absorb transient limits with the bounded
+    // server-side ladder before falling back to the typed rate_limited outcome.
+    const result = await runCheckoutWithRateLimitRetry(
+      () =>
+        checkout(ctx, {
+          payload: {
+            product_cart: [{ product_id: args.productId, quantity: 1 }],
+            return_url: returnUrl,
+            // Note: deliberately not passing `customer` block — Dodo locks
+            // those fields as read-only. User identity is tracked via
+            // metadata.wm_user_id + HMAC signature instead.
+            ...(args.discountCode ? { discount_code: args.discountCode } : {}),
+            ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+            feature_flags: {
+              allow_discount_code: true,
+            },
+            customization: {
+              theme: "dark",
+            },
+          },
+        }),
+      (delayMs) =>
+        console.warn(
+          `[checkout] Dodo 429 for user=${user.userId} product=${args.productId}; retrying in ${delayMs}ms`,
+        ),
+    );
+    if (isCheckoutRateLimitedOutcome(result)) {
+      console.warn(
+        `[checkout] Dodo rate limited checkout creation for user=${user.userId} product=${args.productId} after bounded retry (<=${CHECKOUT_RATE_LIMIT_MAX_ATTEMPTS} attempts); retry after ${result.retryAfterSeconds}s`,
+      );
+      return result;
+    }
     return anonymousClaimToken
       ? { ...result, anonymous_claim_token: anonymousClaimToken }
       : result;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    const rateLimited = checkoutRateLimitedOutcomeFromError(err);
-    if (rateLimited) {
-      console.warn(
-        `[checkout] Dodo rate limited checkout creation for user=${user.userId} product=${args.productId}; retry after ${rateLimited.retryAfterSeconds}s`,
-      );
-      return rateLimited;
-    }
     console.error(
       `[checkout] createCheckout failed for user=${user.userId} product=${args.productId}: ${msg}`,
     );
