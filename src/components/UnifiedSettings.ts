@@ -241,7 +241,9 @@ export class UnifiedSettings {
       const panelItem = target.closest<HTMLElement>('.panel-toggle-item');
       if (panelItem?.dataset.panel) {
         if (panelItem.dataset.proLocked) {
-          window.open('/pro', '_blank', 'noopener,noreferrer');
+          // Absolute + routed: a relative /pro resolves against tauri://localhost
+          // in the desktop WebView, where no such route is served (#5911).
+          void openExternalUrl(`${WEB_APP_ORIGIN}/pro`);
           return;
         }
         const panelKey = panelItem.dataset.panel;
@@ -1436,7 +1438,7 @@ export class UnifiedSettings {
           : p.DODO_PRODUCTS.PRO_MONTHLY;
         return m.startCheckout(product);
       })).catch(() => {
-        window.open('https://worldmonitor.app/pro', '_blank', 'noopener,noreferrer');
+        void openExternalUrl(`${WEB_APP_ORIGIN}/pro`);
       });
       return;
     }
@@ -1468,7 +1470,7 @@ export class UnifiedSettings {
         } else {
           this.close();
           import('@/services/checkout').then(m => import('@/config/products').then(p => m.startCheckout(p.DODO_PRODUCTS.API_STARTER_MONTHLY))).catch(() => {
-            window.open('https://worldmonitor.app/pro', '_blank', 'noopener,noreferrer');
+            void openExternalUrl(`${WEB_APP_ORIGIN}/pro`);
           });
         }
       });
