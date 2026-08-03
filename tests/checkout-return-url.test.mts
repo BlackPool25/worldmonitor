@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   buildDashboardCheckoutReturnUrl,
+  DESKTOP_CHECKOUT_SOURCE,
   resolveCheckoutReturnOrigin,
 } from '../src/services/checkout-return-url.ts';
 
@@ -52,7 +53,17 @@ describe('resolveCheckoutReturnOrigin (#5911)', () => {
     // desktop origin here means the buyer pays and then dead-ends on a page
     // no browser can open.
     assert.equal(
-      buildDashboardCheckoutReturnUrl(resolveCheckoutReturnOrigin('tauri://localhost', true)),
+      buildDashboardCheckoutReturnUrl(
+        resolveCheckoutReturnOrigin('tauri://localhost', true),
+        DESKTOP_CHECKOUT_SOURCE,
+      ),
+      'https://worldmonitor.app/dashboard?wm_checkout=return&wm_src=desktop',
+    );
+  });
+
+  it('does not add the desktop source marker to ordinary web returns', () => {
+    assert.equal(
+      buildDashboardCheckoutReturnUrl('https://worldmonitor.app'),
       'https://worldmonitor.app/dashboard?wm_checkout=return',
     );
   });

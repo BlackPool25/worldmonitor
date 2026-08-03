@@ -309,7 +309,7 @@ describe('startCheckout on desktop (#5911)', () => {
     await checkout.startCheckout('pro_monthly');
 
     const [body] = globalThis.__desktopCheckoutHarness.requestBodies;
-    assert.equal(body?.returnUrl, 'https://worldmonitor.app/dashboard?wm_checkout=return');
+    assert.equal(body?.returnUrl, 'https://worldmonitor.app/dashboard?wm_checkout=return&wm_src=desktop');
   });
 
   it('reports a checkout error instead of claiming success when nothing opened', async () => {
