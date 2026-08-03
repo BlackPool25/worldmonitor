@@ -21,7 +21,7 @@ import { describe, it } from 'node:test';
  */
 function readNumericConstant(relativePath, name) {
   const source = readFileSync(new URL(relativePath, import.meta.url), 'utf8');
-  const match = source.match(new RegExp(`^const ${name} = (\\d[\\d_]*);$`, 'm'));
+  const match = source.match(new RegExp(`^(?:export )?const ${name} = (\\d[\\d_]*);$`, 'm'));
   assert.ok(
     match,
     `${name} must be declared as a plain numeric const in ${relativePath} — ` +

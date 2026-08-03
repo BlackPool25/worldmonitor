@@ -97,8 +97,12 @@ export class CollectorDeliveryError extends Error {
  * queue depth does NOT raise concurrency — writes still drain one at a time,
  * which is what keeps umami#4183 contention off the collector.
  * `tests/analytics-queue-capacity.test.mjs` fails if the two drift apart again.
+ *
+ * Exported so overflow tests can size their input from the real bound instead
+ * of a literal — a hardcoded "fill past 25" silently stops overflowing the
+ * moment this changes, and the test then passes while asserting nothing.
  */
-const COLLECTOR_QUEUE_LIMIT = 50;
+export const COLLECTOR_QUEUE_LIMIT = 50;
 const HEALTH_WINDOW_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 20_000;
 
