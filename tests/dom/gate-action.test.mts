@@ -17,12 +17,24 @@
  * body fetches a portal session.
  */
 
-import { beforeAll, beforeEach, describe, expect, it, vi, type Mock, type MockInstance } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock, type MockInstance } from 'vitest';
 
 import { initTestI18n } from './helpers/i18n.mts';
 
 const openBillingPortal = vi.fn(async () => ({ outcome: 'opened' as const, url: 'https://portal' }));
 const getSubscription = vi.fn<() => { planKey: string } | null>(() => null);
+
+/**
+ * Runtime is the only thing overridden for the desktop cases (#5911);
+ * `external-navigation` and `tauri-bridge` stay real, so those cases assert
+ * the observable effect rather than that a helper was called.
+ */
+let desktopRuntime = false;
+
+vi.mock('@/services/desktop-runtime', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/services/desktop-runtime')>()),
+  isDesktopRuntime: () => desktopRuntime,
+}));
 
 vi.mock('@/services/billing', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/services/billing')>()),
@@ -37,6 +49,7 @@ const PRO_ORIGIN = 'https://worldmonitor.app';
 let openSpy: MockInstance<typeof window.open>;
 let reloadSpy: MockInstance<() => void>;
 let openAuthModal: Mock<() => void>;
+let tauriInvocations: Array<{ command: string; payload?: Record<string, unknown> }>;
 /** Stand-in for the tab the browser hands back from a synchronous window.open. */
 const reservedTab = { closed: false, location: { href: '' } } as unknown as Window;
 
@@ -50,6 +63,19 @@ beforeEach(() => {
   reloadSpy = vi.spyOn(window.location, 'reload').mockImplementation(() => {});
   openBillingPortal.mockClear();
   getSubscription.mockReset().mockReturnValue(null);
+  desktopRuntime = false;
+  tauriInvocations = [];
+  // Present in every case, so a desktop assertion cannot pass merely because
+  // the web cases lacked a bridge to call.
+  vi.stubGlobal('__TAURI_INTERNALS__', {
+    invoke: async (command: string, payload?: Record<string, unknown>) => {
+      tauriInvocations.push({ command, payload });
+    },
+  });
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 // Spies are restored by `restoreMocks: true` in vitest.dom.config.mts — a
@@ -175,6 +201,43 @@ describe('resolveGateAction — LAPSED', () => {
       '_blank',
       'noopener,noreferrer',
     );
+  });
+});
+
+describe('resolveGateAction — desktop runtime (#5911)', () => {
+  it('sends the FREE_TIER upsell to the OS browser instead of another WebView', async () => {
+    desktopRuntime = true;
+
+    act(PanelGateReason.FREE_TIER)();
+    await vi.waitFor(() => expect(tauriInvocations.length).toBe(1));
+
+    expect(tauriInvocations[0]).toEqual({
+      command: 'open_url',
+      payload: { url: `${PRO_ORIGIN}/pro` },
+    });
+    expect(openSpy).not.toHaveBeenCalled();
+  });
+
+  it('sends the LAPSED reactivation link the same way, plan param intact', async () => {
+    desktopRuntime = true;
+
+    act(PanelGateReason.LAPSED, 'pro_business_yearly')();
+    await vi.waitFor(() => expect(tauriInvocations.length).toBe(1));
+
+    expect(tauriInvocations[0]).toEqual({
+      command: 'open_url',
+      payload: { url: `${PRO_ORIGIN}/pro?wm_reactivate_plan=pro_business_yearly#pricing` },
+    });
+    expect(openSpy).not.toHaveBeenCalled();
+  });
+
+  it('reserves no blank portal tab on desktop — there is no popup to protect', () => {
+    desktopRuntime = true;
+
+    act(PanelGateReason.PAYMENT_ON_HOLD)();
+
+    expect(openSpy).not.toHaveBeenCalled();
+    expect(openBillingPortal).toHaveBeenCalledWith(null);
   });
 });
 
