@@ -328,6 +328,32 @@ The upstream that actually fed a published theater-posture cycle, recorded with 
 
 Each cycle attributes exactly one winning source (or a vessels-only outcome when no flight source contributed), and per-source cycle counts accumulate for the life of the producer process. The attribution answers "who fed this record", not "which sources are healthy" — a primary source that answered healthily with zero relevant traffic is a quiet primary, not a failed one, and its health is judged from its own request counters, never from the attribution. Because the two Theater Posture producers use different vocabularies for their sources, every attribution also names its producer. See also: Theater Posture.
 
+## Seed Freshness Contracts
+
+### Transport Freshness
+
+Whether the *producer* ran recently and published enough rows — the age of its run heartbeat, plus a floor on the record count. It answers "did the pipeline execute", and it is the only freshness question most keys need. It is silent about the rows themselves: a run that publishes a complete set on schedule is transport-fresh even when every row in it is a reused copy of an old observation. See also: Content Freshness, Seed-Owned Key.
+
+### Content Freshness
+
+Whether the individual *observations* inside a published set are recent, judged per entity rather than over the set as a whole. It exists because a producer that reuses a cached entity payload while the upstream has not advanced stays transport-fresh indefinitely, so a complete, on-schedule, correctly-sized publication can still carry an entity whose data is days old.
+
+Two properties make it meaningful. The consumer pins both the entities it grades and the budget it grades them against, so a producer cannot certify its own stale observation by narrowing the set or widening the threshold. And the age is recomputed at read time rather than trusted from the producer's own count, because that count is a measurement taken when the producer ran and goes on ageing between runs. See also: Transport Freshness, Activation Marker, Content Clock.
+
+### Content Clock
+
+The timestamp content freshness is measured against: when the upstream's own data last *advanced*, not when it was last *retrieved*. The distinction is load-bearing because a producer may re-fetch an entity on a cache-expiry schedule and receive unchanged content — ageing the retrieval time would reset the clock on a frozen upstream and grade it current, which is the same substitution of transport for content that content freshness exists to end. See also: Content Freshness.
+
+### Activation Marker
+
+A durable, never-expiring marker a producer writes the first time it successfully publishes a new field, so consumers can tell "this producer has never shipped this" apart from "this producer shipped it and then stopped". It exists because consumers deploy in minutes while producers run on much slower schedules, so a newly deployed check would otherwise alarm on the absence of a field nothing has written yet.
+
+The softening it grants covers **absence only** — a field that is present is always evaluated, and once the marker exists a field that disappears fails closed. Reading the marker is a presence question, so consumers that answer it differently (by value rather than existence, or by treating an unreadable marker as a confirmed absence) will disagree about the same key. See also: Content Freshness, Grace Window.
+
+### Grace Window
+
+The bounded period in which a consumer withholds judgement because a producer has not yet had the chance to publish. A grace window must be closed by positive evidence — an activation marker that was read and found absent, or a compiled deadline — never by the mere absence of evidence, since "we could not tell" is a state that can persist forever and would silently disable the check it softens. See also: Activation Marker.
+
 ## Flagged ambiguities
 
 - *"Pool"* had been used for both a labelled market category and the complete set of markets — these are distinct. A pool is always a labelled subset; the complete set has no pool and must be requested as an explicit union.
