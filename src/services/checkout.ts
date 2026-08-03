@@ -56,7 +56,10 @@ import { showDuplicateSubscriptionDialog } from './checkout-duplicate-dialog';
 import { showCheckoutPendingDialog } from './checkout-pending-dialog';
 import { resolvePlanDisplayName } from './checkout-plan-names';
 import { createEntitlementWatchdog, type EntitlementWatchdog } from './entitlement-watchdog';
-import { buildDashboardCheckoutReturnUrl } from './checkout-return-url';
+import { buildDashboardCheckoutReturnUrl, resolveCheckoutReturnOrigin } from './checkout-return-url';
+import { openExternalUrl } from './external-navigation';
+import { isDesktopRuntime } from './desktop-runtime';
+import { showToast } from '@/utils/toast';
 import { saveAnonClaimToken } from './anonymous-identity-storage';
 import { applyProBannerEntitlementHint } from './pro-banner-policy';
 
@@ -80,6 +83,18 @@ const CHECKOUT_DISCOUNT_PARAM = 'checkoutDiscount';
 const PENDING_CHECKOUT_KEY = 'wm-pending-checkout';
 const POST_CHECKOUT_FLAG_KEY = 'wm-post-checkout';
 const APP_CHECKOUT_BASE_URL = 'https://worldmonitor.app/dashboard';
+
+/**
+ * The desktop "return to app" step (#5911). Handing checkout to the OS
+ * browser is otherwise indistinguishable from a dead click: the app window
+ * stays exactly as it was while the browser comes forward somewhere else, or
+ * not at all when the app is fullscreen. The message also states the return
+ * contract — nothing redirects back into the app, Pro arrives over the live
+ * entitlement subscription — so the buyer knows there is nothing to do here
+ * but wait.
+ */
+export const DESKTOP_CHECKOUT_HANDOFF_MESSAGE =
+  'Checkout opened in your browser. Finish payment there, then come back — Pro unlocks here automatically.';
 
 /**
  * Session flag set just before the post-overlay reload. Lets panel-layout
@@ -883,7 +898,13 @@ export async function startCheckout(
       token,
       payload: {
         productId,
-        returnUrl: buildDashboardCheckoutReturnUrl(window.location.origin),
+        // Desktop swaps its `tauri://localhost` WebView origin for the
+        // canonical web origin: checkout runs in the OS browser there, and
+        // the WebView origin serves no /dashboard route for Dodo to return
+        // to (#5911).
+        returnUrl: buildDashboardCheckoutReturnUrl(
+          resolveCheckoutReturnOrigin(window.location.origin, isDesktopRuntime()),
+        ),
         discountCode: options?.discountCode,
         referralCode: effectiveReferral,
         // #4438: only set when the user confirmed "start a new checkout anyway"
@@ -1047,6 +1068,19 @@ export async function startCheckout(
     // event handler / watchdog) is left dormant pending removal.
     const hostedCheckoutUrl = safeHostedCheckoutUrl(result.checkout_url);
     if (hostedCheckoutUrl) {
+      if (isDesktopRuntime()) {
+        // #5911: on desktop the same `window.location.assign` would replace
+        // the entire app with Dodo's page — no tab, no back button — and run
+        // 3DS/fraud inside an embedded WebView, the exact nesting #4449 moved
+        // away from. Hand the hosted checkout to the OS browser instead. The
+        // buyer finishes and returns to `worldmonitor.app/dashboard` there
+        // (see resolveCheckoutReturnOrigin); the desktop client needs no
+        // redirect back in, because Pro arrives over the same live Convex
+        // entitlement subscription the web client uses.
+        await openExternalUrl(hostedCheckoutUrl);
+        showToast(DESKTOP_CHECKOUT_HANDOFF_MESSAGE);
+        return true;
+      }
       window.location.assign(hostedCheckoutUrl);
       return true;
     }

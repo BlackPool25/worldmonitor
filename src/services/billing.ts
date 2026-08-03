@@ -22,6 +22,7 @@ import {
   settleAccountOperation,
 } from './account-operation';
 import { extractBillingErrorKind } from './_billing-error';
+import { openExternalUrl, prereserveExternalTab } from './external-navigation';
 import type { Id } from '../../convex/_generated/dataModel';
 
 export interface SubscriptionInfo {
@@ -334,9 +335,12 @@ const DODO_PORTAL_FALLBACK_URL = 'https://customer.dodopayments.com';
  * is spent and window.open() returns null (blocked). Callers MUST call
  * this synchronously BEFORE awaiting anything, then pass the returned
  * handle into openBillingPortal.
+ *
+ * Returns null on desktop, where the portal opens in the OS browser and
+ * there is no popup to reserve (#5911).
  */
 export function prereserveBillingPortalTab(): Window | null {
-  return window.open('', '_blank', 'noopener,noreferrer');
+  return prereserveExternalTab();
 }
 
 export type OpenBillingPortalOutcome =
@@ -348,13 +352,11 @@ export async function openBillingPortal(
   preopened?: Window | null,
 ): Promise<OpenBillingPortalOutcome> {
   const reservedWin = preopened ?? null;
-  const navigate = (url: string): { outcome: 'opened'; url: string } => {
-    if (reservedWin && !reservedWin.closed) {
-      reservedWin.location.href = url;
-    } else {
-      const fresh = window.open(url, '_blank', 'noopener,noreferrer');
-      if (!fresh) window.location.assign(url);
-    }
+  // Desktop routes the portal to the OS browser via `open_url` instead of
+  // navigating the WebView, which would replace the whole app with Dodo's
+  // portal and strand the user with no chrome to get back (#5911).
+  const navigate = async (url: string): Promise<{ outcome: 'opened'; url: string }> => {
+    await openExternalUrl(url, reservedWin);
     return { outcome: 'opened', url };
   };
 

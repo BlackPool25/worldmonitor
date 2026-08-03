@@ -1,4 +1,6 @@
 import { CANONICAL_FEEDS, INTEL_SOURCES, SOURCE_REGION_MAP } from '@/config/feeds';
+import { WEB_APP_ORIGIN } from '@/config/web-origin';
+import { openExternalUrl } from '@/services/external-navigation';
 import { THEATER_PRESETS, getTheaterPreset, getTheaterPresetEnableList, resolveTheaterPresetSources, type TheaterPreset } from '@/config/theater-presets';
 import {
   PANEL_CATEGORY_MAP,
@@ -969,11 +971,14 @@ export class UnifiedSettings {
     }
     this.close();
     if (this.config.isDesktopApp) {
-      window.open('https://worldmonitor.app/pro', '_blank', 'noopener,noreferrer');
+      // Desktop deliberately skips in-app checkout and sends the user to the
+      // pricing page — but a bare window.open only opens another WebView
+      // window. `openExternalUrl` hands it to the OS browser (#5911).
+      void openExternalUrl(`${WEB_APP_ORIGIN}/pro`);
       return;
     }
     import('@/services/checkout').then(m => import('@/config/products').then(p => m.startCheckout(p.DEFAULT_UPGRADE_PRODUCT))).catch(() => {
-      window.open('https://worldmonitor.app/pro', '_blank', 'noopener,noreferrer');
+      void openExternalUrl(`${WEB_APP_ORIGIN}/pro`);
     });
   }
 
