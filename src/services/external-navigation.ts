@@ -2,23 +2,21 @@
  * Runtime-correct "send the user to this URL, outside the app".
  *
  * Desktop (Tauri) hands the URL to the OS browser through the `open_url` IPC
- * command. This module owns that decision for the billing, checkout and
- * upgrade surfaces only; `components/Panel.ts`, `components/ResilienceWidget.ts`,
- * `app/event-handlers.ts`, `app/desktop-updater.ts`, `settings-main.ts` and
- * `components/RuntimeConfigPanel.ts` still hand-roll the same
- * `invokeTauri('open_url') + window.open` pair. They are correct as written,
- * so migrating them is deliberately out of scope here — tracked in #6120.
- * Navigating the WebView itself replaces the entire
- * app with a third-party page and leaves the user with no browser chrome to
- * get back; for payment pages it also runs 3DS/fraud checks inside an embedded
- * WebView, which is exactly the nesting that hung Dodo checkouts in #4449.
+ * command. Navigating the WebView itself replaces the entire app with a
+ * third-party page and leaves the user with no browser chrome to get back; for
+ * payment pages it also runs 3DS/fraud checks inside an embedded WebView,
+ * which is exactly the nesting that hung Dodo checkouts in #4449.
  *
  * Web keeps the popup-blocker dance: browsers only honour `window.open()`
  * inside a live user gesture, so a caller may reserve a blank tab
  * synchronously in its click handler (`prereserveExternalTab`) and pass the
- * handle here to be navigated once the async work resolves. Both branches
- * reach their first `window.open` before any `await`, so the gesture is still
- * live when the browser checks.
+ * handle here to be navigated once the async work resolves.
+ *
+ * The Rust side of `open_url` accepts `https://` only (plus `http://` for
+ * localhost) and opens through the OS default handler, never a shell — see
+ * `src-tauri/src/main.rs` and `src-tauri/open-url-safety.test.mjs`. The same
+ * URL-scheme gate is checked here before any native or browser fallback so an
+ * unsupported scheme cannot be reopened by `window.open`.
  */
 
 import { enqueueSentryCall } from '@/bootstrap/sentry-defer';
@@ -100,11 +98,12 @@ export function prereserveExternalTab(): Window | null {
 export type ExternalNavOutcome = 'native' | 'popup' | 'same-tab' | 'failed';
 
 export async function openExternalUrl(
-  url: string,
+  url: string | URL,
   preopened?: Window | null,
 ): Promise<ExternalNavOutcome> {
-  if (!isOpenableExternalUrl(url)) {
-    reportOpenFailure(url, 'rejected-scheme');
+  const targetUrl = typeof url === 'string' ? url : url.toString();
+  if (!isOpenableExternalUrl(targetUrl)) {
+    reportOpenFailure(targetUrl, 'rejected-scheme');
     if (preopened && !preopened.closed) preopened.close();
     return 'failed';
   }
@@ -116,7 +115,7 @@ export async function openExternalUrl(
     if (preopened && !preopened.closed) preopened.close();
     try {
       await Promise.race([
-        invokeTauri<void>('open_url', { url }),
+        invokeTauri<void>('open_url', { url: targetUrl }),
         timeout(OPEN_URL_TIMEOUT_MS),
       ]);
       return 'native';
@@ -125,19 +124,19 @@ export async function openExternalUrl(
       // reachable in production — report it, because falling back to
       // `window.open` inside Tauri reproduces the very bug this module exists
       // to fix, and a silent reproduction is unfindable.
-      reportOpenFailure(url, 'native-open-failed');
-      return window.open(url, '_blank', 'noopener,noreferrer') ? 'popup' : 'failed';
+      reportOpenFailure(targetUrl, 'native-open-failed');
+      return window.open(targetUrl, '_blank', 'noopener,noreferrer') ? 'popup' : 'failed';
     }
   }
 
   if (preopened && !preopened.closed) {
-    preopened.location.href = url;
+    preopened.location.href = targetUrl;
     return 'popup';
   }
-  const fresh = window.open(url, '_blank', 'noopener,noreferrer');
+  const fresh = window.open(targetUrl, '_blank', 'noopener,noreferrer');
   if (fresh) return 'popup';
   // Popup blocked and no reserved tab: same-tab navigation beats silently
   // doing nothing, which is how a blocked upgrade click used to look.
-  window.location.assign(url);
+  window.location.assign(targetUrl);
   return 'same-tab';
 }

@@ -1,5 +1,6 @@
 import type { AppContext, AppModule } from '@/app/app-context';
 import { invokeTauri } from '@/services/tauri-bridge';
+import { openExternalUrl } from '@/services/external-navigation';
 import { trackUpdateShown, trackUpdateClicked, trackUpdateDismissed } from '@/services/analytics';
 import { escapeHtml } from '@/utils/sanitize';
 import { getDismissed, setDismissed } from '@/utils/cross-domain-storage';
@@ -199,10 +200,13 @@ export class DesktopUpdater implements AppModule {
       if (action === 'download') {
         trackUpdateClicked(version);
         if (this.ctx.isDesktopApp) {
-          void invokeTauri<void>('open_url', { url }).catch((error) => {
-            this.logUpdaterOutcome('open_failed', { url, error: error instanceof Error ? error.message : String(error) });
-            window.open(url, '_blank', 'noopener,noreferrer');
-          });
+          void openExternalUrl(url)
+            .then((outcome) => {
+              if (outcome !== 'native') this.logUpdaterOutcome('open_failed', { url, outcome });
+            })
+            .catch((error) => {
+              this.logUpdaterOutcome('open_failed', { url, error: error instanceof Error ? error.message : String(error) });
+            });
         } else {
           window.open(url, '_blank', 'noopener,noreferrer');
         }

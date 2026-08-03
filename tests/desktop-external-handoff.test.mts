@@ -8,8 +8,8 @@
  *
  * The established convention (`components/Panel.ts`,
  * `components/ResilienceWidget.ts`, the anchor interceptor in
- * `app/event-handlers.ts`) is `invokeTauri('open_url', { url })`, which hands
- * the URL to the OS default browser.
+ * `app/event-handlers.ts`) is `openExternalUrl(url)`, which hands the URL to
+ * the OS default browser in desktop builds and preserves web fallback behavior.
  *
  * These drive the REAL `isDesktopRuntime()` detector — the window shape below
  * is what a shipped Tauri build actually presents — plus the REAL
@@ -166,7 +166,7 @@ describe('openExternalUrl — desktop', () => {
   it('hands the URL to the OS browser and never navigates the WebView', async () => {
     installWindow('desktop');
 
-    await openExternalUrl('https://worldmonitor.app/pro');
+    assert.equal(await openExternalUrl('https://worldmonitor.app/pro'), 'native');
 
     assert.deepEqual(probe.invocations, [
       { command: 'open_url', payload: { url: 'https://worldmonitor.app/pro' } },
@@ -180,7 +180,7 @@ describe('openExternalUrl — desktop', () => {
     installWindow('desktop');
     const stray = makeTab();
 
-    await openExternalUrl('https://worldmonitor.app/pro', stray);
+    assert.equal(await openExternalUrl('https://worldmonitor.app/pro', stray), 'native');
 
     assert.equal(stray.closed, true, 'a blank WebView window must not be left behind the browser');
     assert.equal(stray.location.href, '', 'the reserved tab must never be navigated on desktop');
@@ -222,7 +222,7 @@ describe('openExternalUrl — desktop', () => {
     installWindow('desktop');
     probe.invokeRejects = true;
 
-    await openExternalUrl('https://worldmonitor.app/pro');
+    assert.equal(await openExternalUrl('https://worldmonitor.app/pro'), 'popup');
 
     assert.equal(probe.invocations.length, 1, 'the native path must be tried first');
     assert.deepEqual(probe.opened, [

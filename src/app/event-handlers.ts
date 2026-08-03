@@ -83,7 +83,7 @@ import {
 } from '@/services/analytics';
 import { detectPlatform, allButtons, buttonsForPlatform } from '@/components/DownloadBanner';
 import type { Platform } from '@/components/DownloadBanner';
-import { invokeTauri } from '@/services/tauri-bridge';
+import { openExternalUrl } from '@/services/external-navigation';
 import { getCachedGpsInterference } from '@/services/gps-interference';
 import { dataFreshness } from '@/services/data-freshness';
 import { mlWorker } from '@/services/ml-worker';
@@ -782,9 +782,7 @@ export class EventHandlerManager implements AppModule {
         if (!/^https?:$/.test(url.protocol)) return; // Only allow http(s) links
         e.preventDefault();
         e.stopPropagation();
-        void invokeTauri<void>('open_url', { url: url.toString() }).catch(() => {
-          window.open(url.toString(), '_blank', 'noopener,noreferrer');
-        });
+        void openExternalUrl(url);
       };
       document.addEventListener('click', this.boundDesktopExternalLinkHandler, true);
     }
