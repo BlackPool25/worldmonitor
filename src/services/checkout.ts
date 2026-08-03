@@ -57,6 +57,7 @@ import { showCheckoutPendingDialog } from './checkout-pending-dialog';
 import { resolvePlanDisplayName } from './checkout-plan-names';
 import { createEntitlementWatchdog, type EntitlementWatchdog } from './entitlement-watchdog';
 import { buildDashboardCheckoutReturnUrl, resolveCheckoutReturnOrigin } from './checkout-return-url';
+import { WEB_APP_ORIGIN } from '@/config/web-origin';
 import { openExternalUrl } from './external-navigation';
 import { isDesktopRuntime } from './desktop-runtime';
 import { showToast } from '@/utils/toast';
@@ -82,7 +83,7 @@ const CHECKOUT_REFERRAL_PARAM = 'checkoutReferral';
 const CHECKOUT_DISCOUNT_PARAM = 'checkoutDiscount';
 const PENDING_CHECKOUT_KEY = 'wm-pending-checkout';
 const POST_CHECKOUT_FLAG_KEY = 'wm-post-checkout';
-const APP_CHECKOUT_BASE_URL = 'https://worldmonitor.app/dashboard';
+const APP_CHECKOUT_BASE_URL = `${WEB_APP_ORIGIN}/dashboard`;
 
 /**
  * The desktop "return to app" step (#5911). Handing checkout to the OS
@@ -93,6 +94,21 @@ const APP_CHECKOUT_BASE_URL = 'https://worldmonitor.app/dashboard';
  * entitlement subscription — so the buyer knows there is nothing to do here
  * but wait.
  */
+/**
+ * Send the user to a worldmonitor.app surface the way the runtime expects:
+ * the OS browser on desktop, a top-window navigation on web. Every exit from
+ * this file that used to `window.location.assign` a web URL goes through
+ * here, so the desktop rule cannot be fixed on one path and missed on its
+ * siblings (#5911).
+ */
+function navigateToWebSurface(url: string): void {
+  if (isDesktopRuntime()) {
+    void openExternalUrl(url);
+    return;
+  }
+  window.location.assign(url);
+}
+
 export const DESKTOP_CHECKOUT_HANDOFF_MESSAGE =
   'Checkout opened in your browser. Finish payment there, then come back — Pro unlocks here automatically.';
 
@@ -836,7 +852,11 @@ export async function startCheckout(
     // #5380-High-3 proved a source-grep guard over this file stays green
     // with either contract violated.
     runNoUserPath(fallbackToPricingPage, {
-      navigate: (url) => window.location.assign(url),
+      // Desktop must not navigate the WebView here either (#5911). This is
+      // the branch a signed-out desktop user takes — the most reachable one
+      // in the app's first session — so leaving it on `assign` would keep the
+      // reported bug alive under the fix.
+      navigate: (url) => navigateToWebSurface(url),
       persistIntent: () => savePendingCheckoutIntent(intent),
       persistAttempt: () => saveCheckoutAttempt({ ...intent, startedAt: Date.now() }),
       openSignIn: () => openSignIn(),
@@ -1073,11 +1093,27 @@ export async function startCheckout(
         // the entire app with Dodo's page — no tab, no back button — and run
         // 3DS/fraud inside an embedded WebView, the exact nesting #4449 moved
         // away from. Hand the hosted checkout to the OS browser instead. The
-        // buyer finishes and returns to `worldmonitor.app/dashboard` there
-        // (see resolveCheckoutReturnOrigin); the desktop client needs no
-        // redirect back in, because Pro arrives over the same live Convex
-        // entitlement subscription the web client uses.
-        await openExternalUrl(hostedCheckoutUrl);
+        // buyer finishes in the browser; the desktop client needs no redirect
+        // back in, because Pro arrives over the same live Convex entitlement
+        // subscription the web client uses.
+        const outcome = await openExternalUrl(hostedCheckoutUrl);
+        if (outcome === 'failed') {
+          // Nothing opened. Announcing "check your browser" here would send
+          // the buyer to a window that does not exist and strand a paid-for
+          // session, so this takes the same shape as every other checkout
+          // contract violation: reported, surfaced, and `false` so retry
+          // surfaces stay offered.
+          const handoffError: CheckoutError = {
+            code: 'service_unavailable',
+            userMessage: 'Could not open checkout in your browser. Please try again.',
+            serverMessage: 'Desktop handoff to the OS browser failed',
+            httpStatus: resp.status,
+            retryable: true,
+          };
+          reportCheckoutError(handoffError, { productId, action: 'desktop-handoff-failed' });
+          renderCheckoutErrorSurface(handoffError, fallbackToPricingPage);
+          return false;
+        }
         showToast(DESKTOP_CHECKOUT_HANDOFF_MESSAGE);
         return true;
       }
@@ -1213,7 +1249,16 @@ function renderCheckoutErrorSurface(
     return;
   }
   if (fallbackToPricingPage) {
-    window.location.assign('https://worldmonitor.app/pro');
+    // Same desktop rule as every other exit from this file (#5911): the
+    // pricing page is a web surface, so it leaves for the OS browser instead
+    // of replacing the app. The toast stays on desktop because, unlike the
+    // web redirect, the app is still on screen to show it.
+    if (isDesktopRuntime()) {
+      void openExternalUrl(`${WEB_APP_ORIGIN}/pro`);
+      showCheckoutErrorToast(error.userMessage);
+      return;
+    }
+    window.location.assign(`${WEB_APP_ORIGIN}/pro`);
     return;
   }
   showCheckoutErrorToast(error.userMessage);

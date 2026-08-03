@@ -134,6 +134,14 @@ vi.mock('@/services/mcp-clients', () => ({
   revokeMcpClient: vi.fn(),
 }));
 
+// Force the web branch down its `.catch(...)` fallback deterministically.
+// Without this the web case asserted nothing: startCheckout would take over
+// and no window.open would ever happen, which the old `.every(...)` check
+// reported as a pass.
+vi.mock('@/services/checkout', () => ({
+  startCheckout: () => Promise.reject(new Error('checkout unavailable in test')),
+}));
+
 const { UnifiedSettings } = await import('@/components/UnifiedSettings');
 
 type SettingsInternals = {
@@ -202,12 +210,14 @@ describe('UnifiedSettings upgrade click (#5911)', () => {
     settings = new UnifiedSettings(config(false));
 
     (settings as unknown as SettingsInternals).handleUpgradeClick();
-    // Web goes through the lazy checkout import; give it a turn to settle.
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The web branch reaches its fallback only after the lazy checkout import
+    // rejects (mocked at module scope above), so wait for the real call.
+    await vi.waitFor(() => expect(openSpy).toHaveBeenCalled());
 
+    // Positive assertion on purpose: the earlier `.every(...)` form was
+    // vacuously true on an empty call list, so it passed whether or not the
+    // web branch ran at all.
+    expect(openSpy).toHaveBeenCalledWith(PRO_URL, '_blank', 'noopener,noreferrer');
     expect(invocations).toEqual([]);
-    // Either startCheckout took over (no window.open) or its import failed
-    // into the fallback — what must never happen on web is a bridge call.
-    expect(openSpy.mock.calls.every(([url]) => url === PRO_URL)).toBe(true);
   });
 });

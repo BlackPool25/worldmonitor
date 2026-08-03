@@ -20,7 +20,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { afterEach, describe, it } from 'node:test';
+import { afterEach, describe, it, mock } from 'node:test';
 
 interface TauriInvocation {
   command: string;
@@ -35,6 +35,8 @@ interface WindowProbe {
   closedTabs: number;
   /** Simulates the Rust side rejecting (bad scheme, opener failure). */
   invokeRejects: boolean;
+  /** Simulates a native call that never settles at all. */
+  invokeHangs: boolean;
   /** Simulates a popup blocker: window.open returns null. */
   popupBlocked: boolean;
 }
@@ -66,6 +68,7 @@ function installWindow(kind: 'desktop' | 'web'): void {
     assigned: [],
     closedTabs: 0,
     invokeRejects: false,
+    invokeHangs: false,
     popupBlocked: false,
   };
 
@@ -93,9 +96,11 @@ function installWindow(kind: 'desktop' | 'web'): void {
 
   if (desktop) {
     win.__TAURI_INTERNALS__ = {
-      invoke: async (command: string, payload?: Record<string, unknown>) => {
+      invoke: (command: string, payload?: Record<string, unknown>) => {
         probe.invocations.push({ command, payload });
-        if (probe.invokeRejects) throw new Error('open_url refused the URL');
+        if (probe.invokeHangs) return new Promise(() => {});
+        if (probe.invokeRejects) return Promise.reject(new Error('open_url refused the URL'));
+        return Promise.resolve();
       },
     };
   }
@@ -180,6 +185,37 @@ describe('openExternalUrl — desktop', () => {
     assert.equal(stray.closed, true, 'a blank WebView window must not be left behind the browser');
     assert.equal(stray.location.href, '', 'the reserved tab must never be navigated on desktop');
     assert.equal(probe.invocations.length, 1);
+  });
+
+  // Bounded so a regression that drops the timeout fails fast here instead of
+  // hanging the whole suite until the CI job's own limit.
+  it('gives up on a native call that never settles instead of hanging its caller', { timeout: 10_000 }, async () => {
+    // Without the bound, `startCheckout` awaits forever and its
+    // `_checkoutInFlight` guard — released only in a `finally` — latches, so
+    // every later upgrade click silently no-ops until the app restarts.
+    installWindow('desktop');
+    probe.invokeHangs = true;
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      const pending = openExternalUrl('https://worldmonitor.app/pro');
+      mock.timers.tick(5_000);
+      assert.equal(await pending, 'popup', 'the timeout must resolve the caller, not strand it');
+    } finally {
+      mock.timers.reset();
+    }
+    assert.equal(probe.invocations.length, 1);
+    assert.deepEqual(probe.opened, [
+      ['https://worldmonitor.app/pro', '_blank', 'noopener,noreferrer'],
+    ]);
+  });
+
+  it('refuses a scheme the native allowlist would reject, without re-opening it', async () => {
+    installWindow('desktop');
+
+    assert.equal(await openExternalUrl('file:///etc/passwd'), 'failed');
+
+    assert.deepEqual(probe.invocations, [], 'never hand a refused scheme to the OS opener');
+    assert.deepEqual(probe.opened, [], 'and never re-open it in the fallback either');
   });
 
   it('falls back to window.open when the native opener refuses', async () => {

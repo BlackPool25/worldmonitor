@@ -1,4 +1,6 @@
 import type { Monitor, PanelConfig, MapLayers } from '@/types';
+import { WEB_APP_ORIGIN } from '@/config/web-origin';
+import { openExternalUrl } from '@/services/external-navigation';
 import { normalizeExclusiveChoropleths } from '@/components/resilience-choropleth-utils';
 import type { AppContext } from '@/app/app-context';
 import {
@@ -2492,7 +2494,9 @@ export class App {
         .closest<HTMLElement>('[data-action]')
         ?.dataset.action;
       if (clickedAction === 'upgrade') {
-        window.open('/pro#pricing', '_blank', 'noopener,noreferrer');
+        // Absolute + routed: the relative form resolved against
+        // tauri://localhost in the desktop WebView (#5911).
+        void openExternalUrl(`${WEB_APP_ORIGIN}/pro#pricing`);
         if (this.followedCountriesCapDropToastTimer !== null) {
           window.clearTimeout(this.followedCountriesCapDropToastTimer);
           this.followedCountriesCapDropToastTimer = null;

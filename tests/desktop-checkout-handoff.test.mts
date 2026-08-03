@@ -31,6 +31,11 @@ interface TauriInvocation {
 
 interface HarnessState {
   desktop: boolean;
+  /** Simulates the native opener refusing / hanging past its timeout. */
+  invokeRejects: boolean;
+  /** null models a signed-out desktop user (first launch, before sign-in). */
+  currentUser: { id: string; email: string } | null;
+  responseStatus: number;
   /** Bodies POSTed to /api/create-checkout. */
   requestBodies: Array<Record<string, unknown>>;
   invocations: TauriInvocation[];
@@ -38,6 +43,7 @@ interface HarnessState {
   assignedUrls: string[];
   openedWindows: string[];
   toasts: string[];
+  errorToasts: string[];
   responseBody: string;
 }
 
@@ -100,15 +106,23 @@ function installDocument(): void {
   });
 }
 
-function resetHarness(desktop: boolean): void {
+function resetHarness(
+  desktop: boolean,
+  overrides: Partial<Pick<HarnessState, 'invokeRejects' | 'currentUser' | 'responseStatus' | 'responseBody'>> = {},
+): void {
   globalThis.__desktopCheckoutHarness = {
     desktop,
+    invokeRejects: false,
+    currentUser: { id: 'user_1', email: 'buyer@example.com' },
+    responseStatus: 200,
     requestBodies: [],
     invocations: [],
     assignedUrls: [],
     openedWindows: [],
     toasts: [],
+    errorToasts: [],
     responseBody: JSON.stringify({ checkout_url: HOSTED_CHECKOUT_URL }),
+    ...overrides,
   };
 
   Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, value: new MemoryStorage() });
@@ -123,8 +137,12 @@ function resetHarness(desktop: boolean): void {
       // The WebView origin a shipped Tauri build actually reports. On web the
       // suite uses the real dashboard origin.
       location: {
-        href: desktop ? 'tauri://localhost/index.html' : 'https://worldmonitor.app/dashboard',
-        origin: desktop ? 'tauri://localhost' : 'https://worldmonitor.app',
+        // A VARIANT host on the web side on purpose: if it were
+        // worldmonitor.app, the web return-origin assertion below would pass
+        // even if resolveCheckoutReturnOrigin always returned the canonical
+        // origin — the exact property the desktop case exists to prove.
+        href: desktop ? 'tauri://localhost/index.html' : 'https://tech.worldmonitor.app/dashboard',
+        origin: desktop ? 'tauri://localhost' : 'https://tech.worldmonitor.app',
         pathname: desktop ? '/index.html' : '/dashboard',
         search: '',
         hash: '',
@@ -139,7 +157,9 @@ function resetHarness(desktop: boolean): void {
       history: { replaceState: () => {} },
       __TAURI_INTERNALS__: {
         invoke: async (command: string, payload?: Record<string, unknown>) => {
-          globalThis.__desktopCheckoutHarness.invocations.push({ command, payload });
+          const harness = globalThis.__desktopCheckoutHarness;
+          harness.invocations.push({ command, payload });
+          if (harness.invokeRejects) throw new Error('open_url refused');
         },
       },
     },
@@ -150,8 +170,8 @@ function resetHarness(desktop: boolean): void {
       const harness = globalThis.__desktopCheckoutHarness;
       harness.requestBodies.push(JSON.parse(init?.body ?? '{}'));
       return {
-        ok: true,
-        status: 200,
+        ok: harness.responseStatus >= 200 && harness.responseStatus < 300,
+        status: harness.responseStatus,
         text: async () => harness.responseBody,
         json: async () => JSON.parse(harness.responseBody),
         headers: { get: () => null },
@@ -184,7 +204,7 @@ const stubSources: Record<string, string> = {
     export const prereserveBillingPortalTab = () => null;
   `,
   './clerk': `
-    export const getCurrentClerkUser = () => ({ id: 'user_1', email: 'buyer@example.com' });
+    export const getCurrentClerkUser = () => globalThis.__desktopCheckoutHarness.currentUser;
     export const getClerkToken = async () => 'tok_test';
     export const openSignIn = () => {};
   `,
@@ -200,7 +220,7 @@ const stubSources: Record<string, string> = {
     export const clearCheckoutAttempt = () => {};
   `,
   './checkout-error-toast': `
-    export const showCheckoutErrorToast = () => {};
+    export const showCheckoutErrorToast = (m) => globalThis.__desktopCheckoutHarness.errorToasts.push(m);
   `,
   './entitlements': `
     export const isEntitled = () => false;
@@ -292,6 +312,53 @@ describe('startCheckout on desktop (#5911)', () => {
     assert.equal(body?.returnUrl, 'https://worldmonitor.app/dashboard?wm_checkout=return');
   });
 
+  it('reports a checkout error instead of claiming success when nothing opened', async () => {
+    // The bug this guards: openExternalUrl used to swallow the failure and
+    // resolve, so the caller toasted "check your browser" and returned true
+    // for a paid-for session that never opened anywhere.
+    resetHarness(true, { invokeRejects: true });
+    const checkout = await loadCheckoutModule();
+
+    assert.equal(await checkout.startCheckout('pro_monthly'), false);
+
+    const harness = globalThis.__desktopCheckoutHarness;
+    assert.deepEqual(harness.toasts, [], 'must not announce a handoff that did not happen');
+    assert.equal(harness.errorToasts.length, 1, 'the failure must reach the user');
+    // Still no WebView navigation — the failure path must not reintroduce it.
+    assert.deepEqual(harness.assignedUrls, []);
+  });
+
+  it('keeps the signed-out redirect out of the WebView', async () => {
+    // The branch a desktop user takes before signing in. It routes through
+    // runNoUserPath's injected navigate, which was left on
+    // window.location.assign by the first cut of this fix.
+    resetHarness(true, { currentUser: null });
+    const checkout = await loadCheckoutModule();
+
+    assert.equal(await checkout.startCheckout('pro_monthly'), false);
+
+    const harness = globalThis.__desktopCheckoutHarness;
+    assert.deepEqual(harness.assignedUrls, [], 'the app must not be replaced by /pro');
+    assert.deepEqual(harness.invocations, [
+      { command: 'open_url', payload: { url: 'https://worldmonitor.app/pro' } },
+    ]);
+  });
+
+  it('keeps the checkout-error pricing fallback out of the WebView', async () => {
+    // renderCheckoutErrorSurface's fallbackToPricingPage arm — the other
+    // window.location.assign that survived the first cut.
+    resetHarness(true, { responseStatus: 500, responseBody: '{"error":"boom"}' });
+    const checkout = await loadCheckoutModule();
+
+    assert.equal(await checkout.startCheckout('pro_monthly'), false);
+
+    const harness = globalThis.__desktopCheckoutHarness;
+    assert.deepEqual(harness.assignedUrls, []);
+    assert.deepEqual(harness.invocations, [
+      { command: 'open_url', payload: { url: 'https://worldmonitor.app/pro' } },
+    ]);
+  });
+
   it('tells the buyer where checkout went and that nothing redirects back', async () => {
     // Without this the click is indistinguishable from a dead button: the app
     // window is unchanged and the browser may open behind a fullscreen app.
@@ -326,6 +393,8 @@ describe('startCheckout on web is unchanged (#5911 regression guard)', () => {
     await checkout.startCheckout('pro_monthly');
 
     const [body] = globalThis.__desktopCheckoutHarness.requestBodies;
-    assert.equal(body?.returnUrl, 'https://worldmonitor.app/dashboard?wm_checkout=return');
+    // The variant host, NOT the canonical origin — this is what proves the
+    // desktop swap is conditional rather than unconditional.
+    assert.equal(body?.returnUrl, 'https://tech.worldmonitor.app/dashboard?wm_checkout=return');
   });
 });
