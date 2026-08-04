@@ -53,10 +53,13 @@ restart on every merge, dropping the AIS websocket connections among them. So
 the closures stay for now,
 what ships today is **detection** ([Deploy-drift check](#deploy-drift-check)
 below), and the permanent fix is to move change detection out of Railway
-entirely — compute which services' closures actually changed in CI and call
-`railway redeploy` for exactly those, so the matching happens in code we own and
-test. That is tracked in
-[#6142](https://github.com/koala73/worldmonitor/issues/6142). The full
+entirely. `.github/workflows/railway-deploy.yml` now computes which filtered
+services' closures changed in CI and runs
+`railway redeploy --from-source` for exactly those. The `--from-source` flag is
+load-bearing: plain `railway redeploy` rebuilds the previous deployment and
+cannot advance a service to the merged commit. The matching happens in
+`scripts/trigger-railway-deploys.mjs`, where it is covered by tests, rather than
+inside Railway's unreliable matcher. The full
 measurement and the history behind it are in
 [Railway watch paths skip deployments, however narrow the pattern](solutions/integration-issues/railway-seeder-watch-paths-can-skip-deployments.md).
 
@@ -64,6 +67,22 @@ The always-on bootstrap publisher is the deliberate exception: its empty watch
 path list means Railway watches the whole repository. That broader trigger
 covers its Dockerfile and future bootstrap inputs without rebuilding the cron
 seeder fleet.
+
+The deploy workflow uses the `ingestion-acceptance-production` GitHub Actions
+environment, with its branch policy restricted to `main`, the
+`RAILWAY_PRODUCTION_TOKEN` environment secret, and the `RAILWAY_PROJECT_ID`
+environment variable. It does not use `railway up`, because an upload carries
+no source commit SHA and would make the deploy-drift check report
+`UNKNOWN_SOURCE`. The existing drift baseline remains until the first
+production runs recover the acknowledged services; prune each recovered entry
+from `scripts/railway-deploy-drift-baseline.json` after verifying its deployed
+SHA.
+
+The trigger step proves only that Railway accepted the latest-source deploy
+request. `--from-source` follows the newest configured source available when
+Railway processes the request, which can be newer than the GitHub push event;
+it does not prove the deployed SHA, build success, or runtime health. Use the
+deploy-drift and freshness checks below for that production validation.
 
 `scripts/audit-railway-watch-paths.mjs` compares the registry with live
 production configuration. It reports exact watch-path and cron drift, missing

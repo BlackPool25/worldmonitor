@@ -111,8 +111,11 @@ So:
    head — whatever the cause.
 3. The permanent fix is to move change detection out of Railway entirely:
    compute in CI which services' dependency closures actually changed and call
-   `railway redeploy` for exactly those, so the matching happens in code we own
-   and test rather than in the component that proved unreliable. That is
+   `railway redeploy --from-source` for exactly those. Plain `railway redeploy`
+   rebuilds the most recent deployment and cannot advance a service to a newer
+   commit; `--from-source` is the deploy-latest-commit operation this workflow
+   needs. The matching happens in code we own and test rather than in the
+   component that proved unreliable. That is
    [#6142](https://github.com/koala73/worldmonitor/issues/6142).
 
 Until #6142 lands, the measured fleet is recorded in
