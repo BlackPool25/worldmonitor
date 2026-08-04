@@ -60,10 +60,13 @@ describe('followed countries cap-drop toast wiring', () => {
       /openExternalUrl\(`\$\{WEB_APP_ORIGIN\}\/pro#pricing`\)/,
       'toast upgrade action must route through openExternalUrl on an absolute origin',
     );
+    // Quote-agnostic, and covers any relative form: the single-quote-only
+    // version stayed green when the exact regression was restored with double
+    // quotes (proven by mutation).
     assert.doesNotMatch(
       appSrc,
-      /window\.open\('\/pro/,
-      'no relative /pro window.open may come back — it dead-ends in the desktop WebView',
+      /window\.open\(\s*['"`]\.?\/(?:pro|dashboard)/,
+      'no relative window.open may come back — it dead-ends in the desktop WebView',
     );
     assert.match(
       appSrc,

@@ -37,4 +37,44 @@ describe('external navigation call-site contract (#6120)', () => {
     assert.deepEqual(missingHelperImports, [], 'every migrated call site must import external-navigation');
     assert.deepEqual(missingHelperCalls, [], 'every migrated call site must call openExternalUrl');
   });
+
+  /**
+   * The three arms above are all satisfied by "the file mentions the helper
+   * somewhere", so a file with two call sites could regress one and stay
+   * green — proven by restoring the pre-fix `window.open` in settings-main.ts
+   * and RuntimeConfigPanel.ts simultaneously. The bug shape is `window.open`,
+   * so that is what this asserts, with the legitimate web-branch sites named
+   * explicitly rather than allowed by omission.
+   */
+  it('leaves no unaccounted window.open in a migrated call site', () => {
+    // Every entry is a WEB-branch open, reached only when the desktop test
+    // above is false, so none of them can navigate a Tauri WebView. They are
+    // fire-and-forget (the handle is never read), which is why passing
+    // `noopener,noreferrer` — and getting null back — is harmless here.
+    const ALLOWED_WINDOW_OPEN = new Map([
+      ['src/components/Panel.ts', 1], //            web checkout fallback
+      ['src/components/ResilienceWidget.ts', 2], // web upgrade fallbacks
+      ['src/app/event-handlers.ts', 2], //          download-banner links
+      ['src/app/desktop-updater.ts', 1], //         non-desktop update link
+      ['src/settings-main.ts', 0],
+      ['src/components/RuntimeConfigPanel.ts', 0],
+    ]);
+
+    const unaccounted = [];
+    for (const relativePath of callSiteFiles) {
+      const source = readFileSync(join(root, relativePath), 'utf8');
+      const found = (source.match(/\bwindow\.open\s*\(/g) ?? []).length;
+      const allowed = ALLOWED_WINDOW_OPEN.get(relativePath) ?? 0;
+      if (found !== allowed) {
+        unaccounted.push(`${relativePath}: ${found} window.open( (expected ${allowed})`);
+      }
+    }
+
+    assert.deepEqual(
+      unaccounted,
+      [],
+      'a migrated call site regained a raw window.open — route it through openExternalUrl, '
+        + 'or add it to ALLOWED_WINDOW_OPEN with a reason',
+    );
+  });
 });

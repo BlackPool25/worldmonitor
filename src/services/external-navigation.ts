@@ -16,7 +16,17 @@
  * localhost) and opens through the OS default handler, never a shell — see
  * `src-tauri/src/main.rs` and `src-tauri/open-url-safety.test.mjs`. The same
  * URL-scheme gate is checked here before any native or browser fallback so an
- * unsupported scheme cannot be reopened by `window.open`.
+ * unsupported scheme cannot be reopened by `window.open`. It is exported
+ * (`isOpenableExternalUrl`) so callers that cancel a click before delegating —
+ * the anchor interceptor in `app/event-handlers.ts` — can gate on the SAME
+ * predicate; a looser gate there turns every URL this module refuses into a
+ * dead click.
+ *
+ * NOTE for anyone touching a `window.open` here: this module deliberately does
+ * NOT pass `noopener`/`noreferrer`, because either one makes `window.open`
+ * return null while still opening the tab, and every branch below reads that
+ * handle to decide what happened. `openWindowWithHandle` severs `opener`
+ * manually instead. See its comment before changing a feature string.
  */
 
 import { enqueueSentryCall } from '@/bootstrap/sentry-defer';
@@ -40,7 +50,7 @@ const OPEN_URL_TIMEOUT_MS = 5_000;
  * is not silently re-opened by the `window.open` fallback below — that would
  * hand the renderer a target the native allowlist had just refused.
  */
-function isOpenableExternalUrl(raw: string): boolean {
+export function isOpenableExternalUrl(raw: string): boolean {
   try {
     const url = new URL(raw);
     if (url.protocol === 'https:') return true;
@@ -76,6 +86,37 @@ function timeout(ms: number): Promise<never> {
 }
 
 /**
+ * `window.open` that actually yields a handle.
+ *
+ * `noopener` — and `noreferrer`, which implies it — makes `window.open`
+ * return `null` PER SPEC while still opening the tab. Every caller here
+ * branches on the handle, so passing those features turned each success into
+ * an apparent blocked popup: `prereserveExternalTab` never returned a tab,
+ * the desktop fallback could only ever report `'failed'`, and the web branch
+ * ran its same-tab `assign` on top of a tab it had just opened. Measured in
+ * Chrome: `window.open(url, '_blank', 'noopener,noreferrer')` is `null` with
+ * the tab present in the tab list.
+ *
+ * The opener link is severed manually instead, which is the only thing those
+ * features were bought for here — every URL routed through this module is
+ * first-party-initiated and scheme-gated above. The referrer degrades from
+ * absent to origin-only, which is the platform default
+ * (`strict-origin-when-cross-origin`) for cross-origin targets.
+ */
+function openWindowWithHandle(url: string): Window | null {
+  const win = window.open(url, '_blank');
+  if (win) {
+    try {
+      win.opener = null;
+    } catch {
+      // Cross-origin setter refused (older engines). The tab still opened,
+      // and the handle is still the answer to "did it open?".
+    }
+  }
+  return win;
+}
+
+/**
  * Reserve a blank tab SYNCHRONOUSLY inside a click handler so an async
  * external navigation can land in it without tripping the popup blocker.
  * Callers must call this before awaiting anything, then pass the handle to
@@ -87,7 +128,7 @@ function timeout(ms: number): Promise<never> {
  */
 export function prereserveExternalTab(): Window | null {
   if (isDesktopRuntime()) return null;
-  return window.open('', '_blank', 'noopener,noreferrer');
+  return openWindowWithHandle('');
 }
 
 /**
@@ -97,9 +138,23 @@ export function prereserveExternalTab(): Window | null {
  */
 export type ExternalNavOutcome = 'native' | 'popup' | 'same-tab' | 'failed';
 
+export interface OpenExternalUrlOptions {
+  /**
+   * Whether a blocked popup may fall back to navigating the CURRENT tab.
+   *
+   * Default `true`: for an upgrade CTA, losing the dashboard beats a dead
+   * click. Pass `false` from any surface holding unsaved user input — the
+   * runtime-config panels stage API keys in memory (`pendingSecrets`), and a
+   * same-tab navigation discards them silently. Those callers get `'failed'`
+   * and can surface it themselves.
+   */
+  sameTabFallback?: boolean;
+}
+
 export async function openExternalUrl(
   url: string | URL,
   preopened?: Window | null,
+  options?: OpenExternalUrlOptions,
 ): Promise<ExternalNavOutcome> {
   const targetUrl = typeof url === 'string' ? url : url.toString();
   if (!isOpenableExternalUrl(targetUrl)) {
@@ -125,7 +180,7 @@ export async function openExternalUrl(
       // `window.open` inside Tauri reproduces the very bug this module exists
       // to fix, and a silent reproduction is unfindable.
       reportOpenFailure(targetUrl, 'native-open-failed');
-      return window.open(targetUrl, '_blank', 'noopener,noreferrer') ? 'popup' : 'failed';
+      return openWindowWithHandle(targetUrl) ? 'popup' : 'failed';
     }
   }
 
@@ -133,10 +188,15 @@ export async function openExternalUrl(
     preopened.location.href = targetUrl;
     return 'popup';
   }
-  const fresh = window.open(targetUrl, '_blank', 'noopener,noreferrer');
+  const fresh = openWindowWithHandle(targetUrl);
   if (fresh) return 'popup';
-  // Popup blocked and no reserved tab: same-tab navigation beats silently
-  // doing nothing, which is how a blocked upgrade click used to look.
+  // Genuinely blocked, and no reserved tab. Same-tab navigation beats
+  // silently doing nothing for an upgrade CTA — but not for a caller holding
+  // unsaved input, which opts out and gets the failure instead.
+  if (options?.sameTabFallback === false) {
+    reportOpenFailure(targetUrl, 'popup-blocked');
+    return 'failed';
+  }
   window.location.assign(targetUrl);
   return 'same-tab';
 }

@@ -33,6 +33,10 @@ interface WindowProbe {
   assigned: string[];
   /** Handles returned by window.open that the code under test then closed. */
   closedTabs: number;
+  /** Tabs the browser opened but returned no handle for (`noopener`). */
+  openedWithoutHandle: number;
+  /** Every handle the fake handed back, so opener-severing is assertable. */
+  handedOutTabs: Array<{ opener: unknown }>;
   /** Simulates the Rust side rejecting (bad scheme, opener failure). */
   invokeRejects: boolean;
   /** Simulates a native call that never settles at all. */
@@ -43,15 +47,25 @@ interface WindowProbe {
 
 let probe: WindowProbe;
 
-function makeTab(): { closed: boolean; location: { href: string }; close: () => void } {
+function makeTab(): {
+  closed: boolean;
+  location: { href: string };
+  close: () => void;
+  opener: unknown;
+} {
   const tab = {
     closed: false,
     location: { href: '' },
+    // Starts non-null so `opener === null` proves the code severed it, rather
+    // than passing because the fake never had one. This is the property that
+    // replaced `noopener` in the feature string.
+    opener: {} as unknown,
     close(): void {
       tab.closed = true;
       probe.closedTabs += 1;
     },
   };
+  probe.handedOutTabs.push(tab);
   return tab;
 }
 
@@ -67,6 +81,8 @@ function installWindow(kind: 'desktop' | 'web'): void {
     opened: [],
     assigned: [],
     closedTabs: 0,
+    openedWithoutHandle: 0,
+    handedOutTabs: [],
     invokeRejects: false,
     invokeHangs: false,
     popupBlocked: false,
@@ -86,9 +102,24 @@ function installWindow(kind: 'desktop' | 'web'): void {
   const win: Record<string, unknown> = {
     navigator: { userAgent: desktop ? 'Mozilla/5.0 Tauri/2.11.5' : 'Mozilla/5.0 Chrome/140' },
     location,
+    // Spec-accurate on the one detail that matters here: `noopener` (and
+    // `noreferrer`, which implies it) makes `window.open` return null WHILE
+    // STILL OPENING THE TAB. A fake that hands back a handle regardless of
+    // the feature string reports every success as a blocked popup, which is
+    // exactly how the always-assign bug reached main unnoticed. Verified in
+    // Chrome: window.open(url,'_blank','noopener,noreferrer') === null with
+    // the tab present in the tab list.
     open: (url: string, target?: string, features?: string) => {
       probe.opened.push([url, target, features]);
-      return probe.popupBlocked ? null : makeTab();
+      if (probe.popupBlocked) return null;
+      // The tab opens either way; only the HANDLE is withheld. Recording it
+      // in `handedOutTabs` would be wrong — nothing can sever an opener it
+      // was never given, which is the whole trap.
+      if (/\bnoopener\b|\bnoreferrer\b/.test(features ?? '')) {
+        probe.openedWithoutHandle += 1;
+        return null;
+      }
+      return makeTab();
     },
     addEventListener: () => {},
     removeEventListener: () => {},
@@ -115,7 +146,7 @@ function installWindow(kind: 'desktop' | 'web'): void {
 // window must exist before the imports below.
 installWindow('web');
 
-const { openExternalUrl, prereserveExternalTab } = await import(
+const { isOpenableExternalUrl, openExternalUrl, prereserveExternalTab } = await import(
   '../src/services/external-navigation.ts'
 );
 const { openBillingPortal, prereserveBillingPortalTab } = await import(
@@ -205,8 +236,19 @@ describe('openExternalUrl — desktop', () => {
     }
     assert.equal(probe.invocations.length, 1);
     assert.deepEqual(probe.opened, [
-      ['https://worldmonitor.app/pro', '_blank', 'noopener,noreferrer'],
+      ['https://worldmonitor.app/pro', '_blank', undefined],
     ]);
+  });
+
+  it('reports failure when the native opener refuses AND the popup is blocked', async () => {
+    installWindow('desktop');
+    probe.invokeRejects = true;
+    probe.popupBlocked = true;
+
+    assert.equal(await openExternalUrl('https://worldmonitor.app/pro'), 'failed');
+
+    assert.equal(probe.invocations.length, 1, 'the native path must be tried first');
+    assert.deepEqual(probe.assigned, [], 'and the WebView must still not be replaced');
   });
 
   it('refuses a scheme the native allowlist would reject, without re-opening it', async () => {
@@ -226,7 +268,7 @@ describe('openExternalUrl — desktop', () => {
 
     assert.equal(probe.invocations.length, 1, 'the native path must be tried first');
     assert.deepEqual(probe.opened, [
-      ['https://worldmonitor.app/pro', '_blank', 'noopener,noreferrer'],
+      ['https://worldmonitor.app/pro', '_blank', undefined],
     ]);
     assert.deepEqual(probe.assigned, [], 'the fallback must still not replace the app');
   });
@@ -249,7 +291,7 @@ describe('openExternalUrl — web', () => {
 
     await openExternalUrl(PORTAL_URL);
 
-    assert.deepEqual(probe.opened, [[PORTAL_URL, '_blank', 'noopener,noreferrer']]);
+    assert.deepEqual(probe.opened, [[PORTAL_URL, '_blank', undefined]]);
     assert.deepEqual(probe.assigned, []);
   });
 
@@ -257,9 +299,88 @@ describe('openExternalUrl — web', () => {
     installWindow('web');
     probe.popupBlocked = true;
 
-    await openExternalUrl(PORTAL_URL);
+    assert.equal(await openExternalUrl(PORTAL_URL), 'same-tab');
 
     assert.deepEqual(probe.assigned, [PORTAL_URL], 'a blocked upgrade click must not look dead');
+  });
+
+  // The regression this suite could not see while its `window.open` fake
+  // ignored the feature string: with `noopener` the handle is null even
+  // though the tab opened, so the "blocked" fallback fired on every
+  // successful web click and the dashboard navigated away underneath it.
+  it('opens exactly once — a successful tab must not also navigate the app away', async () => {
+    installWindow('web');
+
+    assert.equal(await openExternalUrl(PORTAL_URL), 'popup');
+
+    assert.deepEqual(probe.opened, [[PORTAL_URL, '_blank', undefined]]);
+    assert.deepEqual(
+      probe.assigned,
+      [],
+      'the current tab must survive: one click may not both open a tab and replace the page',
+    );
+    assert.equal(probe.openedWithoutHandle, 0, 'no open may discard its own handle');
+  });
+
+  it('severs opener on every tab it hands out, since it no longer passes noopener', async () => {
+    installWindow('web');
+
+    await openExternalUrl(PORTAL_URL);
+
+    assert.equal(probe.handedOutTabs.length, 1);
+    assert.equal(
+      probe.handedOutTabs[0]?.opener,
+      null,
+      'noopener was dropped to keep the handle — the opener link must be cut manually instead',
+    );
+  });
+
+  it('refuses to replace a page holding unsaved input when the popup is blocked', async () => {
+    installWindow('web');
+    probe.popupBlocked = true;
+
+    const outcome = await openExternalUrl(PORTAL_URL, null, { sameTabFallback: false });
+
+    assert.equal(outcome, 'failed');
+    assert.deepEqual(
+      probe.assigned,
+      [],
+      'a settings panel with staged secrets must not be navigated out from under the user',
+    );
+  });
+});
+
+/**
+ * Exported so `app/event-handlers.ts`'s capture-phase anchor interceptor can
+ * gate on the SAME predicate instead of a looser `/^https?:$/`. Those two
+ * disagreeing is what made every plain-http link a dead click: the handler
+ * cancelled the navigation, then the router refused the URL.
+ */
+describe('isOpenableExternalUrl — the gate both the router and the interceptor use', () => {
+  it('mirrors the native allowlist exactly (src-tauri/src/main.rs open_url)', () => {
+    for (const ok of [
+      'https://worldmonitor.app/pro',
+      'https://example.org/a?b=c#d',
+      'http://localhost:5173/x',
+      'http://127.0.0.1:46123/health',
+    ]) {
+      assert.equal(isOpenableExternalUrl(ok), true, `expected openable: ${ok}`);
+    }
+    for (const no of [
+      'http://www.cac.gov.cn/', //        plain http, non-localhost — refused natively
+      'http://example.org/story',
+      'file:///etc/passwd',
+      'javascript:alert(1)',
+      'data:text/html,<h1>x',
+      'not a url',
+    ]) {
+      assert.equal(isOpenableExternalUrl(no), false, `expected refused: ${no}`);
+    }
+  });
+
+  it('does not treat a localhost-suffixed host as localhost', () => {
+    assert.equal(isOpenableExternalUrl('http://localhost.evil.com/'), false);
+    assert.equal(isOpenableExternalUrl('http://127.0.0.1.evil.com/'), false);
   });
 });
 
@@ -275,7 +396,7 @@ describe('prereserveExternalTab', () => {
     installWindow('web');
 
     assert.notEqual(prereserveExternalTab(), null);
-    assert.deepEqual(probe.opened, [['', '_blank', 'noopener,noreferrer']]);
+    assert.deepEqual(probe.opened, [['', '_blank', undefined]]);
   });
 
   it('is what prereserveBillingPortalTab delegates to, so billing inherits both', () => {

@@ -113,6 +113,15 @@ export const DESKTOP_CHECKOUT_HANDOFF_MESSAGE =
   'Checkout opened in your browser. Finish payment there, then come back — Pro unlocks here automatically.';
 
 /**
+ * Same contract, minus the claim about WHERE it opened. Used when the native
+ * handoff failed and checkout landed in a WebView window instead: the buyer
+ * can still complete payment, so naming the wrong window is the only real
+ * risk to avoid.
+ */
+export const DESKTOP_CHECKOUT_FALLBACK_MESSAGE =
+  'Checkout opened in a new window. Finish payment there — Pro unlocks here automatically.';
+
+/**
  * Session flag set just before the post-overlay reload. Lets panel-layout
  * detect "we just returned from an overlay checkout" on the reloaded page —
  * the overlay uses manualRedirect:true so there are no subscription_id URL
@@ -1114,7 +1123,15 @@ export async function startCheckout(
           renderCheckoutErrorSurface(handoffError, fallbackToPricingPage);
           return false;
         }
-        showToast(DESKTOP_CHECKOUT_HANDOFF_MESSAGE);
+        // Only `native` actually reached the OS browser. `popup` means the
+        // native handoff failed and the session opened in a WebView window
+        // instead — the buyer can still pay, so the sale is not blocked, but
+        // pointing them at "your browser" would send them to the wrong place.
+        showToast(
+          outcome === 'native'
+            ? DESKTOP_CHECKOUT_HANDOFF_MESSAGE
+            : DESKTOP_CHECKOUT_FALLBACK_MESSAGE,
+        );
         return true;
       }
       window.location.assign(hostedCheckoutUrl);

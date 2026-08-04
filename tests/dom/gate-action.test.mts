@@ -12,7 +12,7 @@
  * which URL opened, in what order, and what got handed to the billing portal.
  *
  * `prereserveBillingPortalTab` is deliberately NOT mocked — its real body is
- * `window.open('', '_blank', 'noopener,noreferrer')`, and that call is the
+ * `window.open('', '_blank')`, and that call is the
  * behaviour under test. Only `openBillingPortal` is stubbed, because its real
  * body fetches a portal session.
  */
@@ -112,7 +112,7 @@ describe('resolveGateAction — FREE_TIER', () => {
 
     // Absolute, because the desktop webview has no worldmonitor.app origin —
     // a relative href there resolves against tauri://localhost.
-    expect(openSpy).toHaveBeenCalledWith(`${PRO_ORIGIN}/pro`, '_blank', 'noopener,noreferrer');
+    expect(openSpy).toHaveBeenCalledWith(`${PRO_ORIGIN}/pro`, '_blank');
     expect(openAuthModal).not.toHaveBeenCalled();
   });
 });
@@ -127,7 +127,7 @@ describe.each([
     // Synchronous: asserted with no await in between, so a pre-reserve moved
     // after the portal fetch (the popup-blocker regression) fails here.
     expect(openSpy).toHaveBeenCalledTimes(1);
-    expect(openSpy).toHaveBeenCalledWith('', '_blank', 'noopener,noreferrer');
+    expect(openSpy).toHaveBeenCalledWith('', '_blank');
     expect(openSpy.mock.invocationCallOrder[0]!).toBeLessThan(
       openBillingPortal.mock.invocationCallOrder[0]!,
     );
@@ -169,7 +169,6 @@ describe('resolveGateAction — LAPSED', () => {
     expect(openSpy).toHaveBeenCalledWith(
       `${PRO_ORIGIN}/pro?wm_reactivate_plan=pro_business_yearly#pricing`,
       '_blank',
-      'noopener,noreferrer',
     );
   });
 
@@ -181,7 +180,6 @@ describe('resolveGateAction — LAPSED', () => {
     expect(openSpy).toHaveBeenCalledWith(
       `${PRO_ORIGIN}/pro?wm_reactivate_plan=pro_monthly#pricing`,
       '_blank',
-      'noopener,noreferrer',
     );
   });
 
@@ -190,7 +188,7 @@ describe('resolveGateAction — LAPSED', () => {
     // param — the bare /pro redirect this replaced dropped both.
     act(PanelGateReason.LAPSED, null)();
 
-    expect(openSpy).toHaveBeenCalledWith(`${PRO_ORIGIN}/pro#pricing`, '_blank', 'noopener,noreferrer');
+    expect(openSpy).toHaveBeenCalledWith(`${PRO_ORIGIN}/pro#pricing`, '_blank');
   });
 
   it('percent-encodes a plan key so it cannot break out of the query param', () => {
@@ -199,7 +197,6 @@ describe('resolveGateAction — LAPSED', () => {
     expect(openSpy).toHaveBeenCalledWith(
       `${PRO_ORIGIN}/pro?wm_reactivate_plan=pro%26plan%3Devil%23x#pricing`,
       '_blank',
-      'noopener,noreferrer',
     );
   });
 });

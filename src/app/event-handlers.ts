@@ -83,7 +83,7 @@ import {
 } from '@/services/analytics';
 import { detectPlatform, allButtons, buttonsForPlatform } from '@/components/DownloadBanner';
 import type { Platform } from '@/components/DownloadBanner';
-import { openExternalUrl } from '@/services/external-navigation';
+import { isOpenableExternalUrl, openExternalUrl } from '@/services/external-navigation';
 import { getCachedGpsInterference } from '@/services/gps-interference';
 import { dataFreshness } from '@/services/data-freshness';
 import { mlWorker } from '@/services/ml-worker';
@@ -779,7 +779,13 @@ export class EventHandlerManager implements AppModule {
           return;
         }
         if (url.origin === window.location.origin) return;
-        if (!/^https?:$/.test(url.protocol)) return; // Only allow http(s) links
+        // Gate on the SAME predicate the router uses, not a looser one. The
+        // native opener takes https anywhere but http only for localhost, so
+        // a plain-http link matched by `/^https?:$/` was cancelled here and
+        // then refused there — a guaranteed dead click plus a misleading
+        // `rejected-scheme` report. Anything the router will not take is left
+        // to the WebView's own `target="_blank"` handling instead.
+        if (!isOpenableExternalUrl(url.href)) return;
         e.preventDefault();
         e.stopPropagation();
         void openExternalUrl(url);

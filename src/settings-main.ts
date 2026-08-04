@@ -472,7 +472,9 @@ function initFeatureSectionListeners(area: HTMLElement): void {
       e.preventDefault();
       const url = link.dataset.signupUrl;
       if (!url) return;
-      void openExternalUrl(url);
+      // Staged-but-unsaved secrets live in this panel; a same-tab navigation
+      // would discard them silently (#6137).
+      void openExternalUrl(url, null, { sameTabFallback: false });
     });
   });
 

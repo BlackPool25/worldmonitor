@@ -217,7 +217,7 @@ describe('UnifiedSettings upgrade click (#5911)', () => {
     // Positive assertion on purpose: the earlier `.every(...)` form was
     // vacuously true on an empty call list, so it passed whether or not the
     // web branch ran at all.
-    expect(openSpy).toHaveBeenCalledWith(PRO_URL, '_blank', 'noopener,noreferrer');
+    expect(openSpy).toHaveBeenCalledWith(PRO_URL, '_blank');
     expect(invocations).toEqual([]);
   });
 });
