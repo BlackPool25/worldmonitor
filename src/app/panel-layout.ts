@@ -582,10 +582,14 @@ export class PanelLayoutManager implements AppModule {
       // active, retire the app-local retry/referral state here instead. This
       // is scoped to the desktop app; an anonymous or mismatched browser must
       // never clear its own unrelated local checkout state.
-      const entitlementActive = isEntitlementActive(state, Date.now());
+      // Preserve null for unavailable auth-handoff snapshots: isEntitlementActive
+      // collapses null→false, which would invent a free→pro edge and re-trigger
+      // the daypesta reload loop (see createEntitlementReloadController).
+      const entitlementActive =
+        state === null ? null : isEntitlementActive(state, Date.now());
       if (
         this.ctx.isDesktopApp &&
-        entitlementActive &&
+        entitlementActive === true &&
         loadCheckoutAttempt()
       ) {
         clearCheckoutAttempt('success');
