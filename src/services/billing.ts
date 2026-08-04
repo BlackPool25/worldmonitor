@@ -346,7 +346,11 @@ export function prereserveBillingPortalTab(): Window | null {
 export type OpenBillingPortalOutcome =
   | { outcome: 'opened'; url: string }
   | { outcome: 'no-customer' }
-  | { outcome: 'account-changed' };
+  | { outcome: 'account-changed' }
+  // A portal session was minted but nothing opened (#5911). Distinct from
+  // 'no-customer': the user IS a Dodo customer and the URL is valid, so the
+  // caller should offer a retry rather than the support-contact copy.
+  | { outcome: 'open-failed'; url: string };
 
 export async function openBillingPortal(
   preopened?: Window | null,
@@ -355,8 +359,12 @@ export async function openBillingPortal(
   // Desktop routes the portal to the OS browser via `open_url` instead of
   // navigating the WebView, which would replace the whole app with Dodo's
   // portal and strand the user with no chrome to get back (#5911).
-  const navigate = async (url: string): Promise<{ outcome: 'opened'; url: string }> => {
-    await openExternalUrl(url, reservedWin);
+  const navigate = async (url: string): Promise<OpenBillingPortalOutcome> => {
+    const opened = await openExternalUrl(url, reservedWin);
+    // Do not claim 'opened' for a session that never reached the user — we
+    // just minted a real portal session, so a silent failure looks to them
+    // like a dead button on the billing surface.
+    if (opened === 'failed') return { outcome: 'open-failed', url };
     return { outcome: 'opened', url };
   };
 

@@ -71,10 +71,29 @@ function reportOpenFailure(url: string, reason: string): void {
   }));
 }
 
-function timeout(ms: number): Promise<never> {
-  return new Promise((_resolve, reject) => {
-    setTimeout(() => reject(new Error('open_url timed out')), ms);
-  });
+/** Distinguishes "the native side said no" from "it never answered". */
+class OpenUrlTimeout extends Error {}
+
+/**
+ * Race the IPC call against a CANCELLABLE timer.
+ *
+ * `Promise.race` subscribes to every promise it is given, so a losing timer
+ * rejection is already handled and never surfaces as an unhandled rejection —
+ * but an uncleared timer still keeps a 5s handle alive per call, so it is
+ * cleared on both paths.
+ */
+async function invokeOpenUrlBounded(url: string): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      invokeTauri<void>('open_url', { url }),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new OpenUrlTimeout('open_url timed out')), OPEN_URL_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 /**
@@ -115,12 +134,18 @@ export async function openExternalUrl(
     // forward over an orphaned blank WebView window.
     if (preopened && !preopened.closed) preopened.close();
     try {
-      await Promise.race([
-        invokeTauri<void>('open_url', { url }),
-        timeout(OPEN_URL_TIMEOUT_MS),
-      ]);
+      await invokeOpenUrlBounded(url);
       return 'native';
-    } catch {
+    } catch (err) {
+      if (err instanceof OpenUrlTimeout) {
+        // Deliberately NO window.open fallback here. The IPC call is not
+        // cancellable, so a slow-but-alive `open_url` may still complete
+        // after we gave up — falling back would open the URL twice, once in
+        // a WebView and once in the OS browser. For a payment page that is
+        // worse than a clean failure, and the caller can retry.
+        reportOpenFailure(url, 'native-open-timeout');
+        return 'failed';
+      }
       // Bridge globals are not always present at first paint, so this path is
       // reachable in production — report it, because falling back to
       // `window.open` inside Tauri reproduces the very bug this module exists

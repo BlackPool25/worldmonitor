@@ -174,6 +174,8 @@ export class UnifiedSettings {
             showToast(
               'Subscription is managed outside Dodo. Email support@worldmonitor.app for help.',
             );
+          } else if (result.outcome === 'open-failed') {
+            showToast('Could not open the billing portal. Please try again.');
           }
         });
         return;
@@ -194,6 +196,8 @@ export class UnifiedSettings {
             showToast(
               'Subscription is managed outside Dodo. Email support@worldmonitor.app for help.',
             );
+          } else if (result.outcome === 'open-failed') {
+            showToast('Could not open the billing portal. Please try again.');
           }
         });
         return;
@@ -967,6 +971,8 @@ export class UnifiedSettings {
           showToast(
             'Subscription is managed outside Dodo. Email support@worldmonitor.app for help.',
           );
+        } else if (result.outcome === 'open-failed') {
+          showToast('Could not open the billing portal. Please try again.');
         }
       });
       return;
@@ -1410,6 +1416,8 @@ export class UnifiedSettings {
       void openBillingPortal(reservedWin).then((result) => {
         if (result.outcome === 'no-customer') {
           showToast('Subscription is managed outside Dodo. Email support@worldmonitor.app for help.');
+        } else if (result.outcome === 'open-failed') {
+          showToast('Could not open the billing portal. Please try again.');
         }
       });
       return;
@@ -1427,6 +1435,8 @@ export class UnifiedSettings {
         void openBillingPortal(reservedWin).then((result) => {
           if (result.outcome === 'no-customer') {
             showToast('Subscription is managed outside Dodo. Email support@worldmonitor.app for help.');
+          } else if (result.outcome === 'open-failed') {
+            showToast('Could not open the billing portal. Please try again.');
           }
         });
         return;
