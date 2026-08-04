@@ -10,10 +10,19 @@ const DASHBOARD_PATH = '/dashboard';
  */
 export const CHECKOUT_RETURN_PARAM = 'wm_checkout';
 export const CHECKOUT_RETURN_MARKER = 'return';
+/** Optional provenance for returns that cross the desktop WebView boundary. */
+export const CHECKOUT_SOURCE_PARAM = 'wm_src';
+export const DESKTOP_CHECKOUT_SOURCE = 'desktop';
 
-export function buildDashboardCheckoutReturnUrl(origin: string): string {
+export type CheckoutReturnSource = typeof DESKTOP_CHECKOUT_SOURCE;
+
+export function buildDashboardCheckoutReturnUrl(
+  origin: string,
+  source?: CheckoutReturnSource,
+): string {
   const url = new URL(DASHBOARD_PATH, origin);
   url.searchParams.set(CHECKOUT_RETURN_PARAM, CHECKOUT_RETURN_MARKER);
+  if (source) url.searchParams.set(CHECKOUT_SOURCE_PARAM, source);
   return url.toString();
 }
 

@@ -56,7 +56,11 @@ import { showDuplicateSubscriptionDialog } from './checkout-duplicate-dialog';
 import { showCheckoutPendingDialog } from './checkout-pending-dialog';
 import { resolvePlanDisplayName } from './checkout-plan-names';
 import { createEntitlementWatchdog, type EntitlementWatchdog } from './entitlement-watchdog';
-import { buildDashboardCheckoutReturnUrl, resolveCheckoutReturnOrigin } from './checkout-return-url';
+import {
+  buildDashboardCheckoutReturnUrl,
+  DESKTOP_CHECKOUT_SOURCE,
+  resolveCheckoutReturnOrigin,
+} from './checkout-return-url';
 import { WEB_APP_ORIGIN } from '@/config/web-origin';
 import { openExternalUrl } from './external-navigation';
 import { isDesktopRuntime } from './desktop-runtime';
@@ -906,6 +910,7 @@ export async function startCheckout(
     discountCode: options?.discountCode,
     startedAt: Date.now(),
   });
+  const desktopRuntime = isDesktopRuntime();
   try {
     let token = await getClerkToken();
     if (!token) {
@@ -932,7 +937,8 @@ export async function startCheckout(
         // the WebView origin serves no /dashboard route for Dodo to return
         // to (#5911).
         returnUrl: buildDashboardCheckoutReturnUrl(
-          resolveCheckoutReturnOrigin(window.location.origin, isDesktopRuntime()),
+          resolveCheckoutReturnOrigin(window.location.origin, desktopRuntime),
+          desktopRuntime ? DESKTOP_CHECKOUT_SOURCE : undefined,
         ),
         discountCode: options?.discountCode,
         referralCode: effectiveReferral,
@@ -1097,7 +1103,7 @@ export async function startCheckout(
     // event handler / watchdog) is left dormant pending removal.
     const hostedCheckoutUrl = safeHostedCheckoutUrl(result.checkout_url);
     if (hostedCheckoutUrl) {
-      if (isDesktopRuntime()) {
+      if (desktopRuntime) {
         // #5911: on desktop the same `window.location.assign` would replace
         // the entire app with Dodo's page — no tab, no back button — and run
         // 3DS/fraud inside an embedded WebView, the exact nesting #4449 moved
@@ -1301,6 +1307,11 @@ function renderCheckoutErrorSurface(
  *   - `timeout`: after 30s with no transition, swap to an explicit
  *               "Refresh if features haven't unlocked" CTA + Sentry
  *               warning. Never silently disappears.
+ *
+ * Account-agnostic mode is a short-lived classic acknowledgement for a
+ * desktop return in an arbitrary browser. It deliberately skips Clerk email
+ * hydration and entitlement waiting because this browser may belong to nobody
+ * or to a different account.
  */
 // Module-scoped cleanup for the currently-mounted success banner.
 // When `showCheckoutSuccess` is called a second time before the first
@@ -1313,7 +1324,7 @@ function renderCheckoutErrorSurface(
 let _currentBannerCleanup: (() => void) | null = null;
 
 export function showCheckoutSuccess(
-  options?: { waitForEntitlement?: boolean; email?: string | null },
+  options?: { waitForEntitlement?: boolean; email?: string | null; accountAgnostic?: boolean },
 ): void {
   _currentBannerCleanup?.();
   _currentBannerCleanup = null;
@@ -1352,7 +1363,8 @@ export function showCheckoutSuccess(
   // mutable container that later transitions can re-read, and
   // subscribe to auth-state once to update the banner text when email
   // hydrates.
-  let currentMaskedEmail = maskEmail(options?.email);
+  const accountAgnostic = options?.accountAgnostic === true;
+  let currentMaskedEmail = accountAgnostic ? null : maskEmail(options?.email);
   let unsubscribeAuth: (() => void) | null = null;
   let emailPollInterval: ReturnType<typeof setInterval> | null = null;
   let currentState: CheckoutSuccessBannerState = 'pending';
@@ -1361,7 +1373,7 @@ export function showCheckoutSuccess(
     const next = maskEmail(raw ?? null);
     if (next && next !== currentMaskedEmail) {
       currentMaskedEmail = next;
-      setBannerText(banner, currentState, currentMaskedEmail);
+      setBannerText(banner, currentState, currentMaskedEmail, accountAgnostic);
       stopEmailWatchers();
       return true;
     }
@@ -1376,7 +1388,7 @@ export function showCheckoutSuccess(
     }
   };
 
-  if (!currentMaskedEmail) {
+  if (!accountAgnostic && !currentMaskedEmail) {
     // Two fallbacks needed. (1) subscribeAuthState should fire when Clerk
     // hydrates — but auth-state.ts subscribes to clerkInstance at the
     // moment subscribeAuthState is called; if showCheckoutSuccess runs
@@ -1399,7 +1411,7 @@ export function showCheckoutSuccess(
       applyEmail(getCurrentClerkUser()?.email);
     }, POLL_MS);
   }
-  setBannerText(banner, 'pending', currentMaskedEmail);
+  setBannerText(banner, 'pending', currentMaskedEmail, accountAgnostic);
   document.body.appendChild(banner);
 
   requestAnimationFrame(() => {
@@ -1474,9 +1486,14 @@ function setBannerText(
   banner: HTMLElement,
   state: CheckoutSuccessBannerState,
   maskedEmail: string | null,
+  accountAgnostic = false,
 ): void {
   banner.setAttribute('data-entitlement-state', state);
   if (state === 'pending') {
+    if (accountAgnostic) {
+      banner.textContent = 'Payment completed in the desktop app. Pro access will update there automatically.';
+      return;
+    }
     banner.textContent = maskedEmail
       ? `Payment received! Receipt sent to ${maskedEmail}. Unlocking your premium features…`
       : 'Payment received! Unlocking your premium features…';
