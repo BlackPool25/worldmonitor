@@ -152,7 +152,9 @@ function resetHarness(
       },
       open: (url: string) => {
         globalThis.__desktopCheckoutHarness.openedWindows.push(url);
-        return null;
+        // A non-null handle models Tauri's window.open succeeding — i.e. the
+        // fallback opened ANOTHER WEBVIEW, not the OS browser.
+        return {} as unknown;
       },
       history: { replaceState: () => {} },
       __TAURI_INTERNALS__: {
@@ -357,6 +359,20 @@ describe('startCheckout on desktop (#5911)', () => {
     assert.deepEqual(harness.invocations, [
       { command: 'open_url', payload: { url: 'https://worldmonitor.app/pro' } },
     ]);
+  });
+
+  it('does not claim the OS browser when it only fell back to a WebView window', async () => {
+    // openExternalUrl returns 'popup' here: the bridge refused and
+    // window.open succeeded INSIDE Tauri. That is the bug this branch exists
+    // to prevent, so it must not be reported to the buyer as success.
+    resetHarness(true, { invokeRejects: true });
+    const checkout = await loadCheckoutModule();
+
+    assert.equal(await checkout.startCheckout('pro_monthly'), false);
+
+    const harness = globalThis.__desktopCheckoutHarness;
+    assert.deepEqual(harness.toasts, [], 'a WebView fallback is not "opened in your browser"');
+    assert.equal(harness.errorToasts.length, 1);
   });
 
   it('tells the buyer where checkout went and that nothing redirects back', async () => {

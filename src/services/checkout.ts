@@ -1106,7 +1106,11 @@ export async function startCheckout(
         // back in, because Pro arrives over the same live Convex entitlement
         // subscription the web client uses.
         const outcome = await openExternalUrl(hostedCheckoutUrl);
-        if (outcome === 'failed') {
+        // Only a confirmed NATIVE open counts. `popup` on desktop means the
+        // bridge call failed and we fell back to `window.open` inside the
+        // WebView — which is the bug this branch exists to prevent, so
+        // announcing "opened in your browser" for it would be false.
+        if (outcome !== 'native') {
           // Nothing opened. Announcing "check your browser" here would send
           // the buyer to a window that does not exist and strand a paid-for
           // session, so this takes the same shape as every other checkout

@@ -230,14 +230,16 @@ describe('openExternalUrl — desktop', () => {
     try {
       const pending = openExternalUrl('https://worldmonitor.app/pro');
       mock.timers.tick(5_000);
-      assert.equal(await pending, 'popup', 'the timeout must resolve the caller, not strand it');
+      assert.equal(await pending, 'failed', 'the timeout must resolve the caller, not strand it');
     } finally {
       mock.timers.reset();
     }
     assert.equal(probe.invocations.length, 1);
-    assert.deepEqual(probe.opened, [
-      ['https://worldmonitor.app/pro', '_blank', undefined],
-    ]);
+    // No window.open fallback on TIMEOUT specifically: the IPC call is not
+    // cancellable, so a slow-but-alive open_url could still complete and the
+    // user would get the page twice — once in a WebView, once in the OS
+    // browser. For a payment page a clean failure beats a double open.
+    assert.deepEqual(probe.opened, [], 'a timed-out open must not also open a WebView window');
   });
 
   it('reports failure when the native opener refuses AND the popup is blocked', async () => {
@@ -437,6 +439,33 @@ describe('openBillingPortal — desktop', () => {
       { command: 'open_url', payload: { url: 'https://customer.dodopayments.com' } },
     ]);
     assert.deepEqual(probe.assigned, []);
+  });
+});
+
+describe('openBillingPortal — desktop failure', () => {
+  it('reports open-failed rather than claiming it opened a session it did not', async () => {
+    // A portal session was just minted server-side. Reporting 'opened' for a
+    // handoff that never happened leaves the user staring at a dead button on
+    // the billing surface with a live session behind it.
+    installWindow('desktop');
+    installSignedInPortalUser();
+    probe.invokeRejects = true;
+    probe.popupBlocked = true;
+
+    assert.deepEqual(await openBillingPortal(prereserveBillingPortalTab()), {
+      outcome: 'open-failed',
+      url: PORTAL_URL,
+    });
+  });
+
+  it('still reports opened when the native handoff succeeds', async () => {
+    installWindow('desktop');
+    installSignedInPortalUser();
+
+    assert.deepEqual(await openBillingPortal(prereserveBillingPortalTab()), {
+      outcome: 'opened',
+      url: PORTAL_URL,
+    });
   });
 });
 
