@@ -279,7 +279,7 @@ describe('entitlement reload controller', () => {
     );
     assert.match(
       panelLayout,
-      /const entitlementActive = isEntitlementActive\(state, Date\.now\(\)\)[\s\S]*?this\.ctx\.isDesktopApp[\s\S]*?entitlementActive[\s\S]*?loadCheckoutAttempt\(\)[\s\S]*?clearCheckoutAttempt\('success'\)/,
+      /const entitlementActive =\s*state === null \? null : isEntitlementActive\(state, Date\.now\(\)\)[\s\S]*?this\.ctx\.isDesktopApp[\s\S]*?entitlementActive === true[\s\S]*?loadCheckoutAttempt\(\)[\s\S]*?clearCheckoutAttempt\('success'\)/,
       'the desktop app must retire its own attempt/referral state when entitlement activates',
     );
     assert.match(
@@ -289,7 +289,7 @@ describe('entitlement reload controller', () => {
     );
     assert.match(
       panelLayout,
-      /onEntitlementChange\(\(state\) => \{[\s\S]*?const entitlementActive = isEntitlementActive\(state, Date\.now\(\)\)[\s\S]*?entitlementReloadController\.handleSnapshot\(\s*entitlementActive,\s*getAuthState\(\)\.user\?\.id \?\? null,/,
+      /onEntitlementChange\(\(state\) => \{[\s\S]*?const entitlementActive =\s*state === null \? null : isEntitlementActive\(state, Date\.now\(\)\)[\s\S]*?entitlementReloadController\.handleSnapshot\(\s*entitlementActive,\s*getAuthState\(\)\.user\?\.id \?\? null,/,
       'the live watcher must preserve unavailable snapshots and scope the guard to the authenticated account',
     );
   });
