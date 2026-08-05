@@ -82,6 +82,40 @@ describe('blog SEO and GEO corpus contract', () => {
     assert.match(corpus, new RegExp(`\\b${stats.mcpToolCount} (?:live )?(?:geopolitical intelligence )?tools\\b`));
   });
 
+  it('keeps the first-party category explainer answer-first and fact-consistent', () => {
+    const stats = JSON.parse(readFileSync(resolve(root, 'docs/generated/stats.json'), 'utf8'));
+    const explainer = posts.find((post) => post.file === 'what-is-worldmonitor-real-time-global-intelligence.md');
+    assert.ok(explainer, 'missing first-party World Monitor category explainer');
+
+    const firstHeading = explainer.body.indexOf('\n## ');
+    const opening = explainer.body.slice(0, firstHeading).trim();
+    const openingWords = opening.split(/\s+/).filter(Boolean).length;
+    assert.match(opening, /^World Monitor is a \*\*free, open-source, real-time global intelligence dashboard\*\*/);
+    assert.ok(openingWords >= 35 && openingWords <= 80, `category explainer opening is ${openingWords} words`);
+
+    for (const expected of [
+      `${stats.layerDefinitions} map-layer types`,
+      `${stats.tier1Countries} Tier-1 countries`,
+      `${stats.rankableUniverseCountries}-country`,
+      `${stats.stockExchangeCount} stock exchanges`,
+      `${stats.centralBankInstitutionCount} central-bank`,
+      `${stats.locales} interface languages`,
+      `${stats.protoFiles} Protocol Buffer definitions`,
+      `${stats.protoServices} REST service specifications`,
+      `${stats.mcpToolCount} live tools`,
+    ]) {
+      assert.ok(explainer.body.includes(expected), `category explainer is missing generated fact: ${expected}`);
+    }
+    assert.match(explainer.body, new RegExp(`\\bSix dashboard variants\\b`, 'i'));
+    assert.match(explainer.body, /paid Pro, API, and Enterprise plans/i);
+    assert.match(explainer.body, /https:\/\/www\.worldmonitor\.app\/docs\/data-sources/);
+    assert.match(explainer.body, /https:\/\/www\.worldmonitor\.app\/pricing\.md/);
+    assert.match(explainer.body, /\/blog\/glossary\//);
+
+    assert.doesNotMatch(explainer.body, /Five Dashboards|no "enterprise tier"|React \+ TypeScript/);
+    assert.doesNotMatch(explainer.body, /baseline risk \(40%\).*unrest indicators \(20%\)/s);
+  });
+
   it('keeps crawl, entity, and citation signals in the shared templates', () => {
     const base = readFileSync(resolve(root, 'blog-site/src/layouts/Base.astro'), 'utf8');
     const post = readFileSync(resolve(root, 'blog-site/src/layouts/BlogPost.astro'), 'utf8');
