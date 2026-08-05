@@ -106,7 +106,23 @@ describe('blog SEO and GEO corpus contract', () => {
     ]) {
       assert.ok(explainer.body.includes(expected), `category explainer is missing generated fact: ${expected}`);
     }
-    assert.match(explainer.body, new RegExp(`\\bSix dashboard variants\\b`, 'i'));
+    // The variant count is spelled out in the copy, so it cannot ride the
+    // numeric loop above. Derive the word from the generated stat anyway —
+    // with "Six" hardcoded, this block stayed green under variantCount=7
+    // while the same mutation on any looped fact (layerDefinitions) went red.
+    const COUNT_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
+    const variantWord = COUNT_WORDS[stats.variantCount];
+    assert.ok(variantWord, `no spelled-out word for variantCount ${stats.variantCount}`);
+    assert.match(explainer.body, new RegExp(`\\b${variantWord} dashboard variants\\b`, 'i'));
+    // Pin the enumeration too: the word alone stays true if a variant is added
+    // to the list without updating the count, or renamed out of it.
+    const variantList = explainer.body.match(/dashboard variants\*\*: (.+)/);
+    assert.ok(variantList, 'category explainer is missing the enumerated dashboard-variant list');
+    assert.equal(
+      variantList[1].split(',').length,
+      stats.variantCount,
+      `enumerated dashboard variants do not match variantCount ${stats.variantCount}: ${variantList[1]}`,
+    );
     assert.match(explainer.body, /paid Pro, API, and Enterprise plans/i);
     assert.match(explainer.body, /https:\/\/www\.worldmonitor\.app\/docs\/data-sources/);
     assert.match(explainer.body, /https:\/\/www\.worldmonitor\.app\/pricing\.md/);

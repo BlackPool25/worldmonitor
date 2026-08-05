@@ -724,6 +724,13 @@ function claims(s) {
     { file: 'public/llms-full.txt', re: /MCP server endpoint, (\d+)\s+tools/, value: s.mcpToolCount },
     { file: 'public/ai-search.md', re: /- (\d+)\s+MCP tools/, value: s.mcpToolCount },
     { file: 'public/ai-search.md', re: /- (\d+)\s+supported languages/, value: s.locales },
+    // The rest of ai-search.md's Data Coverage bullets that have a generated
+    // source of truth. The locale line above is the one that had already
+    // drifted (24 vs 26) precisely because nothing pinned it; these siblings
+    // were one capability change away from the same fate.
+    { file: 'public/ai-search.md', re: /- (\d+)\s+map layer types/, value: s.layerDefinitions },
+    { file: 'public/ai-search.md', re: /- (\d+)\s+live Country Instability Index countries/, value: s.tier1Countries },
+    { file: 'public/ai-search.md', re: /- (\d+)-country resilience rankings/, value: s.rankableUniverseCountries },
     { file: 'public/sdks.md', re: /every one of the (\d+)\s+\[MCP tools\]/, value: s.mcpToolCount },
     { file: 'public/agent.txt', re: /(\d+)\s+tools; tools\/list for the live inventory/, value: s.mcpToolCount },
     { file: 'public/pricing.md', re: /MCP access and (\d+)\s+tools under one key/, value: s.mcpToolCount },
@@ -795,6 +802,10 @@ function claims(s) {
     { file: 'blog-site/src/content/blog/build-on-worldmonitor-developer-api-open-source.md', re: /worldmonitor\)\. \d+\s+services, (\d+)\s+proto files, and a global/, value: s.protoFiles },
     { file: 'blog-site/src/content/blog/what-is-worldmonitor-real-time-global-intelligence.md', re: /generated from (\d+)\s+Protocol Buffer definitions into \d+\s+REST service specifications/, value: s.protoFiles },
     { file: 'blog-site/src/content/blog/what-is-worldmonitor-real-time-global-intelligence.md', re: /generated from \d+\s+Protocol Buffer definitions into (\d+)\s+REST service specifications/, value: s.protoServices },
+    // Floor claim, same shape as README.md / docs/overview.mdx above. This runs
+    // in the always-on docs-stats job, unlike the blog contract test, which the
+    // `unit` job skips on markdown-only PRs.
+    { file: 'blog-site/src/content/blog/what-is-worldmonitor-real-time-global-intelligence.md', re: /(\d+)\+\s+curated news feeds/, value: s.feedDefinitions, min: true },
     { file: 'blog-site/src/content/blog/ai-powered-intelligence-without-the-cloud.md', re: /architecture \((\d+)\s+proto files, \d+\s+typed services\)/, value: s.protoFiles },
     { file: 'blog-site/src/content/blog/ai-powered-intelligence-without-the-cloud.md', re: /architecture \(\d+\s+proto files, (\d+)\s+typed services\)/, value: s.protoServices },
     { file: 'blog-site/src/content/blog/worldmonitor-vs-traditional-intelligence-tools.md', re: /using the (\d+)\s+typed API services/, value: s.protoServices },
@@ -1095,6 +1106,10 @@ export const PLAN_LAYER_COPY_SURFACES = [
   'docs/zh/accounts.mdx',
   'pro-test/src/locales/en.json',
   'pro-test/welcome.html',
+  // The category explainer names the free-tier layer boundary too ("Every
+  // layer except the Resilience layer is available on the free plan"), so it
+  // has to be re-pointed alongside the pricing surfaces when the lock set moves.
+  'blog-site/src/content/blog/what-is-worldmonitor-real-time-global-intelligence.md',
 ];
 
 /** The single web-locked layer the copy above is written around. */
