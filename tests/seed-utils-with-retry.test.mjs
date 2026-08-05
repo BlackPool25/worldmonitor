@@ -402,9 +402,10 @@ describe('httpRetryError', () => {
 // for another 20 minutes. Those cycles ran 30-36s vs 7-17s for healthy ones.
 //
 // `remainingBudgetMs` is the wall clock the caller actually has left. When the
-// server's own hint EXCEEDS it, no retry inside this run can succeed, so the
-// error is nonRetryable and the provider loop falls through immediately with
-// the budget intact. Deliberately a NEW option rather than a redefinition of
+// server's own hint meets or exceeds it, no retry inside this run can succeed,
+// so the error is nonRetryable and the provider loop falls through immediately
+// with the budget intact. Equality is included: sleeping the full remainder
+// would leave usableBudget at 0 and abort the whole waterfall. Deliberately a NEW option rather than a redefinition of
 // `capMs`: scripts/_seed-history.mjs passes `capMs: RELAY_RETRY_AFTER_CAP_MS`
 // (a fixed 10s ceiling, not a budget), so changing `capMs` semantics would
 // silently make that relay give up where it used to retry.
@@ -443,9 +444,20 @@ describe('httpRetryError — remainingBudgetMs (#6110)', () => {
     assert.equal(err.nonRetryable, true);
   });
 
-  it('retries at the full hint when it exactly equals the remaining budget', () => {
-    // Boundary: hint == budget is survivable (the comparison is strict >).
+  it('is nonRetryable when the hint exactly equals the remaining budget', () => {
+    // Equality is not survivable for waterfall callers: sleeping the full
+    // remainder leaves usableBudget at 0, so the next withRetry attempt throws
+    // createLlmBudgetError and aborts the whole chain. Fail-fast instead.
+    // Comparison is `>=` (not strict `>`).
     const err = httpRetryError(resp429(2), { remainingBudgetMs: 2_000 });
+    assert.equal(err.nonRetryable, true);
+    assert.equal(err.retryAfterMs, 2_000, 'uncapped magnitude retained for logs');
+  });
+
+  it('still retries when the hint is strictly under the remaining budget', () => {
+    // Just under equality remains reachable — pins that `>=` did not become
+    // an accidental always-futile gate for every positive hint.
+    const err = httpRetryError(resp429(2), { remainingBudgetMs: 2_001 });
     assert.equal(err.nonRetryable, false);
     assert.equal(err.retryAfterMs, 2_000);
   });

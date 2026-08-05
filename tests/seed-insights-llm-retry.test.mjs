@@ -89,17 +89,15 @@ describe('seed-insights callLLM retry/budget', () => {
     }
   });
 
-  // #6110 changed the hint used here from 30s to 6s, and the intent is worth
-  // stating: the point of this test is the BUDGET stop — the run exhausts its
-  // clock by sleeping honored hints, and `createLlmBudgetError` then ends the
-  // whole chain instead of burning the next provider's timeout too.
-  //
-  // A 30s hint no longer reaches that path: 30s outruns the 12s of usable
-  // budget, so httpRetryError marks it nonRetryable (helper unit tests pin the
-  // near-miss / over-budget shapes). The #6110 chain suite below pins the
-  // production 1213s shape (no sleep) and a short reachable hint — not this
-  // exact 30s/17s fixture. 6s FITS the budget, is still slept on, and two of
-  // them spend it — which is the state this test exists to cover.
+  // Budget stop: createLlmBudgetError ends the whole chain rather than burning
+  // the next provider's timeout. After the #6110 equality fix (`>=`), two equal
+  // 6s sleeps against 12s usable can no longer exhaust the clock — the second
+  // sleep is fail-fast (hint == rem) and would fall through. Drive the stop by
+  // letting withRetry's wait overshoot remaining after one under-budget sleep:
+  //   usable 12s (callBudget 17s − 5s guard), hint 3s, retryDelayMs 8s
+  //   wait0 = max(8s, 3s) = 8s → rem 4s
+  //   wait1 = max(16s, 3s) = 16s (3s < 4s so still slept) → rem < 0
+  //   attempt2: usable <= 0 → createLlmBudgetError (no groq)
   it('stops at the call budget without falling through to the next provider', async () => {
     process.env.GROQ_API_KEY = 'groq-test-key';
     process.env.OPENROUTER_API_KEY = 'openrouter-test-key';
@@ -117,15 +115,15 @@ describe('seed-insights callLLM retry/budget', () => {
         fetch: async (url) => {
           calls += 1;
           assert.ok(String(url).includes('openrouter.ai'), 'budget stop must not fall through to groq');
-          return { ok: false, status: 429, headers: { get: (n) => (n.toLowerCase() === 'retry-after' ? '6' : null) } };
+          return { ok: false, status: 429, headers: { get: (n) => (n.toLowerCase() === 'retry-after' ? '3' : null) } };
         },
       });
 
-      const result = await callLLM('Some breaking headline', { retryDelayMs: 0, callBudgetMs: 17_000 });
+      const result = await callLLM('Some breaking headline', { retryDelayMs: 8_000, callBudgetMs: 17_000 });
 
       assert.equal(result, null);
       assert.equal(calls, 2);
-      assert.deepEqual(waits, [6000, 6000], 'both hints fit the budget and are honored, spending it');
+      assert.deepEqual(waits, [8000, 16000], 'backoff overshoots remaining after the first under-budget sleep');
     } finally {
       Date.now = originalDateNow;
       globalThis.setTimeout = originalSetTimeout;
@@ -240,6 +238,54 @@ describe('seed-insights callLLM does not sleep on an unreachable Retry-After (#6
       assert.equal(result?.text, LONG_BRIEF);
     } finally {
       globalThis.setTimeout = originalSetTimeout;
+    }
+  });
+
+  it('fails over with no sleep when the hint exactly equals usable budget', async () => {
+    // callBudgetMs 7000 − 5s guard = 2000ms usable at t≈0. A 2s Retry-After
+    // equals that remainder. Sleeping it would spend the whole budget and the
+    // next withRetry attempt would throw createLlmBudgetError, aborting every
+    // later provider. `>=` keeps the budget for fallthrough instead.
+    process.env.OPENROUTER_API_KEY = 'openrouter-test-key';
+    process.env.GROQ_API_KEY = 'groq-test-key';
+    delete process.env.OLLAMA_API_URL;
+
+    const originalSetTimeout = globalThis.setTimeout;
+    const originalDateNow = Date.now;
+    const waits = [];
+    const providers = [];
+    const frozen = 1_700_000_000_000;
+    Date.now = () => frozen;
+    globalThis.setTimeout = (fn, ms, ...args) => { waits.push(ms); fn(...args); return 0; };
+
+    try {
+      __setInsightsLlmTransportForTests({
+        fetch: async (url) => {
+          const href = String(url);
+          providers.push(href.includes('api.groq.com') ? 'groq' : 'openrouter');
+          if (href.includes('openrouter.ai')) {
+            return {
+              ok: false,
+              status: 429,
+              headers: { get: (n) => (n.toLowerCase() === 'retry-after' ? '2' : null) },
+            };
+          }
+          return okResponse(LONG_BRIEF);
+        },
+      });
+
+      const result = await callLLM('Some breaking headline', {
+        retryDelayMs: 0,
+        callBudgetMs: 7_000,
+      });
+
+      assert.deepEqual(waits, [], 'equality must fail-fast, not sleep the full remainder');
+      assert.deepEqual(providers, ['openrouter', 'groq'], 'saved budget must reach the next provider');
+      assert.equal(result?.provider, 'groq');
+      assert.equal(result?.text, LONG_BRIEF);
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+      Date.now = originalDateNow;
     }
   });
 });

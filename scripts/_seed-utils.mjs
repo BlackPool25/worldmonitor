@@ -849,9 +849,12 @@ export function isRetryableHttpStatus(status) {
  *     `RELAY_RETRY_AFTER_CAP_MS` here, so it is NOT a remaining-budget signal.
  *   - `remainingBudgetMs` (#6110) — the wall clock the caller actually has
  *     left. This one can produce a VERDICT, not just a clamp: if the server's
- *     own hint exceeds it, no retry inside this run can succeed, so the error
- *     is nonRetryable and the caller falls through immediately with its budget
- *     intact instead of sleeping against a wall that cannot move.
+ *     own hint meets or exceeds it, no retry inside this run can succeed, so
+ *     the error is nonRetryable and the caller falls through immediately with
+ *     its budget intact instead of sleeping against a wall that cannot move.
+ *     Equality is futile too: sleeping the full remainder leaves usableBudget
+ *     at 0, so the next withRetry attempt throws createLlmBudgetError and
+ *     aborts the whole provider waterfall rather than failing over.
  *
  * Why the verdict matters — production, seed-insights 2026-08-03 12:10Z/12:20Z:
  * groq answered 429 with "tokens per day (TPD): Limit 100000, Used 100000 …
@@ -875,7 +878,11 @@ export function httpRetryError(resp, { maxRetryAfterMs, capMs, remainingBudgetMs
     // the uncapped hint carries the magnitude that settles that, and comparing
     // the capped value instead would reinstate this very bug for any caller
     // whose budget is >= MAX_RETRY_AFTER_MS (groq's 1213s reads as 60s there).
-    if (Number.isFinite(remainingBudgetMs) && uncappedRetryAfterMs > Math.max(0, remainingBudgetMs)) {
+    // `>=`: equality is futile for waterfall callers. Sleeping a hint that
+    // equals the remaining budget spends the whole remainder; the next
+    // withRetry attempt hits usableBudgetMs() <= 0 → createLlmBudgetError and
+    // aborts every later provider. Fail-fast keeps the budget for fallthrough.
+    if (Number.isFinite(remainingBudgetMs) && uncappedRetryAfterMs >= Math.max(0, remainingBudgetMs)) {
       err.nonRetryable = true;
       // Keep the UNCAPPED hint even though we will not sleep on it: only the
       // raw magnitude separates "quota exhausted for 20 minutes" from
@@ -888,7 +895,7 @@ export function httpRetryError(resp, { maxRetryAfterMs, capMs, remainingBudgetMs
     if (Number.isFinite(maxRetryAfterMs)) retryAfterMs = Math.min(retryAfterMs, maxRetryAfterMs);
     if (Number.isFinite(capMs)) retryAfterMs = Math.min(retryAfterMs, Math.max(0, capMs));
     // No `remainingBudgetMs` clamp here on purpose: the early return above
-    // already guarantees hint <= budget, and the ceilings only shrink it
+    // already guarantees hint < budget, and the ceilings only shrink it
     // further. Adding one would be dead code that reads like a safeguard.
     if (retryAfterMs > 0) err.retryAfterMs = retryAfterMs;
     else err.nonRetryable = true;

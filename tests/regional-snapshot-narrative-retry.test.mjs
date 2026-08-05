@@ -86,14 +86,10 @@ describe('narrative callLlmDefault retry/budget', () => {
     }
   });
 
-  // #6110 changed the hint here from 30s to 6s, mirroring the seed-insights
-  // twin of this test. The point of the test is the BUDGET stop — the run
-  // exhausts its clock by sleeping honored hints and `createLlmBudgetError`
-  // ends the whole chain rather than burning the next provider's timeout too.
-  // A 30s hint no longer reaches that path (over-budget → nonRetryable at the
-  // helper; chain-level #6110 suite below pins the 1213s production shape).
-  // 6s FITS, is still slept on, and two of them spend it — the state this
-  // test exists to cover.
+  // Budget stop twin of seed-insights. After the #6110 equality fix (`>=`),
+  // two equal 6s sleeps against 12s usable no longer exhaust the clock — the
+  // second is fail-fast. Drive the stop via withRetry wait overshoot:
+  //   usable 12s, hint 3s, retryDelayMs 8s → waits 8s then 16s → usable <= 0.
   it('stops at the call budget without falling through to the next provider', async () => {
     process.env.GROQ_API_KEY = 'groq-test-key';
     process.env.OPENROUTER_API_KEY = 'openrouter-test-key';
@@ -110,15 +106,15 @@ describe('narrative callLlmDefault retry/budget', () => {
         fetch: async (url) => {
           calls += 1;
           assert.ok(String(url).includes('openrouter.ai'), 'budget stop must not fall through to groq');
-          return { ok: false, status: 429, headers: { get: (n) => (n.toLowerCase() === 'retry-after' ? '6' : null) } };
+          return { ok: false, status: 429, headers: { get: (n) => (n.toLowerCase() === 'retry-after' ? '3' : null) } };
         },
       });
 
-      const result = await callLlmDefault(PROMPT, { retryDelayMs: 0, callBudgetMs: 17_000 });
+      const result = await callLlmDefault(PROMPT, { retryDelayMs: 8_000, callBudgetMs: 17_000 });
 
       assert.equal(result, null);
       assert.equal(calls, 2);
-      assert.deepEqual(waits, [6000, 6000], 'both hints fit the budget and are honored, spending it');
+      assert.deepEqual(waits, [8000, 16000], 'backoff overshoots remaining after the first under-budget sleep');
     } finally {
       Date.now = originalDateNow;
       globalThis.setTimeout = originalSetTimeout;
@@ -179,6 +175,42 @@ describe('narrative callLlmDefault does not sleep on an unreachable Retry-After 
       assert.equal(result?.provider, 'groq');
     } finally {
       globalThis.setTimeout = originalSetTimeout;
+    }
+  });
+
+  it('fails over with no sleep when the hint exactly equals usable budget', async () => {
+    // callBudgetMs 7000 − 5s guard = 2000ms usable. Equality must fail-fast so
+    // the next provider still gets a real attempt (same composition as insights).
+    process.env.GROQ_API_KEY = 'groq-test-key';
+    process.env.OPENROUTER_API_KEY = 'openrouter-test-key';
+    const originalSetTimeout = globalThis.setTimeout;
+    const originalDateNow = Date.now;
+    const waits = [];
+    const providers = [];
+    const frozen = 1_700_000_000_000;
+    Date.now = () => frozen;
+    globalThis.setTimeout = (fn, ms, ...args) => { waits.push(ms); fn(...args); return 0; };
+
+    try {
+      __setNarrativeTransportForTests({
+        fetch: async (url) => {
+          const href = String(url);
+          providers.push(href.includes('api.groq.com') ? 'groq' : 'openrouter');
+          if (href.includes('openrouter.ai')) {
+            return { ok: false, status: 429, headers: { get: (n) => (n.toLowerCase() === 'retry-after' ? '2' : null) } };
+          }
+          return okResponse('llama-3.3-70b-versatile', '{"situation":"ok"}');
+        },
+      });
+
+      const result = await callLlmDefault(PROMPT, { retryDelayMs: 0, callBudgetMs: 7_000 });
+
+      assert.deepEqual(waits, [], 'equality must fail-fast, not sleep the full remainder');
+      assert.deepEqual(providers, ['openrouter', 'groq'], 'saved budget must reach the next provider');
+      assert.equal(result?.provider, 'groq');
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+      Date.now = originalDateNow;
     }
   });
 });
