@@ -766,15 +766,28 @@ const MAX_RETRY_AFTER_MS = 60_000;
  * those predate this helper; consolidating them is a separate refactor.
  */
 export function parseRetryAfterMs(value) {
+  const parsed = parseRetryAfterUncappedMs(value);
+  return parsed == null ? null : Math.min(parsed, MAX_RETRY_AFTER_MS);
+}
+
+/**
+ * #6110: the same parse WITHOUT the `MAX_RETRY_AFTER_MS` cap.
+ *
+ * The cap exists so a stuck header cannot park a bundle past its timeout — it
+ * bounds how long we SLEEP. But it also erases how far out the server actually
+ * pushed us, and that magnitude is exactly what tells us a retry is pointless:
+ * groq's daily-quota 429 asks for 1213s, which the cap flattens to 60s. Judging
+ * futility on the capped value silently reinstates the bug for any caller whose
+ * remaining budget is >= 60s.
+ *
+ * So: sleep on the capped value, judge on the uncapped one.
+ */
+function parseRetryAfterUncappedMs(value) {
   if (!value) return null;
   const seconds = Number(value);
-  if (Number.isFinite(seconds) && seconds > 0) {
-    return Math.min(seconds * 1000, MAX_RETRY_AFTER_MS);
-  }
+  if (Number.isFinite(seconds) && seconds > 0) return seconds * 1000;
   const retryAt = Date.parse(value);
-  if (Number.isFinite(retryAt)) {
-    return Math.min(Math.max(retryAt - Date.now(), 1000), MAX_RETRY_AFTER_MS);
-  }
+  if (Number.isFinite(retryAt)) return Math.max(retryAt - Date.now(), 1000);
   return null;
 }
 
@@ -852,13 +865,23 @@ export function httpRetryError(resp, { maxRetryAfterMs, capMs, remainingBudgetMs
   const err = new Error(`HTTP ${status}`);
   err.status = status;
   err.nonRetryable = !isRetryableHttpStatus(status);
-  let retryAfterMs = parseRetryAfterMs(getResponseHeader(resp?.headers, 'Retry-After'));
+  const rawHeader = getResponseHeader(resp?.headers, 'Retry-After');
+  const uncappedRetryAfterMs = parseRetryAfterUncappedMs(rawHeader);
+  let retryAfterMs = parseRetryAfterMs(rawHeader);
   if (retryAfterMs != null) {
-    // #6110: decide futility from the RAW hint, before any ceiling flattens it.
-    // Clamping first destroys the one fact that mattered — that the server told
-    // us it will not serve this run at all.
-    if (Number.isFinite(remainingBudgetMs) && retryAfterMs > Math.max(0, remainingBudgetMs)) {
+    // #6110: judge futility on the UNCAPPED hint. Every ceiling in play here —
+    // MAX_RETRY_AFTER_MS at parse time, then maxRetryAfterMs and capMs below —
+    // answers "how long may we sleep", never "is sleeping worth anything". Only
+    // the uncapped hint carries the magnitude that settles that, and comparing
+    // the capped value instead would reinstate this very bug for any caller
+    // whose budget is >= MAX_RETRY_AFTER_MS (groq's 1213s reads as 60s there).
+    if (Number.isFinite(remainingBudgetMs) && uncappedRetryAfterMs > Math.max(0, remainingBudgetMs)) {
       err.nonRetryable = true;
+      // Keep the hint on the error even though we will not sleep on it: it is
+      // the only thing that separates "quota exhausted for 20 minutes" from
+      // "throttled for 2 seconds" in the log. withRetry checks nonRetryable
+      // before ever reading retryAfterMs, so this cannot cause a sleep.
+      err.retryAfterMs = retryAfterMs;
       return err;
     }
     if (Number.isFinite(maxRetryAfterMs)) retryAfterMs = Math.min(retryAfterMs, maxRetryAfterMs);
