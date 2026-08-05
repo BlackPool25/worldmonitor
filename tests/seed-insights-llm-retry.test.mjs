@@ -94,11 +94,12 @@ describe('seed-insights callLLM retry/budget', () => {
   // clock by sleeping honored hints, and `createLlmBudgetError` then ends the
   // whole chain instead of burning the next provider's timeout too.
   //
-  // A 30s hint no longer reaches that path, and correctly so: 30s outruns the
-  // 12s of usable budget, so it is now nonRetryable on sight and the chain
-  // fails over to groq immediately with the budget intact (pinned separately in
-  // the #6110 describe below). 6s FITS the budget, so it is still slept on, and
-  // two of them spend it — which is the state this test exists to cover.
+  // A 30s hint no longer reaches that path: 30s outruns the 12s of usable
+  // budget, so httpRetryError marks it nonRetryable (helper unit tests pin the
+  // near-miss / over-budget shapes). The #6110 chain suite below pins the
+  // production 1213s shape (no sleep) and a short reachable hint — not this
+  // exact 30s/17s fixture. 6s FITS the budget, is still slept on, and two of
+  // them spend it — which is the state this test exists to cover.
   it('stops at the call budget without falling through to the next provider', async () => {
     process.env.GROQ_API_KEY = 'groq-test-key';
     process.env.OPENROUTER_API_KEY = 'openrouter-test-key';

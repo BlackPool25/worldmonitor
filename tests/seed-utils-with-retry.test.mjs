@@ -418,9 +418,9 @@ describe('httpRetryError — remainingBudgetMs (#6110)', () => {
     // The production shape: 1213s hint, ~55s of budget left.
     const err = httpRetryError(resp429(1213), { maxRetryAfterMs: 10_000, remainingBudgetMs: 55_000 });
     assert.equal(err.nonRetryable, true, 'retrying before the server will serve us is futile');
-    // The hint is retained for the log (see the fail-fast test below); what
-    // matters is that nonRetryable stops withRetry before it is ever slept on.
-    assert.equal(err.retryAfterMs, 60_000);
+    // Fail-fast retains the UNCAPPED magnitude for logs (see fail-fast test);
+    // nonRetryable stops withRetry before it is ever slept on.
+    assert.equal(err.retryAfterMs, 1_213_000);
   });
 
   it('still retries when the hint fits inside the remaining budget', () => {
@@ -494,12 +494,37 @@ describe('httpRetryError — remainingBudgetMs (#6110)', () => {
     assert.equal(parseRetryAfterMs('3'), 3_000);
   });
 
-  it('carries the hint on the fail-fast error so logs can tell quota from throttle', () => {
-    // Not slept on — withRetry checks nonRetryable first — but without it the
-    // log cannot distinguish "20 minutes" from "2 seconds".
+  it('carries the uncapped hint on the fail-fast error so logs can tell quota from throttle', () => {
+    // Not slept on — withRetry checks nonRetryable first — and must be the
+    // raw magnitude, not the 60s parse cap: 1213s and 90s would both read as
+    // 60_000 if we attached the capped parse.
     const err = httpRetryError(resp429(1213), { maxRetryAfterMs: 10_000, remainingBudgetMs: 55_000 });
     assert.equal(err.nonRetryable, true);
-    assert.equal(err.retryAfterMs, 60_000);
+    assert.equal(err.retryAfterMs, 1_213_000);
+  });
+
+  it('fires remainingBudgetMs futility on HTTP-date Retry-After beyond the 60s parse cap', () => {
+    // Seconds-form is covered above; the Date.parse branch must also feed the
+    // uncapped verdict (a far-future HTTP-date flattens to 60s on the sleep
+    // path and would reinstate #6110 for budgets >= 60s if judged capped).
+    const originalDateNow = Date.now;
+    const frozen = 1_700_000_000_000;
+    Date.now = () => frozen;
+    try {
+      const farFuture = new Date(frozen + 1_213_000).toUTCString();
+      const resp = {
+        status: 429,
+        headers: { get: (n) => (n.toLowerCase() === 'retry-after' ? farFuture : null) },
+      };
+      for (const budgetMs of [60_000, 85_000, 300_000]) {
+        const err = httpRetryError(resp, { maxRetryAfterMs: 10_000, remainingBudgetMs: budgetMs });
+        assert.equal(err.nonRetryable, true, `HTTP-date budget ${budgetMs}ms must see ~1213s as unreachable`);
+        assert.equal(err.retryAfterMs, 1_213_000);
+      }
+      assert.equal(parseRetryAfterMs(farFuture), 60_000, 'sleep parse stays capped');
+    } finally {
+      Date.now = originalDateNow;
+    }
   });
 
   it('is nonRetryable when the raw hint overruns the budget even if the ceiling would fit', () => {

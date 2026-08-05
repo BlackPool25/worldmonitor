@@ -90,10 +90,10 @@ describe('narrative callLlmDefault retry/budget', () => {
   // twin of this test. The point of the test is the BUDGET stop — the run
   // exhausts its clock by sleeping honored hints and `createLlmBudgetError`
   // ends the whole chain rather than burning the next provider's timeout too.
-  // A 30s hint no longer reaches that path, and correctly so: it outruns the
-  // 12s of usable budget, so it is nonRetryable on sight and the chain fails
-  // over immediately with the budget intact. 6s FITS, is still slept on, and
-  // two of them spend it — the state this test exists to cover.
+  // A 30s hint no longer reaches that path (over-budget → nonRetryable at the
+  // helper; chain-level #6110 suite below pins the 1213s production shape).
+  // 6s FITS, is still slept on, and two of them spend it — the state this
+  // test exists to cover.
   it('stops at the call budget without falling through to the next provider', async () => {
     process.env.GROQ_API_KEY = 'groq-test-key';
     process.env.OPENROUTER_API_KEY = 'openrouter-test-key';

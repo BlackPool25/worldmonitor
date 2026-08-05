@@ -877,11 +877,12 @@ export function httpRetryError(resp, { maxRetryAfterMs, capMs, remainingBudgetMs
     // whose budget is >= MAX_RETRY_AFTER_MS (groq's 1213s reads as 60s there).
     if (Number.isFinite(remainingBudgetMs) && uncappedRetryAfterMs > Math.max(0, remainingBudgetMs)) {
       err.nonRetryable = true;
-      // Keep the hint on the error even though we will not sleep on it: it is
-      // the only thing that separates "quota exhausted for 20 minutes" from
-      // "throttled for 2 seconds" in the log. withRetry checks nonRetryable
-      // before ever reading retryAfterMs, so this cannot cause a sleep.
-      err.retryAfterMs = retryAfterMs;
+      // Keep the UNCAPPED hint even though we will not sleep on it: only the
+      // raw magnitude separates "quota exhausted for 20 minutes" from
+      // "throttled for 2 seconds" in the log. The sleep path below still uses
+      // the capped parse. withRetry checks nonRetryable before ever reading
+      // retryAfterMs, so attaching the uncapped value here cannot cause a sleep.
+      err.retryAfterMs = uncappedRetryAfterMs;
       return err;
     }
     if (Number.isFinite(maxRetryAfterMs)) retryAfterMs = Math.min(retryAfterMs, maxRetryAfterMs);
