@@ -130,7 +130,13 @@ The invariant that exactly one layer owns retry policy for any external provider
 
 ### Rate-Limit Outcome
 
-The typed value a provider-rate-limited operation returns *instead of throwing*, so every downstream surface renders a deliberate retry state — an HTTP 429 with a retry hint at the service boundary, a structured error code on the public API — rather than collapsing the limit into a generic failure. The outcome only exists after the owning retry layer has exhausted its bounded attempts; a raw rate-limit error escaping before that point is a defect, not an outcome. See also: Retry Ownership.
+The typed value a provider-rate-limited operation returns *instead of throwing*, so every downstream surface renders a deliberate retry state — an HTTP 429 with a retry hint at the service boundary, a structured error code on the public API — rather than collapsing the limit into a generic failure. The outcome only exists after the owning retry layer has exhausted its bounded attempts; a raw rate-limit error escaping before that point is a defect, not an outcome. See also: Retry Ownership, Quota Cooldown.
+
+### Quota Cooldown
+
+A persisted deadline before which a caller must not re-attempt an upstream that has already refused it on quota grounds — distinct from a retry backoff, which spaces attempts *within* one operation. Three properties decide whether one works at all. It is scoped to the **account** whose quota was exhausted, not to the caller: the same credentials are typically spent by several processes, so the deadline belongs with the credential and a record that cannot identify which account earned it must be ignored rather than obeyed, or a rotated credential inherits a stranger's lockout. It must **outlive the process that learned it** — a one-shot cron worker cannot hold the deadline in a module variable the way a long-lived relay can, so the storage choice follows the caller's process model, not the provider's. And its duration must be measured against the **caller's own invocation cadence**: a deadline shorter than the interval between invocations has already expired by the next one and suppresses nothing, so a fallback copied from a sub-minute loop into a five-minute cron silently does nothing while still logging that it engaged.
+
+The direction of failure is fixed by blast radius, and it is the opposite of a verification gate's. Being wrong about "no cooldown" costs one wasted request; being wrong about "cooldown active" deletes a data tier for hours. So every unreadable state — a storage error, an unparseable record, a deadline beyond any duration the writer could have produced, a foreign account — resolves to *proceed*. That makes the guard's own reject-path the hazard worth auditing: it runs on exactly the malformed values it exists to discard, so any formatting or parsing inside it must be total. See also: Rate-Limit Outcome, Retry Ownership, Seed-Owned Key.
 
 ## Test & Guard Verification
 
