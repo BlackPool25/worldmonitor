@@ -391,6 +391,89 @@ describe('httpRetryError', () => {
   });
 });
 
+// #6110: `capMs` and `maxRetryAfterMs` are both CEILINGS — "never sleep longer
+// than this". Neither answers the question that actually matters when a
+// provider hands back a long Retry-After: is there any point retrying at all?
+//
+// Production (seed-insights, 2026-08-03 12:10Z/12:20Z): groq returned 429 with
+// "tokens per day (TPD): Limit 100000, Used 100000 ... try again in 20m13.92s".
+// The 1213s hint was clamped to the 10s ceiling and retried twice, burning 20s
+// of a 60s LLM budget and a 120s seed lock against a wall that could not move
+// for another 20 minutes. Those cycles ran 30-36s vs 7-17s for healthy ones.
+//
+// `remainingBudgetMs` is the wall clock the caller actually has left. When the
+// server's own hint EXCEEDS it, no retry inside this run can succeed, so the
+// error is nonRetryable and the provider loop falls through immediately with
+// the budget intact. Deliberately a NEW option rather than a redefinition of
+// `capMs`: scripts/_seed-history.mjs passes `capMs: RELAY_RETRY_AFTER_CAP_MS`
+// (a fixed 10s ceiling, not a budget), so changing `capMs` semantics would
+// silently make that relay give up where it used to retry.
+describe('httpRetryError — remainingBudgetMs (#6110)', () => {
+  const resp429 = (retryAfterSeconds) => ({
+    status: 429,
+    headers: { get: (n) => (n.toLowerCase() === 'retry-after' ? String(retryAfterSeconds) : null) },
+  });
+
+  it('is nonRetryable when the server hint exceeds the remaining budget', () => {
+    // The production shape: 1213s hint, ~55s of budget left.
+    const err = httpRetryError(resp429(1213), { maxRetryAfterMs: 10_000, remainingBudgetMs: 55_000 });
+    assert.equal(err.nonRetryable, true, 'retrying before the server will serve us is futile');
+    assert.equal(err.retryAfterMs, undefined, 'must not schedule a sleep it has already ruled out');
+  });
+
+  it('still retries when the hint fits inside the remaining budget', () => {
+    const err = httpRetryError(resp429(3), { maxRetryAfterMs: 10_000, remainingBudgetMs: 55_000 });
+    assert.equal(err.nonRetryable, false);
+    assert.equal(err.retryAfterMs, 3_000);
+  });
+
+  it('still applies maxRetryAfterMs as a ceiling when the hint fits the budget', () => {
+    const err = httpRetryError(resp429(30), { maxRetryAfterMs: 10_000, remainingBudgetMs: 55_000 });
+    assert.equal(err.nonRetryable, false);
+    assert.equal(err.retryAfterMs, 10_000, 'ceiling still applies — this is a policy knob, not a verdict');
+  });
+
+  it('is nonRetryable even for a near-miss — 3s hint against 2s of budget', () => {
+    // Not a clamp. Sleeping the 2s we have still lands BEFORE the server said
+    // it would serve us, so the retry is futile and the 2s is better spent
+    // failing over. The margin being small does not make it survivable.
+    const err = httpRetryError(resp429(3), { remainingBudgetMs: 2_000 });
+    assert.equal(err.nonRetryable, true);
+    assert.equal(err.retryAfterMs, undefined);
+  });
+
+  it('retries at the full hint when it exactly equals the remaining budget', () => {
+    // Boundary: hint == budget is survivable (the comparison is strict >).
+    const err = httpRetryError(resp429(2), { remainingBudgetMs: 2_000 });
+    assert.equal(err.nonRetryable, false);
+    assert.equal(err.retryAfterMs, 2_000);
+  });
+
+  it('is nonRetryable when the budget is already spent', () => {
+    const err = httpRetryError(resp429(3), { remainingBudgetMs: 0 });
+    assert.equal(err.nonRetryable, true);
+    assert.equal(err.retryAfterMs, undefined);
+  });
+
+  it('leaves capMs semantics untouched — a long hint still clamps and retries', () => {
+    // scripts/_seed-history.mjs depends on exactly this: capMs is a ceiling.
+    const err = httpRetryError(resp429(30), { capMs: 10_000 });
+    assert.equal(err.nonRetryable, false, 'capMs must NOT gain the futility verdict');
+    assert.equal(err.retryAfterMs, 10_000);
+  });
+
+  it('ignores remainingBudgetMs when the response carries no Retry-After', () => {
+    const err = httpRetryError({ status: 503, headers: { get: () => null } }, { remainingBudgetMs: 1 });
+    assert.equal(err.nonRetryable, false, 'no hint means no futility claim — normal backoff applies');
+    assert.equal(err.retryAfterMs, undefined);
+  });
+
+  it('does not resurrect a permanent status', () => {
+    const err = httpRetryError({ status: 403, headers: { get: () => '1' } }, { remainingBudgetMs: 999_000 });
+    assert.equal(err.nonRetryable, true);
+  });
+});
+
 describe('createLlmBudgetError / isLlmBudgetError', () => {
   it('produces a nonRetryable, recognizable budget sentinel', () => {
     const err = createLlmBudgetError('forecast budget spent');

@@ -825,21 +825,47 @@ export function isRetryableHttpStatus(status) {
 /**
  * Build an Error from a non-ok provider response for use with `withRetry`.
  * Tags `nonRetryable` for permanent statuses and attaches a capped
- * `retryAfterMs` hint when the server sent one:
- *   - `maxRetryAfterMs` caps a generous server hint (e.g. a 10s ceiling).
- *   - `capMs` (the caller's remaining wall-clock budget) caps it further and,
- *     when <= 0, marks the error non-retryable so the loop stops instead of
- *     sleeping past its deadline.
+ * `retryAfterMs` hint when the server sent one.
+ *
+ * Three knobs, and the distinction between them is the whole point:
+ *   - `maxRetryAfterMs` — a policy CEILING ("never sleep longer than this").
+ *     Clamping is legitimate: the server's hint may be conservative, so an
+ *     earlier retry can still succeed.
+ *   - `capMs` — also a ceiling, plus "when <= 0 there is no time left at all,
+ *     so stop". Kept exactly as-is: scripts/_seed-history.mjs passes a fixed
+ *     `RELAY_RETRY_AFTER_CAP_MS` here, so it is NOT a remaining-budget signal.
+ *   - `remainingBudgetMs` (#6110) — the wall clock the caller actually has
+ *     left. This one can produce a VERDICT, not just a clamp: if the server's
+ *     own hint exceeds it, no retry inside this run can succeed, so the error
+ *     is nonRetryable and the caller falls through immediately with its budget
+ *     intact instead of sleeping against a wall that cannot move.
+ *
+ * Why the verdict matters — production, seed-insights 2026-08-03 12:10Z/12:20Z:
+ * groq answered 429 with "tokens per day (TPD): Limit 100000, Used 100000 …
+ * try again in 20m13.92s". That 1213s hint was clamped to the 10s ceiling and
+ * retried twice, spending 20s of a 60s LLM budget (and of a 120s seed lock) on
+ * a daily quota that could not reset for another 20 minutes. Those cycles ran
+ * 30-36s against 7-17s for healthy ones, and the run still ended with nothing.
  */
-export function httpRetryError(resp, { maxRetryAfterMs, capMs } = {}) {
+export function httpRetryError(resp, { maxRetryAfterMs, capMs, remainingBudgetMs } = {}) {
   const status = resp?.status;
   const err = new Error(`HTTP ${status}`);
   err.status = status;
   err.nonRetryable = !isRetryableHttpStatus(status);
   let retryAfterMs = parseRetryAfterMs(getResponseHeader(resp?.headers, 'Retry-After'));
   if (retryAfterMs != null) {
+    // #6110: decide futility from the RAW hint, before any ceiling flattens it.
+    // Clamping first destroys the one fact that mattered — that the server told
+    // us it will not serve this run at all.
+    if (Number.isFinite(remainingBudgetMs) && retryAfterMs > Math.max(0, remainingBudgetMs)) {
+      err.nonRetryable = true;
+      return err;
+    }
     if (Number.isFinite(maxRetryAfterMs)) retryAfterMs = Math.min(retryAfterMs, maxRetryAfterMs);
     if (Number.isFinite(capMs)) retryAfterMs = Math.min(retryAfterMs, Math.max(0, capMs));
+    // No `remainingBudgetMs` clamp here on purpose: the early return above
+    // already guarantees hint <= budget, and the ceilings only shrink it
+    // further. Adding one would be dead code that reads like a safeguard.
     if (retryAfterMs > 0) err.retryAfterMs = retryAfterMs;
     else err.nonRetryable = true;
   }

@@ -89,6 +89,16 @@ describe('seed-insights callLLM retry/budget', () => {
     }
   });
 
+  // #6110 changed the hint used here from 30s to 6s, and the intent is worth
+  // stating: the point of this test is the BUDGET stop — the run exhausts its
+  // clock by sleeping honored hints, and `createLlmBudgetError` then ends the
+  // whole chain instead of burning the next provider's timeout too.
+  //
+  // A 30s hint no longer reaches that path, and correctly so: 30s outruns the
+  // 12s of usable budget, so it is now nonRetryable on sight and the chain
+  // fails over to groq immediately with the budget intact (pinned separately in
+  // the #6110 describe below). 6s FITS the budget, so it is still slept on, and
+  // two of them spend it — which is the state this test exists to cover.
   it('stops at the call budget without falling through to the next provider', async () => {
     process.env.GROQ_API_KEY = 'groq-test-key';
     process.env.OPENROUTER_API_KEY = 'openrouter-test-key';
@@ -106,7 +116,7 @@ describe('seed-insights callLLM retry/budget', () => {
         fetch: async (url) => {
           calls += 1;
           assert.ok(String(url).includes('openrouter.ai'), 'budget stop must not fall through to groq');
-          return { ok: false, status: 429, headers: { get: (n) => (n.toLowerCase() === 'retry-after' ? '30' : null) } };
+          return { ok: false, status: 429, headers: { get: (n) => (n.toLowerCase() === 'retry-after' ? '6' : null) } };
         },
       });
 
@@ -114,7 +124,7 @@ describe('seed-insights callLLM retry/budget', () => {
 
       assert.equal(result, null);
       assert.equal(calls, 2);
-      assert.deepEqual(waits, [10000, 2000]);
+      assert.deepEqual(waits, [6000, 6000], 'both hints fit the budget and are honored, spending it');
     } finally {
       Date.now = originalDateNow;
       globalThis.setTimeout = originalSetTimeout;
@@ -140,6 +150,96 @@ describe('seed-insights callLLM retry/budget', () => {
 
     assert.deepEqual(providers, ['openrouter', 'groq']);
     assert.equal(result?.provider, 'groq');
+  });
+});
+
+// #6110: the exact production shape from seed-insights 2026-08-03 12:10Z and
+// 12:20Z. openrouter answered but the composer gates rejected it, the chain
+// fell through to groq, and groq returned 429 with
+//   "tokens per day (TPD): Limit 100000, Used 100000 ... try again in 20m13.92s"
+// The 1213s hint was clamped to the 10s ceiling and retried TWICE — 20s of a
+// 60s LLM budget and a 120s seed lock spent on a daily quota that could not
+// reset for another 20 minutes. Both cycles ran 30-36s vs 7-17s for healthy
+// ones and still published nothing.
+//
+// The unit test in seed-utils-with-retry covers the helper; this one exists
+// because the symptom was in the CHAIN — the assertion that matters is that no
+// sleep happens at all, and it can only be observed here.
+describe('seed-insights callLLM does not sleep on an unreachable Retry-After (#6110)', () => {
+  it('fails groq over immediately when its hint outruns the run budget', async () => {
+    process.env.OPENROUTER_API_KEY = 'openrouter-test-key';
+    process.env.GROQ_API_KEY = 'groq-test-key';
+    delete process.env.OLLAMA_API_URL;
+
+    const originalSetTimeout = globalThis.setTimeout;
+    const waits = [];
+    const calls = [];
+    globalThis.setTimeout = (fn, ms, ...args) => { waits.push(ms); fn(...args); return 0; };
+
+    try {
+      __setInsightsLlmTransportForTests({
+        fetch: async (url) => {
+          const target = String(url);
+          calls.push(target);
+          if (target.includes('openrouter')) return okResponse(`${LONG_BRIEF} REJECT_ME`);
+          // groq: daily token quota exhausted, ~20 minutes out.
+          return {
+            ok: false,
+            status: 429,
+            headers: { get: (n) => (n.toLowerCase() === 'retry-after' ? '1213' : null) },
+          };
+        },
+      });
+
+      const result = await callLLM(null, {
+        systemPrompt: 'sys',
+        userPrompt: 'user',
+        accept: (text) => (text.includes('REJECT_ME') ? null : { composed: true }),
+      });
+
+      assert.deepEqual(waits, [], 'a hint 20 minutes out must not be slept on at all');
+      assert.equal(
+        calls.filter((u) => u.includes('groq')).length,
+        1,
+        'groq must be attempted once and abandoned, not retried against a wall',
+      );
+      // The rejected openrouter candidate still comes back so the caller can
+      // classify the failure as GATE rather than mislabel it a provider outage.
+      assert.ok(result, 'the gate-rejected candidate must still be returned');
+      assert.match(result.text, /REJECT_ME/);
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+    }
+  });
+
+  it('still honors a short hint that fits inside the budget', async () => {
+    process.env.OPENROUTER_API_KEY = 'openrouter-test-key';
+    process.env.GROQ_API_KEY = 'groq-test-key';
+    delete process.env.OLLAMA_API_URL;
+
+    const originalSetTimeout = globalThis.setTimeout;
+    const waits = [];
+    globalThis.setTimeout = (fn, ms, ...args) => { waits.push(ms); fn(...args); return 0; };
+
+    try {
+      let attempts = 0;
+      __setInsightsLlmTransportForTests({
+        fetch: async () => {
+          attempts += 1;
+          if (attempts === 1) {
+            return { ok: false, status: 429, headers: { get: (n) => (n.toLowerCase() === 'retry-after' ? '2' : null) } };
+          }
+          return okResponse(LONG_BRIEF);
+        },
+      });
+
+      const result = await callLLM('Some breaking headline', { retryDelayMs: 0 });
+
+      assert.deepEqual(waits, [2000], 'a 2s hint is reachable and must still be honored');
+      assert.equal(result?.text, LONG_BRIEF);
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+    }
   });
 });
 
