@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import {
   loadManifest,
+  matchGeneratedAttributionSection,
   renderAttributionSection,
   scanUpstreamHosts,
   sourceAttributionStats,
@@ -20,8 +21,17 @@ test('source inventory has complete metadata and matches the generated catalog',
 
   const docs = readFileSync(join(rootDir, 'docs/data-sources.mdx'), 'utf8');
   const generated = renderAttributionSection(inventory, manifest);
-  const actual = docs.match(/## Observed Upstream Inventory\n<!-- BEGIN GENERATED SOURCE ATTRIBUTION -->[\s\S]*?<!-- END GENERATED SOURCE ATTRIBUTION -->/)?.[0];
+  const actual = matchGeneratedAttributionSection(docs);
   assert.equal(actual, generated, 'docs/data-sources.mdx must contain exactly the generated attribution section');
+
+  // Mintlify parses this page as MDX v3, which rejects `<!--` with
+  // "Unexpected character `!` (U+0021) before name" and fails the whole
+  // deployment. Nothing repo-side catches that, so pin it here.
+  assert.equal(
+    docs.includes('<!--'),
+    false,
+    'docs/data-sources.mdx must not contain HTML comments — MDX v3 rejects them; use {/* ... */}',
+  );
 
   const stats = sourceAttributionStats(inventory, manifest);
   assert.equal(stats.activeHosts, 528);

@@ -21,8 +21,14 @@ import { fileURLToPath } from 'node:url';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const MANIFEST_PATH = 'shared/source-attribution-manifest.json';
 const DOCS_PATH = 'docs/data-sources.mdx';
-const BEGIN_MARKER = '<!-- BEGIN GENERATED SOURCE ATTRIBUTION -->';
-const END_MARKER = '<!-- END GENERATED SOURCE ATTRIBUTION -->';
+// MDX comments, not HTML ones: Mintlify parses docs/data-sources.mdx as MDX v3,
+// which rejects `<!--` ("Unexpected character `!` before name") and fails the
+// whole deployment. The markers are interpolated into RegExp below, and `{`,
+// `*`, `}` are metacharacters, so every interpolation must go through
+// escapeRegExp — writing them raw silently stops the generator finding its own
+// block.
+const BEGIN_MARKER = '{/* BEGIN GENERATED SOURCE ATTRIBUTION */}';
+const END_MARKER = '{/* END GENERATED SOURCE ATTRIBUTION */}';
 const MANIFEST_STATUSES = new Set(['terms-review', 'reviewed', 'excluded']);
 const MANIFEST_KIND_RE = /^(?:structured|feed|operational-status)(?:\+(?:structured|feed|operational-status))*$/;
 const LOGICAL_KIND_RE = /^(?:candidate|structured|feed|operational-status)(?:\+(?:structured|feed|operational-status))*$/;
@@ -798,12 +804,30 @@ export function renderAttributionSection(inventory, manifest) {
   ].join('\n');
 }
 
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function inventoryMarkerPattern(leadingNewline) {
+  return new RegExp(
+    `${leadingNewline ? '\\n' : ''}## (?:Audited|Observed) Upstream Inventory\\n` +
+      `${escapeRegExp(BEGIN_MARKER)}[\\s\\S]*?${escapeRegExp(END_MARKER)}`,
+  );
+}
+
+/** Single source of truth for locating the generated block, shared with the test. */
+export function matchGeneratedAttributionSection(docs) {
+  return docs.match(inventoryMarkerPattern(false))?.[0];
+}
+
 function updateDocs(rootDir, section) {
   const path = join(rootDir, DOCS_PATH);
   const current = readFileSync(path, 'utf8');
-  const markerPattern = new RegExp(`\\n## (?:Audited|Observed) Upstream Inventory\\n${BEGIN_MARKER}[\\s\\S]*?${END_MARKER}`);
+  const markerPattern = inventoryMarkerPattern(true);
   const updated = markerPattern.test(current)
-    ? current.replace(markerPattern, `\n${section}`)
+    // Function replacement: `section` is generated from manifest text that can
+    // contain `$&`/`$'`, which String.replace would otherwise expand.
+    ? current.replace(markerPattern, () => `\n${section}`)
     : `${current.trimEnd()}\n\n${section}\n`;
   writeFileSync(path, updated);
 }
@@ -838,7 +862,7 @@ function main() {
   }
   const expectedSection = renderAttributionSection(inventory, previous);
   const docs = read(ROOT, DOCS_PATH);
-  const markerPattern = new RegExp(`## (?:Audited|Observed) Upstream Inventory\\n${BEGIN_MARKER}[\\s\\S]*?${END_MARKER}`);
+  const markerPattern = inventoryMarkerPattern(false);
   const actual = docs.match(markerPattern)?.[0];
   if (actual !== expectedSection) {
     console.error('source-attribution: docs/data-sources.mdx is out of date; run node scripts/source-attribution.mjs --write');
