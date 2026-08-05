@@ -4,6 +4,8 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { computeStats, validateCategoryExplainerCopy } from '../scripts/docs-stats.mjs';
+
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
 const blogDir = resolve(root, 'blog-site/src/content/blog');
@@ -82,54 +84,17 @@ describe('blog SEO and GEO corpus contract', () => {
     assert.match(corpus, new RegExp(`\\b${stats.mcpToolCount} (?:live )?(?:geopolitical intelligence )?tools\\b`));
   });
 
+  // The explainer's own contract lives in scripts/docs-stats.mjs — its numeric
+  // counts as claims() entries, its answer-first shape as
+  // validateCategoryExplainerCopy — because the `unit` job that runs this file
+  // is gated on changes.code, whose filter drops every .md path. Asserting it
+  // here as well is what let a markdown-only edit bypass the guard entirely.
+  // This delegates instead of restating, so there is one contract, checked in
+  // the always-on docs-stats job and exercised again by the unit suite.
   it('keeps the first-party category explainer answer-first and fact-consistent', () => {
-    const stats = JSON.parse(readFileSync(resolve(root, 'docs/generated/stats.json'), 'utf8'));
     const explainer = posts.find((post) => post.file === 'what-is-worldmonitor-real-time-global-intelligence.md');
     assert.ok(explainer, 'missing first-party World Monitor category explainer');
-
-    const firstHeading = explainer.body.indexOf('\n## ');
-    const opening = explainer.body.slice(0, firstHeading).trim();
-    const openingWords = opening.split(/\s+/).filter(Boolean).length;
-    assert.match(opening, /^World Monitor is a \*\*free, open-source, real-time global intelligence dashboard\*\*/);
-    assert.ok(openingWords >= 35 && openingWords <= 80, `category explainer opening is ${openingWords} words`);
-
-    for (const expected of [
-      `${stats.layerDefinitions} map-layer types`,
-      `${stats.tier1Countries} Tier-1 countries`,
-      `${stats.rankableUniverseCountries}-country`,
-      `${stats.stockExchangeCount} stock exchanges`,
-      `${stats.centralBankInstitutionCount} central-bank`,
-      `${stats.locales} interface languages`,
-      `${stats.protoFiles} Protocol Buffer definitions`,
-      `${stats.protoServices} REST service specifications`,
-      `${stats.mcpToolCount} live tools`,
-    ]) {
-      assert.ok(explainer.body.includes(expected), `category explainer is missing generated fact: ${expected}`);
-    }
-    // The variant count is spelled out in the copy, so it cannot ride the
-    // numeric loop above. Derive the word from the generated stat anyway —
-    // with "Six" hardcoded, this block stayed green under variantCount=7
-    // while the same mutation on any looped fact (layerDefinitions) went red.
-    const COUNT_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
-    const variantWord = COUNT_WORDS[stats.variantCount];
-    assert.ok(variantWord, `no spelled-out word for variantCount ${stats.variantCount}`);
-    assert.match(explainer.body, new RegExp(`\\b${variantWord} dashboard variants\\b`, 'i'));
-    // Pin the enumeration too: the word alone stays true if a variant is added
-    // to the list without updating the count, or renamed out of it.
-    const variantList = explainer.body.match(/dashboard variants\*\*: (.+)/);
-    assert.ok(variantList, 'category explainer is missing the enumerated dashboard-variant list');
-    assert.equal(
-      variantList[1].split(',').length,
-      stats.variantCount,
-      `enumerated dashboard variants do not match variantCount ${stats.variantCount}: ${variantList[1]}`,
-    );
-    assert.match(explainer.body, /paid Pro, API, and Enterprise plans/i);
-    assert.match(explainer.body, /https:\/\/www\.worldmonitor\.app\/docs\/data-sources/);
-    assert.match(explainer.body, /https:\/\/www\.worldmonitor\.app\/pricing\.md/);
-    assert.match(explainer.body, /\/blog\/glossary\//);
-
-    assert.doesNotMatch(explainer.body, /Five Dashboards|no "enterprise tier"|React \+ TypeScript/);
-    assert.doesNotMatch(explainer.body, /baseline risk \(40%\).*unrest indicators \(20%\)/s);
+    assert.deepEqual(validateCategoryExplainerCopy(computeStats()), []);
   });
 
   it('keeps crawl, entity, and citation signals in the shared templates', () => {
