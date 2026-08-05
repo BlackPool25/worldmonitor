@@ -127,6 +127,11 @@ test('relay handlers expose bounded Google/OpenSky cooldowns and RSS fallback me
     RELAY_TEST_RSS_CACHE_TTL_MS: '10',
     GF_429_COOLDOWN_MS: '60000',
     RELAY_TEST_GOOGLE_STATUS_SEQUENCE: '429',
+    RELAY_TEST_OPENSKY_STATUS_SEQUENCE: '429,200',
+    RELAY_TEST_OPENSKY_RETRY_AFTER_SECONDS: '999999',
+    RELAY_TEST_OPENSKY_REMAINING_CREDITS: '0',
+    RELAY_TEST_OPENSKY_MALFORMED_ENCODING: '1',
+    RELAY_METRICS_WINDOW_SECONDS: '10',
   });
 
   try {
@@ -141,14 +146,20 @@ test('relay handlers expose bounded Google/OpenSky cooldowns and RSS fallback me
     assert.equal(JSON.parse(googleDuringCooldown.body).cooldown, true);
     assert.ok(Number(googleDuringCooldown.headers['retry-after']) >= 1);
 
-    const openskyFirst = await get(port, '/opensky/states/all?lamin=1&lomin=1&lamax=2&lomax=2');
+    const [openskyFirst, openskyQueued] = await Promise.all([
+      get(port, '/opensky/states/all?lamin=1&lomin=1&lamax=2&lomax=2'),
+      get(port, '/opensky/states/all?lamin=3&lomin=3&lamax=4&lomax=4'),
+    ]);
     assert.equal(openskyFirst.status, 429);
-    assert.ok(Number(openskyFirst.headers['retry-after']) >= 1);
+    assert.equal(openskyQueued.headers['x-cache'], 'RATE-LIMITED', 'queued bbox must stop before a second upstream debit');
+    assert.ok(Number(openskyFirst.headers['retry-after']) >= 86_000, 'relay must honor the bounded provider reset window');
+    assert.ok(Number(openskyFirst.headers['retry-after']) <= 86_400, 'provider reset must be capped at 24 hours');
+    assert.ok(Number(openskyQueued.headers['retry-after']) >= 86_000, 'queued response must share the provider reset window');
 
-    const openskyDuringCooldown = await get(port, '/opensky/states/all?lamin=3&lomin=3&lamax=4&lomax=4');
+    const openskyDuringCooldown = await get(port, '/opensky/states/all?lamin=5&lomin=5&lamax=6&lomax=6');
     assert.equal(openskyDuringCooldown.status, 200);
     assert.equal(openskyDuringCooldown.headers['x-cache'], 'RATE-LIMITED');
-    assert.ok(Number(openskyDuringCooldown.headers['retry-after']) >= 1);
+    assert.ok(Number(openskyDuringCooldown.headers['retry-after']) >= 86_000);
 
     const noCacheFeed = 'https://feeds.bbci.co.uk/news/world/rss.xml?test=no-cache';
     const rssFirstFailure = await get(port, `/rss?url=${encodeURIComponent(noCacheFeed)}`);
@@ -184,9 +195,11 @@ test('relay handlers expose bounded Google/OpenSky cooldowns and RSS fallback me
     assert.ok(metrics.googleFlights.throttle >= 2);
     assert.equal(metrics.googleFlights.fallback, 0, 'cooldown-only empty results are not usable fallback data');
     assert.ok(metrics.googleFlights.cooldownRemainingMs > 0);
-    assert.equal(metrics.opensky.requests, 2);
-    assert.ok(metrics.opensky.throttle >= 2);
-    assert.ok(metrics.opensky.global429CooldownRemainingMs > 0);
+    assert.equal(metrics.opensky.requests, 3);
+    assert.ok(metrics.opensky.throttle >= 3);
+    assert.equal(metrics.opensky.upstreamFetches, 1, 'one upstream 429 must atomically stop queued bbox work');
+    assert.equal(metrics.opensky.rateLimitRemaining, 0);
+    assert.ok(metrics.opensky.global429CooldownRemainingMs >= 86_000_000);
     assert.ok(metrics.rss.requests >= 5);
     assert.ok(metrics.rss.fallback >= 1);
     assert.ok(metrics.rss.backoffActiveFeeds >= 2);
@@ -194,6 +207,31 @@ test('relay handlers expose bounded Google/OpenSky cooldowns and RSS fallback me
     assert.equal(metrics.aisSnapshot.success, 0);
     assert.equal(metrics.aisSnapshot.served, 0);
     assert.ok(metrics.aisSnapshot.terminalFailure >= 1);
+
+    await new Promise((resolve) => setTimeout(resolve, 11_000));
+    const agedHealth = JSON.parse((await get(port, '/health')).body);
+    assert.equal(agedHealth.ingestion.aviation.coverage.requests, 0, 'request samples must age out of the rolling window');
+    assert.equal(agedHealth.ingestion.aviation.coverage.status, 'degraded', 'active provider reset must remain visible after samples age out');
+  } finally {
+    await stop(child);
+  }
+});
+
+test('Wingbits bbox relay tiles wide viewports without silently clipping coverage', async () => {
+  const { child, ready } = spawnRelay({
+    WINGBITS_API_KEY: 'test-wingbits-key',
+    RELAY_TEST_WINGBITS_ECHO_AREAS: '1',
+  });
+
+  try {
+    const { port } = await ready;
+    const response = await get(port, '/wingbits/track?lamin=0&lomin=0&lamax=60&lomax=60');
+    assert.equal(response.status, 200, response.body);
+    const payload = JSON.parse(response.body);
+    assert.equal(payload.positions.length, 4, '60 by 60 degrees must be covered by four bounded tiles');
+    assert.ok(payload.positions.every((position) =>
+      position.lat >= 0 && position.lat <= 60 && position.lon >= 0 && position.lon <= 60
+    ));
   } finally {
     await stop(child);
   }
@@ -209,8 +247,8 @@ test('theater-posture Wingbits fallback publication is attributed to Wingbits, n
   try {
     const { port } = await ready;
 
-    // OpenSky upstream is stubbed to 429, adsb.lol to 503 — Wingbits carries
-    // the cycle. Two cycles prove the per-source counter accumulates.
+    // adsb.lol is stubbed to 503, so Wingbits carries the cycle without
+    // consulting OpenSky. Two cycles prove the per-source counter accumulates.
     for (let cycle = 1; cycle <= 2; cycle += 1) {
       const trigger = await get(port, '/__test/seed-theater-posture');
       assert.equal(trigger.status, 200, `trigger ${cycle} failed: ${trigger.body}`);
@@ -245,7 +283,8 @@ test('theater-posture Wingbits fallback publication is attributed to Wingbits, n
     // The acceptance gate itself: fallback publication must not read as OpenSky recovery.
     assert.equal(metrics.opensky.success, 0);
     assert.equal(metrics.opensky.served, 0);
-    assert.ok(metrics.opensky.throttle >= 1);
+    assert.equal(metrics.opensky.requests, 0);
+    assert.equal(metrics.opensky.upstreamFetches, 0);
   } finally {
     await stop(child);
     await upstash.close();
@@ -331,7 +370,6 @@ test('theater-posture OpenSky success is attributed to opensky, and /metrics sta
     RELAY_SHARED_SECRET: 'test-relay-secret',
     I_UNDERSTAND_THIS_DISABLES_AUTH: '',
     RELAY_TEST_OPENSKY_STATUS_SEQUENCE: '200,200',
-    WINGBITS_API_KEY: 'test-wingbits-key',
     ...upstash.env,
   });
   const auth = { 'x-relay-key': 'test-relay-secret' };
@@ -363,10 +401,10 @@ test('theater-posture OpenSky success is attributed to opensky, and /metrics sta
   }
 });
 
-test('theater-posture attributes adsb.lol wins to adsb.lol, and adsb-confirmed quiet skies to vessel-only', async () => {
+test('theater-posture uses adsb.lol, then Wingbits, without routine OpenSky debits', async () => {
   const upstash = await createUpstashMock();
   const { child, ready } = spawnRelay({
-    RELAY_TEST_ADSB_MODE_SEQUENCE: 'flight,empty',
+    RELAY_TEST_ADSB_MODE_SEQUENCE: 'flight,empty,malformed',
     WINGBITS_API_KEY: 'test-wingbits-key',
     ...upstash.env,
   });
@@ -394,12 +432,29 @@ test('theater-posture attributes adsb.lol wins to adsb.lol, and adsb-confirmed q
     assert.equal(quietMeta.sourceVersion, 'vessel-only');
     assert.equal(quietMeta.recordCount, 0);
 
+    const metricsAfterQuiet = JSON.parse((await get(port, '/metrics')).body);
+    assert.equal(
+      metricsAfterQuiet.opensky.requests,
+      0,
+      'healthy adsb.lol cycles must not debit the authenticated OpenSky budget',
+    );
+
     metrics = JSON.parse((await get(port, '/metrics')).body);
     assert.equal(metrics.theaterPosture.lastRun.source, 'vessel-only');
     // The Wingbits stub would have contributed a flight had the chain
     // consulted it: adsb.lol's authoritative empty answer stops the chain.
     assert.equal(metrics.theaterPosture.lastRun.flightCount, 0);
     assert.deepEqual(metrics.theaterPosture.sourceCountsSinceBoot, { opensky: 0, adsbLol: 1, wingbits: 0, vesselOnly: 1 });
+
+    // Cycle 3: adsb.lol returns malformed success, so Wingbits is the recovery source. OpenSky is
+    // last-resort only and must not be touched while Wingbits is usable.
+    const third = await get(port, '/__test/seed-theater-posture');
+    assert.equal(third.status, 200, `trigger 3 failed: ${third.body}`);
+    metrics = JSON.parse((await get(port, '/metrics')).body);
+    assert.equal(metrics.theaterPosture.lastRun.source, 'wingbits');
+    assert.equal(metrics.theaterPosture.lastRun.flightCount, 1);
+    assert.equal(metrics.opensky.requests, 0, 'Wingbits recovery must precede authenticated OpenSky');
+    assert.deepEqual(metrics.theaterPosture.sourceCountsSinceBoot, { opensky: 0, adsbLol: 1, wingbits: 1, vesselOnly: 1 });
   } finally {
     await stop(child);
     await upstash.close();

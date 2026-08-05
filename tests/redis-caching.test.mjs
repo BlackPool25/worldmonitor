@@ -1706,6 +1706,158 @@ describe('country intel brief caching behavior', { concurrency: 1 }, () => {
   });
 });
 
+describe('aviation aircraft provider priority', { concurrency: 1 }, () => {
+  async function importTrackAircraft() {
+    return importPatchedTsModule('server/worldmonitor/aviation/v1/track-aircraft.ts', {
+      './_shared': resolve(root, 'server/_shared/relay.ts'),
+      '../../../_shared/constants': resolve(root, 'server/_shared/constants.ts'),
+      '../../../_shared/redis': resolve(root, 'server/_shared/redis.ts'),
+    });
+  }
+
+  it('serves a bbox from Wingbits without spending an OpenSky request', async () => {
+    const { module, cleanup } = await importTrackAircraft();
+    const restoreEnv = withEnv({
+      WS_RELAY_URL: 'wss://relay.test',
+      UPSTASH_REDIS_REST_URL: undefined,
+      UPSTASH_REDIS_REST_TOKEN: undefined,
+    });
+    const originalFetch = globalThis.fetch;
+    let openskyCalls = 0;
+    let wingbitsCalls = 0;
+
+    globalThis.fetch = async (url) => {
+      const raw = String(url);
+      if (raw.includes('/wingbits/track')) {
+        wingbitsCalls += 1;
+        return jsonResponse({
+          positions: [{ icao24: 'abc123', callsign: 'TEST1', lat: 10.5, lon: 10.5 }],
+          source: 'wingbits',
+        });
+      }
+      if (raw.includes('/opensky') || raw.includes('opensky-network.org')) {
+        openskyCalls += 1;
+        return jsonResponse({
+          states: [['def456', 'TEST2', null, null, null, 10.6, 10.6, 1000, false, 100, 90]],
+        });
+      }
+      throw new Error(`Unexpected fetch URL: ${raw}`);
+    };
+
+    try {
+      const result = await module.trackAircraft({}, {
+        swLat: 10,
+        swLon: 10,
+        neLat: 11,
+        neLon: 11,
+      });
+      assert.equal(wingbitsCalls, 1);
+      assert.equal(openskyCalls, 0, 'Wingbits coverage should prevent an authenticated OpenSky debit');
+      assert.equal(result.source, 'wingbits');
+      assert.deepEqual(result.positions.map((position) => position.icao24), ['abc123']);
+    } finally {
+      cleanup();
+      globalThis.fetch = originalFetch;
+      restoreEnv();
+    }
+  });
+
+  it('treats an empty Wingbits response as authoritative and uses OpenSky only after Wingbits fails', async () => {
+    const { module, cleanup } = await importTrackAircraft();
+    const restoreEnv = withEnv({
+      WS_RELAY_URL: 'wss://relay.test',
+      UPSTASH_REDIS_REST_URL: undefined,
+      UPSTASH_REDIS_REST_TOKEN: undefined,
+    });
+    const originalFetch = globalThis.fetch;
+    let openskyCalls = 0;
+    let wingbitsCalls = 0;
+
+    globalThis.fetch = async (url) => {
+      const raw = String(url);
+      if (raw.includes('/wingbits/track')) {
+        wingbitsCalls += 1;
+        const failed = raw.includes('lamin=20');
+        return failed ? jsonResponse({}, false) : jsonResponse({ positions: [], source: 'wingbits' });
+      }
+      if (raw.includes('/opensky')) {
+        openskyCalls += 1;
+        return jsonResponse({
+          states: [['def456', 'TEST2', null, null, null, 20.6, 20.6, 1000, false, 100, 90]],
+        });
+      }
+      if (raw.includes('opensky-network.org')) {
+        throw new Error('anonymous OpenSky should not be needed');
+      }
+      throw new Error(`Unexpected fetch URL: ${raw}`);
+    };
+
+    try {
+      const quiet = await module.trackAircraft({}, {
+        swLat: 10,
+        swLon: 10,
+        neLat: 11,
+        neLon: 11,
+      });
+      const recovered = await module.trackAircraft({}, {
+        swLat: 20,
+        swLon: 20,
+        neLat: 21,
+        neLon: 21,
+      });
+
+      assert.equal(wingbitsCalls, 2);
+      assert.equal(openskyCalls, 1, 'only the failed Wingbits request may consume OpenSky');
+      assert.deepEqual(quiet.positions, []);
+      assert.equal(quiet.source, 'wingbits');
+      assert.deepEqual(recovered.positions.map((position) => position.icao24), ['def456']);
+      assert.equal(recovered.source, 'opensky');
+    } finally {
+      cleanup();
+      globalThis.fetch = originalFetch;
+      restoreEnv();
+    }
+  });
+
+  it('keeps the all-provider failure path inside the edge response deadline', async () => {
+    const { module, cleanup } = await importTrackAircraft();
+    const restoreEnv = withEnv({
+      WS_RELAY_URL: 'wss://relay.test',
+      UPSTASH_REDIS_REST_URL: undefined,
+      UPSTASH_REDIS_REST_TOKEN: undefined,
+    });
+    const originalFetch = globalThis.fetch;
+    const originalTimeout = AbortSignal.timeout;
+    const requestedTimeouts = [];
+
+    AbortSignal.timeout = (milliseconds) => {
+      requestedTimeouts.push(milliseconds);
+      return AbortSignal.abort(new Error('test timeout'));
+    };
+    globalThis.fetch = async (_url, init) => {
+      throw init?.signal?.reason ?? new Error('upstream failed');
+    };
+
+    try {
+      const result = await module.trackAircraft({}, {
+        swLat: 10,
+        swLon: 10,
+        neLat: 11,
+        neLon: 11,
+      });
+      assert.deepEqual(requestedTimeouts, [6_000, 6_000, 6_000]);
+      assert.equal(requestedTimeouts.reduce((sum, timeout) => sum + timeout, 0), 18_000);
+      assert.deepEqual(result.positions, []);
+      assert.equal(result.source, 'none');
+    } finally {
+      cleanup();
+      AbortSignal.timeout = originalTimeout;
+      globalThis.fetch = originalFetch;
+      restoreEnv();
+    }
+  });
+});
+
 describe('military flights bbox behavior', { concurrency: 1 }, () => {
   async function importListMilitaryFlights() {
     return importPatchedTsModule('server/worldmonitor/military/v1/list-military-flights.ts', {
@@ -1724,6 +1876,13 @@ describe('military flights bbox behavior', { concurrency: 1 }, () => {
     neLon: 11,
   };
 
+  const seededRequest = {
+    swLat: 20,
+    swLon: 10,
+    neLat: 21,
+    neLon: 11,
+  };
+
   function cachedMilitaryFlight(id, latitude, longitude) {
     return {
       id,
@@ -1732,6 +1891,307 @@ describe('military flights bbox behavior', { concurrency: 1 }, () => {
       location: { latitude, longitude },
     };
   }
+
+  it('caches the seeded snapshot per bbox before any OpenSky fetch', async () => {
+    const { module, cleanup } = await importListMilitaryFlights();
+    const restoreEnv = withEnv({
+      UPSTASH_REDIS_REST_URL: 'https://redis.test',
+      UPSTASH_REDIS_REST_TOKEN: 'token',
+      LOCAL_API_MODE: undefined,
+      WS_RELAY_URL: 'wss://relay.test',
+      VERCEL_ENV: undefined,
+      VERCEL_GIT_COMMIT_SHA: undefined,
+    });
+    const originalFetch = globalThis.fetch;
+    const redisKeys = [];
+    let openskyCalls = 0;
+
+    globalThis.fetch = async (url, init) => {
+      const raw = String(url);
+      if (raw.includes('/get/')) {
+        const key = decodeURIComponent(raw.split('/get/')[1] || '');
+        redisKeys.push(key);
+        if (key === 'military:flights:v1') {
+          return jsonResponse({
+            result: JSON.stringify({
+              flights: [
+                { id: 'seed-in', callsign: 'RCH301', lat: 20.2, lon: 10.2 },
+                { id: 'seed-out', callsign: 'RCH302', lat: 22.2, lon: 10.2 },
+              ],
+              fetchedAt: Date.now(),
+            }),
+          });
+        }
+        return jsonResponse({ result: null });
+      }
+      if (isSetRequest(url, init)) return jsonResponse({ result: 'OK' });
+      if (raw.includes('/opensky') || raw.includes('opensky-network.org')) {
+        openskyCalls += 1;
+        return jsonResponse({ states: [] });
+      }
+      throw new Error(`Unexpected fetch URL: ${raw}`);
+    };
+
+    try {
+      const result = await module.listMilitaryFlights(
+        { request: new Request('https://wm.test/api/military/v1/list-military-flights') },
+        seededRequest,
+      );
+      assert.match(redisKeys[0], /^military:flights:v1:/, 'the stable bbox snapshot cache must be checked first');
+      assert.equal(redisKeys[1], 'military:flights:v1', 'a bbox cache miss must read the canonical seed');
+      assert.equal(openskyCalls, 0, 'live seed coverage should prevent an OpenSky fetch');
+      assert.deepEqual(result.flights.map((flight) => flight.id), ['SEED-IN']);
+    } finally {
+      cleanup();
+      globalThis.fetch = originalFetch;
+      restoreEnv();
+    }
+  });
+
+  it('treats an empty live seed as authoritative instead of reopening OpenSky fanout', async () => {
+    const { module, cleanup } = await importListMilitaryFlights();
+    const restoreEnv = withEnv({
+      UPSTASH_REDIS_REST_URL: 'https://redis.test',
+      UPSTASH_REDIS_REST_TOKEN: 'token',
+      LOCAL_API_MODE: undefined,
+      WS_RELAY_URL: 'wss://relay.test',
+      VERCEL_ENV: undefined,
+      VERCEL_GIT_COMMIT_SHA: undefined,
+    });
+    const originalFetch = globalThis.fetch;
+    const redisKeys = [];
+    let openskyCalls = 0;
+
+    globalThis.fetch = async (url, init) => {
+      const raw = String(url);
+      if (raw.includes('/get/')) {
+        const key = decodeURIComponent(raw.split('/get/')[1] || '');
+        redisKeys.push(key);
+        return jsonResponse({
+          result: key === 'military:flights:v1'
+            ? JSON.stringify({ flights: [], fetchedAt: Date.now() })
+            : null,
+        });
+      }
+      if (raw.includes('/opensky') || raw.includes('opensky-network.org')) {
+        openskyCalls += 1;
+        return jsonResponse({ states: [] });
+      }
+      if (isSetRequest(url, init)) return jsonResponse({ result: 'OK' });
+      throw new Error(`Unexpected fetch URL: ${raw}`);
+    };
+
+    try {
+      const result = await module.listMilitaryFlights(
+        { request: new Request('https://wm.test/api/military/v1/list-military-flights') },
+        seededRequest,
+      );
+      assert.match(redisKeys[0], /^military:flights:v1:/);
+      assert.equal(redisKeys[1], 'military:flights:v1');
+      assert.equal(openskyCalls, 0);
+      assert.deepEqual(result, { flights: [], clusters: [], pagination: { nextCursor: '', totalCount: 0 } });
+    } finally {
+      cleanup();
+      globalThis.fetch = originalFetch;
+      restoreEnv();
+    }
+  });
+
+  it('suppresses repeated live-seed Redis reads briefly after a miss', async () => {
+    const { module, cleanup } = await importListMilitaryFlights();
+    const restoreEnv = withEnv({
+      UPSTASH_REDIS_REST_URL: 'https://redis.test',
+      UPSTASH_REDIS_REST_TOKEN: 'token',
+      LOCAL_API_MODE: undefined,
+      WS_RELAY_URL: undefined,
+      VERCEL_ENV: undefined,
+      VERCEL_GIT_COMMIT_SHA: undefined,
+    });
+    const originalFetch = globalThis.fetch;
+    let liveSeedReads = 0;
+
+    let releaseLiveSeedRead;
+    const liveSeedGate = new Promise((resolveGate) => { releaseLiveSeedRead = resolveGate; });
+
+    globalThis.fetch = async (url, init) => {
+      const raw = String(url);
+      if (raw.includes('/get/')) {
+        const key = decodeURIComponent(raw.split('/get/')[1] || '');
+        if (key === 'military:flights:v1') {
+          liveSeedReads += 1;
+          await liveSeedGate;
+        }
+        return jsonResponse({ result: null });
+      }
+      if (isSetRequest(url, init)) return jsonResponse({ result: 'OK' });
+      throw new Error(`Unexpected fetch URL: ${raw}`);
+    };
+
+    try {
+      const ctx = { request: new Request('https://wm.test/api/military/v1/list-military-flights') };
+      const first = module.listMilitaryFlights(ctx, seededRequest);
+      const second = module.listMilitaryFlights(ctx, seededRequest);
+      await new Promise((resolveTick) => setImmediate(resolveTick));
+      releaseLiveSeedRead();
+      await Promise.all([first, second]);
+      await module.listMilitaryFlights(ctx, seededRequest);
+      assert.equal(liveSeedReads, 1, 'a missing root snapshot should be read at most once per suppression window');
+    } finally {
+      cleanup();
+      globalThis.fetch = originalFetch;
+      restoreEnv();
+    }
+  });
+
+  it('does not turn a live-seed Redis command error into OpenSky fanout', async () => {
+    const { module, cleanup } = await importListMilitaryFlights();
+    const restoreEnv = withEnv({
+      UPSTASH_REDIS_REST_URL: 'https://redis.test',
+      UPSTASH_REDIS_REST_TOKEN: 'token',
+      LOCAL_API_MODE: undefined,
+      WS_RELAY_URL: 'wss://relay.test',
+      VERCEL_ENV: undefined,
+      VERCEL_GIT_COMMIT_SHA: undefined,
+    });
+    const originalFetch = globalThis.fetch;
+    let openskyCalls = 0;
+    const redisKeys = [];
+
+    globalThis.fetch = async (url, init) => {
+      const raw = String(url);
+      if (raw.includes('/get/')) {
+        const key = decodeURIComponent(raw.split('/get/')[1] || '');
+        redisKeys.push(key);
+        return key === 'military:flights:v1'
+          ? jsonResponse({ error: 'ERR max request size exceeded' })
+          : jsonResponse({ result: null });
+      }
+      if (isSetRequest(url, init)) return jsonResponse({ result: 'OK' });
+      if (raw.includes('/opensky') || raw.includes('opensky-network.org')) {
+        openskyCalls += 1;
+        return jsonResponse({ states: [] });
+      }
+      throw new Error(`Unexpected fetch URL: ${raw}`);
+    };
+
+    try {
+      const result = await module.listMilitaryFlights(
+        { request: new Request('https://wm.test/api/military/v1/list-military-flights') },
+        seededRequest,
+      );
+      assert.match(redisKeys[0], /^military:flights:v1:/);
+      assert.equal(redisKeys[1], 'military:flights:v1');
+      assert.equal(openskyCalls, 0, 'Redis read failure must fail closed instead of amplifying OpenSky');
+      assert.deepEqual(result, { flights: [], clusters: [], pagination: { nextCursor: '', totalCount: 0 } });
+    } finally {
+      cleanup();
+      globalThis.fetch = originalFetch;
+      restoreEnv();
+    }
+  });
+
+  it('keeps cursor pagination on one seeded snapshot while the root rotates', async () => {
+    const { module, cleanup } = await importListMilitaryFlights();
+    const restoreEnv = withEnv({
+      UPSTASH_REDIS_REST_URL: 'https://redis.test',
+      UPSTASH_REDIS_REST_TOKEN: 'token',
+      LOCAL_API_MODE: undefined,
+      WS_RELAY_URL: 'wss://relay.test',
+      VERCEL_ENV: undefined,
+      VERCEL_GIT_COMMIT_SHA: undefined,
+    });
+    const originalFetch = globalThis.fetch;
+    const store = new Map();
+    let rootReads = 0;
+
+    globalThis.fetch = async (url, init) => {
+      const raw = String(url);
+      if (raw.includes('/get/')) {
+        const key = decodeURIComponent(raw.split('/get/')[1] || '');
+        if (key === 'military:flights:v1') {
+          rootReads += 1;
+          const flights = rootReads === 1
+            ? [
+              { id: 'seed-a', callsign: 'RCH501', lat: 20.2, lon: 10.2 },
+              { id: 'seed-b', callsign: 'RCH502', lat: 20.3, lon: 10.3 },
+            ]
+            : [{ id: 'seed-new', callsign: 'RCH599', lat: 20.4, lon: 10.4 }];
+          return jsonResponse({ result: JSON.stringify({ flights, fetchedAt: Date.now() }) });
+        }
+        return jsonResponse({ result: store.get(key) ?? null });
+      }
+      if (isSetRequest(url, init)) {
+        const { key, value } = parseSetRequest(url, init);
+        store.set(key, value);
+        return jsonResponse({ result: 'OK' });
+      }
+      throw new Error(`Unexpected fetch URL: ${raw}`);
+    };
+
+    try {
+      const ctx = { request: new Request('https://wm.test/api/military/v1/list-military-flights') };
+      const first = await module.listMilitaryFlights(ctx, { ...seededRequest, pageSize: 1, cursor: '' });
+      module._resetStaleNegativeCacheForTests();
+      const second = await module.listMilitaryFlights(ctx, {
+        ...seededRequest,
+        pageSize: 1,
+        cursor: first.pagination?.nextCursor ?? '',
+      });
+      assert.deepEqual(first.flights.map((flight) => flight.id), ['SEED-A']);
+      assert.deepEqual(second.flights.map((flight) => flight.id), ['SEED-B']);
+      assert.equal(rootReads, 1, 'continuation pages must stay on the cached unpaginated snapshot');
+    } finally {
+      cleanup();
+      globalThis.fetch = originalFetch;
+      restoreEnv();
+    }
+  });
+
+  it('uses request-specific recovery outside the seed snapshot coverage', async () => {
+    const { module, cleanup } = await importListMilitaryFlights();
+    const restoreEnv = withEnv({
+      UPSTASH_REDIS_REST_URL: 'https://redis.test',
+      UPSTASH_REDIS_REST_TOKEN: 'token',
+      LOCAL_API_MODE: undefined,
+      WS_RELAY_URL: 'wss://relay.test',
+      VERCEL_ENV: undefined,
+      VERCEL_GIT_COMMIT_SHA: undefined,
+    });
+    const originalFetch = globalThis.fetch;
+    let liveSeedReads = 0;
+    let openskyCalls = 0;
+
+    globalThis.fetch = async (url, init) => {
+      const raw = String(url);
+      if (raw.includes('/get/')) {
+        const key = decodeURIComponent(raw.split('/get/')[1] || '');
+        if (key === 'military:flights:v1') liveSeedReads += 1;
+        return jsonResponse({ result: null });
+      }
+      if (isSetRequest(url, init)) return jsonResponse({ result: 'OK' });
+      if (raw.includes('/opensky')) {
+        openskyCalls += 1;
+        return jsonResponse({
+          states: [['outside-region', 'RCH401', null, null, null, 10.5, 10.5, 20000, false, 300, 90]],
+        });
+      }
+      throw new Error(`Unexpected fetch URL: ${raw}`);
+    };
+
+    try {
+      const result = await module.listMilitaryFlights(
+        { request: new Request('https://wm.test/api/military/v1/list-military-flights') },
+        request,
+      );
+      assert.equal(liveSeedReads, 0, 'an uncovered bbox must not consult a partial global snapshot');
+      assert.equal(openskyCalls, 1);
+      assert.deepEqual(result.flights.map((flight) => flight.id), ['OUTSIDE-REGION']);
+    } finally {
+      cleanup();
+      globalThis.fetch = originalFetch;
+      restoreEnv();
+    }
+  });
 
   it('fetches expanded quantized bbox but returns only flights inside the requested bbox', async () => {
     const { module, cleanup } = await importListMilitaryFlights();
@@ -1816,7 +2276,7 @@ describe('military flights bbox behavior', { concurrency: 1 }, () => {
 
     try {
       const result = await module.listMilitaryFlights({}, request);
-      assert.equal(redisGetCalls, 1, 'handler should read quantized cache first');
+      assert.equal(redisGetCalls, 1, 'an uncovered bbox should read only its quantized cache');
       assert.equal(openskyCalls, 0, 'cache hit should avoid upstream fetch');
       assert.deepEqual(
         result.flights.map((flight) => flight.id),
@@ -1849,7 +2309,7 @@ describe('military flights bbox behavior', { concurrency: 1 }, () => {
       const raw = String(url);
       if (raw.includes('/get/')) {
         const key = decodeURIComponent(raw.split('/get/')[1] || '');
-        if (key.startsWith('military:flights:v1')) liveCacheKeys.push(key);
+        if (key.startsWith('military:flights:v1:')) liveCacheKeys.push(key);
         return jsonResponse({ result: store.get(key) ?? null });
       }
       if (isSetRequest(url, init)) {

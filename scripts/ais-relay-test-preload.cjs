@@ -17,6 +17,10 @@ const openskyStatuses = (process.env.RELAY_TEST_OPENSKY_STATUS_SEQUENCE || '')
   .split(',')
   .map((value) => Number(value.trim()))
   .filter((value) => Number.isFinite(value) && value > 0);
+const openskyRetryAfterSeconds = Number(process.env.RELAY_TEST_OPENSKY_RETRY_AFTER_SECONDS || 0);
+const openskyRemainingCredits = Number(process.env.RELAY_TEST_OPENSKY_REMAINING_CREDITS || 0);
+const openskyMalformedEncoding = process.env.RELAY_TEST_OPENSKY_MALFORMED_ENCODING === '1';
+const wingbitsEchoAreas = process.env.RELAY_TEST_WINGBITS_ECHO_AREAS === '1';
 // adsb.lol modes consumed per request: 'error' -> 503 (falls through to
 // Wingbits), 'empty' -> 200 with zero aircraft (authoritative quiet skies —
 // stops the fallback chain), 'flight' -> 200 with one military aircraft in
@@ -90,6 +94,9 @@ globalThis.fetch = async (url, options) => {
     if (mode === 'empty') {
       return { status: 200, ok: true, statusText: 'OK', text: async () => '', json: async () => ({ ac: [] }) };
     }
+    if (mode === 'malformed') {
+      return { status: 200, ok: true, statusText: 'OK', text: async () => '', json: async () => ({}) };
+    }
     if (mode === 'flight') {
       return {
         status: 200,
@@ -103,6 +110,19 @@ globalThis.fetch = async (url, options) => {
     return { status: 503, ok: false, statusText: 'Service Unavailable', text: async () => '', json: async () => ({}) };
   }
   if (target.includes('customer-api.wingbits.com')) {
+    if (wingbitsEchoAreas) {
+      const areas = JSON.parse(String(options?.body || '[]'));
+      return {
+        status: 200,
+        ok: true,
+        statusText: 'OK',
+        text: async () => '',
+        json: async () => areas.map((area, index) => ({
+          alias: area.alias,
+          data: [{ h: `tile${index}`, f: `TILE${index}`, la: area.la, lo: area.lo, ab: 30000 }],
+        })),
+      };
+    }
     // One military-callsign flight inside iran-theater bounds.
     return {
       status: 200,
@@ -142,11 +162,19 @@ https.get = function patchedGet(...args) {
   const parsed = targetUrl(input);
   if (parsed.hostname === 'opensky-network.org') {
     const status = nextValue(openskyStatuses, 429);
+    const headers = {
+      'content-type': 'application/json',
+      'x-rate-limit-remaining': String(openskyRemainingCredits),
+    };
+    if (status === 429 && openskyRetryAfterSeconds > 0) {
+      headers['x-rate-limit-retry-after-seconds'] = String(openskyRetryAfterSeconds);
+    }
+    if (status === 429 && openskyMalformedEncoding) headers['content-encoding'] = 'gzip';
     return request({
       callback: cb,
       statusCode: status,
       body: JSON.stringify({ states: status === 200 ? [OPENSKY_MIL_STATE] : [], time: Date.now() }),
-      headers: { 'content-type': 'application/json' },
+      headers,
     });
   }
   if (parsed.hostname === 'feeds.bbci.co.uk') {

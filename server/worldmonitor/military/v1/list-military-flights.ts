@@ -8,7 +8,7 @@ import type {
 } from '../../../../src/generated/server/worldmonitor/military/v1/service_server';
 
 import { isMilitaryCallsign, isMilitaryHex, detectAircraftType, UPSTREAM_TIMEOUT_MS } from './_shared';
-import { cachedFetchJson, getRawJson } from '../../../_shared/redis';
+import { cachedFetchJson, getRawJson, readCachedJson } from '../../../_shared/redis';
 import { markNoCacheResponse } from '../../../_shared/response-headers';
 import { getRelayBaseUrl, getRelayHeaders } from '../../../_shared/relay';
 
@@ -25,6 +25,24 @@ interface RequestBounds {
   north: number;
   west: number;
   east: number;
+}
+
+// The scheduled military-flight snapshot contains exactly these two producer
+// regions (scripts/seed-military-flights.mjs QUERY_REGIONS). It is authoritative
+// only when one region fully contains the requested bbox; otherwise using it
+// would silently turn uncovered geography into an empty result.
+const LIVE_SEED_COVERAGE: readonly RequestBounds[] = [
+  { south: 10, north: 46, west: 107, east: 143 },
+  { south: 13, north: 85, west: -10, east: 57 },
+];
+
+function liveSeedCovers(bounds: RequestBounds): boolean {
+  return LIVE_SEED_COVERAGE.some((region) =>
+    region.south <= bounds.south
+    && region.north >= bounds.north
+    && region.west <= bounds.west
+    && region.east >= bounds.east
+  );
 }
 
 
@@ -126,7 +144,7 @@ const CONFIDENCE_MAP: Record<string, string> = {
   low: 'MILITARY_CONFIDENCE_LOW',
 };
 
-interface StaleFlight {
+interface SeedFlight {
   id?: string;
   callsign?: string;
   hexCode?: string;
@@ -152,8 +170,8 @@ interface StaleFlight {
   note?: string;
 }
 
-interface StalePayload {
-  flights?: StaleFlight[];
+interface SeedPayload {
+  flights?: SeedFlight[];
   fetchedAt?: number;
 }
 
@@ -164,7 +182,7 @@ interface StalePayload {
  * hexCode is canonicalized to uppercase per the invariant documented on
  * MilitaryFlight.hex_code in military_flight.proto.
  */
-function staleToProto(f: StaleFlight): ListMilitaryFlightsResponse['flights'][number] | null {
+function seedToProto(f: SeedFlight): ListMilitaryFlightsResponse['flights'][number] | null {
   if (f.lat == null || f.lon == null) return null;
   const icao = (f.hexCode || f.id || '').toUpperCase();
   if (!icao) return null;
@@ -195,6 +213,52 @@ function staleToProto(f: StaleFlight): ListMilitaryFlightsResponse['flights'][nu
   };
 }
 
+function seedPayloadToProto(raw: SeedPayload | null): ListMilitaryFlightsResponse['flights'] | null {
+  if (!raw || !Array.isArray(raw.flights)) return null;
+  if (raw.flights.length === 0) return [];
+  const flights = raw.flights
+    .map(seedToProto)
+    .filter((flight): flight is NonNullable<typeof flight> => flight != null);
+  return flights.length > 0 ? flights : null;
+}
+
+const LIVE_SEED_NEG_TTL_MS = 30_000;
+let liveSeedNegUntil = 0;
+let liveSeedNegStatus: 'miss' | 'error' = 'miss';
+type LiveSeedRead =
+  | { status: 'hit'; flights: ListMilitaryFlightsResponse['flights'] }
+  | { status: 'miss' | 'error' };
+let liveSeedReadPromise: Promise<LiveSeedRead> | null = null;
+
+async function fetchLiveSeedSnapshot(): Promise<LiveSeedRead> {
+  const now = Date.now();
+  if (now < liveSeedNegUntil) return { status: liveSeedNegStatus };
+  if (liveSeedReadPromise) return liveSeedReadPromise;
+
+  liveSeedReadPromise = (async () => {
+    const read = await readCachedJson(REDIS_CACHE_KEY, true);
+    if (read.status === 'error') {
+      liveSeedNegStatus = 'error';
+      liveSeedNegUntil = now + LIVE_SEED_NEG_TTL_MS;
+      return { status: 'error' };
+    }
+    const flights = read.status === 'hit'
+      ? seedPayloadToProto(read.value as SeedPayload)
+      : null;
+    if (flights === null) {
+      liveSeedNegStatus = 'miss';
+      liveSeedNegUntil = now + LIVE_SEED_NEG_TTL_MS;
+      return { status: 'miss' };
+    }
+    return { status: 'hit', flights };
+  })();
+  try {
+    return await liveSeedReadPromise;
+  } finally {
+    liveSeedReadPromise = null;
+  }
+}
+
 // Negative cache for the stale Redis read — mirrors the legacy
 // /api/military-flights handler's NEG_TTL=30_000ms. When the live fetch fails
 // AND the stale key is also empty/unparseable, suppress further Redis reads
@@ -207,6 +271,9 @@ let staleNegUntil = 0;
 // Test seam — exposed for unit tests that need to drive the suppression
 // window without sleeping. Not exported from the module's public API.
 export function _resetStaleNegativeCacheForTests(): void {
+  liveSeedNegUntil = 0;
+  liveSeedNegStatus = 'miss';
+  liveSeedReadPromise = null;
   staleNegUntil = 0;
 }
 
@@ -214,15 +281,9 @@ async function fetchStaleFallback(): Promise<ListMilitaryFlightsResponse['flight
   const now = Date.now();
   if (now < staleNegUntil) return null;
   try {
-    const raw = (await getRawJson(REDIS_STALE_KEY)) as StalePayload | null;
-    if (!raw || !Array.isArray(raw.flights) || raw.flights.length === 0) {
-      staleNegUntil = now + STALE_NEG_TTL_MS;
-      return null;
-    }
-    const flights = raw.flights
-      .map(staleToProto)
-      .filter((f): f is NonNullable<typeof f> => f != null);
-    if (flights.length === 0) {
+    const raw = (await getRawJson(REDIS_STALE_KEY)) as SeedPayload | null;
+    const flights = seedPayloadToProto(raw);
+    if (!flights || flights.length === 0) {
       staleNegUntil = now + STALE_NEG_TTL_MS;
       return null;
     }
@@ -259,6 +320,28 @@ export async function listMilitaryFlights(
       cacheKey,
       REDIS_CACHE_TTL,
       async () => {
+        // The scheduled seeder is the single routine authenticated OpenSky
+        // writer. Cache its unpaginated regional snapshot under the existing
+        // bbox key so every cursor reads one stable version. Requests outside
+        // the producer's declared coverage continue to request-specific
+        // recovery instead of receiving a falsely authoritative empty result.
+        // The producer deliberately preserves its last-good snapshot during an
+        // upstream outage. Keep serving that snapshot (with each flight's old
+        // lastSeenAt intact) while seed health reports the stale fetchedAt;
+        // reopening per-viewer OpenSky recovery here recreates the credit fanout.
+        if (liveSeedCovers(requestBounds)) {
+          const seeded = await fetchLiveSeedSnapshot();
+          if (seeded.status === 'hit') {
+            return { flights: seeded.flights, clusters: [], pagination: undefined };
+          }
+          if (seeded.status === 'error') {
+            // A Redis command/read failure is not proof the snapshot is
+            // missing. Throw before any provider call so cachedFetchJson's
+            // bounded negative path prevents per-bbox OpenSky amplification.
+            throw new Error('military live seed read failed');
+          }
+        }
+
         const isSidecar = (process.env.LOCAL_API_MODE || '').includes('sidecar');
         const relayBase = isSidecar ? null : getRelayBaseUrl();
         const baseUrl = isSidecar ? 'https://opensky-network.org/api/states/all' : relayBase ? relayBase + '/opensky' : null;

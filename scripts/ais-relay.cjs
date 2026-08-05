@@ -4024,6 +4024,8 @@ function theaterDetectAircraftType(callsign) {
 }
 
 const WINGBITS_MAX_BOX_NM = 2000;
+const WINGBITS_VIEWPORT_TILE_DEGREES = 30;
+const WINGBITS_MAX_VIEWPORT_AREAS = 36;
 
 const POSTURE_THEATERS = [
   { id: 'iran-theater', bounds: { north: 42, south: 20, east: 65, west: 30 }, thresholds: { elevated: 8, critical: 20 }, strikeIndicators: { minTankers: 2, minAwacs: 1, minFighters: 5 } },
@@ -4071,6 +4073,34 @@ function wingbitsIndexLookupCallsign(callsign) {
     if (cs.includes(callsign)) results.push(position);
   }
   return results;
+}
+
+function buildWingbitsViewportAreas(south, west, north, east) {
+  const latTiles = Math.max(1, Math.ceil((north - south) / WINGBITS_VIEWPORT_TILE_DEGREES));
+  const lonTiles = Math.max(1, Math.ceil((east - west) / WINGBITS_VIEWPORT_TILE_DEGREES));
+  if (latTiles * lonTiles > WINGBITS_MAX_VIEWPORT_AREAS) return null;
+
+  const areas = [];
+  for (let latIndex = 0; latIndex < latTiles; latIndex += 1) {
+    const tileSouth = south + latIndex * WINGBITS_VIEWPORT_TILE_DEGREES;
+    const tileNorth = Math.min(north, tileSouth + WINGBITS_VIEWPORT_TILE_DEGREES);
+    for (let lonIndex = 0; lonIndex < lonTiles; lonIndex += 1) {
+      const tileWest = west + lonIndex * WINGBITS_VIEWPORT_TILE_DEGREES;
+      const tileEast = Math.min(east, tileWest + WINGBITS_VIEWPORT_TILE_DEGREES);
+      const centerLat = (tileSouth + tileNorth) / 2;
+      const centerLon = (tileWest + tileEast) / 2;
+      areas.push({
+        alias: `viewport-${latIndex}-${lonIndex}`,
+        by: 'box',
+        la: centerLat,
+        lo: centerLon,
+        w: Math.max(1, Math.min((tileEast - tileWest) * 60 * Math.cos(centerLat * Math.PI / 180), WINGBITS_MAX_BOX_NM)),
+        h: Math.max(1, Math.min((tileNorth - tileSouth) * 60, WINGBITS_MAX_BOX_NM)),
+        unit: 'nm',
+      });
+    }
+  }
+  return areas;
 }
 
 async function handleWingbitsTrackRequest(req, res) {
@@ -4183,11 +4213,17 @@ async function handleWingbitsTrackRequest(req, res) {
   const clampedLamax = Math.max(-90, Math.min(90, lamax));
   const clampedLomin = Math.max(-180, Math.min(180, lomin));
   const clampedLomax = Math.max(-180, Math.min(180, lomax));
-  const centerLat = (clampedLamin + clampedLamax) / 2;
-  const centerLon = (clampedLomin + clampedLomax) / 2;
-  const widthNm = Math.min(Math.abs(clampedLomax - clampedLomin) * 60 * Math.cos(centerLat * Math.PI / 180), WINGBITS_MAX_BOX_NM);
-  const heightNm = Math.min(Math.abs(clampedLamax - clampedLamin) * 60, WINGBITS_MAX_BOX_NM);
-  const areas = [{ alias: 'viewport', by: 'box', la: centerLat, lo: centerLon, w: widthNm, h: heightNm, unit: 'nm' }];
+  const south = Math.min(clampedLamin, clampedLamax);
+  const north = Math.max(clampedLamin, clampedLamax);
+  const west = Math.min(clampedLomin, clampedLomax);
+  const east = Math.max(clampedLomin, clampedLomax);
+  const areas = buildWingbitsViewportAreas(south, west, north, east);
+  if (!areas) {
+    return safeEnd(res, 422, { 'Content-Type': 'application/json' }, JSON.stringify({
+      error: `Viewport requires more than ${WINGBITS_MAX_VIEWPORT_AREAS} Wingbits areas`,
+      positions: [],
+    }));
+  }
 
   try {
     const resp = await fetch('https://customer-api.wingbits.com/v1/flights', {
@@ -4226,9 +4262,13 @@ async function handleWingbitsTrackRequest(req, res) {
           const cs = (f.f || f.callsign || f.flight || '').trim().toUpperCase();
           if (!cs.includes(callsignFilter)) continue;
         }
-        seenIds.add(icao24);
         const lat = f.la ?? f.latitude ?? f.lat ?? 0;
         const lon = f.lo ?? f.longitude ?? f.lon ?? f.lng ?? 0;
+        // Multi-area requests overlap at tile edges. Deduplicate and retain
+        // only positions inside the original viewport so a successful
+        // Wingbits response is complete and authoritative for that bbox.
+        if (lat < south || lat > north || lon < west || lon > east) continue;
+        seenIds.add(icao24);
         positions.push({
           icao24,
           callsign: (f.f || f.callsign || f.flight || '').trim(),
@@ -4301,7 +4341,11 @@ async function fetchTheaterFlightsFromAdsbLol() {
       return null;
     }
     const data = await resp.json();
-    const aircraft = data.ac || [];
+    if (!Array.isArray(data.ac)) {
+      console.warn('[adsb.lol] Malformed response: missing ac array');
+      return null;
+    }
+    const aircraft = data.ac;
     const flights = [];
     const seenIds = new Set();
     for (const a of aircraft) {
@@ -4463,28 +4507,29 @@ async function seedTheaterPosture() {
   const t0 = Date.now();
   let flights = [];
   let flightSource = 'vessel-only';
-  try {
-    flights = await fetchTheaterFlightsFromOpenSky();
-    if (flights.length > 0) flightSource = 'opensky';
-  } catch (e) {
-    console.warn(`[TheaterPosture] OpenSky failed: ${e?.message || e}`);
-  }
-  if (flights.length === 0) {
-    const adsbLol = await fetchTheaterFlightsFromAdsbLol();
-    if (adsbLol !== null) {
-      // null = fetch error (fall through to Wingbits); [] = success, no theater traffic (stop here)
-      flights = adsbLol;
-      if (flights.length > 0) flightSource = 'adsb.lol';
+  const adsbLol = await fetchTheaterFlightsFromAdsbLol();
+  if (adsbLol !== null) {
+    // null = fetch error (fall through); [] = success, no theater traffic (stop here).
+    // adsb.lol is the normal theater source so this background loop does not
+    // independently consume the authenticated OpenSky daily credit pool.
+    flights = adsbLol;
+    if (flights.length > 0) flightSource = 'adsb.lol';
+  } else {
+    const wb = await fetchTheaterFlightsFromWingbits();
+    if (wb && wb.length > 0) {
+      flights = wb;
+      flightSource = 'wingbits';
     } else {
-      const wb = await fetchTheaterFlightsFromWingbits();
-      if (wb && wb.length > 0) {
-        flights = wb;
-        flightSource = 'wingbits';
+      try {
+        flights = await fetchTheaterFlightsFromOpenSky();
+        if (flights.length > 0) flightSource = 'opensky';
+      } catch (e) {
+        console.warn(`[TheaterPosture] OpenSky failed: ${e?.message || e}`);
       }
     }
   }
   if (flights.length === 0) {
-    console.warn('[TheaterPosture] No military flights from OpenSky, adsb.lol, or Wingbits — continuing with vessel-only posture');
+    console.warn('[TheaterPosture] No military flights from adsb.lol, OpenSky, or Wingbits — continuing with vessel-only posture');
   }
   const theaters = calculateTheaterPostures(flights);
   const totalVessels = theaters.reduce((sum, t) => sum + t.trackedVessels, 0);
@@ -7100,21 +7145,29 @@ function getRelayRollingMetrics() {
 
   const dedupCount = rollup.openskyDedup + rollup.openskyDedupNeg + rollup.openskyDedupEmpty;
   const cacheServedCount = rollup.openskyCacheHit + rollup.openskyNegativeHit + dedupCount;
-  const openskyCoverage = summarizeServedCoverage({
+  const nowMs = Date.now();
+  const openskyProviderBlocked = nowMs < openskyGlobal429Until;
+  const observedOpenSkyCoverage = summarizeServedCoverage({
     requests: rollup.openskyRequests,
     served: rollup.openskyServed,
     minimum: AVIATION_MIN_SERVED_COVERAGE,
   });
+  const openskyCoverage = openskyProviderBlocked
+    ? { ...observedOpenSkyCoverage, status: 'degraded' }
+    : observedOpenSkyCoverage;
   const googleFlightsCoverage = summarizeServedCoverage({
     requests: rollup.googleFlightsRequests,
     served: rollup.googleFlightsServed,
     minimum: AVIATION_MIN_SERVED_COVERAGE,
   });
-  const aviationCoverage = summarizeServedCoverage({
+  const observedAviationCoverage = summarizeServedCoverage({
     requests: rollup.openskyRequests + rollup.googleFlightsRequests,
     served: rollup.openskyServed + rollup.googleFlightsServed,
     minimum: AVIATION_MIN_SERVED_COVERAGE,
   });
+  const aviationCoverage = openskyProviderBlocked
+    ? { ...observedAviationCoverage, status: 'degraded' }
+    : observedAviationCoverage;
   const rssCoverage = summarizeServedCoverage({
     requests: rollup.rssRequests,
     served: rollup.rssServed,
@@ -7122,7 +7175,6 @@ function getRelayRollingMetrics() {
   });
   let rssBackoffActive = 0;
   let rssMaxBackoffRemainingMs = 0;
-  const nowMs = Date.now();
   for (const expiry of rssBackoffUntil.values()) {
     const remaining = Math.max(0, expiry - nowMs);
     if (remaining > 0) {
@@ -7151,7 +7203,11 @@ function getRelayRollingMetrics() {
       terminalFailure: rollup.openskyTerminalFailure,
       served: rollup.openskyServed,
       coverage: openskyCoverage,
-      global429CooldownRemainingMs: Math.max(0, openskyGlobal429Until - Date.now()),
+      global429CooldownRemainingMs: Math.max(0, openskyGlobal429Until - nowMs),
+      rateLimitRemaining: openskyRateLimitRemaining,
+      rateLimitRetryAt: openskyGlobal429Until ? new Date(openskyGlobal429Until).toISOString() : null,
+      lastSuccessAt: openskyLastSuccessAt ? new Date(openskyLastSuccessAt).toISOString() : null,
+      last429At: openskyLast429At ? new Date(openskyLast429At).toISOString() : null,
       requestSpacingMs: OPENSKY_REQUEST_SPACING_MS,
     },
     ais: {
@@ -8507,9 +8563,13 @@ const OPENSKY_AUTH_COOLDOWN_MS = 60000; // 1 min cooldown after auth failure
 // Global OpenSky rate limiter — serializes upstream requests and enforces 429 cooldown
 let openskyGlobal429Until = 0; // timestamp: block ALL upstream requests until this time
 const OPENSKY_429_COOLDOWN_MS = Number(process.env.OPENSKY_429_COOLDOWN_MS) || 90 * 1000; // 90s cooldown after any 429
+const OPENSKY_MAX_429_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const OPENSKY_REQUEST_SPACING_MS = Number(process.env.OPENSKY_REQUEST_SPACING_MS) || 2000; // 2s minimum between consecutive upstream requests
 let openskyLastUpstreamTime = 0;
 let openskyUpstreamQueue = Promise.resolve(); // serial chain — only 1 upstream request at a time
+let openskyRateLimitRemaining = null;
+let openskyLastSuccessAt = 0;
+let openskyLast429At = 0;
 
 async function getOpenSkyToken() {
   const clientId = process.env.OPENSKY_CLIENT_ID;
@@ -8688,6 +8748,17 @@ function _collectDecompressed(response) {
   });
 }
 
+function _readOpenSkyRateLimitHeaders(response) {
+  const remaining = Number(response.headers['x-rate-limit-remaining']);
+  const retryAfterSeconds = Number(response.headers['x-rate-limit-retry-after-seconds']);
+  return {
+    rateLimitRemaining: Number.isFinite(remaining) && remaining >= 0 ? Math.floor(remaining) : null,
+    retryAfterSeconds: Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+      ? Math.min(Math.ceil(retryAfterSeconds), OPENSKY_MAX_429_COOLDOWN_MS / 1000)
+      : null,
+  };
+}
+
 function _openskyRawFetch(url, token) {
   const parsed = new URL(url);
   const reqHeaders = {
@@ -8710,9 +8781,10 @@ function _openskyRawFetch(url, token) {
           headers: reqHeaders,
           timeout: 15000,
         }, (response) => {
+          const rateLimit = _readOpenSkyRateLimitHeaders(response);
           _collectDecompressed(response)
-            .then(data => resolve({ status: response.statusCode || 502, data }))
-            .catch(err => resolve({ status: 0, data: null, error: err }));
+            .then(data => resolve({ status: response.statusCode || 502, data, ...rateLimit }))
+            .catch(err => resolve({ status: response.statusCode || 502, data: null, error: err, ...rateLimit }));
         });
         request.on('error', (err) => resolve({ status: 0, data: null, error: err }));
         request.on('timeout', () => { request.destroy(); resolve({ status: 504, data: null, error: new Error('timeout') }); });
@@ -8727,9 +8799,10 @@ function _openskyRawFetch(url, token) {
       agent: httpsKeepAliveAgent,
       timeout: 15000,
     }, (response) => {
+      const rateLimit = _readOpenSkyRateLimitHeaders(response);
       _collectDecompressed(response)
-        .then(data => resolve({ status: response.statusCode || 502, data }))
-        .catch(err => resolve({ status: 0, data: null, error: err }));
+        .then(data => resolve({ status: response.statusCode || 502, data, ...rateLimit }))
+        .catch(err => resolve({ status: response.statusCode || 502, data: null, error: err, ...rateLimit }));
     });
     request.on('error', (err) => resolve({ status: 0, data: null, error: err }));
     request.on('timeout', () => { request.destroy(); resolve({ status: 504, data: null, error: new Error('timeout') }); });
@@ -8749,7 +8822,28 @@ function openskyQueuedFetch(url, token) {
       return { status: 429, data: JSON.stringify({ states: [], time: Date.now() }), rateLimited: true };
     }
     openskyLastUpstreamTime = Date.now();
-    return _openskyRawFetch(url, token);
+    incrementRelayMetric('openskyUpstreamFetches');
+    const result = await _openskyRawFetch(url, token);
+    const completedAt = Date.now();
+    if (result.rateLimitRemaining != null) {
+      openskyRateLimitRemaining = result.rateLimitRemaining;
+    }
+    if (result.status >= 200 && result.status < 300) {
+      openskyLastSuccessAt = completedAt;
+    }
+    if (result.status === 429) {
+      const providerCooldownMs = result.retryAfterSeconds == null
+        ? OPENSKY_429_COOLDOWN_MS
+        : result.retryAfterSeconds * 1000;
+      const cooldownMs = Math.min(
+        OPENSKY_MAX_429_COOLDOWN_MS,
+        Math.max(OPENSKY_429_COOLDOWN_MS, providerCooldownMs),
+      );
+      openskyGlobal429Until = Math.max(openskyGlobal429Until, completedAt + cooldownMs);
+      openskyLast429At = completedAt;
+      console.warn(`[Relay] OpenSky 429 — global cooldown ${Math.ceil(cooldownMs / 1000)}s (all bbox queries blocked)`);
+    }
+    return result;
   });
   openskyUpstreamQueue = job.catch(() => {});
   return job;
@@ -8889,8 +8983,6 @@ async function handleOpenSkyRequest(req, res, PORT) {
     }
 
     logThrottled('log', `opensky-miss:${cacheKey}`, '[Relay] OpenSky request (MISS):', openskyUrl);
-    incrementRelayMetric('openskyUpstreamFetches');
-
     // Serialized fetch — queued with spacing to prevent concurrent 429 storms
     const result = await openskyQueuedFetch(openskyUrl, token);
     const upstreamStatus = result.status || 502;
@@ -8902,11 +8994,6 @@ async function handleOpenSkyRequest(req, res, PORT) {
     if (upstreamStatus === 401) {
       openskyToken = null;
       openskyTokenExpiry = 0;
-    }
-
-    if (upstreamStatus === 429 && !result.rateLimited) {
-      openskyGlobal429Until = Date.now() + OPENSKY_429_COOLDOWN_MS;
-      console.warn(`[Relay] OpenSky 429 — global cooldown ${OPENSKY_429_COOLDOWN_MS / 1000}s (all bbox queries blocked)`);
     }
 
     if (upstreamStatus === 200 && result.data) {
@@ -10064,6 +10151,9 @@ const server = http.createServer(async (req, res) => {
     openskyTokenPromise = null;
     openskyAuthCooldownUntil = 0;
     openskyGlobal429Until = 0;
+    openskyRateLimitRemaining = null;
+    openskyLastSuccessAt = 0;
+    openskyLast429At = 0;
     openskyNegativeCache.clear();
     console.log('[Relay] OpenSky auth + rate-limit state reset via /opensky-reset');
     const tokenStart = Date.now();
