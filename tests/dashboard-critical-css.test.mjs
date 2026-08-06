@@ -7,6 +7,22 @@ import ts from 'typescript';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..');
+const dashboardHtml = resolve(repoRoot, 'dist/dashboard.html');
+const expectBuiltOutput = process.env.WM_EXPECT_BUILT_OUTPUT === '1';
+
+function shouldSkipBuiltOutput() {
+  if (existsSync(dashboardHtml)) return false;
+  return !expectBuiltOutput;
+}
+
+function guardBuiltOutput() {
+  if (!existsSync(dashboardHtml) && expectBuiltOutput) {
+    throw new Error(
+      'dist/dashboard.html is missing but WM_EXPECT_BUILT_OUTPUT=1 indicates CI expected a build. ' +
+      'Run VITE_VARIANT=full vite build first, or check that the build step still produces dist/dashboard.html.',
+    );
+  }
+}
 
 function src(relPath) {
   return readFileSync(resolve(repoRoot, relPath), 'utf8');
@@ -306,7 +322,10 @@ describe('dashboard critical CSS graph', () => {
     );
   });
 
-  it('does not link or merge the settings-only stylesheet into built dashboard.html', () => {
+  describe('built dashboard output', { skip: shouldSkipBuiltOutput() }, () => {
+    guardBuiltOutput();
+
+    it('does not link or merge the settings-only stylesheet into built dashboard.html', () => {
     const dashboardHtml = builtSrc('dist/dashboard.html');
     const hrefs = stylesheetHrefs(dashboardHtml);
     const settingsStylesheets = hrefs.filter((href) =>
@@ -394,5 +413,6 @@ describe('dashboard critical CSS graph', () => {
         `Deferred dashboard stylesheet ${href} must keep a no-JS stylesheet fallback (rel=stylesheet, any attribute order).`,
       );
     }
+  });
   });
 });
