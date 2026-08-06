@@ -845,13 +845,17 @@ entries.
 
 ## Standalone seed crons added after this snapshot
 
-> These data seeds were added **after** the 2026-04-10 inventory above and each
-> runs as its own Railway nixpacks cron service (root directory `.`, start
-> command `node scripts/<file>`, watch paths `scripts/**`, `shared/**`). They
-> are intentionally **not** part of the 100-service inventory count above and
-> are registered in `scripts/railway-services.json` with deploy mode
-> `nixpacks-root-repo`, so scripts-root packaging checks do not misclassify
-> their valid imports outside `scripts/`.
+> These data seeds were added **after** the 2026-04-10 inventory above. The rows
+> marked **planned** are registry/documentation entries for services that are
+> not provisioned in production; they remain excluded from the live audit and
+> `--apply` until an explicit lifecycle activation. The four planned rows below
+> are repository-root `nixpacks-root-repo` cron candidates (root directory
+> `.`, start command `node scripts/<file>`), so their eventual packaging can
+> include valid imports outside `scripts/`. Active rows must instead follow the
+> deploy mode and exact `watchPatterns` recorded in `scripts/railway-services.json`.
+> These rows are intentionally **not** part of the 100-service inventory count
+> above and are registered in `scripts/railway-services.json` with deploy mode
+> `nixpacks-root-repo`.
 >
 > **Cadence below is inferred from each seed's cache TTL** as a documentation
 > aid; confirm the live cron schedule and Service ID against the Railway
@@ -876,15 +880,15 @@ fetch('https://backboard.railway.com/graphql/v2',{method:'POST',
 | Service | Start command | Inferred cadence | Domain |
 |---|---|---|---|
 | seed-aaii-sentiment | `node scripts/seed-aaii-sentiment.mjs` | weekly (7d TTL) | AAII bull/bear investor sentiment survey |
-| seed-market-quotes | `node scripts/seed-market-quotes.mjs` | ~30 min (30m TTL) | Equity index / stock bootstrap quotes (Yahoo + Finnhub + Alpha Vantage) |
+| seed-market-quotes | `node scripts/seed-market-quotes.mjs` | **planned — not provisioned** | Equity index / stock bootstrap quotes (Yahoo + Finnhub + Alpha Vantage) |
 | seed-commodity-quotes | `node scripts/seed-commodity-quotes.mjs` | ~30 min (30m TTL) | Commodity + extended-gold bootstrap quotes |
-| seed-crypto-sectors | `node scripts/seed-crypto-sectors.mjs` | hourly (1h TTL) | CoinGecko crypto sector performance |
+| seed-crypto-sectors | `node scripts/seed-crypto-sectors.mjs` | **planned — not provisioned** | CoinGecko crypto sector performance |
 | seed-market-breadth | `node scripts/seed-market-breadth.mjs` | daily (30d history window) | S&P 500 breadth (% above 20/50/200-day, Barchart) |
-| seed-weather-alerts | `node scripts/seed-weather-alerts.mjs` | ~15 min (15m TTL) | NWS active weather alerts |
+| seed-weather-alerts | `node scripts/seed-weather-alerts.mjs` | **planned — not provisioned** | NWS active weather alerts |
 | seed-fx-yoy | `node scripts/seed-fx-yoy.mjs` | daily (25h TTL) | Wide-coverage FX YoY + 24m drawdown (resilience FX-stress inputs) |
 | seed-comtrade-bilateral-hs4 | `node scripts/seed-comtrade-bilateral-hs4.mjs` | **`0 6 1 * *` (monthly, verified 2026-07-27)** | UN Comtrade bilateral HS4 trade flows — only scheduled consumer of the keyed 500/mo Comtrade quota |
 | seed-hs2-chokepoint-exposure | `node scripts/seed-hs2-chokepoint-exposure.mjs` | periodic (TTL-extended) | HS2 chokepoint trade-exposure (derived) |
-| seed-service-statuses | `node scripts/seed-service-statuses.mjs` | frequent (relay-fallback) | Service-status warm-ping; primary seeder is the AIS relay loop |
+| seed-service-statuses | `node scripts/seed-service-statuses.mjs` | **planned — not provisioned** | Service-status warm-ping; primary seeder is the AIS relay loop |
 
 The bilateral HS4 cron uses `COMTRADE_API_KEYS` and a 480-request hard budget
 under the provider's 500-call monthly quota. The authenticated route requests

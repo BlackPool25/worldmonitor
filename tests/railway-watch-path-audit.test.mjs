@@ -21,6 +21,9 @@ import {
 } from './_lib/import-graph-walk.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const RAILWAY_SERVICE_REGISTRY = JSON.parse(
+  readFileSync(resolve(repoRoot, 'scripts/railway-services.json'), 'utf8'),
+);
 
 function service({
   cronSchedule = '0 * * * *',
@@ -733,6 +736,33 @@ describe('planned Railway service lifecycle', () => {
     cronSchedule: '7,22,37,52 * * * *',
   };
 
+  it('keeps unprovisioned standalone seeders explicitly planned', () => {
+    const expectedPlannedServices = [
+      'seed-crypto-sectors',
+      'seed-market-quotes',
+      'seed-service-statuses',
+      'seed-weather-alerts',
+    ];
+    const plannedEntries = RAILWAY_SERVICE_REGISTRY.filter((entry) =>
+      expectedPlannedServices.includes(entry.service),
+    );
+
+    assert.deepEqual(
+      plannedEntries.map((entry) => entry.service).sort(),
+      expectedPlannedServices.sort(),
+    );
+    assert.ok(
+      plannedEntries.every((entry) => entry.lifecycle === 'planned'),
+      'unprovisioned standalone seeders must not be treated as active Railway services',
+    );
+    assert.deepEqual(
+      managedRailwayServices(RAILWAY_SERVICE_REGISTRY).filter((entry) =>
+        expectedPlannedServices.includes(entry.service),
+      ),
+      [],
+    );
+  });
+
   it('does not report an intentionally absent planned service', () => {
     assert.deepEqual(
       auditRailwayServiceConfig({ services: {} }, new Map(), [planned]),
@@ -1011,9 +1041,7 @@ describe('audit CLI argument parsing', () => {
 // behaviour directly, so a broken detector fails here rather than passing a
 // co-evolved comparison.
 describe('closure detection layers', () => {
-  const registry = JSON.parse(
-    readFileSync(resolve(repoRoot, 'scripts/railway-services.json'), 'utf8'),
-  );
+  const registry = RAILWAY_SERVICE_REGISTRY;
 
   describe('the container model derived from a Dockerfile', () => {
     it('detects the tsx loader and the dynamic roots the image copies in', () => {
@@ -1171,9 +1199,7 @@ describe('closure detection layers', () => {
 });
 
 describe('critical ingestion Railway registry contract', () => {
-  const registry = JSON.parse(
-    readFileSync(resolve(repoRoot, 'scripts/railway-services.json'), 'utf8'),
-  );
+  const registry = RAILWAY_SERVICE_REGISTRY;
   // Cron pins stay an explicit literal: these are production schedules and a
   // silent edit to one should fail loudly rather than be rubber-stamped by
   // reading the same file the change lives in.
