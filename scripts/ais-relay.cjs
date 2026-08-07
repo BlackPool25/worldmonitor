@@ -10431,6 +10431,7 @@ const server = http.createServer(async (req, res) => {
         'CDN-Cache-Control': 'no-store',
         'X-Cache': cacheLabel,
         ...extraHeaders,
+        'X-Relay-Stale': '1',
       }, cacheEntry.data);
 
       // Backoff guard: if feed is in exponential backoff, don't hit upstream

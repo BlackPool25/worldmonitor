@@ -312,6 +312,13 @@ test('RSS proxy: upstream rejection preserves the last successful body', async (
   assert.match(stale.body, /Fresh/);
   assert.equal(proxy.negativeCache.get(feedUrl).statusCode, 403);
 
+  // A second request is served by the short-lived negative cache while the
+  // positive body remains available, exercising the NEGATIVE-STALE branch.
+  const negativeStale = await fetch(`http://127.0.0.1:${proxyPort}/?url=${encodeURIComponent(feedUrl)}`);
+  assert.equal(negativeStale.status, 200);
+  assert.equal(negativeStale.headers['x-cache'], 'NEGATIVE-STALE');
+  assert.match(negativeStale.body, /Fresh/);
+
   upstream.server.close();
   proxy.server.close();
 });

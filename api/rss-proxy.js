@@ -223,7 +223,11 @@ export default async function handler(req, ctx) {
     const data = await response.text();
     const isSuccess = response.status >= 200 && response.status < 300;
     const relayCacheState = usedRelay ? response.headers.get('x-cache') : null;
-    const isStaleRelay = relayCacheState === 'STALE' || relayCacheState?.endsWith('-STALE');
+    const relayStaleMarker = usedRelay ? response.headers.get('x-relay-stale') : null;
+    // New relays identify stale fallback explicitly. Keep the label fallback
+    // while Railway and Vercel revisions roll out independently.
+    const legacyStaleCacheLabel = relayCacheState === 'STALE' || relayCacheState?.endsWith('-STALE');
+    const isStaleRelay = relayStaleMarker === '1' || legacyStaleCacheLabel;
     const isCacheableSuccess = isSuccess && !isStaleRelay;
     // Relay-only feeds are slow-updating institutional sources — cache longer
     const cdnTtl = isRelayOnly ? 3600 : 900;
@@ -240,6 +244,7 @@ export default async function handler(req, ctx) {
         ...(isCacheableSuccess && { 'CDN-Cache-Control': `public, s-maxage=${cdnTtl}, stale-while-revalidate=${swr}, stale-if-error=${sie}` }),
         ...(isStaleRelay && { 'CDN-Cache-Control': 'no-store' }),
         ...(relayCacheState && { 'X-Cache': relayCacheState }),
+        ...(relayStaleMarker && { 'X-Relay-Stale': relayStaleMarker }),
         ...corsHeaders,
       },
     });

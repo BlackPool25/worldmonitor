@@ -247,6 +247,7 @@ test('does not cache stale RSS bodies returned by the Railway relay', async () =
       headers: {
         'Content-Type': 'application/xml',
         'X-Cache': 'BACKOFF-STALE',
+        'X-Relay-Stale': '1',
       },
     });
   };
@@ -257,7 +258,36 @@ test('does not cache stale RSS bodies returned by the Railway relay', async () =
   assert.equal(res.headers.get('cache-control'), 'no-store');
   assert.equal(res.headers.get('cdn-cache-control'), 'no-store');
   assert.equal(res.headers.get('x-cache'), 'BACKOFF-STALE');
+  assert.equal(res.headers.get('x-relay-stale'), '1');
   assert.match(await res.text(), /stale/);
+  assert.equal(calls.length, 2);
+});
+
+test('keeps legacy plain STALE relay responses non-cacheable during rollout', async () => {
+  process.env.WS_RELAY_URL = 'wss://relay.example.com';
+  process.env.RELAY_SHARED_SECRET = 'relay-secret';
+  const calls = [];
+
+  globalThis.fetch = async (input, init = {}) => {
+    calls.push({ url: String(input), headers: init.headers });
+    if (calls.length === 1) return new Response('Forbidden', { status: 403 });
+    return new Response('<rss><channel><title>legacy stale</title></channel></rss>', {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/xml',
+        'X-Cache': 'STALE',
+      },
+    });
+  };
+
+  const res = await handler(makeRequest('https://techcrunch.com/feed'));
+
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('cache-control'), 'no-store');
+  assert.equal(res.headers.get('cdn-cache-control'), 'no-store');
+  assert.equal(res.headers.get('x-cache'), 'STALE');
+  assert.equal(res.headers.get('x-relay-stale'), null);
+  assert.match(await res.text(), /legacy stale/);
   assert.equal(calls.length, 2);
 });
 
