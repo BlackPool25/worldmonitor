@@ -742,14 +742,15 @@ describe('planned Railway service lifecycle', () => {
       'seed-market-quotes',
       'seed-service-statuses',
       'seed-weather-alerts',
-    ];
-    const plannedEntries = RAILWAY_SERVICE_REGISTRY.filter((entry) =>
-      expectedPlannedServices.includes(entry.service),
+    ].sort();
+    const plannedEntries = RAILWAY_SERVICE_REGISTRY.filter(
+      (entry) => entry.lifecycle === 'planned',
     );
 
     assert.deepEqual(
       plannedEntries.map((entry) => entry.service).sort(),
-      expectedPlannedServices.sort(),
+      expectedPlannedServices,
+      'only unprovisioned standalone seeders may be marked planned',
     );
     assert.ok(
       plannedEntries.every((entry) => entry.lifecycle === 'planned'),
