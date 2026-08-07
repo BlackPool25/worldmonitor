@@ -5,6 +5,7 @@ const { once } = require('node:events');
 const http = require('node:http');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const { setTimeout: sleep } = require('node:timers/promises');
 const test = require('node:test');
 
 function get(port, requestPath, headers) {
@@ -172,7 +173,7 @@ test('relay handlers expose bounded Google/OpenSky cooldowns and RSS fallback me
     const staleFeed = 'https://feeds.bbci.co.uk/news/world/rss.xml?test=stale';
     const rssFresh = await get(port, `/rss?url=${encodeURIComponent(staleFeed)}`);
     assert.equal(rssFresh.status, 200);
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await sleep(25);
     const rssStale = await get(port, `/rss?url=${encodeURIComponent(staleFeed)}`);
     assert.equal(rssStale.status, 200);
     assert.equal(rssStale.headers['x-cache'], 'STALE');
@@ -212,6 +213,151 @@ test('relay handlers expose bounded Google/OpenSky cooldowns and RSS fallback me
     const agedHealth = JSON.parse((await get(port, '/health')).body);
     assert.equal(agedHealth.ingestion.aviation.coverage.requests, 0, 'request samples must age out of the rolling window');
     assert.equal(agedHealth.ingestion.aviation.coverage.status, 'degraded', 'active provider reset must remain visible after samples age out');
+  } finally {
+    await stop(child);
+  }
+});
+
+test('RSS keeps serving the last good body after an upstream 403 enters backoff', async () => {
+  const { child, ready } = spawnRelay({
+    RELAY_RSS_RATE_LIMIT_MAX: '1000',
+    RELAY_TEST_RSS_CACHE_TTL_MS: '10',
+    RELAY_METRICS_WINDOW_SECONDS: '10',
+  });
+
+  try {
+    const { port } = await ready;
+    const feedUrl = 'https://feeds.bbci.co.uk/news/world/rss.xml?test=forbidden';
+    const requestPath = `/rss?url=${encodeURIComponent(feedUrl)}`;
+
+    const fresh = await get(port, requestPath);
+    assert.equal(fresh.status, 200);
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    const stale = await get(port, requestPath);
+    assert.equal(stale.status, 200, stale.body);
+    assert.equal(stale.headers['x-cache'], 'STALE');
+    assert.match(stale.body, /<rss>/);
+
+    const backoffStale = await get(port, requestPath);
+    assert.equal(backoffStale.status, 200, backoffStale.body);
+    assert.equal(backoffStale.headers['x-cache'], 'BACKOFF-STALE');
+    assert.match(backoffStale.body, /<rss>/);
+
+    const metrics = JSON.parse((await get(port, '/metrics')).body);
+    assert.ok(metrics.rss.authRejection >= 1, 'the upstream 403 must remain observable');
+    assert.ok(metrics.rss.fallback >= 2, 'both stale responses must be counted as fallback');
+    assert.equal(metrics.rss.served, 3, 'fresh plus both stale responses must be served');
+  } finally {
+    await stop(child);
+  }
+});
+
+test('RSS keeps serving the last good body after upstream 5xx and timeout failures', async () => {
+  for (const [mode, outcome] of [['server-error', 'terminalFailure'], ['timeout', 'timeout']]) {
+    const { child, ready } = spawnRelay({
+      RELAY_RSS_RATE_LIMIT_MAX: '1000',
+      RELAY_TEST_RSS_CACHE_TTL_MS: '10',
+      RELAY_METRICS_WINDOW_SECONDS: '10',
+    });
+
+    try {
+      const { port } = await ready;
+      const feedUrl = `https://feeds.bbci.co.uk/news/world/rss.xml?test=${mode}`;
+      const requestPath = `/rss?url=${encodeURIComponent(feedUrl)}`;
+
+      assert.equal((await get(port, requestPath)).status, 200);
+      await sleep(25);
+
+      const stale = await get(port, requestPath);
+      assert.equal(stale.status, 200, stale.body);
+      assert.equal(stale.headers['x-cache'], 'STALE');
+      assert.match(stale.body, /<rss>/);
+
+      const metrics = JSON.parse((await get(port, '/metrics')).body);
+      assert.ok(metrics.rss[outcome] >= 1, `${mode} must remain observable`);
+      assert.ok(metrics.rss.fallback >= 1, `${mode} must serve stale fallback`);
+    } finally {
+      await stop(child);
+    }
+  }
+});
+
+test('RSS counts concurrent stale deduplication as fallback', async () => {
+  const { child, ready } = spawnRelay({
+    RELAY_RSS_RATE_LIMIT_MAX: '1000',
+    RELAY_TEST_RSS_CACHE_TTL_MS: '10',
+    RELAY_METRICS_WINDOW_SECONDS: '10',
+  });
+
+  try {
+    const { port } = await ready;
+    const feedUrl = 'https://feeds.bbci.co.uk/news/world/rss.xml?test=dedup';
+    const requestPath = `/rss?url=${encodeURIComponent(feedUrl)}`;
+    assert.equal((await get(port, requestPath)).status, 200);
+    await sleep(25);
+
+    const responses = await Promise.all([get(port, requestPath), get(port, requestPath)]);
+    assert.ok(responses.every((response) => response.status === 200), responses.map((response) => response.body).join('\n'));
+    assert.deepEqual(new Set(responses.map((response) => response.headers['x-cache'])), new Set(['STALE', 'DEDUP-STALE']));
+
+    const metrics = JSON.parse((await get(port, '/metrics')).body);
+    assert.ok(metrics.rss.authRejection >= 2, 'leader and dedup follower must retain the upstream rejection outcome');
+    assert.ok(metrics.rss.fallback >= 2, 'leader and dedup follower must count as fallback');
+    assert.equal(metrics.rss.served, 3, 'fresh, stale leader, and stale dedup follower must be served');
+  } finally {
+    await stop(child);
+  }
+});
+
+test('RSS keeps concurrent timeout followers on the stale no-store path', async () => {
+  const { child, ready } = spawnRelay({
+    RELAY_RSS_RATE_LIMIT_MAX: '1000',
+    RELAY_TEST_RSS_CACHE_TTL_MS: '10',
+    RELAY_METRICS_WINDOW_SECONDS: '10',
+  });
+
+  try {
+    const { port } = await ready;
+    const feedUrl = 'https://feeds.bbci.co.uk/news/world/rss.xml?test=dedup-timeout';
+    const requestPath = `/rss?url=${encodeURIComponent(feedUrl)}`;
+    assert.equal((await get(port, requestPath)).status, 200);
+    await sleep(25);
+
+    const responses = await Promise.all([get(port, requestPath), get(port, requestPath)]);
+    assert.ok(responses.every((response) => response.status === 200), responses.map((response) => response.body).join('\n'));
+    assert.deepEqual(new Set(responses.map((response) => response.headers['x-cache'])), new Set(['STALE', 'DEDUP-STALE']));
+
+    const metrics = JSON.parse((await get(port, '/metrics')).body);
+    assert.ok(metrics.rss.timeout >= 2, 'leader and dedup follower must retain the timeout outcome');
+    assert.ok(metrics.rss.fallback >= 2, 'leader and dedup follower must count as fallback');
+    assert.equal(metrics.rss.served, 3, 'fresh, stale leader, and stale dedup follower must be served');
+  } finally {
+    await stop(child);
+  }
+});
+
+test('RSS retains stale bodies while cleanup runs during active backoff', async () => {
+  const { child, ready } = spawnRelay({
+    RELAY_RSS_RATE_LIMIT_MAX: '1000',
+    RELAY_TEST_RSS_CACHE_TTL_MS: '10',
+    RELAY_TEST_RSS_CACHE_CLEANUP_INTERVAL_MS: '1000',
+    RELAY_METRICS_WINDOW_SECONDS: '10',
+  });
+
+  try {
+    const { port } = await ready;
+    const feedUrl = 'https://feeds.bbci.co.uk/news/world/rss.xml?test=forbidden';
+    const requestPath = `/rss?url=${encodeURIComponent(feedUrl)}`;
+    assert.equal((await get(port, requestPath)).status, 200);
+    await sleep(25);
+    assert.equal((await get(port, requestPath)).headers['x-cache'], 'STALE');
+
+    await sleep(1200);
+    const backoffStale = await get(port, requestPath);
+    assert.equal(backoffStale.status, 200, backoffStale.body);
+    assert.equal(backoffStale.headers['x-cache'], 'BACKOFF-STALE');
   } finally {
     await stop(child);
   }

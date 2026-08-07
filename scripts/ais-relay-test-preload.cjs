@@ -60,13 +60,17 @@ function response(statusCode, body, headers, callback) {
   });
 }
 
-function request({ callback, statusCode, body = '', headers = {}, error = null }) {
+function request({ callback, statusCode, body = '', headers = {}, error = null, timeout = false, delayMs = 0 }) {
   const req = new EventEmitter();
   req.write = () => {};
   req.end = () => {};
   req.setTimeout = () => req;
   req.destroy = () => req;
-  process.nextTick(() => {
+  const emitResponse = () => {
+    if (timeout) {
+      req.emit('timeout');
+      return;
+    }
     if (error) {
       const err = new Error(error);
       err.code = 'ECONNRESET';
@@ -74,7 +78,9 @@ function request({ callback, statusCode, body = '', headers = {}, error = null }
       return;
     }
     response(statusCode, body, headers, callback);
-  });
+  };
+  if (delayMs > 0) setTimeout(emitResponse, delayMs);
+  else process.nextTick(emitResponse);
   return req;
 }
 
@@ -181,8 +187,39 @@ https.get = function patchedGet(...args) {
     const key = parsed.searchParams.get('test') || parsed.pathname;
     const callNumber = (rssCalls.get(key) || 0) + 1;
     rssCalls.set(key, callNumber);
-    const mode = key === 'stale' && callNumber === 1 ? 'success' : 'error';
+    let mode = 'error';
+    if ((key === 'stale' || key === 'forbidden' || key === 'server-error' || key === 'timeout' || key === 'dedup' || key === 'dedup-timeout') && callNumber === 1) {
+      mode = 'success';
+    } else if (key === 'forbidden') {
+      mode = 'forbidden';
+    } else if (key === 'server-error') {
+      mode = 'server-error';
+    } else if (key === 'timeout') {
+      mode = 'timeout';
+    } else if (key === 'dedup') {
+      mode = 'forbidden';
+    } else if (key === 'dedup-timeout') {
+      mode = 'timeout';
+    }
     if (mode === 'error') return request({ callback: cb, error: 'RSS upstream reset' });
+    if (mode === 'timeout') return request({ callback: cb, timeout: true, delayMs: key === 'dedup-timeout' ? 25 : 0 });
+    if (mode === 'server-error') {
+      return request({
+        callback: cb,
+        statusCode: 503,
+        body: 'Service unavailable',
+        headers: { 'content-type': 'text/html' },
+      });
+    }
+    if (mode === 'forbidden') {
+      return request({
+        callback: cb,
+        statusCode: 403,
+        body: 'Forbidden',
+        headers: { 'content-type': 'text/html' },
+        delayMs: key === 'dedup' ? 25 : 0,
+      });
+    }
     return request({
       callback: cb,
       statusCode: 200,
