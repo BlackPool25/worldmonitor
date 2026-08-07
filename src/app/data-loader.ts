@@ -72,7 +72,7 @@ import {
   fetchSanctionsPressure,
   fetchRadiationWatch,
 } from '@/services';
-import { getMarketWatchlistEntries } from '@/services/market-watchlist';
+import { getMarketWatchlistEntries, mergeWatchlistSymbols } from '@/services/market-watchlist';
 import { fetchStockAnalysesForTargets, getStockAnalysisTargets, type StockAnalysisResult } from '@/services/stock-analysis';
 import { fetchInsiderTransactions } from '@/services/insider-transactions';
 import {
@@ -2199,19 +2199,12 @@ export class DataLoaderManager implements AppModule {
     } = marketMod;
     try {
       const customEntries = getMarketWatchlistEntries();
-      const effectiveSymbols = (() => {
-        if (customEntries.length === 0) return MARKET_SYMBOLS;
-        const base = MARKET_SYMBOLS.slice();
-        const seen = new Set(base.map((s) => s.symbol));
-        for (const entry of customEntries) {
-          const sym = entry.symbol;
-          if (!sym || seen.has(sym)) continue;
-          seen.add(sym);
-          base.push({ symbol: sym, name: entry.name || sym, display: entry.display || sym });
-          if (base.length >= 50) break;
-        }
-        return base;
-      })();
+      // The cap bounds the custom picks only — the default universe is already
+      // larger than it, so bounding the merged length dropped all but the first
+      // custom ticker (#6305).
+      const effectiveSymbols = customEntries.length === 0
+        ? MARKET_SYMBOLS
+        : mergeWatchlistSymbols(MARKET_SYMBOLS, customEntries);
 
       // Hydrate markets from bootstrap (same pattern as sectors) — instant data on page load
       const hydratedMarkets = getHydratedData('marketQuotes') as ListMarketQuotesResponse | undefined;

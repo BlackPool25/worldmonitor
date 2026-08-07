@@ -13,6 +13,23 @@ export interface MarketWatchlistEntry {
   display?: string;
 }
 
+/** Shape of an entry in the fixed default symbol universe (`shared/stocks.json`). */
+export interface MarketSymbolMeta {
+  symbol: string;
+  name: string;
+  display: string;
+}
+
+/**
+ * Maximum number of CUSTOM tickers the user may track on top of the defaults.
+ *
+ * Single source of truth for the storage layer, the watchlist editor, and the
+ * dashboard merge. #6305: the merge used to bound the default-plus-custom
+ * array by this number instead, and since the default universe is already
+ * larger than the cap, all but the first custom ticker were silently dropped.
+ */
+export const MARKET_WATCHLIST_MAX_ENTRIES = 50;
+
 const STORAGE_KEY = 'wm-market-watchlist-v1';
 export const MARKET_WATCHLIST_EVENT = 'wm-market-watchlist-changed';
 
@@ -49,6 +66,63 @@ function coerceEntry(v: unknown): MarketWatchlistEntry | null {
   return null;
 }
 
+/**
+ * Clean, de-dupe by symbol (order preserved) and bound a raw entry list.
+ *
+ * Shared by the storage setter and the watchlist editor so the cap and the
+ * normalization rules cannot drift apart between the two.
+ */
+export function normalizeWatchlistEntries(
+  entries: readonly MarketWatchlistEntry[] | null | undefined,
+  max: number = MARKET_WATCHLIST_MAX_ENTRIES,
+): MarketWatchlistEntry[] {
+  const seen = new Set<string>();
+  const out: MarketWatchlistEntry[] = [];
+
+  for (const raw of entries || []) {
+    if (out.length >= max) break;
+    const symbol = normalizeSymbol(raw?.symbol || '');
+    if (!symbol || seen.has(symbol)) continue;
+    seen.add(symbol);
+
+    const name = normalizeName(raw.name);
+    const display = normalizeName(raw.display);
+    out.push({ symbol, ...(name ? { name } : {}), ...(display ? { display } : {}) });
+  }
+
+  return out;
+}
+
+/**
+ * Merge the user's custom tickers onto the fixed default universe.
+ *
+ * The bound applies to how many custom tickers are appended — never to the
+ * merged length, which starts out above the cap (#6305). A custom entry that
+ * duplicates a default is already tracked, so it is skipped without spending
+ * cap budget.
+ */
+export function mergeWatchlistSymbols(
+  defaults: readonly MarketSymbolMeta[],
+  customEntries: readonly MarketWatchlistEntry[],
+  maxCustom: number = MARKET_WATCHLIST_MAX_ENTRIES,
+): MarketSymbolMeta[] {
+  const merged = defaults.slice();
+  if (customEntries.length === 0) return merged;
+
+  const seen = new Set(merged.map((s) => s.symbol));
+  let added = 0;
+  for (const entry of customEntries) {
+    if (added >= maxCustom) break;
+    const symbol = entry?.symbol;
+    if (!symbol || seen.has(symbol)) continue;
+    seen.add(symbol);
+    merged.push({ symbol, name: entry.name || symbol, display: entry.display || symbol });
+    added += 1;
+  }
+
+  return merged;
+}
+
 export function getMarketWatchlistEntries(): MarketWatchlistEntry[] {
   try {
     const parsed = safeParseJson<unknown>(localStorage.getItem(STORAGE_KEY));
@@ -67,21 +141,7 @@ export function getMarketWatchlistEntries(): MarketWatchlistEntry[] {
 }
 
 export function setMarketWatchlistEntries(entries: MarketWatchlistEntry[]): void {
-  // Clean, de-dupe by symbol but keep order.
-  const seen = new Set<string>();
-  const out: MarketWatchlistEntry[] = [];
-
-  for (const raw of entries || []) {
-    const sym = normalizeSymbol(raw.symbol || '');
-    if (!sym || seen.has(sym)) continue;
-    seen.add(sym);
-
-    const name = normalizeName(raw.name);
-    const display = normalizeName(raw.display);
-
-    out.push({ symbol: sym, ...(name ? { name } : {}), ...(display ? { display } : {}) });
-    if (out.length >= 50) break;
-  }
+  const out = normalizeWatchlistEntries(entries);
 
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(out));
