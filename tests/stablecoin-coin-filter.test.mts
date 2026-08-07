@@ -504,6 +504,102 @@ test('a Redis outage suppresses provider work instead of amplifying into it', as
   );
 });
 
+// ---------------------------------------------------------------------------
+// Untrusted input: Redis payloads and provider responses are not typed values
+// ---------------------------------------------------------------------------
+
+test('a Redis fault scoped to the gap key alone still suppresses the provider call', async (t) => {
+  t.after(restoreEnvironment);
+  const h = installHarness({
+    seed: SEED_SNAPSHOT,
+    gecko: ids => new Response(JSON.stringify(ids.map(id => geckoRow(id, 1.0))), { status: 200 }),
+  });
+
+  // The seed read SUCCEEDS and only the gap key errors. cachedFetchJson treats
+  // a read error as a miss and runs its fetcher, so without an explicit guard
+  // the seed-read check never sees this and CoinGecko gets called anyway.
+  const base = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes(`/get/${encodeURIComponent(GAP_KEY_PREFIX)}`)) {
+      return new Response('redis exploded', { status: 500 });
+    }
+    return base(input as RequestInfo, init);
+  }) as typeof fetch;
+
+  const res = await call(['frax']);
+
+  assert.deepEqual(h.geckoCalls, [], 'a gap-key read error must not reach the provider');
+  assert.deepEqual(res.unresolved, [{ id: 'frax', reason: 'PROVIDER_ERROR' }]);
+});
+
+test('provider rows that parse to nothing are an error, not proof of absence', async (t) => {
+  t.after(restoreEnvironment);
+  const h = installHarness({
+    seed: SEED_SNAPSHOT,
+    // HTTP 200 carrying junk. An empty array would be a real "no such coin";
+    // a non-empty array of unusable rows is output we could not parse.
+    gecko: () => new Response(JSON.stringify([null]), { status: 200 }),
+  });
+
+  const first = await call(['frax']);
+  const second = await call(['frax']);
+
+  assert.deepEqual(first.unresolved, [{ id: 'frax', reason: 'PROVIDER_ERROR' }]);
+  assert.deepEqual(
+    second.unresolved,
+    [{ id: 'frax', reason: 'PROVIDER_ERROR' }],
+    'malformed output must not be negative-cached as NOT_FOUND',
+  );
+  assert.ok(
+    !h.redisWrites.some(k => k.startsWith(GAP_KEY_PREFIX)),
+    'nothing derived from an unparseable response belongs in the cache',
+  );
+});
+
+test('non-numeric provider fields never reach the response as NaN', async (t) => {
+  t.after(restoreEnvironment);
+  installHarness({
+    seed: SEED_SNAPSHOT,
+    gecko: ids => new Response(
+      JSON.stringify(ids.map(id => geckoRow(id, 1.0, {
+        current_price: 'oops',
+        market_cap: null,
+        total_volume: undefined,
+        price_change_percentage_24h: 'NaN',
+      }))),
+      { status: 200 },
+    ),
+  });
+
+  const res = await call(['frax']);
+  const coin = res.stablecoins[0]!;
+
+  for (const [field, value] of Object.entries({
+    price: coin.price,
+    deviation: coin.deviation,
+    marketCap: coin.marketCap,
+    volume24h: coin.volume24h,
+    change24h: coin.change24h,
+  })) {
+    assert.ok(Number.isFinite(value), `${field} must be a finite number, got ${value}`);
+  }
+  assert.ok(Number.isFinite(res.summary?.totalMarketCap), 'a NaN row must not poison the summary');
+});
+
+test('a malformed row in the snapshot does not 500 the dashboard request', async (t) => {
+  t.after(restoreEnvironment);
+  installHarness({
+    seed: { ...SEED_SNAPSHOT, stablecoins: [null, seedCoin('tether'), 'nonsense', { noId: true }] },
+  });
+
+  const res = await call([]);
+
+  assert.deepEqual(res.stablecoins.map(c => c.id), ['tether'], 'usable rows still serve');
+  assert.equal(res.summary?.coinCount, 1);
+  assert.equal(res.dataStatus, 'OK');
+});
+
 test('a malformed ID is rejected before any provider work', async (t) => {
   t.after(restoreEnvironment);
   const h = installHarness({ seed: SEED_SNAPSHOT });

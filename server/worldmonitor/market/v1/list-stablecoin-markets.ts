@@ -25,7 +25,6 @@ import type {
   UnresolvedStablecoin,
 } from '../../../../src/generated/server/worldmonitor/market/v1/service_server';
 import stablecoinConfig from '../../../../shared/stablecoins.json';
-import { captureSilentError } from '../../../../api/_sentry-edge.js';
 import { cachedFetchJson, readCachedJson } from '../../../_shared/redis';
 import { sha256Hex } from '../../../_shared/hash';
 import {
@@ -85,7 +84,42 @@ function unresolvedEntry(id: string, reason: UnresolvedReason): UnresolvedStable
 
 interface SeedSnapshot {
   timestamp?: string;
-  stablecoins?: Stablecoin[];
+  stablecoins?: unknown;
+}
+
+interface GapPayload {
+  coins: Stablecoin[];
+  source: CryptoMarketsSource;
+}
+
+/**
+ * Redis payloads are untrusted input, not typed values — a cast is a promise
+ * TypeScript cannot keep. One `null` row inside `stablecoins` would throw while
+ * summarizing and turn the dashboard's own request into a 500, so rows are
+ * filtered rather than asserted. `id` is the only field worth gating on: it is
+ * the merge key, and a row without one cannot be matched to a request anyway.
+ */
+function isUsableStablecoin(value: unknown): value is Stablecoin {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && typeof (value as Stablecoin).id === 'string'
+    && (value as Stablecoin).id.length > 0,
+  );
+}
+
+function isGapPayload(value: unknown): value is GapPayload {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && Array.isArray((value as GapPayload).coins),
+  );
+}
+
+/** Provider numerics arrive as JSON of unknown shape; a string price must not become NaN. */
+function toFiniteNumber(value: unknown): number {
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) ? n : 0;
 }
 
 function unavailableResponse(unresolved: UnresolvedStablecoin[]): ListStablecoinMarketsResponse {
@@ -182,12 +216,12 @@ function normalizeRequestedCoins(raw: unknown): {
  * response must not be labelled on different rules.
  */
 function toStablecoin(item: CoinGeckoMarketItem): Stablecoin {
-  const price = item.current_price || 0;
+  const price = toFiniteNumber(item.current_price);
   const deviation = Math.abs(price - 1.0);
   return {
     id: item.id,
-    symbol: (item.symbol || '').toUpperCase(),
-    name: item.name || '',
+    symbol: String(item.symbol || '').toUpperCase(),
+    name: String(item.name || ''),
     price,
     deviation: +(deviation * 100).toFixed(3),
     pegStatus: deviation <= ON_PEG_MAX
@@ -195,11 +229,11 @@ function toStablecoin(item: CoinGeckoMarketItem): Stablecoin {
       : deviation <= SLIGHT_DEPEG_MAX
         ? 'SLIGHT DEPEG'
         : 'DEPEGGED',
-    marketCap: item.market_cap || 0,
-    volume24h: item.total_volume || 0,
-    change24h: item.price_change_percentage_24h || 0,
-    change7d: item.price_change_percentage_7d_in_currency || 0,
-    image: item.image || '',
+    marketCap: toFiniteNumber(item.market_cap),
+    volume24h: toFiniteNumber(item.total_volume),
+    change24h: toFiniteNumber(item.price_change_percentage_24h),
+    change7d: toFiniteNumber(item.price_change_percentage_7d_in_currency),
+    image: String(item.image || ''),
   };
 }
 
@@ -229,8 +263,27 @@ async function resolveGapCoins(ids: string[]): Promise<{
   // input, and the list is unbounded in length.
   const cacheKey = `${GAP_CACHE_KEY_PREFIX}${await sha256Hex([...ids].sort().join(','))}`;
 
+  // Read the gap key ourselves before handing it to cachedFetchJson, which
+  // treats a Redis READ ERROR as a miss and runs the fetcher anyway. Without
+  // this, a Redis fault scoped to this key alone — the seed read having
+  // succeeded — still reaches CoinGecko, which is the fan-out the seed-read
+  // guard exists to prevent. Same rule, applied per key.
+  const cachedRead = await readCachedJson(cacheKey);
+  if (cachedRead.status === 'error') {
+    return { resolved, providerFailed: true };
+  }
+  if (cachedRead.status === 'hit') {
+    // A hit that is not a payload is cachedFetchJson's negative sentinel: the
+    // provider answered previously and had nothing for this ID set.
+    if (!isGapPayload(cachedRead.value)) return { resolved, providerFailed: false };
+    for (const coin of cachedRead.value.coins) {
+      if (isUsableStablecoin(coin)) resolved.set(coin.id, coin);
+    }
+    return { resolved, providerFailed: cachedRead.value.source === 'coinpaprika' };
+  }
+
   try {
-    const payload = await cachedFetchJson<{ coins: Stablecoin[]; source: CryptoMarketsSource }>(
+    const payload = await cachedFetchJson<GapPayload>(
       cacheKey,
       GAP_CACHE_TTL,
       async () => {
@@ -239,10 +292,19 @@ async function resolveGapCoins(ids: string[]): Promise<{
           priceChangePercentage: '24h,7d',
         });
         const requested = new Set(ids);
-        const coins = items
-          .filter(item => item && typeof item.id === 'string' && requested.has(item.id))
-          .map(toStablecoin);
-        return coins.length > 0 ? { coins, source } : null;
+        const usable = items.filter(
+          item => isUsableStablecoin(item) && requested.has(item.id),
+        );
+        // Rows present but none usable is malformed provider output, not an
+        // answer. Returning null here would negative-cache it and report the
+        // requested coins as NOT_FOUND — asserting they do not exist on the
+        // strength of a response we could not parse. Throwing routes it to
+        // PROVIDER_ERROR, and cacheFetcherErrors:false keeps it out of Redis.
+        if (usable.length === 0) {
+          if (items.length > 0) throw new Error(`provider returned ${items.length} unusable row(s)`);
+          return null;
+        }
+        return { coins: usable.map(toStablecoin), source };
       },
       GAP_NEGATIVE_TTL,
       { timeoutMs: GAP_FETCH_TIMEOUT_MS, cacheFetcherErrors: false },
@@ -251,12 +313,12 @@ async function resolveGapCoins(ids: string[]): Promise<{
     for (const coin of payload?.coins ?? []) resolved.set(coin.id, coin);
     return { resolved, providerFailed: payload?.source === 'coinpaprika' };
   } catch (err) {
-    // Reaching here means BOTH provider legs failed (or the short unavailable
-    // backoff is armed) — the degraded-provider state this RPC is meant to make
-    // visible. Not caller-triggerable noise: an unknown-but-well-formed ID gets
-    // a 200 with no row from CoinGecko, which resolves to NOT_FOUND without
-    // throwing. The caller still gets a response; only the reporting is silent.
-    void captureSilentError(err, { tags: { route: 'market/list-stablecoin-markets', step: 'gap-lookup' } });
+    // sentry-coverage-ok: this failure is reported IN BAND rather than silently
+    // — every affected ID comes back to the caller as PROVIDER_ERROR and the
+    // response as PARTIAL/UNAVAILABLE, which is the whole point of #6308's
+    // attribution fields. Swallowing here is what converts the throw into that
+    // contract; rethrowing would 500 a request the seed could still partly
+    // answer.
     console.warn('[Stablecoin] gap lookup failed:', (err as Error).message);
     return { resolved, providerFailed: true };
   }
@@ -279,7 +341,7 @@ export async function listStablecoinMarkets(
   const seedUnreachable = seedRead.status === 'error';
   const seed = seedRead.status === 'hit' ? seedRead.value as SeedSnapshot : null;
   const rawSeedCoins = seed?.stablecoins;
-  const seedCoins = Array.isArray(rawSeedCoins) ? rawSeedCoins : [];
+  const seedCoins = Array.isArray(rawSeedCoins) ? rawSeedCoins.filter(isUsableStablecoin) : [];
 
   // Default request: the seeded snapshot verbatim, no upstream work, ever.
   if (lookupIds.length === 0 && unresolved.length === 0) {
