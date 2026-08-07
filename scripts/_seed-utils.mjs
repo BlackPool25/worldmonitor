@@ -837,8 +837,13 @@ export async function withRetry(fn, maxRetries = 3, delayMs = 1000) {
         // Test-only cap on the idle wait between attempts (WM_SEED_RETRY_DELAY_MS):
         // suites that stub persistent upstream failures otherwise sleep through
         // every real backoff. Attempt COUNT and the logged/computed wait stay
-        // real — only the sleep shrinks. Read per call, never set in production.
-        const overrideMs = Number(process.env.WM_SEED_RETRY_DELAY_MS);
+        // real — only the sleep shrinks. Dual-gated on NODE_TEST_CONTEXT so the
+        // knob is structurally inert outside the node test runner: a stray env
+        // var on a Railway seeder must not disable production backoff (and the
+        // full-wait log lines would make that near-invisible). Read per call.
+        const overrideMs = process.env.NODE_TEST_CONTEXT
+          ? Number(process.env.WM_SEED_RETRY_DELAY_MS)
+          : Number.NaN;
         const pause = Number.isFinite(overrideMs) ? Math.min(wait, overrideMs) : wait;
         await new Promise(r => setTimeout(r, pause));
       }

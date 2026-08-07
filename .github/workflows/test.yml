@@ -468,6 +468,13 @@ jobs:
           key: playwright-chromium-${{ steps.playwright-version.outputs.version }}
       - run: npx playwright install --with-deps chromium
         if: steps.playwright-cache.outputs.cache-hit != 'true'
+      # The cache restores only browser binaries (~/.cache/ms-playwright), not
+      # the OS libraries --with-deps installs — and runners are fresh VMs, so a
+      # cache hit on an image that no longer ships a needed lib would fail at
+      # chromium launch. Exactly one apt pass runs either way: --with-deps on a
+      # miss (above), install-deps alone on a hit.
+      - run: npx playwright install-deps chromium
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
       # One invocation for all three smoke specs: each `playwright test` run
       # boots its own vite dev server (reuseExistingServer is false), so three
       # separate steps paid three boots; the specs are independent and share

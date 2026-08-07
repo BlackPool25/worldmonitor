@@ -366,15 +366,25 @@ describe('CI workflow coverage', () => {
 
   it('keeps every smoke spec on the combined ci-smoke command line', () => {
     const ciSmoke = packageScripts['test:e2e:ci-smoke'] ?? '';
+    // Tokenize as the shell would, and stop at the first comment token: npm
+    // scripts run under `sh -c`, where a word-initial `#` comments out the
+    // rest of the line. A substring check would stay green with the spec
+    // paths sitting in the commented-out tail while playwright never runs
+    // them — the argv-token check is what gives this guard teeth.
+    const argvTokens: string[] = [];
+    for (const token of ciSmoke.trim().split(/\s+/)) {
+      if (token.startsWith('#')) break;
+      argvTokens.push(token);
+    }
     for (const spec of REQUIRED_CI_SMOKE_SPECS) {
       assert.ok(
-        ciSmoke.includes(spec),
-        `test:e2e:ci-smoke must run ${spec} — a spec dropped from this command has no other CI invocation`,
+        argvTokens.includes(spec),
+        `test:e2e:ci-smoke must pass ${spec} as a live argv token — a spec dropped ` +
+          '(or commented out) from this command has no other CI invocation',
       );
     }
-    assert.match(
-      ciSmoke,
-      /VITE_VARIANT=full/,
+    assert.ok(
+      argvTokens.includes('VITE_VARIANT=full'),
       'test:e2e:ci-smoke must pin VITE_VARIANT=full — variant-live-smoke asserts the full-variant panel set',
     );
   });
