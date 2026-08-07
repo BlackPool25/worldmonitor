@@ -14,6 +14,8 @@
 
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 import {
   COVERAGE_KEY,
@@ -37,6 +39,7 @@ import {
   TRADE_FLOW_COVERAGE_KEY,
   TRADE_FLOW_KEY_PREFIX,
   TRADE_FLOW_SEED_YEARS,
+  TRADE_FLOW_EMPTY_STREAK_TO_DROP,
   WORLD_PARTNER_CODE as SEED_WORLD_PARTNER_CODE,
   buildFlowRecords,
   fetchFlowPair,
@@ -642,6 +645,40 @@ describe('fetchFlowPair', () => {
   });
 });
 
+// ── The dashboard call site ───────────────────────────────────────────────
+
+describe('the dashboard asks for a combination the seed can answer', () => {
+  // The production symptom of #6309 was this one call: the flows tab requested
+  // partner '156' (China), which the WTO indicators behind this RPC answer 204
+  // for, so the panel rendered the upstream-unavailable banner on every load.
+  // The handler and seeder suites above would all stay green if it came back.
+  //
+  // Static pin rather than a runtime one: importing data-loader.ts pulls the
+  // whole app graph under tsx. It parses the real argument list instead of
+  // grepping for a substring, so a changed partner reddens rather than matching
+  // some other occurrence of the same digits.
+  const dataLoader = readFileSync(
+    resolve(import.meta.dirname, '..', 'src/app/data-loader.ts'),
+    'utf8',
+  );
+
+  const calls = [...dataLoader.matchAll(/fetchTradeFlows\(([^)]*)\)/g)]
+    .map((m) => m[1].split(',').map((a) => a.trim()));
+
+  test('there is exactly one call, and it asks for World', () => {
+    assert.equal(calls.length, 1, `expected one fetchTradeFlows call, found ${calls.length}`);
+    assert.deepEqual(calls[0], ["'840'", "'000'", '10'],
+      'the flows tab must request partner 000 (World) — 156 is unanswerable upstream');
+  });
+
+  test('no call site requests a partner WTO cannot answer', () => {
+    for (const args of calls) {
+      assert.notEqual(args[1], "'156'",
+        'partner 156 returns HTTP 204 from ITS_MTV_AX/ITS_MTV_AM; it can never be seeded');
+    }
+  });
+});
+
 // ── Seeder: the whole run ─────────────────────────────────────────────────
 
 describe('fetchTradeFlows composes the loop, the counters, and the manifest', () => {
@@ -669,14 +706,82 @@ describe('fetchTradeFlows composes the loop, the counters, and the manifest', ()
     assert.equal(run.manifest.endYear - run.manifest.startYear, TRADE_FLOW_SEED_YEARS);
   });
 
-  test('a reporter WTO answers empty is dropped from advertised coverage', async () => {
-    // The mirror of the case above, and the distinction the manifest exists for.
-    // Both indicators answered; neither had rows. That is upstream's definitive
-    // answer, so the pair must read `not_covered` (a contract answer) rather
-    // than `seed_missing` (a fault) forever.
+  test('a single empty answer does NOT make a pair cacheable-not-covered', async () => {
+    // `not_covered` leaves upstreamUnavailable false, and this route is on the
+    // `daily` tier (CDN-Cache-Control s-maxage=86400), so a verdict reached on
+    // one transient 204 could outlive the 6h seed cadence by 4x. Until the
+    // emptiness persists, the pair stays advertised and reads `seed_missing`,
+    // which is no-store and self-corrects next run.
     _setAllReportersForTesting(['840', '156']);
     globalThis.fetch = (async (input: string | URL | Request) => {
-      const params = new URL(String(input)).searchParams;
+      const href = String(input);
+      if (href.startsWith(REDIS_HOST)) return new Response(JSON.stringify({ result: null }), { status: 200 });
+      const params = new URL(href).searchParams;
+      if (params.get('r') === '156') return new Response(null, { status: 204 });
+      return wtoRows(params.get('i') ?? '', [2024, 2025]);
+    }) as typeof fetch;
+
+    const run = await fetchTradeFlows();
+
+    assert.equal(run.coverage.emptyPairs, 1);
+    assert.ok(run.manifest.pairs.includes('156:000'),
+      'first empty run must keep the pair advertised so the miss reads as a fault');
+    assert.equal(run.manifest.emptyStreaks['156:000'], 1);
+  });
+
+  test('a pair is dropped only once the emptiness has persisted', async () => {
+    // Same run, but the previous manifest already recorded the pair one short of
+    // the threshold. This is the state that makes the drop legitimate.
+    _setAllReportersForTesting(['840', '156']);
+    const priorManifest = {
+      pairs: ['156:000', '840:000'],
+      emptyStreaks: { '156:000': TRADE_FLOW_EMPTY_STREAK_TO_DROP - 1 },
+    };
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const href = String(input);
+      if (href.startsWith(REDIS_HOST)) {
+        return new Response(JSON.stringify({ result: JSON.stringify(priorManifest) }), { status: 200 });
+      }
+      const params = new URL(href).searchParams;
+      if (params.get('r') === '156') return new Response(null, { status: 204 });
+      return wtoRows(params.get('i') ?? '', [2024, 2025]);
+    }) as typeof fetch;
+
+    const run = await fetchTradeFlows();
+
+    assert.ok(!run.manifest.pairs.includes('156:000'),
+      `dropped after ${TRADE_FLOW_EMPTY_STREAK_TO_DROP} consecutive empty runs`);
+    assert.equal(run.manifest.emptyStreaks['156:000'], TRADE_FLOW_EMPTY_STREAK_TO_DROP);
+  });
+
+  test('a pair that produces data resets its streak', async () => {
+    _setAllReportersForTesting(['156']);
+    const priorManifest = { pairs: [], emptyStreaks: { '156:000': 2 } };
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const href = String(input);
+      if (href.startsWith(REDIS_HOST)) {
+        return new Response(JSON.stringify({ result: JSON.stringify(priorManifest) }), { status: 200 });
+      }
+      return wtoRows(new URL(href).searchParams.get('i') ?? '', [2025]);
+    }) as typeof fetch;
+
+    const run = await fetchTradeFlows();
+
+    assert.deepEqual(run.manifest.pairs, ['156:000'], 'a producing pair is advertised again');
+    assert.equal(run.manifest.emptyStreaks['156:000'], undefined,
+      'the streak resets by omission rather than accumulating forever');
+  });
+
+  test('an empty answer is classified as an answer, not an upstream failure', async () => {
+    // The classification is what the streak logic keys on: a 204 counts toward
+    // emptyPairs (eventually `not_covered`), while a failed request counts
+    // toward upstreamFailures (always `seed_missing`). Confusing the two would
+    // either strand a live reporter or hide a real outage.
+    _setAllReportersForTesting(['840', '156']);
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const href = String(input);
+      if (href.startsWith(REDIS_HOST)) return new Response(JSON.stringify({ result: null }), { status: 200 });
+      const params = new URL(href).searchParams;
       if (params.get('r') === '156') return new Response(null, { status: 204 });
       return wtoRows(params.get('i') ?? '', [2024, 2025]);
     }) as typeof fetch;
@@ -685,8 +790,7 @@ describe('fetchTradeFlows composes the loop, the counters, and the manifest', ()
 
     assert.equal(run.coverage.emptyPairs, 1);
     assert.equal(run.coverage.upstreamFailures, 0, 'a 204 is an answer, not a failure');
-    assert.deepEqual(run.manifest.pairs, ['840:000'],
-      'an economy WTO has nothing for must not be advertised as a broken seed');
+    assert.deepEqual(Object.keys(run.flows), [tradeFlowSeedKey('840', '000')]);
   });
 
   test('the fallback reporter list reaches the manifest that gates publication', async () => {
@@ -745,6 +849,44 @@ describe('publishTradeFlows', () => {
 
     assert.ok(!commands.map((c) => c[1]).includes(COVERAGE_KEY),
       'an empty manifest must never replace a good one');
+  });
+
+  test('a manifest write failure does not cost the freshness record', async () => {
+    // The per-pair writes are isolated; this one was not. A throw here would
+    // skip writeSeedMeta AND abort fetchAll before the tariff, customs and
+    // canonical shipping publishes — the cascade the isolation exists to stop.
+    const written: unknown[][] = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (!String(input).startsWith(REDIS_HOST)) throw new Error('unexpected host');
+      const cmd = JSON.parse(String(init?.body));
+      if (cmd[1] === COVERAGE_KEY) return new Response('nope', { status: 400 });
+      written.push(cmd);
+      return new Response(JSON.stringify({ result: 'OK' }), { status: 200 });
+    }) as typeof fetch;
+
+    await publishTradeFlows(RUN);
+
+    assert.ok(written.some((c) => c[1] === 'seed-meta:trade:flows'),
+      'freshness must still be recorded when only the manifest write failed');
+  });
+
+  test('a run that wrote nothing leaves the last good freshness record alone', async () => {
+    // Overwriting it would replace "256 pairs, healthy" with "0 pairs, as of
+    // now" — a freshly dated EMPTY instead of letting the existing record age
+    // into STALE_SEED. Declaring the fleet gone is not the seeder's call.
+    const written: unknown[][] = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (!String(input).startsWith(REDIS_HOST)) throw new Error('unexpected host');
+      const cmd = JSON.parse(String(init?.body));
+      if (String(cmd[1]).startsWith('trade:flows:v2:')) return new Response('nope', { status: 400 });
+      written.push(cmd);
+      return new Response(JSON.stringify({ result: 'OK' }), { status: 200 });
+    }) as typeof fetch;
+
+    await publishTradeFlows(RUN);
+
+    assert.ok(!written.some((c) => c[1] === 'seed-meta:trade:flows'),
+      'a zero-write run must not stamp a fresh timestamp over a healthy record');
   });
 
   test('a partial write failure is reported as partial, not as full coverage', async () => {

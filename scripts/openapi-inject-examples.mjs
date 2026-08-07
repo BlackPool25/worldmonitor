@@ -169,6 +169,21 @@ const GDELT_TOPIC_EXAMPLE_ID = (() => {
 // undefined to fall through. `series_id` / `series_ids` is shared by FRED (no
 // enum, needs an override) and BLS (enum-resolved upstream) — disambiguate by
 // operation.
+// Enum fields whose zero value is the state the example should depict. The
+// generic rule skips `_UNSPECIFIED` because a request filter set to "unset" is
+// a useless sample — but on a RESPONSE field that names why data is missing,
+// the zero value is precisely the served/healthy case, and any other member
+// contradicts the rows shown alongside it.
+function overrideEnumExample(key, context = {}, members = []) {
+  const where = `${context.operationId ?? ''} ${context.path ?? ''}`.toLowerCase();
+  if (key === 'unavailablereason' && (where.includes('gettradeflows') || where.includes('get-trade-flows'))) {
+    // Pairing rows with INVALID_REQUEST documents a response the handler cannot
+    // produce. See #6309.
+    return members.find((m) => typeof m === 'string' && m.endsWith('_UNSPECIFIED'));
+  }
+  return undefined;
+}
+
 function overrideStringExample(key, context = {}) {
   const where = `${context.operationId ?? ''} ${context.path ?? ''}`.toLowerCase();
   if (key === 'jmespath') return 'keys(@)';
@@ -184,6 +199,18 @@ function overrideStringExample(key, context = {}) {
         ? 'pending'
         : '/api/scenario/v1/get-scenario-status?jobId=scenario%3A1717200000000%3Aabcd1234';
     }
+  }
+  // GetTradeFlows' 200 example must depict a SERVED response. The field-name
+  // heuristic otherwise picks "156" for partnerCountry (China — a partner the
+  // WTO indicators behind this RPC cannot answer at all, so it could never
+  // appear on a served row) and the first enum member other than the zero value
+  // for unavailableReason, producing rows and INVALID_REQUEST together: a state
+  // the handler cannot emit. See #6309.
+  if (where.includes('gettradeflows') || where.includes('get-trade-flows')) {
+    if (key === 'partnercountry') return '000';
+    if (key === 'reportingcountry') return '840';
+    if (key === 'unavailablereason') return 'TRADE_FLOW_UNAVAILABLE_REASON_UNSPECIFIED';
+    if (key === 'productsector') return 'Total merchandise';
   }
   if (key === 'period' && where.includes('getsectorsummary')) return '1d';
   if (key === 'timespan' && where.includes('searchgdeltdocuments')) return '15min';
@@ -760,6 +787,11 @@ function exampleForSchema(schema, spec, context = {}, depth = 0, seen = new Set(
   if (schema.default !== undefined) return clone(schema.default);
   if (schema.const !== undefined) return clone(schema.const);
   if (Array.isArray(schema.enum) && schema.enum.length > 0) {
+    const curated = overrideEnumExample(normalizeKey(context.name ?? ''), context, schema.enum);
+    if (curated !== undefined) return clone(curated);
+    // Default: skip the zero value, which is rarely the interesting case for a
+    // request filter. See overrideEnumExample for the response fields where the
+    // zero value IS the state worth showing.
     const value = schema.enum.find((item) => !(typeof item === 'string' && item.endsWith('_UNSPECIFIED')));
     return clone(value ?? schema.enum[0]);
   }

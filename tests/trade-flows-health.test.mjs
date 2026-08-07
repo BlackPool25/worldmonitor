@@ -13,7 +13,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { __testing__ } from '../api/health.js';
-import { TRADE_FLOW_META_KEY } from '../scripts/seed-supply-chain-trade.mjs';
+import { TRADE_FLOW_META_KEY, TRADE_TTL } from '../scripts/seed-supply-chain-trade.mjs';
 
 const { classifyKey, STANDALONE_KEYS, SEED_META, ROLLOUT_PENDING_UNTIL_MS } = __testing__;
 
@@ -90,7 +90,10 @@ test('the staleness budget fires before the data keys it vouches for expire', ()
   // land INSIDE the data TTL, the opposite of a probe that watches a real data
   // key. Getting this backwards opens a silent window where every flow key is
   // gone and health still reads OK.
-  const TRADE_TTL_MIN = 480; // TRADE_TTL 28800s in scripts/seed-supply-chain-trade.mjs
+  // Derived from the producer's own constant, not a copy of it: a hardcoded 480
+  // would keep this green if TRADE_TTL moved, which is exactly the drift this
+  // invariant exists to catch.
+  const TRADE_TTL_MIN = TRADE_TTL / 60;
   const CRON_MIN = 360; // 6h
   assert.ok(SEED_META.tradeFlows.maxStaleMin < TRADE_TTL_MIN,
     `maxStaleMin ${SEED_META.tradeFlows.maxStaleMin} must fire before the ${TRADE_TTL_MIN}min data TTL lapses`);

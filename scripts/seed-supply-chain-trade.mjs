@@ -32,7 +32,11 @@ const KEYS = {
 // data-key TTL must satisfy maxStaleMin ∈ [TTL_min, TTL_min+120] or it opens a silent
 // EMPTY / false-STALE window), so raising a TTL means moving its maxStaleMin in lockstep.
 const SHIPPING_TTL = 28800; // 8h — 2h buffer over 6h cron cadence (was 1h = 5h expired gap)
-const TRADE_TTL = 28800; // 8h — 2h buffer over 6h cron cadence (was 6h = 0 buffer)
+// Exported so tests/trade-flows-health.test.mjs can assert the tradeFlows
+// staleness budget against the REAL data TTL. A test that hardcoded 480 would
+// stay green if this constant moved, re-opening the silent window where the
+// flow keys have expired but health still reads OK.
+export const TRADE_TTL = 28800; // 8h — 2h buffer over 6h cron cadence (was 6h = 0 buffer)
 const TARIFF_TTL = 28800; // 8h — 2h buffer over 6h cron cadence (was TRADE_TTL=6h = 0 buffer)
 const CUSTOMS_TTL = 86400; // 24h — monthly Treasury data, matches maxStaleMin:1440 (was TRADE_TTL=6h = 0 buffer)
 
@@ -676,6 +680,30 @@ export async function fetchFlowPair(reporter, partner, flows, stats, now = new D
   };
 }
 
+// How many consecutive runs a pair must answer empty before it stops being
+// advertised. 3 runs at the 6h cron is ~18h — comfortably longer than the 24h
+// CDN window is short, so a pair only becomes cacheable-`not_covered` once the
+// emptiness has clearly outlived any single upstream blip.
+export const TRADE_FLOW_EMPTY_STREAK_TO_DROP = 3;
+
+/** Previous run's per-pair empty streaks; {} when no manifest is readable. */
+async function readEmptyPairStreaks() {
+  try {
+    const previous = await verifySeedKey(TRADE_FLOW_COVERAGE_KEY);
+    const streaks = previous?.emptyStreaks;
+    if (!streaks || typeof streaks !== 'object' || Array.isArray(streaks)) return {};
+    const clean = {};
+    for (const [id, n] of Object.entries(streaks)) {
+      if (typeof n === 'number' && Number.isFinite(n) && n > 0) clean[id] = n;
+    }
+    return clean;
+  } catch {
+    // No manifest, unreadable, or Redis down. Starting the streaks at zero only
+    // delays a drop by a run; inventing one would drop a pair on first sight.
+    return {};
+  }
+}
+
 export async function fetchTradeFlows() {
   const flows = {};
   const now = new Date();
@@ -712,11 +740,40 @@ export async function fetchTradeFlows() {
   //     `not_covered` — an honest contract answer.
   // Keeping the second class in would report ~22 reporters (measured 2026-08-07:
   // 256 published against 278 attempted) as a broken seed forever.
+  //
+  // But removal must not be triggered by a SINGLE empty answer. `not_covered` is
+  // the one verdict that leaves upstreamUnavailable false, which is the one the
+  // gateway lets the CDN hold — and this route is on the `daily` tier, so
+  // CDN-Cache-Control pins it for up to 24h, four times the 6h seed cadence. One
+  // transient 204 for a normally-populated reporter would therefore strand it as
+  // "not covered" long after the next run had already re-seeded it. Require the
+  // emptiness to persist instead: until then the pair stays advertised and reads
+  // `seed_missing`, which is no-store and self-corrects on the next run.
+  const emptyStreaks = await readEmptyPairStreaks();
   const emptyIds = new Set(stats.emptyPairIds);
-  const advertised = pairs
-    .map(([reporter, partner]) => tradeFlowCoverageId(reporter, partner))
-    .filter((id) => !emptyIds.has(id))
-    .sort();
+  const streaks = {};
+  const advertised = [];
+  for (const [reporter, partner] of pairs) {
+    const id = tradeFlowCoverageId(reporter, partner);
+    if (!emptyIds.has(id)) continue; // seeded or upstream-failed: keep advertised
+    const streak = (emptyStreaks[id] ?? 0) + 1;
+    streaks[id] = streak;
+    if (streak < TRADE_FLOW_EMPTY_STREAK_TO_DROP) advertised.push(id);
+  }
+  for (const [reporter, partner] of pairs) {
+    const id = tradeFlowCoverageId(reporter, partner);
+    if (!emptyIds.has(id)) advertised.push(id);
+  }
+  advertised.sort();
+  const droppedForEmptiness = stats.emptyPairs - Object.values(streaks)
+    .filter((n) => n < TRADE_FLOW_EMPTY_STREAK_TO_DROP).length;
+  if (stats.emptyPairs > 0) {
+    console.log(
+      `  Trade flows: ${stats.emptyPairs} pairs answered empty; `
+      + `${droppedForEmptiness} dropped from advertised coverage after `
+      + `${TRADE_FLOW_EMPTY_STREAK_TO_DROP} consecutive empty runs`,
+    );
+  }
 
   return {
     coverage,
@@ -733,6 +790,10 @@ export async function fetchTradeFlows() {
       startYear: coverage.startYear,
       endYear: coverage.endYear,
       stats,
+      // Carried run-to-run so a pair must answer empty repeatedly before it
+      // becomes a cacheable `not_covered`. Only currently-empty pairs appear —
+      // a pair that produced data resets by omission.
+      emptyStreaks: streaks,
       // Publication gate, not payload — see publishTradeFlows.
       reporterListIsFallback: REPORTER_LIST_IS_FALLBACK,
       fetchedAt: new Date().toISOString(),
@@ -798,11 +859,30 @@ export async function publishTradeFlows({ flows, manifest }) {
   if (untrustworthy) {
     console.warn(`  Trade flows: not publishing a coverage manifest — ${untrustworthy}`);
   } else {
-    await writeExtraKey(TRADE_FLOW_COVERAGE_KEY, manifest, TRADE_TTL);
+    // Isolated for the same reason as the per-pair writes above: letting this
+    // throw would skip the freshness record AND abort fetchAll before the
+    // tariff, customs-revenue and canonical shipping publishes that follow —
+    // the exact cascade the per-key isolation exists to prevent. The previous
+    // manifest stays alive under its own TTL.
+    try {
+      await writeExtraKey(TRADE_FLOW_COVERAGE_KEY, manifest, TRADE_TTL);
+    } catch (err) {
+      console.warn(`  Trade flows: coverage manifest write failed: ${err?.message || err}`);
+    }
   }
   // recordCount is the number of pairs actually IN Redis, which is what
   // api/health.js compares against its minRecordCount floor. Deliberately no
   // `coverage` argument — see the manifest comment in fetchTradeFlows.
+  //
+  // A run that landed NOTHING must not stamp a fresh timestamp over the last
+  // good record: that would replace "the fleet is 256 pairs and healthy" with
+  // "the fleet is 0 pairs, as of now", turning a total failure into a freshly
+  // dated EMPTY instead of letting the existing meta age into STALE_SEED. The
+  // seeder is not the right place to declare the fleet gone.
+  if (written === 0) {
+    console.warn('  Trade flows: no keys written; leaving the previous seed-meta record to age out');
+    return;
+  }
   await writeSeedMeta(TRADE_FLOW_KEY_PREFIX, written, TRADE_FLOW_META_KEY);
 }
 

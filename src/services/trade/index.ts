@@ -114,8 +114,8 @@ onEntitlementChange(() => {
 const emptyRestrictions: GetTradeRestrictionsResponse = { restrictions: [], fetchedAt: '', upstreamUnavailable: false };
 const emptyTariffs: GetTariffTrendsResponse = { datapoints: [], fetchedAt: '', upstreamUnavailable: false };
 // The client-side empty is a local degrade (feature off, breaker open, thrown
-// request) — it is not a server verdict, so it carries no unavailableReason.
-// Only the handler names a reason.
+// request), not a server verdict, so it carries the UNSPECIFIED zero value.
+// Only the handler names an actual coverage gap or fault.
 const emptyFlows: GetTradeFlowsResponse = {
   flows: [], fetchedAt: '', upstreamUnavailable: false,
   unavailableReason: 'TRADE_FLOW_UNAVAILABLE_REASON_UNSPECIFIED',
