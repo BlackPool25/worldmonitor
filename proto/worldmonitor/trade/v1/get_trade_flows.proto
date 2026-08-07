@@ -6,7 +6,7 @@ import "buf/validate/validate.proto";
 import "sebuf/http/annotations.proto";
 import "worldmonitor/trade/v1/trade_data.proto";
 
-// Request for bilateral trade flow data.
+// Request for merchandise trade flow data, reporter versus World.
 //
 // Coverage is seed-backed: Railway pre-fetches a fixed set of
 // reporter/partner pairs from WTO and this API serves slices of that history.

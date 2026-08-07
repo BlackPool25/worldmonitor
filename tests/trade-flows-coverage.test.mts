@@ -225,12 +225,19 @@ describe('seeded reporter-versus-World requests', () => {
   });
 
   test('every supported window is answerable from the one seeded key', async () => {
-    seedUsWorld(1996, 2025);
-    for (const [years, expected] of [[1, 2], [10, 11], [29, 30], [30, 30]] as const) {
+    // Seeded window is deliberately WIDER than the maximum lookback (32 calendar
+    // years for a max of 30). With a 30-year fixture, years=30 would return the
+    // whole seed either way and an implementation that dropped one endpoint at
+    // the boundary would still pass — the fixture would be satisfying the
+    // assertion through a second path.
+    seedUsWorld(1994, 2025);
+    for (const [years, expected] of [[1, 2], [10, 11], [29, 30], [30, 31]] as const) {
       const res = await getTradeFlows(CTX, request({ years }));
-      assert.equal(res.flows.length, expected, `years=${years}`);
+      assert.equal(res.flows.length, expected,
+        `years=${years} spans ${years} + 1 calendar years, inclusive of both endpoints`);
       assert.equal(res.unavailableReason, '', `years=${years} must not report a fault`);
       assert.equal(res.coverageEndYear, 2025, `years=${years}`);
+      assert.equal(res.coverageStartYear, 2025 - years, `years=${years}`);
     }
   });
 
@@ -323,10 +330,26 @@ describe('a miss is attributed to a cause, not blamed on upstream', () => {
   });
 
   test('a malformed manifest is treated as unreadable rather than as empty coverage', async () => {
-    redisStore.set(COVERAGE_KEY, { pairs: 'not-an-array' });
+    // Each shape must reach coverage_unknown, not not_covered. The member-level
+    // cases are the dangerous ones: they pass an Array.isArray check, match
+    // nothing, and would answer `not_covered` — the one CDN-cacheable verdict —
+    // for every request, presenting corruption as a legitimate answer.
+    for (const pairs of ['not-an-array', [null], [{}], [123], ['840'], ['840:000:10'], ['84:000']]) {
+      redisStore.set(COVERAGE_KEY, { pairs });
+      const res = await getTradeFlows(CTX, request());
+      assert.equal(res.unavailableReason, 'coverage_unknown', JSON.stringify(pairs));
+      assert.equal(res.upstreamUnavailable, true, JSON.stringify(pairs));
+    }
+  });
+
+  test('a failed read of the bridge key is a cache fault, not unknown coverage', async () => {
+    // No manifest routes into the legacy bridge; the bridge's own read then
+    // fails. That is a Redis fault and must be named as one.
+    redisErrors.add(legacyTradeFlowSeedKey('840', '000'));
     const res = await getTradeFlows(CTX, request());
 
-    assert.equal(res.unavailableReason, 'coverage_unknown');
+    assert.equal(res.unavailableReason, 'cache_unavailable');
+    assert.equal(res.upstreamUnavailable, true);
   });
 
   test('the manifest verdict wins over the legacy bridge once the seeder has run', async () => {
@@ -727,12 +750,14 @@ describe('publishTradeFlows', () => {
     // One key's write fails permanently. The remaining pairs must still land,
     // and the freshness record must count what is actually in Redis — otherwise
     // health reads full coverage over a half-written fleet.
-    let seen = 0;
+    const written: unknown[][] = [];
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
       if (!String(input).startsWith(REDIS_HOST)) throw new Error('unexpected host');
       const cmd = JSON.parse(String(init?.body));
-      seen += 1;
+      // 400 is in PERMANENT_4XX_STATUSES, so writeExtraKey fails fast instead of
+      // burning its retry budget — this asserts the isolation, not the retry.
       if (cmd[1] === 'trade:flows:v2:156:000') return new Response('nope', { status: 400 });
+      written.push(cmd);
       return new Response(JSON.stringify({ result: 'OK' }), { status: 200 });
     }) as typeof fetch;
 
@@ -745,7 +770,16 @@ describe('publishTradeFlows', () => {
       },
     });
 
-    assert.ok(seen > 3, 'a failed write must not abort the pairs after it');
+    const keys = written.map((c) => c[1]);
+    assert.ok(keys.includes('trade:flows:v2:004:000'),
+      'a failed write must not abort the pairs after it');
+    assert.ok(keys.includes(COVERAGE_KEY), 'the manifest must still be published');
+
+    const meta = written.find((c) => c[1] === 'seed-meta:trade:flows');
+    assert.ok(meta, 'freshness must still be recorded');
+    assert.equal(JSON.parse(String(meta[2])).recordCount, 2,
+      'recordCount must count what landed in Redis (2 of 3), not what was fetched — '
+      + 'otherwise a partial write reads as full coverage');
   });
 
   test('a run on the fallback reporter list publishes no manifest', async () => {

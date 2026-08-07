@@ -48,6 +48,7 @@ interface CoverageManifest {
 }
 
 const CODE_PATTERN = /^[0-9]{3}$/;
+const PAIR_ID_PATTERN = /^[0-9]{3}:[0-9]{3}$/;
 
 export function tradeFlowSeedKey(reporter: string, partner: string): string {
   return `${SEED_KEY_PREFIX}:${reporter}:${partner}`;
@@ -181,12 +182,17 @@ async function classifyMiss(reporter: string, partner: string): Promise<GetTrade
     return unavailable('cache_unavailable', true);
   }
   const manifest = read.status === 'hit' ? (read.value as CoverageManifest | null) : null;
-  if (!Array.isArray(manifest?.pairs)) {
+  // Every member must be well-formed, not just the array itself. `{pairs:[null]}`
+  // would otherwise pass, match nothing, and answer `not_covered` — the one
+  // verdict the CDN is allowed to hold — for every request, presenting a corrupt
+  // manifest as a legitimate coverage answer.
+  const pairs = manifest?.pairs;
+  if (!Array.isArray(pairs) || !pairs.every((id) => typeof id === 'string' && PAIR_ID_PATTERN.test(id))) {
     // The manifest expires on the same TTL as the data keys, so losing both is
     // itself evidence the seeder has stopped — not evidence about this pair.
     return unavailable('coverage_unknown', true);
   }
-  return manifest.pairs.includes(tradeFlowCoverageId(reporter, partner))
+  return pairs.includes(tradeFlowCoverageId(reporter, partner))
     ? unavailable('seed_missing', true)
     : unavailable('not_covered', false);
 }
@@ -211,7 +217,12 @@ export async function getTradeFlows(
   if (flows.length === 0) {
     const miss = await classifyMiss(reporter, partner);
     if (miss.unavailableReason !== 'coverage_unknown') return miss;
-    return (await readLegacySeed(reporter, partner, years)) ?? miss;
+    const legacy = await readLegacySeed(reporter, partner, years);
+    // A failed read of the bridge key is a cache fault, not "we don't know what
+    // is covered" — collapsing the two would report a Redis outage under the
+    // wrong reason.
+    if (legacy === 'error') return unavailable('cache_unavailable', true);
+    return legacy ?? miss;
   }
 
   return served(flows, seeded?.fetchedAt);
@@ -233,14 +244,21 @@ function served(flows: TradeFlowRecord[], fetchedAt: unknown): GetTradeFlowsResp
   };
 }
 
-/** See legacyTradeFlowSeedKey. Returns null when the old key cannot answer. */
+/**
+ * See legacyTradeFlowSeedKey. Returns the served response, `'error'` when the
+ * read itself failed, or null when the old key simply has no answer.
+ */
 async function readLegacySeed(
   reporter: string,
   partner: string,
   years: number,
-): Promise<GetTradeFlowsResponse | null> {
+): Promise<GetTradeFlowsResponse | 'error' | null> {
   const key = legacyTradeFlowSeedKey(reporter, partner);
   const read = await readCachedJson(key, true);
+  if (read.status === 'error') {
+    logReadFailure(key, read.error);
+    return 'error';
+  }
   if (read.status !== 'hit') return null;
   const legacy = read.value as GetTradeFlowsResponse | null;
   if (!Array.isArray(legacy?.flows)) return null;

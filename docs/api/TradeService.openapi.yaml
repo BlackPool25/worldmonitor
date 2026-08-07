@@ -965,7 +965,7 @@ components:
                          both endpoints (years = 10 returns 11 calendar years). 0 selects the
                          default of 10; the maximum is 30, which is the full seeded window.
             description: |-
-                Request for bilateral trade flow data.
+                Request for merchandise trade flow data, reporter versus World.
 
                  Coverage is seed-backed: Railway pre-fetches a fixed set of
                  reporter/partner pairs from WTO and this API serves slices of that history.
