@@ -16,7 +16,7 @@ import {
 import {
   extractBundleMembers,
   parseDockerfileCopy,
-  stripComments,
+  readStrippedSource,
   walkContainerGraph,
 } from './_lib/import-graph-walk.mjs';
 
@@ -130,7 +130,7 @@ function extractFileReadDependencies(files, repoRootDir) {
   };
   for (const file of files) {
     if (!/\.[cm]?[jt]s$/u.test(file)) continue;
-    const source = stripComments(readFileSync(file, 'utf8'));
+    const source = readStrippedSource(file);
     // readFileSync(join(__dirname, 'shared', 'x.json')) -- any local alias of
     // readFileSync/join (the seeders import them as _readFileSync/_join).
     for (const match of source.matchAll(
@@ -190,7 +190,7 @@ function extractLiteralPathDependencies(files, repoRootDir) {
   const found = new Set();
   for (const file of files) {
     if (!/\.[cm]?[jt]s$/u.test(file)) continue;
-    const source = stripComments(readFileSync(file, 'utf8'));
+    const source = readStrippedSource(file);
     for (const match of source.matchAll(LITERAL_PATH_RE)) {
       // EVERY base that resolves, never the first one. shared/ is mirrored at
       // the repository root AND under scripts/ — `stocks.json` exists in both —
@@ -311,7 +311,7 @@ function extractSharedConfigDependencies(files, deployMode) {
   const dependencies = new Set();
   for (const file of files) {
     if (!/\.[cm]?[jt]s$/u.test(file)) continue;
-    const source = stripComments(readFileSync(file, 'utf8'));
+    const source = readStrippedSource(file);
     for (const match of source.matchAll(/\bloadSharedConfig\(\s*['"]([^'"]+)['"]\s*\)/gu)) {
       dependencies.add(`${prefix}/${match[1]}`);
     }

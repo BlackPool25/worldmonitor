@@ -834,7 +834,13 @@ export async function withRetry(fn, maxRetries = 3, delayMs = 1000) {
         const wait = err?.retryAfterMs ? Math.max(baseWait, err.retryAfterMs) : baseWait;
         const cause = err.cause ? ` (cause: ${err.cause.message || err.cause.code || err.cause})` : '';
         console.warn(`  Retry ${attempt + 1}/${maxRetries} in ${wait}ms: ${err.message || err}${cause}`);
-        await new Promise(r => setTimeout(r, wait));
+        // Test-only cap on the idle wait between attempts (WM_SEED_RETRY_DELAY_MS):
+        // suites that stub persistent upstream failures otherwise sleep through
+        // every real backoff. Attempt COUNT and the logged/computed wait stay
+        // real — only the sleep shrinks. Read per call, never set in production.
+        const overrideMs = Number(process.env.WM_SEED_RETRY_DELAY_MS);
+        const pause = Number.isFinite(overrideMs) ? Math.min(wait, overrideMs) : wait;
+        await new Promise(r => setTimeout(r, pause));
       }
     }
   }

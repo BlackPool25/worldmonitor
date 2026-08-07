@@ -5,6 +5,8 @@ import { execFileSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { load as loadYaml } from 'js-yaml';
+
+import { loadUnifiedOpenApiSpec } from './_lib/openapi-spec-cache.mjs';
 import { readIdempotencyExemptPaths } from '../scripts/lib/openapi-codegen.mjs';
 
 // Guards the Idempotency-Key header parameter injected by
@@ -184,7 +186,7 @@ describe('OpenAPI Idempotency-Key contract', () => {
   }
 
   it('bundle (worldmonitor.openapi.yaml → /openapi.json) covers every POST', () => {
-    const bundle = loadYaml(readFileSync(resolve(apiDir, 'worldmonitor.openapi.yaml'), 'utf8'));
+    const bundle = loadUnifiedOpenApiSpec();
     const ops = postOps(bundle);
     assert.ok(ops.length > 0, 'bundle has POST operations');
     for (const [path, op] of ops) {

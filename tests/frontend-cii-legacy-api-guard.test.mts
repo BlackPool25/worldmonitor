@@ -38,6 +38,11 @@ describe('legacy local CII product API guard', () => {
       if (path === legacyEnginePath) continue;
 
       const source = readFileSync(path, 'utf8');
+      // Cheap superset pre-filter: an import of the legacy engine must contain
+      // this literal in its module specifier, so files without the substring
+      // cannot be offenders. Full TS parsing of all of src/ took ~12 s; only
+      // the handful of candidate files need an AST.
+      if (!source.includes('country-instability')) continue;
       const sourceFile = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
       const relativePath = relative(repoRoot, path).replaceAll('\\', '/');
 

@@ -312,10 +312,19 @@ function formatCoordinates(lat, lon) {
 }
 
 function longestEligibleMetaDescription(candidates) {
-  return [...new Set(candidates)]
-    .map((candidate) => String(candidate ?? '').trim())
-    .filter((candidate) => candidate.length <= META_DESCRIPTION_MAX)
-    .sort((a, b) => b.length - a.length)[0];
+  // Linear scan, first-longest wins — the same pick a stable descending sort
+  // by length would make, without copying and sorting the (potentially ~12k)
+  // candidate array.
+  let best;
+  const seen = new Set();
+  for (const raw of candidates) {
+    const candidate = String(raw ?? '').trim();
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    if (candidate.length > META_DESCRIPTION_MAX) continue;
+    if (best === undefined || candidate.length > best.length) best = candidate;
+  }
+  return best;
 }
 
 function formatMetaDescriptionList(items) {
@@ -327,12 +336,21 @@ function formatMetaDescriptionList(items) {
 function signalMetaDescriptionCandidates({ subjects, signals }) {
   const candidates = [];
   const subsetCount = 2 ** signals.length;
+  // The formatted signal list depends only on the mask, so format each subset
+  // once instead of once per subject×verb combination. The triple loop below
+  // keeps its original nesting so the candidate order — and therefore which
+  // equal-length candidate longestEligibleMetaDescription picks — is unchanged.
+  const listByMask = new Array(subsetCount);
+  for (let mask = 1; mask < subsetCount; mask += 1) {
+    const selectedSignals = signals.filter((_, index) => mask & (2 ** index));
+    if (selectedSignals.length < 3) continue;
+    listByMask[mask] = formatMetaDescriptionList(selectedSignals);
+  }
   for (const subject of subjects) {
     for (const verb of ['tracks', 'monitors', 'covers']) {
       for (let mask = 1; mask < subsetCount; mask += 1) {
-        const selectedSignals = signals.filter((_, index) => mask & (2 ** index));
-        if (selectedSignals.length < 3) continue;
-        candidates.push(`${subject}: ${verb} ${formatMetaDescriptionList(selectedSignals)}.`);
+        if (listByMask[mask] === undefined) continue;
+        candidates.push(`${subject}: ${verb} ${listByMask[mask]}.`);
       }
     }
   }

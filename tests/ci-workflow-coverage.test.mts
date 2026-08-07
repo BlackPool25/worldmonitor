@@ -30,9 +30,18 @@ const REQUIRED_PR_SCRIPTS = [
   'test:data',
   'test:sidecar',
   'test:convex',
-  'test:e2e:mcp-grant',
-  'test:e2e:variant-smoke:full',
+  'test:e2e:ci-smoke',
   'test:resilience-validation-smoke',
+] as const;
+
+// Every spec the combined ci-smoke invocation must keep exercising. The three
+// specs used to be three separate workflow steps; now that one script carries
+// them, dropping a spec from its command line is the new way a guard can stop
+// being invoked while CI stays green — so the spec list is pinned here.
+const REQUIRED_CI_SMOKE_SPECS = [
+  'e2e/variant-live-smoke.spec.ts',
+  'e2e/mcp-grant-consent.spec.ts',
+  'e2e/dashboard-news-request-budget.spec.ts',
 ] as const;
 
 const REQUIRED_TEST_JOBS = [
@@ -353,6 +362,21 @@ describe('CI workflow coverage', () => {
         `A workflow must run npm run ${script}`,
       );
     }
+  });
+
+  it('keeps every smoke spec on the combined ci-smoke command line', () => {
+    const ciSmoke = packageScripts['test:e2e:ci-smoke'] ?? '';
+    for (const spec of REQUIRED_CI_SMOKE_SPECS) {
+      assert.ok(
+        ciSmoke.includes(spec),
+        `test:e2e:ci-smoke must run ${spec} — a spec dropped from this command has no other CI invocation`,
+      );
+    }
+    assert.match(
+      ciSmoke,
+      /VITE_VARIANT=full/,
+      'test:e2e:ci-smoke must pin VITE_VARIANT=full — variant-live-smoke asserts the full-variant panel set',
+    );
   });
 
   it('keeps the main Test workflow jobs for defensibility smoke gates', () => {

@@ -5,6 +5,8 @@ import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { load as loadYaml } from 'js-yaml';
 
+import { loadUnifiedOpenApiSpec } from './_lib/openapi-spec-cache.mjs';
+
 import {
   COMPANY_MONITORING_OPENAPI_ITEM_CONTRACTS,
   COMPANY_MONITORING_OPENAPI_QUERY_ITEM_CONTRACTS,
@@ -24,7 +26,7 @@ const specs = [
   ],
   [
     'unified YAML',
-    loadYaml(readFileSync(resolve(root, 'docs/api/worldmonitor.openapi.yaml'), 'utf8')),
+    loadUnifiedOpenApiSpec(),
     'worldmonitor_company_monitoring_v1_',
   ],
 ];
