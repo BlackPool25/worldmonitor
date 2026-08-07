@@ -645,6 +645,45 @@ describe('fetchFlowPair', () => {
   });
 });
 
+// ── The published 200 example ─────────────────────────────────────────────
+
+describe('the published success example depicts a response the handler can emit', () => {
+  // The generated example paired flow rows with INVALID_REQUEST and partner
+  // '156' — a state the handler cannot produce, documenting bilateral coverage
+  // the product does not claim. The repo-wide examples contract does NOT catch
+  // this: it only bans `_UNSPECIFIED` sentinels, and INVALID_REQUEST is not one,
+  // so the incoherent example passed it cleanly. Pin the coherence here.
+  const spec = JSON.parse(readFileSync(
+    resolve(import.meta.dirname, '..', 'docs/api/TradeService.openapi.json'),
+    'utf8',
+  )) as {
+    paths: Record<string, Record<string, {
+      responses: Record<string, { content: Record<string, { example?: Record<string, unknown> }> }>;
+    }>>;
+  };
+
+  const example = () =>
+    spec.paths['/api/trade/v1/get-trade-flows'].get.responses['200'].content['application/json'].example ?? {};
+
+  test('rows are never shown alongside a reason that denies them', () => {
+    const ex = example();
+    const flows = ex.flows as unknown[] | undefined;
+    assert.ok(Array.isArray(flows) && flows.length > 0, 'a 200 example should show rows');
+    const reason = ex.unavailableReason;
+    assert.ok(
+      reason === undefined || reason === R.served,
+      `a served example cannot carry ${JSON.stringify(reason)} — the handler only sets a `
+      + 'non-UNSPECIFIED reason when flows is empty',
+    );
+  });
+
+  test('the example does not advertise a partner upstream cannot answer', () => {
+    const flows = example().flows as Record<string, unknown>[];
+    assert.equal(flows[0].partnerCountry, WORLD_PARTNER_CODE,
+      'ITS_MTV_AX/ITS_MTV_AM answer 204 for every named partner; only World is obtainable');
+  });
+});
+
 // ── The dashboard call site ───────────────────────────────────────────────
 
 describe('the dashboard asks for a combination the seed can answer', () => {

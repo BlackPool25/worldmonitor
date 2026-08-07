@@ -23248,7 +23248,7 @@ paths:
                                       "partnerCountry": "000"
                                       "productSector": "Total merchandise"
                                       "reportingCountry": "840"
-                                "unavailableReason": "TRADE_FLOW_UNAVAILABLE_REASON_UNSPECIFIED"
+                                "upstreamUnavailable": false
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_trade_v1_GetTradeFlowsResponse'
                 "400":

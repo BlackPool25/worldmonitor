@@ -169,19 +169,26 @@ const GDELT_TOPIC_EXAMPLE_ID = (() => {
 // undefined to fall through. `series_id` / `series_ids` is shared by FRED (no
 // enum, needs an override) and BLS (enum-resolved upstream) — disambiguate by
 // operation.
-// Enum fields whose zero value is the state the example should depict. The
-// generic rule skips `_UNSPECIFIED` because a request filter set to "unset" is
-// a useless sample — but on a RESPONSE field that names why data is missing,
-// the zero value is precisely the served/healthy case, and any other member
-// contradicts the rows shown alongside it.
-function overrideEnumExample(key, context = {}, members = []) {
+// Real, documented fields a specific operation's example should not FEATURE.
+//
+// Distinct from honeypots (security decoys that must never be advertised):
+// these are legitimate response fields whose only truthful value in the state
+// the example depicts is the enum zero value — which
+// tests/openapi-examples-contract.test.mjs rightly bans from examples, since a
+// sample showing `_UNSPECIFIED` teaches nothing. Emitting any other member
+// instead would contradict the rest of the payload, so the honest option is to
+// leave the field out and let the schema below document it.
+//
+// Dropping it here also frees a MAX_OPTIONAL_PROPERTIES slot for a field that
+// IS informative in that state.
+function isCuratedOmission(key, context = {}) {
   const where = `${context.operationId ?? ''} ${context.path ?? ''}`.toLowerCase();
-  if (key === 'unavailablereason' && (where.includes('gettradeflows') || where.includes('get-trade-flows'))) {
-    // Pairing rows with INVALID_REQUEST documents a response the handler cannot
-    // produce. See #6309.
-    return members.find((m) => typeof m === 'string' && m.endsWith('_UNSPECIFIED'));
-  }
-  return undefined;
+  // GetTradeFlows: a 200 carrying rows always has unavailableReason at the
+  // UNSPECIFIED zero value. The generic enum picker skips the zero value and so
+  // paired flow rows with INVALID_REQUEST — a response the handler cannot
+  // produce. See #6309.
+  return key === 'unavailableReason'
+    && (where.includes('gettradeflows') || where.includes('get-trade-flows'));
 }
 
 function overrideStringExample(key, context = {}) {
@@ -787,11 +794,6 @@ function exampleForSchema(schema, spec, context = {}, depth = 0, seen = new Set(
   if (schema.default !== undefined) return clone(schema.default);
   if (schema.const !== undefined) return clone(schema.const);
   if (Array.isArray(schema.enum) && schema.enum.length > 0) {
-    const curated = overrideEnumExample(normalizeKey(context.name ?? ''), context, schema.enum);
-    if (curated !== undefined) return clone(curated);
-    // Default: skip the zero value, which is rarely the interesting case for a
-    // request filter. See overrideEnumExample for the response fields where the
-    // zero value IS the state worth showing.
     const value = schema.enum.find((item) => !(typeof item === 'string' && item.endsWith('_UNSPECIFIED')));
     return clone(value ?? schema.enum[0]);
   }
@@ -818,9 +820,12 @@ function exampleForSchema(schema, spec, context = {}, depth = 0, seen = new Set(
     // Drop honeypot fields before slot selection so they never appear in the
     // example and never consume a MAX_OPTIONAL_PROPERTIES slot from a real field.
     const isHoneypot = (key) => isHoneypotField(props[key], spec);
-    const required = new Set((Array.isArray(schema.required) ? schema.required : []).filter((key) => !isHoneypot(key)));
+    // Curated omissions join honeypots in being dropped BEFORE slot selection,
+    // so the freed slot goes to a field that actually informs the example.
+    const isDropped = (key) => isHoneypot(key) || isCuratedOmission(key, context);
+    const required = new Set((Array.isArray(schema.required) ? schema.required : []).filter((key) => !isDropped(key)));
     const optional = Object.keys(props)
-      .filter((key) => !required.has(key) && !isHoneypot(key))
+      .filter((key) => !required.has(key) && !isDropped(key))
       .slice(0, MAX_OPTIONAL_PROPERTIES);
     const keys = [...required, ...optional];
     if (keys.length === 0) {
