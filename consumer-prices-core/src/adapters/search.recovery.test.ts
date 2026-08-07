@@ -124,6 +124,43 @@ describe('SearchAdapter recovery path', () => {
     expect(result.url).toBe(replacementUrl);
   });
 
+  it('retains failed pin classifications when the Exa fallback also fails', async () => {
+    const exa = {
+      search: vi.fn().mockResolvedValue([{ url: 'https://coldstorage.com.sg/en/p/bread/i/2.html' }]),
+      extract: vi.fn(),
+    } as unknown as ExaProvider;
+    const firecrawl = {
+      extract: vi
+        .fn()
+        .mockResolvedValueOnce({
+          data: {
+            productName: 'Garden Sunflower Seeds 1kg',
+            price: 9.95,
+            currency: 'SGD',
+            sizeText: '400g',
+          },
+        })
+        .mockResolvedValueOnce({ data: {} }),
+    } as unknown as FirecrawlProvider;
+    const adapter = new SearchAdapter(exa, firecrawl);
+    const context = makeContext(
+      makeConfig({ allowedHosts: ['www.coldstorage.com.sg'], extractionFallback: 'none' }),
+    );
+    const target = {
+      ...makeTarget(),
+      metadata: { ...makeTarget().metadata, direct: true },
+    };
+
+    const error = await adapter.fetchTarget(context, target).catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(SearchTargetError);
+    expect((error as SearchTargetError).failures.map(({ reason }) => reason)).toEqual([
+      'title-mismatch',
+      'missing-price',
+    ]);
+    expect(exa.extract).not.toHaveBeenCalled();
+  });
+
   it('opens a Firecrawl cooldown after repeated provider errors while keeping fallback bounded', async () => {
     const exa = {
       search: vi.fn().mockResolvedValue([

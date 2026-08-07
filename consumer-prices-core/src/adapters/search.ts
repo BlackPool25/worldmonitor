@@ -568,11 +568,13 @@ export class SearchAdapter implements RetailerAdapter {
       matchId?: string;
     };
     const hostAllowlist = normalizeAllowedHosts(domain, ctx.config.searchConfig?.allowedHosts);
+    const failures: ExtractionFailure[] = [];
 
     // Direct path: skip Exa discovery, call the configured extractor on the pinned URL.
     if (direct) {
       try {
         const attempt = await this._extractFromUrl(ctx, target.url, canonicalName, currency, itemConstraints);
+        failures.push(...attempt.failures);
         if (attempt.result) {
           const result = attempt.result;
           ctx.logger.info(
@@ -601,6 +603,8 @@ export class SearchAdapter implements RetailerAdapter {
           `  [search:pin] ${ctx.config.slug}/${canonicalName}: pin extraction failed (${formatExtractionFailures(attempt.failures)}), falling back to Exa`,
         );
       } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        failures.push({ provider: 'firecrawl', reason: 'provider-error', detail });
         ctx.logger.warn(`  [search:pin] ${ctx.config.slug}/${canonicalName}: pin fetch error, falling back to Exa: ${err}`);
       }
     }
@@ -721,7 +725,6 @@ export class SearchAdapter implements RetailerAdapter {
     // the reason each provider/page was rejected for the scrape-run diagnostics.
     let picked: ExtractionSuccess | null = null;
     let usedUrl = safeUrls[0];
-    const failures: ExtractionFailure[] = [];
 
     for (const url of safeUrls) {
       try {
