@@ -139,7 +139,7 @@ export const CROSS_STRAIT_SOURCE_CONTRACTS = Object.freeze({
     maxRequestsPerRun: 2,
     maxDirectRequestsPerRun: 1,
     maxProxyRequestsPerRun: 1,
-    fallbackPolicy: 'direct_then_proxy_on_transport_failure',
+    fallbackPolicy: 'direct_then_proxy_on_transport_or_empty_content',
     documentAdmission: 'manual_review_required',
     runtimePdfRequestsPerRun: 0,
     // A proxy CONNECT refusal is emitted before the tunnel reaches Japan MOD,
@@ -1539,6 +1539,12 @@ export function parseJapanModIndex(html) {
   return [...new Map(rows.map((row) => [row.sourceUrl, row])).values()];
 }
 
+function parseNonEmptyJapanModIndex(html) {
+  const rows = parseJapanModIndex(html);
+  if (rows.length === 0) throw new Error('JMOD_INDEX_EMPTY');
+  return rows;
+}
+
 function isUsableJapanEnglishIndex(html) {
   const contract = CROSS_STRAIT_SOURCE_CONTRACTS.japanMod;
   return scanHtmlAnchors(html).some((anchor) => {
@@ -1609,7 +1615,7 @@ async function fetchBoundedText(fetchFn, url, sourceContract) {
 
 function shouldProxyJapanModFailure(error) {
   const code = errorCode(error);
-  if (code === 'SOURCE_ERROR' || code === 'TIMEOUT') return true;
+  if (code === 'SOURCE_ERROR' || code === 'TIMEOUT' || code === 'JMOD_INDEX_EMPTY') return true;
   const status = Number(/^HTTP_(\d{3})$/u.exec(code)?.[1]);
   return status === 403
     || status === 408
@@ -2302,11 +2308,22 @@ async function fetchJapanIndexOutcome(fetchFn, sleepFn, {
   let transportPath = 'direct';
   let fallbackReason = null;
   let proxyResponseDetail = null;
+  let rows;
+  let directFailure = null;
   try {
     await sleepFn(REQUEST_CADENCE_MS);
     html = await fetchBoundedText(fetchFn, contract.indexUrl, contract);
-  } catch (directError) {
-    if (!proxyFetchFn || !shouldProxyJapanModFailure(directError)) {
+    rows = parseNonEmptyJapanModIndex(html);
+    // A 200 carrying no allowlisted release is a discovery failure, not a
+    // success: it is how a relocated news list or a challenge page served with
+    // a 200 would otherwise be published as fresh. Treat it like a direct
+    // transport failure so the configured proxy gets its one bounded chance.
+  } catch (error) {
+    directFailure = error;
+  }
+
+  if (directFailure) {
+    if (!proxyFetchFn || !shouldProxyJapanModFailure(directFailure)) {
       return {
         ok: false,
         requestCount,
@@ -2314,10 +2331,10 @@ async function fetchJapanIndexOutcome(fetchFn, sleepFn, {
         transportMode: contract.transportMode,
         availableDocumentUrls: [],
         candidates: [],
-        errorCodes: [errorCode(directError)],
+        errorCodes: [errorCode(directFailure)],
       };
     }
-    fallbackReason = errorCode(directError);
+    fallbackReason = errorCode(directFailure);
     requestCount += 1;
     transportPath = 'proxy';
     try {
@@ -2373,42 +2390,28 @@ async function fetchJapanIndexOutcome(fetchFn, sleepFn, {
         errorCodes: [...new Set([fallbackReason, failureCode])],
       };
     }
-  }
-
-  let rows;
-  try {
-    rows = parseJapanModIndex(html);
-    // A 200 carrying no allowlisted release is a discovery failure, not a
-    // success: it is how a relocated news list or a challenge page served with
-    // a 200 would otherwise be published as fresh.
-    if (rows.length === 0) throw new Error('JMOD_INDEX_EMPTY');
-  } catch (error) {
-    const failureCode = errorCode(error);
-    return {
-      ok: false,
-      requestCount,
-      transportPath,
-      transportMode: contract.transportMode,
-      ...(fallbackReason ? { fallbackReason } : {}),
-      ...(transportPath === 'proxy'
-        ? { proxyFailureReason: failureCode }
-        : {}),
-      ...(transportPath === 'proxy'
-        ? {
-            proxyFailureDetail: buildProxyDiagnosticDetail({
-              ...proxyResponseDetail,
-              stage: 'parse',
-              errorCode: failureCode,
-              errorMessage: error?.message,
-            }),
-          }
-        : {}),
-      availableDocumentUrls: [],
-      candidates: [],
-      errorCodes: fallbackReason
-        ? [...new Set([fallbackReason, failureCode])]
-        : [failureCode],
-    };
+    try {
+      rows = parseNonEmptyJapanModIndex(html);
+    } catch (error) {
+      const failureCode = errorCode(error);
+      return {
+        ok: false,
+        requestCount,
+        transportPath,
+        transportMode: contract.transportMode,
+        fallbackReason,
+        proxyFailureReason: failureCode,
+        proxyFailureDetail: buildProxyDiagnosticDetail({
+          ...proxyResponseDetail,
+          stage: 'parse',
+          errorCode: failureCode,
+          errorMessage: error?.message,
+        }),
+        availableDocumentUrls: [],
+        candidates: [],
+        errorCodes: [...new Set([fallbackReason, failureCode])],
+      };
+    }
   }
 
   let shadowIndexProbe;

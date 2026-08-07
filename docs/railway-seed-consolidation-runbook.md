@@ -575,8 +575,9 @@ fail-closed read and hand-off contract.
 
 The official discovery URL is the Japanese Joint Staff homepage,
 `https://www.mod.go.jp/js/`. The runtime makes one direct request and, after a
-transport failure, one request through `JAPAN_MOD_PROXY_URL` (falling back to
-`PROXY_URL`). It never downloads linked PDFs during a scheduled run.
+transport failure or an empty allowlisted index, one request through
+`JAPAN_MOD_PROXY_URL` (falling back to `PROXY_URL`). It never downloads linked
+PDFs during a scheduled run.
 
 **Japan MOD's Cloudflare rule is path-level, not egress-level.** Measured
 2026-08-01, from both direct egress and the configured Decodo path:
@@ -648,8 +649,9 @@ Recovery is accepted only when:
 2. `lastSuccessAt` is non-null, later than the deploy, and advances between
    those two successful runs;
 3. the published `_seed.sourceVersion` reads
-   `taiwan-mnd-html+japan-joint-staff-homepage-v2`, proving the new adapter is
-   the code that ran rather than a merged-but-not-deployed PR;
+   `taiwan-mnd-html+japan-joint-staff-homepage-v3`, proving the resilient
+   homepage-discovery adapter is the code that ran rather than a
+   merged-but-not-deployed PR;
 4. the source reports `transportMode: japanese_homepage_candidate_discovery`
    and at least one newly discovered candidate tied to each successful fetch —
    retained rows do not count;

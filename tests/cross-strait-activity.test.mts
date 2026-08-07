@@ -1124,7 +1124,7 @@ describe('quantified cross-Strait activity (#5575)', () => {
     );
   });
 
-  it('marks an empty or challenge-page Japan index as a transport error while retaining reviewed rows', async () => {
+  it('retries an empty or challenge-page Japan index through the proxy while retaining reviewed rows', async () => {
     let proxyCalls = 0;
     const fetchFn = async (input: string | URL | Request) => {
       const url = String(input);
@@ -1148,10 +1148,12 @@ describe('quantified cross-Strait activity (#5575)', () => {
       },
     });
     const japan = snapshot.sources.find((source: { id: string }) => source.id === 'japan-mod');
-    assert.equal(japan?.transportStatus, 'error');
-    assert.deepEqual(japan?.errorCodes, ['JMOD_INDEX_EMPTY']);
-    assert.equal(proxyCalls, 0, 'valid HTTP transport with invalid content must not trigger the proxy');
-    assert.equal(snapshot.status, 'degraded');
+    assert.equal(japan?.transportStatus, 'fresh');
+    assert.equal(japan?.requestCount, 2);
+    assert.equal(japan?.transportPath, 'proxy');
+    assert.equal(japan?.fallbackReason, 'JMOD_INDEX_EMPTY');
+    assert.deepEqual(japan?.errorCodes, []);
+    assert.equal(proxyCalls, 1, 'empty direct content must trigger the bounded proxy fallback');
     assert.equal(isCrossStraitActivitySnapshot(snapshot), true);
     assert.ok(
       snapshot.observations
@@ -1211,11 +1213,66 @@ describe('quantified cross-Strait activity (#5575)', () => {
     assert.deepEqual(japan?.errorCodes, []);
     assert.equal(
       CROSS_STRAIT_SOURCE_CONTRACTS.japanMod.fallbackPolicy,
-      'direct_then_proxy_on_transport_failure',
+      'direct_then_proxy_on_transport_or_empty_content',
     );
     assert.equal(CROSS_STRAIT_SOURCE_CONTRACTS.japanMod.maxDirectRequestsPerRun, 1);
     assert.equal(CROSS_STRAIT_SOURCE_CONTRACTS.japanMod.maxProxyRequestsPerRun, 1);
     assert.doesNotMatch(JSON.stringify(japan), /proxy-user|proxy-secret/);
+  });
+
+  it('retains last-good Japan MOD data when empty direct content and the proxy both fail', async () => {
+    const previousSnapshot = await fetchCrossStraitActivitySnapshot({
+      fetchFn: crossStraitFixtureFetch(
+        () => new Response(fixture('jmod-homepage.html')),
+      ),
+      now: Date.parse(retrievedAt),
+      previousSnapshot: null,
+      sleepFn: async () => {},
+      proxyUrl: '',
+    });
+    const nextAt = '2026-07-25T11:30:00.000Z';
+    const snapshot = await fetchCrossStraitActivitySnapshot({
+      fetchFn: crossStraitFixtureFetch(
+        () => new Response('<html><body>Access denied</body></html>'),
+      ),
+      now: Date.parse(nextAt),
+      previousSnapshot,
+      sleepFn: async () => {},
+      proxyUrl: 'https://proxy-user:proxy-secret@proxy.test:443',
+      proxyRequestFn: async () => {
+        throw Object.assign(
+          new Error('Proxy CONNECT: HTTP/1.1 407 Proxy Authentication Required'),
+          { status: 407 },
+        );
+      },
+    });
+
+    const japan = snapshot.sources.find((source: { id: string }) => source.id === 'japan-mod');
+    assert.equal(japan?.transportStatus, 'error');
+    assert.equal(japan?.requestCount, 2);
+    assert.equal(japan?.transportPath, 'proxy');
+    assert.equal(japan?.fallbackReason, 'JMOD_INDEX_EMPTY');
+    assert.equal(japan?.proxyFailureReason, 'PROXY_AUTH_FAILED');
+    assert.deepEqual(japan?.errorCodes, ['JMOD_INDEX_EMPTY', 'PROXY_AUTH_FAILED']);
+    assert.equal(japan?.lastSuccessAt, retrievedAt);
+    const previousJapan = previousSnapshot.sources.find(
+      (source: { id: string }) => source.id === 'japan-mod',
+    );
+    assert.equal(
+      japan?.unreviewedCandidateCount,
+      previousJapan?.unreviewedCandidateCount,
+    );
+    const previousIndexPresence = previousSnapshot.observations
+      .filter((row: { sourceId: string }) => row.sourceId === 'japan-mod')
+      .map((row: { id: string; indexPresence?: string }) => [row.id, row.indexPresence]);
+    const currentIndexPresence = snapshot.observations
+      .filter((row: { sourceId: string }) => row.sourceId === 'japan-mod')
+      .map((row: { id: string; indexPresence?: string }) => [row.id, row.indexPresence]);
+    assert.deepEqual(
+      currentIndexPresence,
+      previousIndexPresence,
+      'an empty direct index must not be published as confirmed document absence',
+    );
   });
 
   it('retains last-good Japan MOD data and records both failures when the proxy also fails', async () => {
