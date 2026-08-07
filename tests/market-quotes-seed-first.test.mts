@@ -64,7 +64,7 @@ function seedPayload(symbols: string[]): ListMarketQuotesResponse {
     finnhubSkipped: false,
     skipReason: '',
     rateLimited: false,
-    unavailable: [],
+    unavailableSymbols: [],
   };
 }
 
@@ -153,7 +153,7 @@ const okQuote = (price: number, changePct: number): ProviderReply => ({
 
 const symbolsOf = (resp: ListMarketQuotesResponse) => resp.quotes.map((q) => q.symbol);
 const reasonFor = (resp: ListMarketQuotesResponse, symbol: string) =>
-  resp.unavailable.find((u) => u.symbol === symbol)?.reason;
+  resp.unavailableSymbols.find((u) => u.symbol === symbol)?.reason;
 
 describe('normalizeRequestedSymbols', () => {
   it('upper-cases, strips whitespace, and de-dupes keeping first-seen order', () => {
@@ -193,7 +193,7 @@ describe('listMarketQuotes seed-first resolution', () => {
     const resp = await listMarketQuotes(CTX, { symbols: ['NVDA', 'AAPL'] });
 
     assert.deepEqual(symbolsOf(resp), ['NVDA', 'AAPL']);
-    assert.deepEqual(resp.unavailable, []);
+    assert.deepEqual(resp.unavailableSymbols, []);
     assert.deepEqual(h.finnhubCalls, []);
   });
 
@@ -212,7 +212,7 @@ describe('listMarketQuotes seed-first resolution', () => {
     const resp = await listMarketQuotes(CTX, { symbols: ['AAPL', 'RIVN', 'MSFT', 'PLTR'] });
 
     assert.deepEqual(symbolsOf(resp), ['AAPL', 'RIVN', 'MSFT', 'PLTR']);
-    assert.deepEqual(resp.unavailable, []);
+    assert.deepEqual(resp.unavailableSymbols, []);
     assert.deepEqual(h.finnhubCalls.sort(), ['PLTR', 'RIVN']);
     const rivn = resp.quotes.find((q) => q.symbol === 'RIVN');
     assert.equal(rivn?.price, 12.5);
@@ -228,7 +228,7 @@ describe('listMarketQuotes seed-first resolution', () => {
     const resp = await listMarketQuotes(CTX, { symbols: ['SOFI', 'HOOD'] });
 
     assert.deepEqual(symbolsOf(resp), ['SOFI', 'HOOD']);
-    assert.deepEqual(resp.unavailable, []);
+    assert.deepEqual(resp.unavailableSymbols, []);
   });
 
   it('reuses the Redis-cached quote on a repeat request for the same missing symbol', async () => {
@@ -344,7 +344,7 @@ describe('listMarketQuotes seed-first resolution', () => {
 
     assert.deepEqual(resp.quotes, []);
     assert.deepEqual(
-      resp.unavailable.map((u) => u.reason),
+      resp.unavailableSymbols.map((u) => u.reason),
       ['MARKET_QUOTE_UNAVAILABLE_REASON_SEED_UNAVAILABLE', 'MARKET_QUOTE_UNAVAILABLE_REASON_SEED_UNAVAILABLE'],
     );
     assert.deepEqual(h.finnhubCalls, [], 'a degraded seed must not amplify into one upstream call per symbol');

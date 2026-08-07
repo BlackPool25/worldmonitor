@@ -10,7 +10,7 @@ export interface ListMarketQuotesResponse {
   finnhubSkipped: boolean;
   skipReason: string;
   rateLimited: boolean;
-  unavailable: MarketQuoteUnavailable[];
+  unavailableSymbols: MarketQuoteUnavailable[];
 }
 
 export interface MarketQuote {

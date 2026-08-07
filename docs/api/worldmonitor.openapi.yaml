@@ -14750,7 +14750,7 @@ paths:
                                       "symbol": "AAPL"
                                 "rateLimited": true
                                 "skipReason": "example"
-                                "unavailable":
+                                "unavailableSymbols":
                                     - "reason": "MARKET_QUOTE_UNAVAILABLE_REASON_NOT_FOUND"
                                       "symbol": "AAPL"
                             schema:
@@ -37936,7 +37936,7 @@ components:
                 rateLimited:
                     type: boolean
                     description: True when the upstream API rate-limited the request.
-                unavailable:
+                unavailableSymbols:
                     type: array
                     items:
                         $ref: '#/components/schemas/worldmonitor_market_v1_MarketQuoteUnavailable'

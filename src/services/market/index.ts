@@ -26,7 +26,7 @@ const defiBreaker = createCircuitBreaker<ListDefiTokensResponse>({ name: 'DeFi T
 const aiBreaker = createCircuitBreaker<ListAiTokensResponse>({ name: 'AI Tokens', persistCache: true });
 const otherBreaker = createCircuitBreaker<ListOtherTokensResponse>({ name: 'Other Tokens', persistCache: true });
 
-const emptyStockFallback: ListMarketQuotesResponse = { quotes: [], finnhubSkipped: false, skipReason: '', rateLimited: false, unavailable: [] };
+const emptyStockFallback: ListMarketQuotesResponse = { quotes: [], finnhubSkipped: false, skipReason: '', rateLimited: false, unavailableSymbols: [] };
 const emptyCommodityFallback: ListCommodityQuotesResponse = { quotes: [] };
 const emptySectorFallback: GetSectorSummaryResponse = { sectors: [] };
 const emptyCryptoFallback: ListCryptoQuotesResponse = { quotes: [] };
@@ -72,7 +72,7 @@ export interface MarketFetchResult {
    * A custom watchlist ticker the fixed seed does not carry used to vanish
    * from `data` with no signal at all.
    */
-  unavailable?: MarketQuoteUnavailable[];
+  unavailableSymbols?: MarketQuoteUnavailable[];
 }
 
 // ========================================================================
@@ -140,7 +140,7 @@ export async function fetchMultipleStocks(
     rateLimited: resp.rateLimited || undefined,
     // `resp` can be the pre-#6305 breaker cache or the empty fallback, so
     // treat a missing field as "nothing to report" rather than trusting it.
-    unavailable: resp.unavailable?.length ? resp.unavailable : undefined,
+    unavailableSymbols: resp.unavailableSymbols?.length ? resp.unavailableSymbols : undefined,
   };
 }
 

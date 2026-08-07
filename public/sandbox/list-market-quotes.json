@@ -35,7 +35,7 @@
       ],
       "rateLimited": true,
       "skipReason": "example",
-      "unavailable": [
+      "unavailableSymbols": [
         {
           "reason": "MARKET_QUOTE_UNAVAILABLE_REASON_NOT_FOUND",
           "symbol": "AAPL"

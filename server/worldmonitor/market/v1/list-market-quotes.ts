@@ -238,7 +238,7 @@ function seedUnavailableResponse(symbols: string[]): ListMarketQuotesResponse {
     finnhubSkipped: false,
     skipReason: '',
     rateLimited: false,
-    unavailable: symbols.map((symbol) => ({ symbol, reason: REASON.seedUnavailable })),
+    unavailableSymbols: symbols.map((symbol) => ({ symbol, reason: REASON.seedUnavailable })),
   };
 }
 
@@ -266,7 +266,7 @@ export async function listMarketQuotes(
   }
 
   // No symbol filter: the caller wants the seed universe as-is.
-  if (accepted.length === 0) return { ...bootstrap, unavailable: bootstrap.unavailable ?? [] };
+  if (accepted.length === 0) return { ...bootstrap, unavailableSymbols: bootstrap.unavailableSymbols ?? [] };
 
   const seeded = filterMarketQuotes(bootstrap, accepted);
   const seededBySymbol = new Map(seeded.quotes.map((quote) => [quote.symbol, quote]));
@@ -284,7 +284,7 @@ export async function listMarketQuotes(
       finnhubSkipped: false,
       skipReason: '',
       rateLimited: false,
-      unavailable: overflow,
+      unavailableSymbols: overflow,
     };
   }
 
@@ -321,6 +321,6 @@ export async function listMarketQuotes(
     finnhubSkipped: skipped,
     skipReason: skipped ? 'FINNHUB_API_KEY not configured' : '',
     rateLimited: resolved.rateLimited,
-    unavailable: [...unavailable, ...overflow],
+    unavailableSymbols: [...unavailable, ...overflow],
   };
 }

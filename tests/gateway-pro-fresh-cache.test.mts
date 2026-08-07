@@ -5,8 +5,18 @@ import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 
 import { issueSessionToken } from '../api/_session.js';
 import { createDomainGateway } from '../server/gateway.ts';
+import { hasEndpointRatePolicy } from '../server/_shared/rate-limit.ts';
 import { PRO_FRESH_CACHE_RPC_PATHS } from '../src/shared/pro-fresh-rpc.ts';
 import { installRedis } from './helpers/fake-upstash-redis.mts';
+
+// This harness configures no Upstash credentials, so any route carrying an
+// explicit endpoint rate policy fails closed (503) before the cache-tier logic
+// ever runs — that is the policy's whole point. Partition dynamically rather
+// than naming routes, so a sibling that gains a policy later moves buckets
+// instead of silently going uncovered. (#6305 gave list-market-quotes a policy
+// when its seed misses started reaching a paid provider.)
+const CACHE_TIER_PATHS = [...PRO_FRESH_CACHE_RPC_PATHS].filter((p) => !hasEndpointRatePolicy(p));
+const FAIL_CLOSED_PATHS = [...PRO_FRESH_CACHE_RPC_PATHS].filter((p) => hasEndpointRatePolicy(p));
 
 const ORIGINAL_FETCH = globalThis.fetch;
 const ORIGINAL_ENV = {
@@ -167,17 +177,39 @@ describe('Pro-only market freshness cache contract', () => {
     );
   });
 
-  it('gives active Pro-or-higher plans a 30-second private browser tier on all five routes', async () => {
+  it('gives active Pro-or-higher plans a 30-second private browser tier', async () => {
     entitlements.set('user_pro_fresh', entitlement('pro_monthly', 1));
     const token = await signToken('user_pro_fresh');
 
-    for (const path of PRO_FRESH_CACHE_RPC_PATHS) {
+    assert.ok(CACHE_TIER_PATHS.length > 0, 'expected at least one policy-free Pro-fresh route to exercise');
+    for (const path of CACHE_TIER_PATHS) {
       const res = await handler(request(path, { Authorization: `Bearer ${token}` }));
       assert.equal(res.status, 200, path);
       assert.equal(res.headers.get('X-Cache-Tier'), 'live-browser', path);
       assert.match(res.headers.get('Cache-Control') ?? '', /\bmax-age=30\b/, path);
       assert.match(res.headers.get('Cache-Control') ?? '', /\bprivate\b/, path);
       assertPrivateCache(res);
+    }
+  });
+
+  it('fails a rate-policied Pro-fresh route closed when no limiter is configured', async () => {
+    // The freshness tier is a caching concern; the endpoint policy is a spend
+    // control that runs first. A provider-backed route must not serve — even to
+    // Pro — when its limiter is unavailable, so assert the precedence rather
+    // than routing around it.
+    entitlements.set('user_pro_failclosed', entitlement('pro_monthly', 1));
+    const token = await signToken('user_pro_failclosed');
+
+    // Without this the test goes vacuous the moment the policy is dropped:
+    // FAIL_CLOSED_PATHS would empty out and the loop below would assert nothing.
+    assert.ok(
+      FAIL_CLOSED_PATHS.includes('/api/market/v1/list-market-quotes'),
+      'list-market-quotes must keep its endpoint rate policy — it reaches a paid provider on seed misses (#6305)',
+    );
+    for (const path of FAIL_CLOSED_PATHS) {
+      const res = await handler(request(path, { Authorization: `Bearer ${token}` }));
+      assert.equal(res.status, 503, path);
+      assert.equal(res.headers.get('X-Cache-Tier'), null, path);
     }
   });
 
@@ -188,7 +220,7 @@ describe('Pro-only market freshness cache contract', () => {
     for (const userId of ['user_free_cache', 'user_expired_pro_cache']) {
       const token = await signToken(userId, userId.includes('expired') ? 'pro' : 'free');
       const res = await handler(request(
-        '/api/market/v1/list-market-quotes',
+        '/api/market/v1/list-crypto-quotes',
         { Authorization: `Bearer ${token}` },
       ));
       assert.equal(res.status, 200);
@@ -200,7 +232,7 @@ describe('Pro-only market freshness cache contract', () => {
 
   it('keeps anonymous browser sessions on the existing five-minute private tier', async () => {
     const res = await handler(request(
-      '/api/market/v1/list-market-quotes',
+      '/api/market/v1/list-crypto-quotes',
       { 'X-WorldMonitor-Key': anonymousSessionToken },
     ));
     assert.equal(res.status, 200);
@@ -213,7 +245,7 @@ describe('Pro-only market freshness cache contract', () => {
     entitlements.set('user_unresolved_cache', null);
     const token = await signToken('user_unresolved_cache', 'pro');
     const res = await handler(request(
-      '/api/market/v1/list-market-quotes',
+      '/api/market/v1/list-crypto-quotes',
       { Authorization: `Bearer ${token}` },
     ));
 

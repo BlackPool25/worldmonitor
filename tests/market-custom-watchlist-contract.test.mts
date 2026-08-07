@@ -80,7 +80,7 @@ function defaultSeed(): ListMarketQuotesResponse {
     finnhubSkipped: false,
     skipReason: '',
     rateLimited: false,
-    unavailable: [],
+    unavailableSymbols: [],
   };
 }
 
@@ -146,7 +146,7 @@ describe('custom watchlist symbols reach the response (#6305)', () => {
     assert.equal(returned.length, DEFAULTS.length + 2);
     assert.deepEqual(returned.slice(0, DEFAULTS.length), DEFAULTS.map((s) => s.symbol));
     assert.deepEqual(returned.slice(-2), ['RIVN', 'PLTR']);
-    assert.deepEqual(resp.unavailable, [], 'nothing requested may go unreported');
+    assert.deepEqual(resp.unavailableSymbols, [], 'nothing requested may go unreported');
 
     // Only the two seed misses cost an upstream call — the 59 defaults are free.
     assert.deepEqual(harness.finnhubCalls.sort(), ['PLTR', 'RIVN']);
@@ -162,7 +162,7 @@ describe('custom watchlist symbols reach the response (#6305)', () => {
 
     assert.ok(resp.quotes.some((q) => q.symbol === 'RIVN'));
     assert.ok(!resp.quotes.some((q) => q.symbol === 'NOSUCHTICKER'));
-    assert.deepEqual(resp.unavailable, [
+    assert.deepEqual(resp.unavailableSymbols, [
       { symbol: 'NOSUCHTICKER', reason: 'MARKET_QUOTE_UNAVAILABLE_REASON_NOT_FOUND' },
     ]);
   });
@@ -182,7 +182,7 @@ describe('custom watchlist symbols reach the response (#6305)', () => {
     const resp = await listMarketQuotes(CTX, { symbols: requested.map((s) => s.symbol) });
 
     assert.equal(
-      resp.unavailable.filter((u) => u.reason === 'MARKET_QUOTE_UNAVAILABLE_REASON_REQUEST_LIMIT_EXCEEDED').length,
+      resp.unavailableSymbols.filter((u) => u.reason === 'MARKET_QUOTE_UNAVAILABLE_REASON_REQUEST_LIMIT_EXCEEDED').length,
       0,
       'a maximal watchlist must not exceed the handler request bound',
     );

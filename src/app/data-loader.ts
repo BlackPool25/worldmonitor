@@ -2237,7 +2237,7 @@ export class DataLoaderManager implements AppModule {
           },
         });
         this.ctx.latestMarkets = stocksResult.data;
-        marketsPanel?.renderMarkets(stocksResult.data, stocksResult.rateLimited, stocksResult.unavailable);
+        marketsPanel?.renderMarkets(stocksResult.data, stocksResult.rateLimited, stocksResult.unavailableSymbols);
       }
 
       const finnhubConfigMsg = 'FINNHUB_API_KEY not configured — add in Settings';
