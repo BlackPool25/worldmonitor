@@ -4,25 +4,11 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, extname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { guardBuiltOutput, shouldSkipBuiltOutput } from './_lib/built-output-guard.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..');
 const dashboardHtml = resolve(repoRoot, 'dist/dashboard.html');
-const expectBuiltOutput = process.env.WM_EXPECT_BUILT_OUTPUT === '1';
-
-function shouldSkipBuiltOutput() {
-  if (existsSync(dashboardHtml)) return false;
-  return !expectBuiltOutput;
-}
-
-function guardBuiltOutput() {
-  if (!existsSync(dashboardHtml) && expectBuiltOutput) {
-    throw new Error(
-      'dist/dashboard.html is missing but WM_EXPECT_BUILT_OUTPUT=1 indicates CI expected a build. ' +
-      'Run VITE_VARIANT=full vite build first, or check that the build step still produces dist/dashboard.html.',
-    );
-  }
-}
 
 function src(relPath) {
   return readFileSync(resolve(repoRoot, relPath), 'utf8');
@@ -322,8 +308,8 @@ describe('dashboard critical CSS graph', () => {
     );
   });
 
-  describe('built dashboard output', { skip: shouldSkipBuiltOutput() }, () => {
-    guardBuiltOutput();
+  describe('built dashboard output', { skip: shouldSkipBuiltOutput(dashboardHtml) }, () => {
+    guardBuiltOutput(dashboardHtml);
 
     it('does not link or merge the settings-only stylesheet into built dashboard.html', () => {
     const dashboardHtml = builtSrc('dist/dashboard.html');

@@ -3,16 +3,15 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { guardBuiltOutput, shouldSkipBuiltOutput } from './_lib/built-output-guard.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..');
 const distDir = resolve(repoRoot, 'dist');
 const dashboardHtml = resolve(distDir, 'dashboard.html');
-const expectBuiltOutput = process.env.WM_EXPECT_BUILT_OUTPUT === '1';
 
 function shouldSkipDashboard() {
-  if (existsSync(dashboardHtml)) return false;
-  return !expectBuiltOutput;
+  return shouldSkipBuiltOutput(dashboardHtml);
 }
 
 // Large static config DATA TABLES intentionally kept OFF the eager dashboard
@@ -189,12 +188,7 @@ function registerDeferredChunkAssertions(chunks, options) {
 }
 
 function guardDashboardBuild() {
-  if (!existsSync(dashboardHtml) && expectBuiltOutput) {
-    throw new Error(
-      'dist/dashboard.html is missing but WM_EXPECT_BUILT_OUTPUT=1 indicates CI expected a build. ' +
-      'Run VITE_VARIANT=full vite build first, or check that the build step still produces dist/dashboard.html.',
-    );
-  }
+  guardBuiltOutput(dashboardHtml);
 }
 
 describe('eager chunk budget: lazy-only config data tables stay off the entry', { skip: shouldSkipDashboard() }, () => {
