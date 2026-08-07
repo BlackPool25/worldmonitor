@@ -53,6 +53,20 @@ describe('listCommodityQuotes contract (#6307)', () => {
     assert.throws(() => resolveCommodityQuery(['GC=F', 'INVALID']), UnsupportedCommoditySymbolError);
   });
 
+  it('rejects whitespace-only symbols instead of treating them as empty→defaults', () => {
+    assert.throws(
+      () => resolveCommodityQuery(['   ', '\t']),
+      (err) => {
+        assert.ok(err instanceof UnsupportedCommoditySymbolError);
+        assert.equal(err.statusCode, 400);
+        assert.match(err.message, /blank/);
+        return true;
+      },
+    );
+    // Blank mixed with a supported symbol still fails closed (never partial success).
+    assert.throws(() => resolveCommodityQuery(['GC=F', '  ']), UnsupportedCommoditySymbolError);
+  });
+
   it('caps cardinality beyond the configured cap (over-cap is explicit)', () => {
     const many = Array.from({ length: 80 }, (_, i) => `SYM${i}`);
     // none of these are supported → would throw, so build capped against a

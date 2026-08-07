@@ -983,6 +983,19 @@ describe('OpenAPI curated example values', () => {
         assert.notEqual(value, 'example', `${where}: placeholder commodity symbol`);
         assert.ok(supported.has(String(value)), `${where}: commodity symbol '${value}' is not in the supported seed set`);
       }
+
+      // Response examples also used singular `symbol` (generic inject defaulted to AAPL).
+      for (const { path, method, op } of operationEntries(spec)) {
+        if (op.operationId !== 'ListCommodityQuotes') continue;
+        const example = op.responses?.['200']?.content?.['application/json']?.example;
+        const quotes = example?.quotes;
+        if (!Array.isArray(quotes)) continue;
+        for (const [i, q] of quotes.entries()) {
+          const where = `${label} ${method.toUpperCase()} ${path} response.quotes[${i}].symbol`;
+          assert.ok(q && typeof q.symbol === 'string', `${where}: missing symbol`);
+          assert.ok(supported.has(q.symbol), `${where}: commodity symbol '${q.symbol}' is not in the supported seed set`);
+        }
+      }
     }
   });
 });

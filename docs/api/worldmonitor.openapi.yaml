@@ -14950,7 +14950,7 @@ paths:
                                       "price": 75.25
                                       "sparkline":
                                           - 1.5
-                                      "symbol": "AAPL"
+                                      "symbol": "GC=F"
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_market_v1_ListCommodityQuotesResponse'
                 "400":

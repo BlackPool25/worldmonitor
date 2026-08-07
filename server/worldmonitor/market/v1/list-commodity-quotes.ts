@@ -7,7 +7,7 @@
  *   - Only symbols in the configured commodity set (shared/commodities.json)
  *     are supported. Requesting an unsupported symbol returns HTTP 400.
  *   - Symbols are normalized (trim, de-whitespace, upper), deduplicated, and
- *     capped before the seed read. Results are returned in request order.
+ *     capped before the seed read. Results preserve seed/bootstrap order.
  */
 
 import type {
@@ -61,7 +61,16 @@ export function resolveCommodityQuery(
   const unsupported: string[] = [];
   for (const raw of rawSymbols) {
     const symbol = normalizeCommoditySymbol(raw);
-    if (!symbol || seen.has(symbol)) continue;
+    // Present-but-blank after normalize (e.g. whitespace-only) is a client error.
+    // Without this, resolve returns symbols=[] and the filter path returns the
+    // full seed set — looking like empty→defaults for a non-empty request.
+    if (!symbol) {
+      if (String(raw).length > 0 && !unsupported.includes('<blank>')) {
+        unsupported.push('<blank>');
+      }
+      continue;
+    }
+    if (seen.has(symbol)) continue;
     if (!supported.has(symbol)) {
       unsupported.push(symbol);
       continue;

@@ -89,7 +89,7 @@ The Markets panel supports user-customizable stock and commodity symbol lists, a
 
 Symbols are entered via a modal dialog accessible from the Markets panel settings icon. The input accepts comma-separated, newline-separated, or `SYMBOL|Label` formats. Watchlist state is stored in `localStorage` as `wm-market-watchlist-v1` (max 50 symbols, deduplicated). Changes emit a `wm-market-watchlist-changed` CustomEvent for live synchronization across panels without page reload.
 
-Commodity symbols are limited to the configured seed set (see `shared/commodities.json`, e.g. `GC=F` gold, `CL=F` crude oil). The commodity quotes RPC serves only this set — an unsupported symbol is rejected rather than silently dropped, and an empty request returns the full default set.
+Commodity futures on the watchlist (e.g. `GC=F`, `CL=F`) are served via market quotes when the Markets panel requests them. The dedicated commodity quotes RPC (`list-commodity-quotes`) is limited to the configured seed set in `shared/commodities.json` — empty `symbols` returns that full set; an unsupported symbol is rejected with HTTP 400 rather than silently dropped. Custom non-seed watchlist tickers are tracked separately (#6305).
 
 ### Macro Signal Analysis (Market Radar)
 

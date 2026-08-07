@@ -253,7 +253,7 @@ paths:
                                       "price": 75.25
                                       "sparkline":
                                           - 1.5
-                                      "symbol": "AAPL"
+                                      "symbol": "GC=F"
                             schema:
                                 $ref: '#/components/schemas/ListCommodityQuotesResponse'
                 "400":
