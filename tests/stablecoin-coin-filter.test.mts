@@ -429,6 +429,49 @@ test('a gap-only response is not stamped with the stale snapshot timestamp', asy
   );
 });
 
+test('an ID the CoinPaprika fallback cannot map is unknown, not absent', async (t) => {
+  t.after(restoreEnvironment);
+  const paprikaCalls: string[] = [];
+  installHarness({
+    // A snapshot WITHOUT tether, so both requested IDs are genuine gaps — the
+    // mixed-gap set is the whole point. tether is in shared/stablecoins.json's
+    // CoinPaprika mapping table; frax is not.
+    seed: { ...SEED_SNAPSHOT, stablecoins: [seedCoin('dai')] },
+    // CoinGecko is down, so the ladder falls through to CoinPaprika, which can
+    // only answer for mapped IDs. It therefore never looks frax up at all —
+    // and reporting NOT_FOUND would assert the coin does not exist on the
+    // strength of a gap in our own mapping table.
+    gecko: () => new Response('down', { status: 500 }),
+  });
+
+  const withGecko = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.startsWith('https://api.coinpaprika.com/')) {
+      paprikaCalls.push(url);
+      return new Response(
+        JSON.stringify({
+          id: 'usdt-tether',
+          name: 'Tether',
+          symbol: 'USDT',
+          quotes: { USD: { price: 1.0, volume_24h: 1, market_cap: 1, percent_change_24h: 0, percent_change_7d: 0 } },
+        }),
+        { status: 200 },
+      );
+    }
+    return withGecko(input as RequestInfo, init);
+  }) as typeof fetch;
+
+  const res = await call(['tether', 'frax']);
+
+  assert.ok(paprikaCalls.length > 0, 'the fallback leg must actually have run');
+  assert.deepEqual(
+    res.unresolved,
+    [{ id: 'frax', reason: 'PROVIDER_ERROR' }],
+    'an unmappable ID on the fallback leg is PROVIDER_ERROR, not NOT_FOUND',
+  );
+});
+
 test('a Redis outage suppresses provider work instead of amplifying into it', async (t) => {
   t.after(restoreEnvironment);
   const h = installHarness({

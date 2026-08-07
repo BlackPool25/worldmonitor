@@ -27,7 +27,12 @@ import type {
 import stablecoinConfig from '../../../../shared/stablecoins.json';
 import { cachedFetchJson, readCachedJson } from '../../../_shared/redis';
 import { sha256Hex } from '../../../_shared/hash';
-import { fetchCryptoMarkets, parseStringArray, type CoinGeckoMarketItem } from './_shared';
+import {
+  fetchCryptoMarketsWithSource,
+  parseStringArray,
+  type CoinGeckoMarketItem,
+  type CryptoMarketsSource,
+} from './_shared';
 
 const SEED_CACHE_KEY = 'market:stablecoins:v1';
 
@@ -206,6 +211,11 @@ function toStablecoin(item: CoinGeckoMarketItem): Stablecoin {
  * from a definitive "no such coin" (cached negative, reported NOT_FOUND).
  * Caching the outage would answer the next caller with the wrong reason for
  * five minutes.
+ *
+ * `providerFailed` is the "we cannot claim absence" flag, and a successful
+ * CoinPaprika answer sets it too: that leg only covers IDs in its mapping
+ * table, so an ID missing from a fell-back result was never actually looked
+ * up. It is cached alongside the coins so a cache hit keeps the distinction.
  */
 async function resolveGapCoins(ids: string[]): Promise<{
   resolved: Map<string, Stablecoin>;
@@ -219,11 +229,11 @@ async function resolveGapCoins(ids: string[]): Promise<{
   const cacheKey = `${GAP_CACHE_KEY_PREFIX}${await sha256Hex([...ids].sort().join(','))}`;
 
   try {
-    const payload = await cachedFetchJson<{ coins: Stablecoin[] }>(
+    const payload = await cachedFetchJson<{ coins: Stablecoin[]; source: CryptoMarketsSource }>(
       cacheKey,
       GAP_CACHE_TTL,
       async () => {
-        const items = await fetchCryptoMarkets(ids, {
+        const { items, source } = await fetchCryptoMarketsWithSource(ids, {
           sparkline: false,
           priceChangePercentage: '24h,7d',
         });
@@ -231,14 +241,14 @@ async function resolveGapCoins(ids: string[]): Promise<{
         const coins = items
           .filter(item => item && typeof item.id === 'string' && requested.has(item.id))
           .map(toStablecoin);
-        return coins.length > 0 ? { coins } : null;
+        return coins.length > 0 ? { coins, source } : null;
       },
       GAP_NEGATIVE_TTL,
       { timeoutMs: GAP_FETCH_TIMEOUT_MS, cacheFetcherErrors: false },
     );
 
     for (const coin of payload?.coins ?? []) resolved.set(coin.id, coin);
-    return { resolved, providerFailed: false };
+    return { resolved, providerFailed: payload?.source === 'coinpaprika' };
   } catch (err) {
     console.warn('[Stablecoin] gap lookup failed:', (err as Error).message);
     return { resolved, providerFailed: true };

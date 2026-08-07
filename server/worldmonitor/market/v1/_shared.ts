@@ -505,16 +505,35 @@ export async function fetchCoinPaprikaMarkets(
 // Unified crypto market fetcher: CoinGecko → CoinPaprika fallback
 // ========================================================================
 
-export async function fetchCryptoMarkets(
+export type CryptoMarketsSource = 'coingecko' | 'coinpaprika';
+
+/**
+ * Same ladder as `fetchCryptoMarkets`, but names the leg that answered.
+ *
+ * The two legs do not have the same reach: CoinGecko resolves any ID it knows,
+ * while CoinPaprika can only answer for IDs present in COINPAPRIKA_ID_MAP. So
+ * "absent from the result" means "no such coin" on the primary and merely
+ * "outside our mapping table" on the fallback. A caller that reports per-ID
+ * outcomes has to tell those apart; one that just renders the rows does not,
+ * and should keep using `fetchCryptoMarkets`.
+ */
+export async function fetchCryptoMarketsWithSource(
   ids: string[],
   opts: CoinGeckoMarketsOpts = {},
-): Promise<CoinGeckoMarketItem[]> {
+): Promise<{ items: CoinGeckoMarketItem[]; source: CryptoMarketsSource }> {
   try {
-    return await fetchCoinGeckoMarkets(ids, opts);
+    return { items: await fetchCoinGeckoMarkets(ids, opts), source: 'coingecko' };
   } catch (err) {
     console.warn(`[CoinGecko] Failed, falling back to CoinPaprika:`, (err as Error).message);
     // No opts pass-through: CoinPaprika's ticker response always carries both
     // the 24h and 7d change, so the projection knobs have nothing to select.
-    return fetchCoinPaprikaMarkets(ids);
+    return { items: await fetchCoinPaprikaMarkets(ids), source: 'coinpaprika' };
   }
+}
+
+export async function fetchCryptoMarkets(
+  ids: string[],
+  opts: CoinGeckoMarketsOpts = {},
+): Promise<CoinGeckoMarketItem[]> {
+  return (await fetchCryptoMarketsWithSource(ids, opts)).items;
 }
