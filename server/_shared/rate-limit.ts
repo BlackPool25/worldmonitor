@@ -303,6 +303,12 @@ export const ENDPOINT_RATE_POLICIES: Record<string, EndpointRatePolicy> = {
   '/api/market/v1/backtest-stock': { limit: 60, window: '60 s' },
   '/api/market/v1/get-insider-transactions': { limit: 60, window: '60 s' },
   '/api/market/v1/get-country-stock-index': { limit: 30, window: '60 s' },
+  // Stablecoins are seed-backed for the default request, but naming coins the
+  // snapshot does not carry reaches CoinGecko, and the caller chooses the IDs
+  // — unbounded cardinality, so per-request Redis caching cannot bound spend
+  // on its own. 30/min mirrors the country-index route: both cap a batched
+  // upstream call rather than a per-symbol fan-out. (#6308)
+  '/api/market/v1/list-stablecoin-markets': { limit: 30, window: '60 s' },
   '/api/economic/v1/list-world-bank-indicators': { limit: 30, window: '60 s' },
   // Company Monitoring is contract-only and remains unrouted until #6003
   // passes, but generated mutation routes still need a fail-closed policy
@@ -409,6 +415,9 @@ export const FAIL_CLOSED_ENDPOINT_RATE_POLICY_REQUIRED: Record<string, RateLimit
   },
   '/api/market/v1/get-country-stock-index': {
     reason: 'Per-country stock-index lookups proxy Yahoo Finance on cache miss.',
+  },
+  '/api/market/v1/list-stablecoin-markets': {
+    reason: 'Caller-named coin IDs absent from the seed snapshot fan out to CoinGecko on cache miss with unbounded ID cardinality.',
   },
   '/api/economic/v1/list-world-bank-indicators': {
     reason: 'Caller-controlled indicator, country, and year inputs proxy World Bank on cache miss.',

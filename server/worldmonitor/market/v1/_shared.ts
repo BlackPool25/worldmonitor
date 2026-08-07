@@ -354,11 +354,26 @@ export function coingeckoEndpoint(): { baseUrl: string; headers: Record<string, 
   return { baseUrl: 'https://api.coingecko.com/api/v3', headers, tier: 'keyless' };
 }
 
+/**
+ * Shape of the `/coins/markets` projection. Defaults reproduce the original
+ * call exactly (sparkline on, 24h window) so existing callers are unchanged;
+ * the stablecoin RPC asks for `24h,7d` and no sparkline, because it must
+ * populate a `change7d` field and renders no chart. Requesting `7d` is not
+ * optional there: CoinGecko omits `price_change_percentage_7d_in_currency`
+ * unless the window is named, which would silently zero the column.
+ */
+export interface CoinGeckoMarketsOpts {
+  sparkline?: boolean;
+  priceChangePercentage?: string;
+}
+
 export async function fetchCoinGeckoMarkets(
   ids: string[],
+  opts: CoinGeckoMarketsOpts = {},
 ): Promise<CoinGeckoMarketItem[]> {
+  const { sparkline = true, priceChangePercentage = '24h' } = opts;
   const { baseUrl, headers } = coingeckoEndpoint();
-  const url = `${baseUrl}/coins/markets?vs_currency=usd&ids=${ids.join(',')}&order=market_cap_desc&sparkline=true&price_change_percentage=24h`;
+  const url = `${baseUrl}/coins/markets?vs_currency=usd&ids=${ids.join(',')}&order=market_cap_desc&sparkline=${sparkline}&price_change_percentage=${encodeURIComponent(priceChangePercentage)}`;
 
   const resp = await fetch(url, {
     headers,
@@ -492,11 +507,14 @@ export async function fetchCoinPaprikaMarkets(
 
 export async function fetchCryptoMarkets(
   ids: string[],
+  opts: CoinGeckoMarketsOpts = {},
 ): Promise<CoinGeckoMarketItem[]> {
   try {
-    return await fetchCoinGeckoMarkets(ids);
+    return await fetchCoinGeckoMarkets(ids, opts);
   } catch (err) {
     console.warn(`[CoinGecko] Failed, falling back to CoinPaprika:`, (err as Error).message);
+    // No opts pass-through: CoinPaprika's ticker response always carries both
+    // the 24h and 7d change, so the projection knobs have nothing to select.
     return fetchCoinPaprikaMarkets(ids);
   }
 }

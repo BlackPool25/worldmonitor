@@ -139,7 +139,7 @@ const EXCLUDED_FROM_MCP_PARITY = new Map([
   ["POST /api/news/v1/summarize-article",
     "llm-passthrough: request-time article summarization is intentionally REST-only; get_world_brief reads the gated seeded snapshot instead"],
 
-  // === fetch-on-miss (29) ===
+  // === fetch-on-miss (30) ===
   ["GET /api/intelligence/v1/get-risk-scores",
     "fetch-on-miss: paid-upstream — cachedFetchJsonWithMeta + ACLED API on cache miss. Cross-domain composite spans conflict plus auxiliary infra outages, climate anomalies, cyber threats, wildfires, GPS jamming, OREF history, advisories, displacement, news insights/threats, aviation, earthquakes, sanctions, temporal anomalies, and military CII; intended for a future expanded_risk_scores composite tool because the current shape doesn't fit any single existing tool."],
   ["GET /api/aviation/v1/get-carrier-ops",
@@ -198,6 +198,12 @@ const EXCLUDED_FROM_MCP_PARITY = new Map([
     "fetch-on-miss: paid-upstream — external upstream fetch per cache miss"],
   ["POST /api/military/v1/get-aircraft-details-batch",
     "fetch-on-miss: high-cardinality-input — arbitrary query/symbol/identifier params, not enumerable"],
+  // Reclassified from deferred-to-future-tool by #6308. The default request is
+  // still a pure read of market:stablecoins:v1, but naming coins the snapshot
+  // does not carry now reaches CoinGecko through cachedFetchJson, and the
+  // caller picks the IDs. #4525 still owns exposing this as an MCP tool.
+  ["GET /api/market/v1/list-stablecoin-markets",
+    "fetch-on-miss: high-cardinality-input — caller-named CoinGecko IDs outside the seeded set fan out to the provider, not enumerable"],
 
   // === manual-mapping (27) ===
   ["POST /api/batch/v1/execute",
@@ -253,7 +259,7 @@ const EXCLUDED_FROM_MCP_PARITY = new Map([
   ["POST /api/economic/v1/get-fred-series-batch",
     "manual-mapping: parameterized cache key not statically resolvable — equivalent data covered by sibling cache tool at the prefix level"],
 
-  // === deferred-to-future-tool (60) ===
+  // === deferred-to-future-tool (59) ===
   ["GET /api/consumer-prices/v1/get-consumer-price-basket-series",
     "deferred-to-future-tool: handler reads parameterized consumer-prices:basket-series:<market>:<basket>:<range> key NOT in get_consumer_prices._coverageKeys — bundle into a future expanded_consumer_prices tool that exposes the basket-series time series"],
   ["GET /api/company-monitoring/v1/get-company-coverage",
@@ -351,8 +357,6 @@ const EXCLUDED_FROM_MCP_PARITY = new Map([
     "deferred-to-future-tool: pure-read but no MCP tool exposes market:defi-tokens:v1 yet — bundle into a future expanded-domain tool"],
   ["GET /api/market/v1/list-other-tokens",
     "deferred-to-future-tool: pure-read but no MCP tool exposes market:other-tokens:v1 yet — bundle into a future expanded-domain tool"],
-  ["GET /api/market/v1/list-stablecoin-markets",
-    "deferred-to-future-tool: pure-read but no MCP tool exposes market:stablecoins:v1 yet — bundle into a future expanded-domain tool"],
   ["GET /api/military/v1/get-usni-fleet-report",
     "deferred-to-future-tool: pure-read but no MCP tool exposes usni-fleet:sebuf:v1 yet — bundle into a future expanded-domain tool"],
   ["GET /api/military/v1/list-defense-patents",
