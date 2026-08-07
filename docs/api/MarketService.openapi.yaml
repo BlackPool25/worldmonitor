@@ -409,7 +409,18 @@ paths:
             parameters:
                 - name: coins
                   in: query
-                  description: CoinGecko IDs to retrieve (e.g. "tether,usd-coin"). Empty returns defaults.
+                  description: |-
+                    CoinGecko IDs to retrieve (e.g. "tether,usd-coin"). Empty returns defaults.
+
+                     Repeated (`?coins=tether&coins=dai`) and comma-joined
+                     (`?coins=tether,dai`) forms are equivalent. IDs are trimmed, lowercased,
+                     and de-duplicated; the request is capped at 25 IDs. An ID that is not
+                     shaped like a CoinGecko ID, that overflows the cap, or that no provider
+                     can resolve is reported in `unresolved` rather than dropped.
+
+                     The empty (default) request is served from the seeded snapshot alone and
+                     never reaches an upstream provider. Naming IDs explicitly opts into a
+                     bounded, cached provider lookup for any ID the snapshot does not carry.
                   required: false
                   style: form
                   explode: true
@@ -433,6 +444,7 @@ paths:
                     content:
                         application/json:
                             example:
+                                "dataStatus": "example"
                                 "stablecoins":
                                     - "change24h": 1.5
                                       "change7d": 1.5
@@ -448,6 +460,9 @@ paths:
                                     "totalMarketCap": 1
                                     "totalVolume24h": 1
                                 "timestamp": "2026-01-15T12:00:00Z"
+                                "unresolved":
+                                    - "id": "example-id"
+                                      "reason": "example"
                             schema:
                                 $ref: '#/components/schemas/ListStablecoinMarketsResponse'
                 "400":
@@ -2577,7 +2592,18 @@ components:
                     type: array
                     items:
                         type: string
-                        description: CoinGecko IDs to retrieve (e.g. "tether,usd-coin"). Empty returns defaults.
+                        description: |-
+                            CoinGecko IDs to retrieve (e.g. "tether,usd-coin"). Empty returns defaults.
+
+                             Repeated (`?coins=tether&coins=dai`) and comma-joined
+                             (`?coins=tether,dai`) forms are equivalent. IDs are trimmed, lowercased,
+                             and de-duplicated; the request is capped at 25 IDs. An ID that is not
+                             shaped like a CoinGecko ID, that overflows the cap, or that no provider
+                             can resolve is reported in `unresolved` rather than dropped.
+
+                             The empty (default) request is served from the seeded snapshot alone and
+                             never reaches an upstream provider. Naming IDs explicitly opts into a
+                             bounded, cached provider lookup for any ID the snapshot does not carry.
             description: ListStablecoinMarketsRequest specifies which stablecoins to retrieve.
         ListStablecoinMarketsResponse:
             type: object
@@ -2591,6 +2617,18 @@ components:
                     type: array
                     items:
                         $ref: '#/components/schemas/Stablecoin'
+                unresolved:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/UnresolvedStablecoin'
+                dataStatus:
+                    type: string
+                    description: |-
+                        Coverage of THIS response, distinct from `summary.health_status` (which
+                         reports peg health, not data availability):
+                           "OK"          — every requested coin was returned.
+                           "PARTIAL"     — at least one coin returned, at least one unresolved.
+                           "UNAVAILABLE" — no coin data available.
             description: ListStablecoinMarketsResponse contains stablecoin market data.
         StablecoinSummary:
             type: object
@@ -2664,6 +2702,23 @@ components:
                 - id
                 - symbol
             description: Stablecoin represents a single stablecoin with peg health data.
+        UnresolvedStablecoin:
+            type: object
+            properties:
+                id:
+                    type: string
+                    description: |-
+                        The requested ID, after trimming and lowercasing. Malformed IDs are
+                         reported as sent (normalized and truncated) so the caller can spot the typo.
+                reason:
+                    type: string
+                    description: |-
+                        Bounded vocabulary — anything outside this list is a contract violation:
+                           "INVALID_ID"     — not shaped like a CoinGecko ID.
+                           "OVER_CAP"       — beyond the per-request ID cap; never looked up.
+                           "NOT_FOUND"      — the provider answered, and has no such coin.
+                           "PROVIDER_ERROR" — the lookup failed, so the ID is unknown, not absent.
+            description: UnresolvedStablecoin explains why a requested ID is absent from the response.
         ListEtfFlowsRequest:
             type: object
             description: ListEtfFlowsRequest is empty; the handler uses a fixed list of BTC spot ETFs.

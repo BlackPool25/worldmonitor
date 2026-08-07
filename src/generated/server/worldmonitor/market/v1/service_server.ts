@@ -77,6 +77,8 @@ export interface ListStablecoinMarketsResponse {
   timestamp: string;
   summary?: StablecoinSummary;
   stablecoins: Stablecoin[];
+  unresolved: UnresolvedStablecoin[];
+  dataStatus: string;
 }
 
 export interface StablecoinSummary {
@@ -99,6 +101,11 @@ export interface Stablecoin {
   change24h: number;
   change7d: number;
   image: string;
+}
+
+export interface UnresolvedStablecoin {
+  id: string;
+  reason: string;
 }
 
 export interface ListEtfFlowsRequest {
