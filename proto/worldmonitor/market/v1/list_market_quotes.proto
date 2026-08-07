@@ -24,4 +24,9 @@ message ListMarketQuotesResponse {
 
   // True when the upstream API rate-limited the request.
   bool rate_limited = 4;
+
+  // Requested symbols that produced no quote, in requested order, each with a
+  // reason. Present so a custom watchlist ticker that the fixed seed does not
+  // carry is visibly unavailable instead of silently missing from `quotes`.
+  repeated MarketQuoteUnavailable unavailable = 5;
 }

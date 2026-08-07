@@ -322,6 +322,17 @@ export const ENDPOINT_RATE_POLICIES: Record<string, EndpointRatePolicy> = {
   // only thing standing between a Redis outage and a CoinGecko fan-out. (#6308)
   '/api/market/v1/list-stablecoin-markets': { limit: 60, window: '60 s' },
   '/api/economic/v1/list-world-bank-indicators': { limit: 30, window: '60 s' },
+  // #6305: list-market-quotes stopped being a pure seed read. The fixed seed
+  // still answers the default universe with no upstream call, but a symbol the
+  // seed does not carry (a custom watchlist ticker) now resolves through the
+  // bounded, Redis-cached Finnhub gap fetch — so caller-controlled symbols can
+  // reach a paid provider and this route can no longer inherit the fail-open
+  // global budget. Same 60/min as the sibling per-symbol market routes: the
+  // dashboard issues one multi-symbol call per refresh and the response is
+  // CDN-cached (medium tier), so 60/min is far above any legitimate per-IP
+  // load. Provider spend is separately capped at MARKET_QUOTES_UPSTREAM_LIMIT
+  // lookups per request.
+  '/api/market/v1/list-market-quotes': { limit: 60, window: '60 s' },
   // Company Monitoring is contract-only and remains unrouted until #6003
   // passes, but generated mutation routes still need a fail-closed policy
   // before any later lane can wire them. Import can carry 100 rows, so keep its
@@ -430,6 +441,9 @@ export const FAIL_CLOSED_ENDPOINT_RATE_POLICY_REQUIRED: Record<string, RateLimit
   },
   '/api/market/v1/list-stablecoin-markets': {
     reason: 'Caller-named coin IDs absent from the seed snapshot fan out to CoinGecko on cache miss with unbounded ID cardinality.',
+  },
+  '/api/market/v1/list-market-quotes': {
+    reason: 'Custom watchlist symbols the fixed seed does not carry resolve through the paid Finnhub provider on cache miss (#6305).',
   },
   '/api/economic/v1/list-world-bank-indicators': {
     reason: 'Caller-controlled indicator, country, and year inputs proxy World Bank on cache miss.',

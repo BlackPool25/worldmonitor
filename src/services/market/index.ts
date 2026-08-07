@@ -26,7 +26,7 @@ const defiBreaker = createCircuitBreaker<ListDefiTokensResponse>({ name: 'DeFi T
 const aiBreaker = createCircuitBreaker<ListAiTokensResponse>({ name: 'AI Tokens', persistCache: true });
 const otherBreaker = createCircuitBreaker<ListOtherTokensResponse>({ name: 'Other Tokens', persistCache: true });
 
-const emptyStockFallback: ListMarketQuotesResponse = { quotes: [], finnhubSkipped: false, skipReason: '', rateLimited: false };
+const emptyStockFallback: ListMarketQuotesResponse = { quotes: [], finnhubSkipped: false, skipReason: '', rateLimited: false, unavailable: [] };
 const emptyCommodityFallback: ListCommodityQuotesResponse = { quotes: [] };
 const emptySectorFallback: GetSectorSummaryResponse = { sectors: [] };
 const emptyCryptoFallback: ListCryptoQuotesResponse = { quotes: [] };

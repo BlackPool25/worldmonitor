@@ -14750,6 +14750,9 @@ paths:
                                       "symbol": "AAPL"
                                 "rateLimited": true
                                 "skipReason": "example"
+                                "unavailable":
+                                    - "reason": "MARKET_QUOTE_UNAVAILABLE_REASON_NOT_FOUND"
+                                      "symbol": "AAPL"
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_market_v1_ListMarketQuotesResponse'
                 "400":
@@ -37933,6 +37936,10 @@ components:
                 rateLimited:
                     type: boolean
                     description: True when the upstream API rate-limited the request.
+                unavailable:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/worldmonitor_market_v1_MarketQuoteUnavailable'
             description: ListMarketQuotesResponse contains stock and index quotes.
         worldmonitor_market_v1_MarketQuote:
             type: object
@@ -37964,6 +37971,35 @@ components:
             required:
                 - symbol
             description: MarketQuote represents a stock or index quote from Finnhub or Yahoo Finance.
+        worldmonitor_market_v1_MarketQuoteUnavailable:
+            type: object
+            properties:
+                symbol:
+                    type: string
+                    minLength: 1
+                    description: The requested ticker symbol, normalized.
+                reason:
+                    type: string
+                    enum:
+                        - MARKET_QUOTE_UNAVAILABLE_REASON_UNSPECIFIED
+                        - MARKET_QUOTE_UNAVAILABLE_REASON_NOT_FOUND
+                        - MARKET_QUOTE_UNAVAILABLE_REASON_PROVIDER_ERROR
+                        - MARKET_QUOTE_UNAVAILABLE_REASON_PROVIDER_RATE_LIMITED
+                        - MARKET_QUOTE_UNAVAILABLE_REASON_PROVIDER_NOT_CONFIGURED
+                        - MARKET_QUOTE_UNAVAILABLE_REASON_REQUEST_LIMIT_EXCEEDED
+                        - MARKET_QUOTE_UNAVAILABLE_REASON_UPSTREAM_BUDGET_EXHAUSTED
+                        - MARKET_QUOTE_UNAVAILABLE_REASON_SEED_UNAVAILABLE
+                    description: |-
+                        MarketQuoteUnavailableReason explains why a requested symbol produced no quote.
+
+                         Requested symbols are resolved seed-first: the fixed Railway seed snapshot
+                         answers without any upstream call, and only the remaining symbols are looked
+                         up through the bounded, Redis-cached quote provider. Every symbol that
+                         survives normalization is accounted for by either a quote or one of these
+                         reasons — a requested symbol is never silently dropped.
+            required:
+                - symbol
+            description: MarketQuoteUnavailable reports a requested symbol that produced no quote.
         worldmonitor_market_v1_ListCryptoQuotesRequest:
             type: object
             properties:

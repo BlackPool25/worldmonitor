@@ -38,13 +38,11 @@ export async function fetchYahooQuotesBatch(
   return { results, rateLimited: rateLimitHits > symbols.length / 2 };
 }
 
-// Yahoo-only symbols: indices, futures, and forex pairs not on Finnhub free tier
-export const YAHOO_ONLY_SYMBOLS = new Set([
-  '^GSPC', '^DJI', '^IXIC', '^VIX',
-  'GC=F', 'CL=F', 'NG=F', 'SI=F', 'HG=F',
-  'EURUSD=X', 'GBPUSD=X', 'AUDUSD=X',
-  'USDJPY=X', 'USDCNY=X', 'USDINR=X', 'USDCHF=X', 'USDCAD=X', 'USDTRY=X',
-]);
+// The Yahoo-only symbol list that used to live here was dead after #1684 (the
+// handler became a pure seed read) and had drifted to a subset of the routing
+// list the relay actually uses. `shared/stocks.json#yahooOnly` is the single
+// source of truth; `./_quote-provider.ts` reads it to decide what Finnhub can
+// serve.
 
 export const CRYPTO_META: Record<string, { name: string; symbol: string }> = cryptoConfig.meta;
 
