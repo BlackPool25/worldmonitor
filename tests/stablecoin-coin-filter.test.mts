@@ -429,6 +429,38 @@ test('a gap-only response is not stamped with the stale snapshot timestamp', asy
   );
 });
 
+test('a Redis outage suppresses provider work instead of amplifying into it', async (t) => {
+  t.after(restoreEnvironment);
+  const h = installHarness({
+    seed: SEED_SNAPSHOT,
+    gecko: ids => new Response(JSON.stringify(ids.map(id => geckoRow(id, 1.0))), { status: 200 }),
+  });
+
+  // Redis is reachable but erroring — the snapshot read fails, so WITHOUT the
+  // guard every requested ID would look like a gap and go upstream, uncached,
+  // at full request rate. The rate limiter lives in this same Redis and cannot
+  // help, which is exactly why the suppression has to be in the handler.
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes('/get/market%3Astablecoins%3Av1')) return new Response('boom', { status: 500 });
+    return originalFetch(input as RequestInfo, init);
+  }) as typeof fetch;
+
+  const res = await call(['tether', 'usd-coin']);
+
+  assert.deepEqual(h.geckoCalls, [], 'a Redis outage must not become a provider fan-out');
+  assert.equal(res.dataStatus, 'UNAVAILABLE');
+  assert.deepEqual(
+    res.unresolved,
+    [
+      { id: 'tether', reason: 'PROVIDER_ERROR' },
+      { id: 'usd-coin', reason: 'PROVIDER_ERROR' },
+    ],
+    'IDs we declined to look up are unknown, not proven absent',
+  );
+});
+
 test('a malformed ID is rejected before any provider work', async (t) => {
   t.after(restoreEnvironment);
   const h = installHarness({ seed: SEED_SNAPSHOT });

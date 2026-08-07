@@ -25,7 +25,7 @@ import type {
   UnresolvedStablecoin,
 } from '../../../../src/generated/server/worldmonitor/market/v1/service_server';
 import stablecoinConfig from '../../../../shared/stablecoins.json';
-import { cachedFetchJson, getCachedJson } from '../../../_shared/redis';
+import { cachedFetchJson, readCachedJson } from '../../../_shared/redis';
 import { sha256Hex } from '../../../_shared/hash';
 import { fetchCryptoMarkets, parseStringArray, type CoinGeckoMarketItem } from './_shared';
 
@@ -251,12 +251,16 @@ export async function listStablecoinMarkets(
 ): Promise<ListStablecoinMarketsResponse> {
   const { lookupIds, unresolved } = normalizeRequestedCoins(req?.coins);
 
-  let seed: SeedSnapshot | null = null;
-  try {
-    seed = await getCachedJson(SEED_CACHE_KEY, true) as SeedSnapshot | null;
-  } catch {
-    seed = null;
-  }
+  // readCachedJson, not getCachedJson: the latter collapses "the snapshot is
+  // absent" and "Redis is unreachable" into one null, and those must diverge
+  // here. A Redis outage makes every requested ID look like a gap, which would
+  // turn one bad minute for Upstash into a full-rate, uncached CoinGecko
+  // fan-out from the edge — with the gap cache and the rate limiter, which
+  // both live in that same Redis, unable to stop it. So a read ERROR suppresses
+  // provider work entirely; only a genuine miss lets a lookup proceed.
+  const seedRead = await readCachedJson(SEED_CACHE_KEY, true);
+  const seedUnreachable = seedRead.status === 'error';
+  const seed = seedRead.status === 'hit' ? seedRead.value as SeedSnapshot : null;
   const rawSeedCoins = seed?.stablecoins;
   const seedCoins = Array.isArray(rawSeedCoins) ? rawSeedCoins : [];
 
@@ -273,8 +277,12 @@ export async function listStablecoinMarkets(
   }
 
   const seedById = new Map(seedCoins.map(coin => [coin.id, coin]));
-  const gapIds = lookupIds.filter(id => !seedById.has(id));
-  const { resolved, providerFailed } = await resolveGapCoins(gapIds);
+  const gapIds = seedUnreachable ? [] : lookupIds.filter(id => !seedById.has(id));
+  const { resolved, providerFailed: lookupFailed } = await resolveGapCoins(gapIds);
+  // An ID we declined to look up is unknown, not absent — same reason a failed
+  // lookup reports. Reporting NOT_FOUND here would assert the coin does not
+  // exist on the strength of a Redis outage.
+  const providerFailed = lookupFailed || seedUnreachable;
 
   const stablecoins: Stablecoin[] = [];
   for (const id of lookupIds) {

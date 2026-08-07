@@ -150,7 +150,19 @@ Five major stablecoins (USDT, USDC, DAI, FDUSD, USDe) are monitored via the Coin
 | 0.5% – 1.0% | SLIGHT DEPEG | Yellow    |
 | > 1.0%      | DEPEGGED     | Red       |
 
-The panel aggregates total stablecoin market cap, 24h volume, and an overall health status (HEALTHY / CAUTION / WARNING). The `coins` query parameter accepts a comma-separated list of CoinGecko IDs, validated against a `[a-z0-9-]+` regex to prevent injection.
+The panel aggregates total stablecoin market cap, 24h volume, and an overall health status (HEALTHY / CAUTION / WARNING).
+
+The `coins` query parameter selects which stablecoins to return. Repeated (`?coins=tether&coins=dai`) and comma-joined (`?coins=tether,dai`) forms are equivalent. IDs are trimmed, lowercased, de-duplicated, and validated against `^[a-z0-9][a-z0-9-]{0,63}$`; a request is capped at 25 IDs.
+
+Requesting nothing and requesting something cost different amounts, deliberately:
+
+- **Empty `coins`** returns the five seeded defaults from the cached snapshot and never calls an upstream provider.
+- **Named IDs** are answered from that snapshot where possible; only IDs the snapshot does not carry — including stablecoins outside the default five — reach CoinGecko, in one batched, rate-limited, separately cached lookup.
+
+The aggregate summary is recomputed over exactly the coins returned, so a subset request describes the subset. Two response fields report coverage:
+
+- `data_status` — `OK`, `PARTIAL`, or `UNAVAILABLE`. This is data coverage; `summary.health_status` is peg health, and the two are independent.
+- `unresolved` — one entry per requested ID missing from the response, with a reason: `INVALID_ID` (not shaped like a CoinGecko ID), `OVER_CAP` (beyond the 25-ID cap, never looked up), `NOT_FOUND` (the provider answered and has no such coin), or `PROVIDER_ERROR` (the lookup failed, so the ID is unknown rather than absent).
 
 ### BTC ETF Flow Estimation
 

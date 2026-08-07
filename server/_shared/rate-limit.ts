@@ -303,12 +303,24 @@ export const ENDPOINT_RATE_POLICIES: Record<string, EndpointRatePolicy> = {
   '/api/market/v1/backtest-stock': { limit: 60, window: '60 s' },
   '/api/market/v1/get-insider-transactions': { limit: 60, window: '60 s' },
   '/api/market/v1/get-country-stock-index': { limit: 30, window: '60 s' },
-  // Stablecoins are seed-backed for the default request, but naming coins the
-  // snapshot does not carry reaches CoinGecko, and the caller chooses the IDs
-  // — unbounded cardinality, so per-request Redis caching cannot bound spend
-  // on its own. 30/min mirrors the country-index route: both cap a batched
-  // upstream call rather than a per-symbol fan-out. (#6308)
-  '/api/market/v1/list-stablecoin-markets': { limit: 30, window: '60 s' },
+  // Stablecoins are seed-backed for the DEFAULT request, but naming coins the
+  // snapshot does not carry reaches CoinGecko, and the caller picks the IDs —
+  // unbounded cardinality, so the per-ID-set cache cannot bound spend alone.
+  //
+  // Sized against the dashboard, not the provider: this path is in
+  // PRO_FRESH_CACHE_RPC_PATHS, so it carries a panel that refreshes on a timer
+  // for every open dashboard, and the limit is per-IP for anonymous traffic —
+  // one office NAT is one bucket. 60/min matches the sibling per-symbol market
+  // routes, which are likewise sized to admit a full legitimate load plus
+  // headroom rather than to price the upstream call.
+  //
+  // Note this makes the route fail closed on a Redis outage, which the four
+  // other panels in PRO_FRESH_CACHE_RPC_PATHS are not. That is survivable
+  // because the handler cannot serve data during that outage either (the seed
+  // read is the same Redis) — and it deliberately performs no provider work
+  // when that read fails, so the fail-closed 503 is a second line, not the
+  // only thing standing between a Redis outage and a CoinGecko fan-out. (#6308)
+  '/api/market/v1/list-stablecoin-markets': { limit: 60, window: '60 s' },
   '/api/economic/v1/list-world-bank-indicators': { limit: 30, window: '60 s' },
   // Company Monitoring is contract-only and remains unrouted until #6003
   // passes, but generated mutation routes still need a fail-closed policy

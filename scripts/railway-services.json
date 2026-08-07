@@ -137,6 +137,7 @@
       "scripts/shared/rss-allowed-domains.cjs",
       "scripts/shared/rss-allowed-domains.json",
       "scripts/shared/source-tiers.json",
+      "scripts/shared/stablecoins.json",
       "scripts/shared/stocks.json",
       "scripts/shared/ucdp-candidate.cjs",
       "shared/ai-tokens.json",
@@ -149,6 +150,7 @@
       "shared/rss-allowed-domains.cjs",
       "shared/rss-allowed-domains.json",
       "shared/source-tiers.json",
+      "shared/stablecoins.json",
       "shared/stocks.json"
     ],
     "documentedAt": "Dockerfile.relay"
