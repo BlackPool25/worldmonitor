@@ -25,7 +25,7 @@ import type {
   UnresolvedStablecoin,
 } from '../../../../src/generated/server/worldmonitor/market/v1/service_server';
 import stablecoinConfig from '../../../../shared/stablecoins.json';
-import { cachedFetchJson, readCachedJson } from '../../../_shared/redis';
+import { cachedFetchJson, readCachedJson, setCachedJson } from '../../../_shared/redis';
 import { sha256Hex } from '../../../_shared/hash';
 import {
   fetchCryptoMarketsWithSource,
@@ -42,6 +42,10 @@ const SEED_CACHE_KEY = 'market:stablecoins:v1';
 const GAP_CACHE_KEY_PREFIX = 'market:stablecoins:rpc:v1:';
 const GAP_CACHE_TTL = 600; // 10 min — matches the seeder's cron cadence
 const GAP_NEGATIVE_TTL = 300; // 5 min — how long "CoinGecko has no such coin" sticks
+// A fallback answer that covered only part of the set is a degraded result
+// wearing a healthy cache entry. Short enough that CoinGecko's recovery is
+// picked up on the next cycle rather than a full TTL later.
+const GAP_DEGRADED_TTL = 60;
 // Above _shared's UPSTREAM_TIMEOUT_MS (10s) plus the CoinPaprika fallback leg,
 // so the cache layer stays the last-resort bound rather than pre-empting the
 // fetcher's own timeouts.
@@ -90,6 +94,8 @@ interface SeedSnapshot {
 interface GapPayload {
   coins: Stablecoin[];
   source: CryptoMarketsSource;
+  /** When the provider actually answered — NOT when this response was built. */
+  fetchedAt: string;
 }
 
 /**
@@ -108,12 +114,17 @@ function isUsableStablecoin(value: unknown): value is Stablecoin {
   );
 }
 
+/**
+ * Every field is checked, `source` included. A payload missing it would read as
+ * a CoinGecko answer, and a CoinGecko answer is what makes "absent" credible —
+ * so a shape we cannot fully verify must never be allowed to produce NOT_FOUND.
+ */
 function isGapPayload(value: unknown): value is GapPayload {
-  return Boolean(
-    value
-    && typeof value === 'object'
-    && Array.isArray((value as GapPayload).coins),
-  );
+  if (!value || typeof value !== 'object') return false;
+  const payload = value as GapPayload;
+  return Array.isArray(payload.coins)
+    && (payload.source === 'coingecko' || payload.source === 'coinpaprika')
+    && typeof payload.fetchedAt === 'string';
 }
 
 /** Provider numerics arrive as JSON of unknown shape; a string price must not become NaN. */
@@ -263,38 +274,34 @@ function toStablecoin(item: CoinGeckoMarketItem): Stablecoin {
 async function resolveGapCoins(ids: string[]): Promise<{
   resolved: Map<string, Stablecoin>;
   providerFailed: boolean;
+  fetchedAt: string | null;
 }> {
   const resolved = new Map<string, Stablecoin>();
-  if (ids.length === 0) return { resolved, providerFailed: false };
+  if (ids.length === 0) return { resolved, providerFailed: false, fetchedAt: null };
 
   // sha256 rather than the raw ID list: the key is derived from caller-supplied
   // input, and the list is unbounded in length.
   const cacheKey = `${GAP_CACHE_KEY_PREFIX}${await sha256Hex([...ids].sort().join(','))}`;
 
-  // Read the gap key ourselves before handing it to cachedFetchJson, which
-  // treats a Redis READ ERROR as a miss and runs the fetcher anyway. Without
-  // this, a Redis fault scoped to this key alone — the seed read having
-  // succeeded — still reaches CoinGecko, which is the fan-out the seed-read
-  // guard exists to prevent. Same rule, applied per key.
-  const cachedRead = await readCachedJson(cacheKey);
-  if (cachedRead.status === 'error') {
-    return { resolved, providerFailed: true };
-  }
-  if (cachedRead.status === 'hit') {
-    // A hit that is not a payload is cachedFetchJson's negative sentinel: the
-    // provider answered previously and had nothing for this ID set.
-    if (!isGapPayload(cachedRead.value)) return { resolved, providerFailed: false };
-    for (const coin of cachedRead.value.coins) {
-      if (isUsableStablecoin(coin)) resolved.set(coin.id, coin);
-    }
-    return { resolved, providerFailed: cachedRead.value.source === 'coinpaprika' };
-  }
-
   try {
+    let incompleteFallback = false;
     const payload = await cachedFetchJson<GapPayload>(
       cacheKey,
       GAP_CACHE_TTL,
       async () => {
+        // The last check before spending. cachedFetchJson does its own read and
+        // treats a READ ERROR as a miss, running the fetcher regardless — so
+        // checking the key only before calling it leaves the fan-out open to a
+        // Redis fault that lands in between. This runs once per key rather than
+        // once per caller, because cachedFetchJson coalesces. A residual window
+        // remains between this read and the fetch below; closing that too would
+        // mean reimplementing the coalescing, which is not worth it.
+        const recheck = await readCachedJson(cacheKey);
+        if (recheck.status === 'error') {
+          throw new Error('gap cache unreadable — refusing to reach the provider');
+        }
+        if (recheck.status === 'hit' && isGapPayload(recheck.value)) return recheck.value;
+
         const { items, source } = await fetchCryptoMarketsWithSource(ids, {
           sparkline: false,
           priceChangePercentage: '24h,7d',
@@ -312,14 +319,34 @@ async function resolveGapCoins(ids: string[]): Promise<{
           if (items.length > 0) throw new Error(`provider returned ${items.length} unusable row(s)`);
           return null;
         }
-        return { coins: usable.map(toStablecoin), source };
+        incompleteFallback = source === 'coinpaprika' && usable.length < ids.length;
+        return { coins: usable.map(toStablecoin), source, fetchedAt: new Date().toISOString() };
       },
       GAP_NEGATIVE_TTL,
       { timeoutMs: GAP_FETCH_TIMEOUT_MS, cacheFetcherErrors: false },
     );
 
-    for (const coin of payload?.coins ?? []) resolved.set(coin.id, coin);
-    return { resolved, providerFailed: payload?.source === 'coinpaprika' };
+    // null is cachedFetchJson's negative sentinel: the provider answered and
+    // had nothing. Anything else that fails the shape check is a cache entry we
+    // cannot read, which is not evidence of absence.
+    if (payload === null) return { resolved, providerFailed: false, fetchedAt: null };
+    if (!isGapPayload(payload)) return { resolved, providerFailed: true, fetchedAt: null };
+
+    for (const coin of payload.coins) {
+      if (isUsableStablecoin(coin)) resolved.set(coin.id, coin);
+    }
+
+    // An incomplete fallback answer must not stay authoritative for the full
+    // TTL. CoinPaprika can only map part of the set, so the IDs it could not
+    // reach keep reporting PROVIDER_ERROR — for ten minutes after CoinGecko
+    // recovers, on a cache entry that looks perfectly healthy.
+    if (incompleteFallback) await setCachedJson(cacheKey, payload, GAP_DEGRADED_TTL);
+
+    return {
+      resolved,
+      providerFailed: payload.source === 'coinpaprika',
+      fetchedAt: payload.fetchedAt,
+    };
   } catch (err) {
     // sentry-coverage-ok: this failure is reported IN BAND rather than silently
     // — every affected ID comes back to the caller as PROVIDER_ERROR and the
@@ -328,7 +355,7 @@ async function resolveGapCoins(ids: string[]): Promise<{
     // contract; rethrowing would 500 a request the seed could still partly
     // answer.
     console.warn('[Stablecoin] gap lookup failed:', (err as Error).message);
-    return { resolved, providerFailed: true };
+    return { resolved, providerFailed: true, fetchedAt: null };
   }
 }
 
@@ -349,7 +376,15 @@ export async function listStablecoinMarkets(
   const seedUnreachable = seedRead.status === 'error';
   const seed = seedRead.status === 'hit' ? seedRead.value as SeedSnapshot : null;
   const rawSeedCoins = seed?.stablecoins;
-  const seedCoins = Array.isArray(rawSeedCoins) ? rawSeedCoins.filter(isUsableStablecoin) : [];
+  const seedRows = Array.isArray(rawSeedCoins) ? rawSeedCoins : [];
+  const seedCoins = seedRows.filter(isUsableStablecoin);
+  // A snapshot that parsed but yielded no usable row is CORRUPT, not empty, and
+  // the difference decides whether we spend money. Treated as empty, every
+  // named default becomes a gap and goes to CoinGecko — the same amplification
+  // the unreachable branch above exists to prevent, reached through a readable
+  // Redis instead of a broken one.
+  const seedCorrupt = seedRows.length > 0 && seedCoins.length === 0;
+  const seedUnusable = seedUnreachable || seedCorrupt;
 
   // Default request: the seeded snapshot verbatim, no upstream work, ever.
   if (lookupIds.length === 0 && unresolved.length === 0) {
@@ -364,12 +399,13 @@ export async function listStablecoinMarkets(
   }
 
   const seedById = new Map(seedCoins.map(coin => [coin.id, coin]));
-  const gapIds = seedUnreachable ? [] : lookupIds.filter(id => !seedById.has(id));
-  const { resolved, providerFailed: lookupFailed } = await resolveGapCoins(gapIds);
+  const gapIds = seedUnusable ? [] : lookupIds.filter(id => !seedById.has(id));
+  const { resolved, providerFailed: lookupFailed, fetchedAt: gapFetchedAt } =
+    await resolveGapCoins(gapIds);
   // An ID we declined to look up is unknown, not absent — same reason a failed
   // lookup reports. Reporting NOT_FOUND here would assert the coin does not
-  // exist on the strength of a Redis outage.
-  const providerFailed = lookupFailed || seedUnreachable;
+  // exist on the strength of a Redis outage or a corrupt snapshot.
+  const providerFailed = lookupFailed || seedUnusable;
 
   const stablecoins: Stablecoin[] = [];
   for (const id of lookupIds) {
@@ -384,13 +420,22 @@ export async function listStablecoinMarkets(
   if (stablecoins.length === 0) return unavailableResponse(unresolved);
 
   // The timestamp must describe the OLDEST row present, since that is what a
-  // consumer checks for staleness. Stamping a gap-only response with the seed's
-  // time would report data that was just fetched as hours old.
-  const servedFromSeed = stablecoins.some(coin => seedById.has(coin.id));
+  // consumer checks for staleness. Each contributing source reports its own
+  // age: the snapshot its seed time, the gap lookup the moment the provider
+  // actually answered — which is NOT now when the result came from the gap
+  // cache, and stamping now there would hide up to a full TTL of age.
+  const ages: string[] = [];
+  if (stablecoins.some(coin => seedById.has(coin.id)) && seed?.timestamp) {
+    ages.push(seed.timestamp);
+  }
+  if (stablecoins.some(coin => !seedById.has(coin.id)) && gapFetchedAt) {
+    ages.push(gapFetchedAt);
+  }
   const dataStatus: DataStatus = unresolved.length === 0 ? 'OK' : 'PARTIAL';
 
   return {
-    timestamp: (servedFromSeed && seed?.timestamp) || new Date().toISOString(),
+    // ISO-8601 UTC sorts lexicographically, so the first is the oldest.
+    timestamp: ages.sort()[0] ?? new Date().toISOString(),
     summary: summarize(stablecoins),
     stablecoins,
     unresolved,

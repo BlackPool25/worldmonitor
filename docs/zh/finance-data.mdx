@@ -160,7 +160,7 @@ Finance 变体包含一个精选数据库,记录了沙特阿拉伯和阿联酋�
 
 汇总统计基于实际返回的币种重新计算,因此子集请求描述的就是该子集。两个响应字段报告覆盖情况:
 
-- `data_status` —— `OK`、`PARTIAL` 或 `UNAVAILABLE`。它表示数据覆盖情况;`summary.health_status` 表示锚定健康状况,二者相互独立。
+- `dataStatus` —— `OK`、`PARTIAL` 或 `UNAVAILABLE`。它表示数据覆盖情况;`summary.healthStatus` 表示锚定健康状况,二者相互独立。
 - `unresolved` —— 每个请求了但未出现在响应中的 ID 各一条,并附原因:`INVALID_ID`(不符合 CoinGecko ID 格式)、`OVER_CAP`(超出 25 个 ID 上限,从未查询)、`NOT_FOUND`(服务商已应答,确无此币)或 `PROVIDER_ERROR`(查询失败,因此该 ID 是未知而非不存在)。
 
 ### BTC ETF 资金流向估算

@@ -161,7 +161,7 @@ Requesting nothing and requesting something cost different amounts, deliberately
 
 The aggregate summary is recomputed over exactly the coins returned, so a subset request describes the subset. Two response fields report coverage:
 
-- `data_status` — `OK`, `PARTIAL`, or `UNAVAILABLE`. This is data coverage; `summary.health_status` is peg health, and the two are independent.
+- `dataStatus` — `OK`, `PARTIAL`, or `UNAVAILABLE`. This is data coverage; `summary.healthStatus` is peg health, and the two are independent.
 - `unresolved` — one entry per requested ID missing from the response, with a reason: `INVALID_ID` (not shaped like a CoinGecko ID), `OVER_CAP` (beyond the 25-ID cap, never looked up), `NOT_FOUND` (the provider answered and has no such coin), or `PROVIDER_ERROR` (the lookup failed, so the ID is unknown rather than absent).
 
 ### BTC ETF Flow Estimation

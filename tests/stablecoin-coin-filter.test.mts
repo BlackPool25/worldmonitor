@@ -22,6 +22,7 @@ import {
   DATA_STATUSES,
 } from '../server/worldmonitor/market/v1/list-stablecoin-markets.ts';
 import { __clearLocalUnavailableBackoffForTests } from '../server/_shared/redis.ts';
+import { sha256Hex } from '../server/_shared/hash.ts';
 
 const REDIS_URL = 'https://redis.example.test';
 const SEED_KEY = 'market:stablecoins:v1';
@@ -598,6 +599,141 @@ test('a malformed row in the snapshot does not 500 the dashboard request', async
   assert.deepEqual(res.stablecoins.map(c => c.id), ['tether'], 'usable rows still serve');
   assert.equal(res.summary?.coinCount, 1);
   assert.equal(res.dataStatus, 'OK');
+});
+
+test('a gap-key read that fails only on the SECOND read still suppresses the provider', async (t) => {
+  t.after(restoreEnvironment);
+  const h = installHarness({
+    seed: SEED_SNAPSHOT,
+    gecko: ids => new Response(JSON.stringify(ids.map(id => geckoRow(id, 1.0))), { status: 200 }),
+  });
+
+  // cachedFetchJson reads the key itself and treats a read ERROR as a miss, so
+  // guarding only the first read leaves the fan-out open to a Redis fault that
+  // lands between the two. Let the first gap-key GET miss cleanly, then fail
+  // every later one — flaky Upstash, which is exactly when this matters.
+  const base = globalThis.fetch;
+  let gapGets = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes(`/get/${encodeURIComponent(GAP_KEY_PREFIX)}`)) {
+      gapGets += 1;
+      if (gapGets === 1) return new Response(JSON.stringify({ result: null }), { status: 200 });
+      return new Response('redis flaked', { status: 500 });
+    }
+    return base(input as RequestInfo, init);
+  }) as typeof fetch;
+
+  const res = await call(['frax']);
+
+  assert.ok(gapGets >= 2, 'the scenario requires a second gap-key read to happen');
+  assert.deepEqual(h.geckoCalls, [], 'a read error between the two reads must not reach the provider');
+  assert.deepEqual(res.unresolved, [{ id: 'frax', reason: 'PROVIDER_ERROR' }]);
+});
+
+test('a corrupt snapshot does not turn named defaults into provider gaps', async (t) => {
+  t.after(restoreEnvironment);
+  const h = installHarness({
+    // The snapshot READS fine — Redis is healthy — but every row is junk. Left
+    // to look like an empty snapshot, each named default becomes a gap.
+    seed: { ...SEED_SNAPSHOT, stablecoins: [null, 'nonsense', { noId: true }] },
+    gecko: ids => new Response(JSON.stringify(ids.map(id => geckoRow(id, 1.0))), { status: 200 }),
+  });
+
+  const res = await call(['tether', 'usd-coin']);
+
+  assert.deepEqual(h.geckoCalls, [], 'a corrupt snapshot must not become a provider fan-out');
+  assert.equal(res.dataStatus, 'UNAVAILABLE');
+  assert.deepEqual(res.unresolved.map(u => u.reason), ['PROVIDER_ERROR', 'PROVIDER_ERROR']);
+});
+
+test('a gap response served from cache reports when the provider answered, not now', async (t) => {
+  t.after(restoreEnvironment);
+  const h = installHarness({
+    seed: SEED_SNAPSHOT,
+    gecko: ids => new Response(JSON.stringify(ids.map(id => geckoRow(id, 1.0))), { status: 200 }),
+  });
+
+  await call(['frax']);
+
+  // Backdate the cached entry to a value no wall clock can produce. Comparing
+  // two `new Date()` stamps would not settle this — both calls can land in the
+  // same millisecond, so the assertion would hold even if the handler ignored
+  // the stored time entirely.
+  const AGED = '2020-01-01T00:00:00.000Z';
+  const key = [...h.store.keys()].find(k => k.startsWith(GAP_KEY_PREFIX));
+  assert.ok(key, 'the gap result must have been cached');
+  const cached = JSON.parse(h.store.get(key)!);
+  assert.equal(typeof cached.fetchedAt, 'string', 'the payload records when the provider answered');
+  h.store.set(key, JSON.stringify({ ...cached, fetchedAt: AGED }));
+
+  const second = await call(['frax']);
+
+  assert.equal(h.geckoCalls.length, 1, 'the second request is a cache hit');
+  assert.equal(
+    second.timestamp,
+    AGED,
+    'a cache hit must report the age of the data, not the age of the response',
+  );
+});
+
+test('an incomplete fallback answer is not left authoritative for the full TTL', async (t) => {
+  t.after(restoreEnvironment);
+  const writes: Array<{ key: string; ttl: number }> = [];
+  installHarness({
+    // Both IDs are gaps; CoinGecko is down; CoinPaprika can map only tether.
+    seed: { ...SEED_SNAPSHOT, stablecoins: [seedCoin('dai')] },
+    gecko: () => new Response('down', { status: 500 }),
+  });
+
+  const base = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.startsWith('https://api.coinpaprika.com/')) {
+      return new Response(
+        JSON.stringify({
+          id: 'usdt-tether',
+          name: 'Tether',
+          symbol: 'USDT',
+          quotes: { USD: { price: 1.0, volume_24h: 1, market_cap: 1, percent_change_24h: 0, percent_change_7d: 0 } },
+        }),
+        { status: 200 },
+      );
+    }
+    if (url.endsWith('/') && init?.method === 'POST') {
+      const [, key, , , ttl] = JSON.parse(String(init.body)) as string[];
+      writes.push({ key: key!, ttl: Number(ttl) });
+    }
+    return base(input as RequestInfo, init);
+  }) as typeof fetch;
+
+  const res = await call(['tether', 'frax']);
+
+  assert.deepEqual(res.stablecoins.map(c => c.id), ['tether']);
+  assert.deepEqual(res.unresolved, [{ id: 'frax', reason: 'PROVIDER_ERROR' }]);
+
+  const gapWrites = writes.filter(w => w.key.startsWith(GAP_KEY_PREFIX));
+  assert.ok(gapWrites.length > 0, 'the partial result is cached');
+  assert.ok(
+    gapWrites[gapWrites.length - 1]!.ttl <= 60,
+    `a partially-covered fallback must expire quickly, got ttl=${gapWrites[gapWrites.length - 1]!.ttl}`,
+  );
+});
+
+test('a cached gap payload missing its source is not read as proof of absence', async (t) => {
+  t.after(restoreEnvironment);
+  const h = installHarness({ seed: SEED_SNAPSHOT });
+
+  // Pre-seed the gap key with a payload shaped like an older/partial write.
+  // Read as a CoinGecko answer it would license NOT_FOUND for everything it
+  // omits; the shape check has to refuse it instead.
+  const key = `${GAP_KEY_PREFIX}${await sha256Hex('frax')}`;
+  h.store.set(key, JSON.stringify({ coins: [] }));
+
+  const res = await call(['frax']);
+
+  assert.deepEqual(res.unresolved, [{ id: 'frax', reason: 'PROVIDER_ERROR' }]);
+  assert.deepEqual(h.geckoCalls, [], 'an unreadable cache entry is not a reason to refetch here');
 });
 
 test('a malformed ID is rejected before any provider work', async (t) => {
