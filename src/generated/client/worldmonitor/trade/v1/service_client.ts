@@ -66,7 +66,7 @@ export interface GetTradeFlowsResponse {
   flows: TradeFlowRecord[];
   fetchedAt: string;
   upstreamUnavailable: boolean;
-  unavailableReason: string;
+  unavailableReason: TradeFlowUnavailableReason;
   coverageStartYear: number;
   coverageEndYear: number;
 }
@@ -149,6 +149,8 @@ export interface ComtradeFlowRecord {
   yoyChange: number;
   isAnomaly: boolean;
 }
+
+export type TradeFlowUnavailableReason = "TRADE_FLOW_UNAVAILABLE_REASON_UNSPECIFIED" | "TRADE_FLOW_UNAVAILABLE_REASON_INVALID_REQUEST" | "TRADE_FLOW_UNAVAILABLE_REASON_NOT_COVERED" | "TRADE_FLOW_UNAVAILABLE_REASON_SEED_MISSING" | "TRADE_FLOW_UNAVAILABLE_REASON_COVERAGE_UNKNOWN" | "TRADE_FLOW_UNAVAILABLE_REASON_CACHE_UNAVAILABLE";
 
 export interface FieldViolation {
   field: string;

@@ -52,14 +52,16 @@ description: "六标签页贸易政策综合面板，涵盖出口限制措施、
 
 格式错误的代码或超出范围的 `years` 会返回 HTTP 400，而不是被默认值静默替换。种子无法回答的合法请求会返回空 `flows` 以及来自封闭词汇表的 `unavailableReason`，从而将覆盖缺口与故障区分开：
 
-| `unavailableReason` | `upstreamUnavailable` | 含义 |
+`unavailableReason` 是 `TradeFlowUnavailableReason` 枚举，因此该封闭集合可直接从 OpenAPI schema 中发现，而不仅存在于文字说明中。取值均以 `TRADE_FLOW_UNAVAILABLE_REASON_` 为前缀：
+
+| 后缀 | `upstreamUnavailable` | 含义 |
 |---|---|---|
-| `""` | `false` | 正常返回数据行。 |
-| `not_covered` | `false` | 请求合法，但该申报国/伙伴国组合不在种子覆盖范围内。并非故障，重试无用。 |
-| `seed_missing` | `true` | 该组合在覆盖范围内，但其缓存条目已丢失。 |
-| `coverage_unknown` | `true` | 无法读取覆盖清单，因此无法排除上述两种情况。 |
-| `cache_unavailable` | `true` | 缓存读取本身失败。 |
-| `invalid_request` | `false` | 代码格式错误（仅在绕过请求校验时可达）。 |
+| `UNSPECIFIED` | `false` | 正常返回数据行。 |
+| `NOT_COVERED` | `false` | 请求合法，但该申报国/伙伴国组合不在种子覆盖范围内。并非故障，重试无用。 |
+| `SEED_MISSING` | `true` | 该组合在覆盖范围内，但其缓存条目已丢失。 |
+| `COVERAGE_UNKNOWN` | `true` | 无法读取覆盖清单，因此无法排除上述两种情况。 |
+| `CACHE_UNAVAILABLE` | `true` | 缓存读取本身失败。 |
+| `INVALID_REQUEST` | `false` | 代码格式错误（仅在绕过请求校验时可达）。 |
 
 整体覆盖情况通过 `/api/health` 中的 `tradeFlows` 条目发布，其 `records` 计数为实际种子化的申报国/世界组合数量；数量不足时读作 `COVERAGE_PARTIAL`，而种子器停止运行时读作 `STALE_SEED`。
 

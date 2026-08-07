@@ -13,6 +13,7 @@ import type {
   GetTradeFlowsRequest,
   GetTradeFlowsResponse,
   TradeFlowRecord,
+  TradeFlowUnavailableReason,
 } from '../../../../src/generated/server/worldmonitor/trade/v1/service_server';
 import { readCachedJson } from '../../../_shared/redis';
 
@@ -27,18 +28,27 @@ export const DEFAULT_YEARS = 10;
 export const MAX_YEARS = 30;
 
 /**
- * Closed vocabulary published as `unavailableReason`. The distinction that
- * matters is `not_covered` (a contract answer — this pair was never seeded and
- * nothing is broken) versus everything else (a fault). Collapsing them, which is
- * what a bare `upstreamUnavailable: true` did, makes a permanent coverage gap
- * look like a transient outage that will fix itself.
+ * Short names for the generated `TradeFlowUnavailableReason` enum members.
+ *
+ * The vocabulary is a proto enum rather than a bare string so the closed set is
+ * machine-discoverable from the OpenAPI spec and gives generated clients
+ * compile-time exhaustiveness — matching how the repo models every other
+ * "why is this not covered" state (DependencyFlag, CompanyCoverageState).
+ * The distinction that matters is NOT_COVERED (a contract answer — nothing is
+ * broken, a retry cannot help) versus everything else (a fault); collapsing
+ * them, which a bare `upstreamUnavailable: true` did, makes a permanent
+ * coverage gap look like a transient outage that will fix itself.
  */
-export type TradeFlowUnavailableReason =
-  | 'invalid_request'
-  | 'not_covered'
-  | 'seed_missing'
-  | 'coverage_unknown'
-  | 'cache_unavailable';
+const REASON = {
+  served: 'TRADE_FLOW_UNAVAILABLE_REASON_UNSPECIFIED',
+  invalidRequest: 'TRADE_FLOW_UNAVAILABLE_REASON_INVALID_REQUEST',
+  notCovered: 'TRADE_FLOW_UNAVAILABLE_REASON_NOT_COVERED',
+  seedMissing: 'TRADE_FLOW_UNAVAILABLE_REASON_SEED_MISSING',
+  coverageUnknown: 'TRADE_FLOW_UNAVAILABLE_REASON_COVERAGE_UNKNOWN',
+  cacheUnavailable: 'TRADE_FLOW_UNAVAILABLE_REASON_CACHE_UNAVAILABLE',
+} as const satisfies Record<string, TradeFlowUnavailableReason>;
+
+export { REASON as TRADE_FLOW_REASON };
 
 interface CoverageManifest {
   pairs: string[];
@@ -179,7 +189,7 @@ async function classifyMiss(reporter: string, partner: string): Promise<GetTrade
   const read = await readCachedJson(COVERAGE_KEY, true);
   if (read.status === 'error') {
     logReadFailure(COVERAGE_KEY, read.error);
-    return unavailable('cache_unavailable', true);
+    return unavailable(REASON.cacheUnavailable, true);
   }
   const manifest = read.status === 'hit' ? (read.value as CoverageManifest | null) : null;
   // Every member must be well-formed, not just the array itself. `{pairs:[null]}`
@@ -190,11 +200,11 @@ async function classifyMiss(reporter: string, partner: string): Promise<GetTrade
   if (!Array.isArray(pairs) || !pairs.every((id) => typeof id === 'string' && PAIR_ID_PATTERN.test(id))) {
     // The manifest expires on the same TTL as the data keys, so losing both is
     // itself evidence the seeder has stopped — not evidence about this pair.
-    return unavailable('coverage_unknown', true);
+    return unavailable(REASON.coverageUnknown, true);
   }
   return pairs.includes(tradeFlowCoverageId(reporter, partner))
-    ? unavailable('seed_missing', true)
-    : unavailable('not_covered', false);
+    ? unavailable(REASON.seedMissing, true)
+    : unavailable(REASON.notCovered, false);
 }
 
 export async function getTradeFlows(
@@ -202,26 +212,26 @@ export async function getTradeFlows(
   req: GetTradeFlowsRequest,
 ): Promise<GetTradeFlowsResponse> {
   const normalized = normalizeTradeFlowRequest(req);
-  if (!normalized) return unavailable('invalid_request', false);
+  if (!normalized) return unavailable(REASON.invalidRequest, false);
   const { reporter, partner, years } = normalized;
 
   const seedKey = tradeFlowSeedKey(reporter, partner);
   const read = await readCachedJson(seedKey, true);
   if (read.status === 'error') {
     logReadFailure(seedKey, read.error);
-    return unavailable('cache_unavailable', true);
+    return unavailable(REASON.cacheUnavailable, true);
   }
 
   const seeded = read.status === 'hit' ? (read.value as GetTradeFlowsResponse | null) : null;
   const flows = Array.isArray(seeded?.flows) ? sliceFlowsToWindow(seeded.flows, years) : [];
   if (flows.length === 0) {
     const miss = await classifyMiss(reporter, partner);
-    if (miss.unavailableReason !== 'coverage_unknown') return miss;
+    if (miss.unavailableReason !== REASON.coverageUnknown) return miss;
     const legacy = await readLegacySeed(reporter, partner, years);
     // A failed read of the bridge key is a cache fault, not "we don't know what
     // is covered" — collapsing the two would report a Redis outage under the
     // wrong reason.
-    if (legacy === 'error') return unavailable('cache_unavailable', true);
+    if (legacy === 'error') return unavailable(REASON.cacheUnavailable, true);
     return legacy ?? miss;
   }
 
@@ -238,7 +248,7 @@ function served(flows: TradeFlowRecord[], fetchedAt: unknown): GetTradeFlowsResp
     flows,
     fetchedAt: typeof fetchedAt === 'string' ? fetchedAt : '',
     upstreamUnavailable: false,
-    unavailableReason: '',
+    unavailableReason: REASON.served,
     coverageStartYear: first?.year ?? 0,
     coverageEndYear: last?.year ?? 0,
   };

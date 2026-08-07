@@ -52,14 +52,16 @@ The `revenue` tab's US-Treasury feed is particularly sensitive — see the chang
 
 A malformed code or an out-of-range `years` is rejected with HTTP 400 rather than silently replaced by a default. A well-formed request the seed cannot answer returns empty `flows` plus an `unavailableReason` from a closed vocabulary, so a coverage gap is distinguishable from a fault:
 
-| `unavailableReason` | `upstreamUnavailable` | Meaning |
+`unavailableReason` is the `TradeFlowUnavailableReason` enum, so the closed set is discoverable from the OpenAPI schema rather than only from prose. Values are prefixed `TRADE_FLOW_UNAVAILABLE_REASON_`:
+
+| Suffix | `upstreamUnavailable` | Meaning |
 |---|---|---|
-| `""` | `false` | Rows served. |
-| `not_covered` | `false` | Well-formed, but this reporter/partner pair is outside seeded coverage. Nothing is broken; retrying will not help. |
-| `seed_missing` | `true` | The pair is inside coverage but its cache entry is gone. |
-| `coverage_unknown` | `true` | The coverage manifest could not be read, so neither of the above can be ruled out. |
-| `cache_unavailable` | `true` | The cache read itself failed. |
-| `invalid_request` | `false` | Codes were malformed (only reachable where request validation is bypassed). |
+| `UNSPECIFIED` | `false` | Rows served. |
+| `NOT_COVERED` | `false` | Well-formed, but this reporter/partner pair is outside seeded coverage. Nothing is broken; retrying will not help. |
+| `SEED_MISSING` | `true` | The pair is inside coverage but its cache entry is gone. |
+| `COVERAGE_UNKNOWN` | `true` | The coverage manifest could not be read, so neither of the above can be ruled out. |
+| `CACHE_UNAVAILABLE` | `true` | The cache read itself failed. |
+| `INVALID_REQUEST` | `false` | Codes were malformed (only reachable where request validation is bypassed). |
 
 Fleet-level coverage is published as the `tradeFlows` entry in `/api/health`, whose `records` count is the number of reporter/World pairs actually seeded; a shortfall reads `COVERAGE_PARTIAL`, while a stopped seeder reads `STALE_SEED`.
 

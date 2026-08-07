@@ -667,7 +667,10 @@ export async function fetchFlowPair(reporter, partner, flows, stats, now = new D
     flows: records,
     fetchedAt: new Date().toISOString(),
     upstreamUnavailable: false,
-    unavailableReason: '',
+    // Mirrors the generated TradeFlowUnavailableReason zero value; the handler
+    // recomputes this after slicing, but the seeded payload must be valid on
+    // its own rather than carrying a string the enum does not contain.
+    unavailableReason: 'TRADE_FLOW_UNAVAILABLE_REASON_UNSPECIFIED',
     coverageStartYear: records[0].year,
     coverageEndYear: records[records.length - 1].year,
   };

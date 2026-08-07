@@ -23247,7 +23247,7 @@ paths:
                                       "partnerCountry": "156"
                                       "productSector": "diesel"
                                       "reportingCountry": "840"
-                                "unavailableReason": "example"
+                                "unavailableReason": "TRADE_FLOW_UNAVAILABLE_REASON_INVALID_REQUEST"
                             schema:
                                 $ref: '#/components/schemas/worldmonitor_trade_v1_GetTradeFlowsResponse'
                 "400":
@@ -44483,14 +44483,17 @@ components:
                          part of seeded coverage, which is a contract answer rather than an outage.
                 unavailableReason:
                     type: string
+                    enum:
+                        - TRADE_FLOW_UNAVAILABLE_REASON_UNSPECIFIED
+                        - TRADE_FLOW_UNAVAILABLE_REASON_INVALID_REQUEST
+                        - TRADE_FLOW_UNAVAILABLE_REASON_NOT_COVERED
+                        - TRADE_FLOW_UNAVAILABLE_REASON_SEED_MISSING
+                        - TRADE_FLOW_UNAVAILABLE_REASON_COVERAGE_UNKNOWN
+                        - TRADE_FLOW_UNAVAILABLE_REASON_CACHE_UNAVAILABLE
                     description: |-
-                        Empty when flows are served. Otherwise one of a closed vocabulary that
-                         says why they are not, so a caller can tell a coverage gap from a fault:
-                           "invalid_request"    request codes were malformed
-                           "not_covered"        well-formed, but this pair is not seeded
-                           "seed_missing"       pair is seeded, but its cache entry is absent
-                           "coverage_unknown"   coverage manifest unreadable, so neither can be ruled out
-                           "cache_unavailable"  the cache read itself failed
+                        TradeFlowUnavailableReason says why no rows were returned. The distinction
+                         that matters is NOT_COVERED — a contract answer, nothing is broken and a
+                         retry cannot help — against every other member, which names a fault.
                 coverageStartYear:
                     type: integer
                     format: int32

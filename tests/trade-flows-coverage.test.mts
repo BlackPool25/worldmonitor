@@ -26,6 +26,7 @@ import {
   normalizeTradeFlowRequest,
   sliceFlowsToWindow,
   tradeFlowSeedKey,
+  TRADE_FLOW_REASON as R,
 } from '../server/worldmonitor/trade/v1/get-trade-flows';
 import { validateGeneratedRequest } from '../server/request-validator';
 import { GENERATED_MESSAGE_RULES } from '../src/generated/server/request_validation';
@@ -142,7 +143,7 @@ function seededPayload(startYear: number, endYear: number): GetTradeFlowsRespons
     flows,
     fetchedAt: '2026-08-07T00:00:00.000Z',
     upstreamUnavailable: false,
-    unavailableReason: '',
+    unavailableReason: R.served,
     coverageStartYear: startYear,
     coverageEndYear: endYear,
   };
@@ -217,7 +218,7 @@ describe('seeded reporter-versus-World requests', () => {
     seedUsWorld(1996, 2025);
     const res = await getTradeFlows(CTX, request());
 
-    assert.equal(res.unavailableReason, '');
+    assert.equal(res.unavailableReason, R.served);
     assert.equal(res.upstreamUnavailable, false);
     assert.equal(res.coverageStartYear, 2015);
     assert.equal(res.coverageEndYear, 2025);
@@ -235,7 +236,7 @@ describe('seeded reporter-versus-World requests', () => {
       const res = await getTradeFlows(CTX, request({ years }));
       assert.equal(res.flows.length, expected,
         `years=${years} spans ${years} + 1 calendar years, inclusive of both endpoints`);
-      assert.equal(res.unavailableReason, '', `years=${years} must not report a fault`);
+      assert.equal(res.unavailableReason, R.served, `years=${years} must not report a fault`);
       assert.equal(res.coverageEndYear, 2025, `years=${years}`);
       assert.equal(res.coverageStartYear, 2025 - years, `years=${years}`);
     }
@@ -252,7 +253,7 @@ describe('seeded reporter-versus-World requests', () => {
     const res = await getTradeFlows(CTX, request({ years: 30 }));
     assert.equal(res.flows.length, 6);
     assert.equal(res.coverageStartYear, 2020);
-    assert.equal(res.unavailableReason, '');
+    assert.equal(res.unavailableReason, R.served);
   });
 
   test('the served path reads exactly one key and never the manifest', async () => {
@@ -274,7 +275,7 @@ describe('seeded reporter-versus-World requests', () => {
     seedUsWorld();
     const explicit = await getTradeFlows(CTX, request({ reportingCountry: '840', partnerCountry: '000' }));
     assert.equal(explicit.flows.length, 11);
-    assert.equal(explicit.unavailableReason, '');
+    assert.equal(explicit.unavailableReason, R.served);
   });
 });
 
@@ -285,7 +286,7 @@ describe('a miss is attributed to a cause, not blamed on upstream', () => {
     seedManifest([tradeFlowCoverageId('840', '000')]);
     const res = await getTradeFlows(CTX, request({ reportingCountry: '840', partnerCountry: '156' }));
 
-    assert.equal(res.unavailableReason, 'not_covered');
+    assert.equal(res.unavailableReason, R.notCovered);
     assert.equal(res.upstreamUnavailable, false,
       'no retry fixes a combination WTO does not publish; calling it an outage invites one');
     assert.deepEqual(res.flows, []);
@@ -298,7 +299,7 @@ describe('a miss is attributed to a cause, not blamed on upstream', () => {
     seedManifest([tradeFlowCoverageId('840', '000'), tradeFlowCoverageId('156', '000')]);
     const res = await getTradeFlows(CTX, request({ reportingCountry: '156' }));
 
-    assert.equal(res.unavailableReason, 'seed_missing');
+    assert.equal(res.unavailableReason, R.seedMissing);
     assert.equal(res.upstreamUnavailable, true);
   });
 
@@ -307,7 +308,7 @@ describe('a miss is attributed to a cause, not blamed on upstream', () => {
     seedManifest([]);
     const res = await getTradeFlows(CTX, request());
 
-    assert.equal(res.unavailableReason, 'cache_unavailable');
+    assert.equal(res.unavailableReason, R.cacheUnavailable);
     assert.equal(res.upstreamUnavailable, true);
     assert.deepEqual(redisReads, [tradeFlowSeedKey('840', '000')],
       'a cache fault is already conclusive; the manifest cannot refine it');
@@ -317,14 +318,14 @@ describe('a miss is attributed to a cause, not blamed on upstream', () => {
     redisErrors.add(COVERAGE_KEY);
     const res = await getTradeFlows(CTX, request());
 
-    assert.equal(res.unavailableReason, 'cache_unavailable');
+    assert.equal(res.unavailableReason, R.cacheUnavailable);
     assert.equal(res.upstreamUnavailable, true);
   });
 
   test('an absent manifest cannot rule coverage in or out', async () => {
     const res = await getTradeFlows(CTX, request());
 
-    assert.equal(res.unavailableReason, 'coverage_unknown');
+    assert.equal(res.unavailableReason, R.coverageUnknown);
     assert.equal(res.upstreamUnavailable, true,
       'losing the manifest and the data together is evidence the seeder stopped');
   });
@@ -337,7 +338,7 @@ describe('a miss is attributed to a cause, not blamed on upstream', () => {
     for (const pairs of ['not-an-array', [null], [{}], [123], ['840'], ['840:000:10'], ['84:000']]) {
       redisStore.set(COVERAGE_KEY, { pairs });
       const res = await getTradeFlows(CTX, request());
-      assert.equal(res.unavailableReason, 'coverage_unknown', JSON.stringify(pairs));
+      assert.equal(res.unavailableReason, R.coverageUnknown, JSON.stringify(pairs));
       assert.equal(res.upstreamUnavailable, true, JSON.stringify(pairs));
     }
   });
@@ -348,7 +349,7 @@ describe('a miss is attributed to a cause, not blamed on upstream', () => {
     redisErrors.add(legacyTradeFlowSeedKey('840', '000'));
     const res = await getTradeFlows(CTX, request());
 
-    assert.equal(res.unavailableReason, 'cache_unavailable');
+    assert.equal(res.unavailableReason, R.cacheUnavailable);
     assert.equal(res.upstreamUnavailable, true);
   });
 
@@ -359,7 +360,7 @@ describe('a miss is attributed to a cause, not blamed on upstream', () => {
     redisStore.set(legacyTradeFlowSeedKey('840', '000'), seededPayload(2015, 2025));
     const res = await getTradeFlows(CTX, request());
 
-    assert.equal(res.unavailableReason, 'seed_missing');
+    assert.equal(res.unavailableReason, R.seedMissing);
     assert.ok(!redisReads.includes(legacyTradeFlowSeedKey('840', '000')));
   });
 
@@ -368,7 +369,7 @@ describe('a miss is attributed to a cause, not blamed on upstream', () => {
     seedManifest([tradeFlowCoverageId('840', '000')]);
     const res = await getTradeFlows(CTX, request());
 
-    assert.equal(res.unavailableReason, 'seed_missing');
+    assert.equal(res.unavailableReason, R.seedMissing);
   });
 });
 
@@ -382,7 +383,7 @@ describe('the v1 seed still answers until the first v2 run publishes', () => {
     redisStore.set(legacyTradeFlowSeedKey('840', '000'), seededPayload(2016, 2025));
     const res = await getTradeFlows(CTX, request());
 
-    assert.equal(res.unavailableReason, '');
+    assert.equal(res.unavailableReason, R.served);
     assert.equal(res.upstreamUnavailable, false);
     assert.equal(res.flows.length, 10);
     assert.equal(res.coverageEndYear, 2025);
@@ -399,7 +400,7 @@ describe('the v1 seed still answers until the first v2 run publishes', () => {
 
   test('an absent legacy key leaves the original verdict intact', async () => {
     const res = await getTradeFlows(CTX, request());
-    assert.equal(res.unavailableReason, 'coverage_unknown');
+    assert.equal(res.unavailableReason, R.coverageUnknown);
   });
 });
 
@@ -410,7 +411,7 @@ describe('malformed input is rejected instead of silently defaulted', () => {
     seedUsWorld();
     const res = await getTradeFlows(CTX, request({ reportingCountry: 'XX' }));
 
-    assert.equal(res.unavailableReason, 'invalid_request');
+    assert.equal(res.unavailableReason, R.invalidRequest);
     assert.deepEqual(res.flows, [], 'the old handler substituted 840 and answered about a country nobody asked for');
     assert.deepEqual(redisReads, [], 'a rejected request must not build a cache key at all');
   });
@@ -419,7 +420,7 @@ describe('malformed input is rejected instead of silently defaulted', () => {
     seedUsWorld();
     const res = await getTradeFlows(CTX, request({ partnerCountry: '15' }));
 
-    assert.equal(res.unavailableReason, 'invalid_request');
+    assert.equal(res.unavailableReason, R.invalidRequest);
     assert.deepEqual(redisReads, []);
   });
 
@@ -427,7 +428,7 @@ describe('malformed input is rejected instead of silently defaulted', () => {
     seedUsWorld();
     for (const years of [-1, 31, 1000, 10.5, Number.NaN]) {
       const res = await getTradeFlows(CTX, request({ years }));
-      assert.equal(res.unavailableReason, 'invalid_request', `years=${years}`);
+      assert.equal(res.unavailableReason, R.invalidRequest, `years=${years}`);
     }
   });
 
@@ -613,7 +614,7 @@ describe('fetchFlowPair', () => {
     const payload = flows['trade:flows:v2:840:000'];
     assert.equal(payload.flows.length, 3);
     assert.equal(payload.upstreamUnavailable, false);
-    assert.equal(payload.unavailableReason, '');
+    assert.equal(payload.unavailableReason, R.served);
     assert.equal(payload.coverageStartYear, 2023);
     assert.equal(payload.coverageEndYear, 2025);
     assert.equal(stats.pairsSeeded, 1);

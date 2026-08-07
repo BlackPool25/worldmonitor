@@ -6,6 +6,26 @@ import "buf/validate/validate.proto";
 import "sebuf/http/annotations.proto";
 import "worldmonitor/trade/v1/trade_data.proto";
 
+// TradeFlowUnavailableReason says why no rows were returned. The distinction
+// that matters is NOT_COVERED — a contract answer, nothing is broken and a
+// retry cannot help — against every other member, which names a fault.
+enum TradeFlowUnavailableReason {
+  // Rows were served.
+  TRADE_FLOW_UNAVAILABLE_REASON_UNSPECIFIED = 0;
+  // Request codes were malformed. Only reachable where request validation is
+  // bypassed; the gateway rejects these with HTTP 400 before the handler runs.
+  TRADE_FLOW_UNAVAILABLE_REASON_INVALID_REQUEST = 1;
+  // Well-formed, but this reporter/partner pair is outside seeded coverage.
+  TRADE_FLOW_UNAVAILABLE_REASON_NOT_COVERED = 2;
+  // The pair is inside coverage but its cache entry is absent.
+  TRADE_FLOW_UNAVAILABLE_REASON_SEED_MISSING = 3;
+  // The coverage manifest could not be read, so neither of the two above can
+  // be ruled out.
+  TRADE_FLOW_UNAVAILABLE_REASON_COVERAGE_UNKNOWN = 4;
+  // The cache read itself failed.
+  TRADE_FLOW_UNAVAILABLE_REASON_CACHE_UNAVAILABLE = 5;
+}
+
 // Request for merchandise trade flow data, reporter versus World.
 //
 // Coverage is seed-backed: Railway pre-fetches a fixed set of
@@ -51,14 +71,9 @@ message GetTradeFlowsResponse {
   // are served AND when the request names a combination that is simply not
   // part of seeded coverage, which is a contract answer rather than an outage.
   bool upstream_unavailable = 3;
-  // Empty when flows are served. Otherwise one of a closed vocabulary that
-  // says why they are not, so a caller can tell a coverage gap from a fault:
-  //   "invalid_request"    request codes were malformed
-  //   "not_covered"        well-formed, but this pair is not seeded
-  //   "seed_missing"       pair is seeded, but its cache entry is absent
-  //   "coverage_unknown"   coverage manifest unreadable, so neither can be ruled out
-  //   "cache_unavailable"  the cache read itself failed
-  string unavailable_reason = 4;
+  // UNSPECIFIED when flows are served; otherwise why they are not, so a caller
+  // can tell a coverage gap from a fault without parsing prose.
+  TradeFlowUnavailableReason unavailable_reason = 4;
   // First and last calendar year covered by `flows`. Both are 0 when no flows
   // are returned. This is the effective window after slicing to `years`, which
   // may be narrower than the requested lookback when the seed starts later.

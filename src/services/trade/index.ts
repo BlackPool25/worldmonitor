@@ -118,7 +118,8 @@ const emptyTariffs: GetTariffTrendsResponse = { datapoints: [], fetchedAt: '', u
 // Only the handler names a reason.
 const emptyFlows: GetTradeFlowsResponse = {
   flows: [], fetchedAt: '', upstreamUnavailable: false,
-  unavailableReason: '', coverageStartYear: 0, coverageEndYear: 0,
+  unavailableReason: 'TRADE_FLOW_UNAVAILABLE_REASON_UNSPECIFIED',
+  coverageStartYear: 0, coverageEndYear: 0,
 };
 const emptyBarriers: GetTradeBarriersResponse = { barriers: [], fetchedAt: '', upstreamUnavailable: false };
 const emptyRevenue: GetCustomsRevenueResponse = { months: [], fetchedAt: '', upstreamUnavailable: false };
