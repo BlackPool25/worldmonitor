@@ -2775,8 +2775,17 @@ async function seedCryptoQuotes() {
 }
 
 // Stablecoin Markets — CoinGecko → CoinPaprika fallback
-const STABLECOIN_IDS = 'tether,usd-coin,dai,first-digital-usd,ethena-usde';
-const STABLECOIN_PAPRIKA_MAP = { tether: 'usdt-tether', 'usd-coin': 'usdc-usd-coin', dai: 'dai-dai', 'first-digital-usd': 'fdusd-first-digital-usd', 'ethena-usde': 'usde-ethena-usde' };
+//
+// This is the BACKUP writer for market:stablecoins:v1; the standalone
+// scripts/seed-stablecoin-markets.mjs is the primary. Both, plus the RPC
+// handler that fills gaps the snapshot does not carry, now read one shared
+// config — private copies here meant the backup could seed a different coin
+// set, or classify the same price differently, than the primary. (#6308)
+const _stablecoinCfg = requireShared('stablecoins.json');
+const STABLECOIN_IDS = _stablecoinCfg.ids.join(',');
+const STABLECOIN_PAPRIKA_MAP = _stablecoinCfg.coinpaprika;
+const STABLECOIN_ON_PEG_MAX = _stablecoinCfg.pegThresholds.onPegMaxDeviation;
+const STABLECOIN_SLIGHT_DEPEG_MAX = _stablecoinCfg.pegThresholds.slightDepegMaxDeviation;
 const STABLECOIN_SEED_TTL = 7200; // 2h — 1h buffer over 5min cron cadence (was 1h = 55min buffer)
 
 async function fetchStablecoinCoinPaprika() {
@@ -2807,7 +2816,7 @@ async function seedStablecoinMarkets() {
   const stablecoins = data.map((coin) => {
     const price = coin.current_price || 0;
     const deviation = Math.abs(price - 1.0);
-    const pegStatus = deviation <= 0.005 ? 'ON PEG' : deviation <= 0.01 ? 'SLIGHT DEPEG' : 'DEPEGGED';
+    const pegStatus = deviation <= STABLECOIN_ON_PEG_MAX ? 'ON PEG' : deviation <= STABLECOIN_SLIGHT_DEPEG_MAX ? 'SLIGHT DEPEG' : 'DEPEGGED';
     return { id: coin.id, symbol: (coin.symbol || '').toUpperCase(), name: coin.name, price, deviation: +(deviation * 100).toFixed(3), pegStatus, marketCap: coin.market_cap || 0, volume24h: coin.total_volume || 0, change24h: coin.price_change_percentage_24h || 0, change7d: coin.price_change_percentage_7d_in_currency || 0, image: coin.image || '' };
   });
   const totalMarketCap = stablecoins.reduce((s, c) => s + c.marketCap, 0);
