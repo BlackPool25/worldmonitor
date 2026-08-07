@@ -1,8 +1,8 @@
 // Cached loader for the unified OpenAPI bundle used by the contract tests.
 //
-// docs/api/worldmonitor.openapi.yaml is ~2.1 MB and a single YAML.parse of it
-// costs seconds, while JSON.parse of the same document costs ~70 ms. The
-// contract suite loads the bundle from ~20 separate test processes (some files
+// docs/api/worldmonitor.openapi.yaml is ~2.1 MB and a YAML parse of it costs
+// far more than the tens-of-milliseconds JSON.parse of the same document. The
+// contract suite loads the bundle from 15 separate test processes (some files
 // several times), which made the OpenAPI guards the slowest block of
 // test:data. Identical bytes always parse to the identical document, so the
 // parse result is cached on disk as JSON keyed by a content hash of the YAML
@@ -26,10 +26,11 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-// js-yaml, not 'yaml': on the 2.1 MB bundle js-yaml loads in ~0.3 s where
-// 'yaml' takes ~5 s, and both produce the identical document for this spec
-// (verified deep-equal). The parser choice bounds the worst case for every
-// cold-cache process racing to warm the same entry.
+// js-yaml, not 'yaml': on the 2.1 MB bundle js-yaml loads roughly an order of
+// magnitude faster (~8-20x across measurements), and both produce the
+// identical document for this spec (verified deep-equal). The parser choice
+// bounds the worst case for every cold-cache process racing to warm the same
+// entry.
 import { load as loadYamlSource } from 'js-yaml';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
