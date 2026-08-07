@@ -25,6 +25,7 @@ import type {
   UnresolvedStablecoin,
 } from '../../../../src/generated/server/worldmonitor/market/v1/service_server';
 import stablecoinConfig from '../../../../shared/stablecoins.json';
+import { captureSilentError } from '../../../../api/_sentry-edge.js';
 import { cachedFetchJson, readCachedJson } from '../../../_shared/redis';
 import { sha256Hex } from '../../../_shared/hash';
 import {
@@ -250,6 +251,12 @@ async function resolveGapCoins(ids: string[]): Promise<{
     for (const coin of payload?.coins ?? []) resolved.set(coin.id, coin);
     return { resolved, providerFailed: payload?.source === 'coinpaprika' };
   } catch (err) {
+    // Reaching here means BOTH provider legs failed (or the short unavailable
+    // backoff is armed) — the degraded-provider state this RPC is meant to make
+    // visible. Not caller-triggerable noise: an unknown-but-well-formed ID gets
+    // a 200 with no row from CoinGecko, which resolves to NOT_FOUND without
+    // throwing. The caller still gets a response; only the reporting is silent.
+    void captureSilentError(err, { tags: { route: 'market/list-stablecoin-markets', step: 'gap-lookup' } });
     console.warn('[Stablecoin] gap lookup failed:', (err as Error).message);
     return { resolved, providerFailed: true };
   }

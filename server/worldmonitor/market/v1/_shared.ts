@@ -524,6 +524,10 @@ export async function fetchCryptoMarketsWithSource(
   try {
     return { items: await fetchCoinGeckoMarkets(ids, opts), source: 'coingecko' };
   } catch (err) {
+    // sentry-coverage-ok: a primary-leg failure is the expected trigger for
+    // this ladder, and the CoinPaprika call below owns recovery. If that leg
+    // fails too the error propagates to the caller, which is where the
+    // both-providers-down condition is worth reporting.
     console.warn(`[CoinGecko] Failed, falling back to CoinPaprika:`, (err as Error).message);
     // No opts pass-through: CoinPaprika's ticker response always carries both
     // the 24h and 7d change, so the projection knobs have nothing to select.
