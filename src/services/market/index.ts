@@ -6,7 +6,7 @@
  */
 
 import { getRpcBaseUrl } from '@/services/rpc-client';
-import type { ListMarketQuotesResponse, ListCommodityQuotesResponse, GetSectorSummaryResponse, ListCryptoQuotesResponse, ListCryptoSectorsResponse, CryptoSector, ListDefiTokensResponse, ListAiTokensResponse, ListOtherTokensResponse, MarketQuote as ProtoMarketQuote, CryptoQuote as ProtoCryptoQuote } from '@/generated/client/worldmonitor/market/v1/service_client';
+import type { ListMarketQuotesResponse, ListCommodityQuotesResponse, GetSectorSummaryResponse, ListCryptoQuotesResponse, ListCryptoSectorsResponse, CryptoSector, ListDefiTokensResponse, ListAiTokensResponse, ListOtherTokensResponse, MarketQuote as ProtoMarketQuote, MarketQuoteUnavailable, CryptoQuote as ProtoCryptoQuote } from '@/generated/client/worldmonitor/market/v1/service_client';
 import type { MarketData, CryptoData, TokenData } from '@/types';
 import { createCircuitBreaker } from '@/utils/circuit-breaker';
 import { getHydratedData } from '@/services/bootstrap';
@@ -67,6 +67,12 @@ export interface MarketFetchResult {
   skipped?: boolean;
   reason?: string;
   rateLimited?: boolean;
+  /**
+   * Requested symbols that produced no quote, each with a reason (#6305).
+   * A custom watchlist ticker the fixed seed does not carry used to vanish
+   * from `data` with no signal at all.
+   */
+  unavailable?: MarketQuoteUnavailable[];
 }
 
 // ========================================================================
@@ -132,6 +138,9 @@ export async function fetchMultipleStocks(
     skipped: resp.finnhubSkipped || undefined,
     reason: resp.skipReason || undefined,
     rateLimited: resp.rateLimited || undefined,
+    // `resp` can be the pre-#6305 breaker cache or the empty fallback, so
+    // treat a missing field as "nothing to report" rather than trusting it.
+    unavailable: resp.unavailable?.length ? resp.unavailable : undefined,
   };
 }
 

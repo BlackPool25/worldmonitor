@@ -10,16 +10,49 @@ import {
   renderChinaCorporateDisclosureSignals,
   type ChinaCorporateDisclosureSnapshot,
 } from './market-disclosures';
-import { composeMarketPanelContent } from './market-panel-content';
+import {
+  composeMarketPanelContent,
+  groupUnavailableSymbols,
+  type UnavailableSymbolGroup,
+} from './market-panel-content';
+import type {
+  MarketQuoteUnavailable,
+  MarketQuoteUnavailableReason,
+} from '@/generated/client/worldmonitor/market/v1/service_client';
 import { openMarketChartModal } from './market-chart-modal';
 import {
   bindMarketChartActivation,
   getMarketChartRowAttributes,
 } from './market-chart-interactions';
 
+// Not in the `common` namespace on purpose: `common` ships whole inside the
+// budgeted first-paint shell bundle, and this notice only ever renders after a
+// market fetch has completed.
+const UNAVAILABLE_REASON_KEYS: Record<MarketQuoteUnavailableReason, string> = {
+  MARKET_QUOTE_UNAVAILABLE_REASON_UNSPECIFIED: 'components.markets.unavailable.notFound',
+  MARKET_QUOTE_UNAVAILABLE_REASON_NOT_FOUND: 'components.markets.unavailable.notFound',
+  MARKET_QUOTE_UNAVAILABLE_REASON_PROVIDER_ERROR: 'components.markets.unavailable.providerError',
+  MARKET_QUOTE_UNAVAILABLE_REASON_PROVIDER_RATE_LIMITED: 'components.markets.unavailable.rateLimited',
+  MARKET_QUOTE_UNAVAILABLE_REASON_PROVIDER_NOT_CONFIGURED: 'components.markets.unavailable.notConfigured',
+  MARKET_QUOTE_UNAVAILABLE_REASON_REQUEST_LIMIT_EXCEEDED: 'components.markets.unavailable.requestLimit',
+  MARKET_QUOTE_UNAVAILABLE_REASON_UPSTREAM_BUDGET_EXHAUSTED: 'components.markets.unavailable.budget',
+  MARKET_QUOTE_UNAVAILABLE_REASON_SEED_UNAVAILABLE: 'components.markets.unavailable.seed',
+};
+
+function unavailableSymbolLine(group: UnavailableSymbolGroup): string {
+  // An unrecognized reason (a server ahead of this bundle) still names the
+  // symbols rather than dropping the line — silence is the bug being fixed.
+  const reason = t(UNAVAILABLE_REASON_KEYS[group.reason] ?? 'components.markets.unavailable.notFound');
+  const symbols = group.symbols.join(', ');
+  return group.overflow > 0
+    ? t('components.markets.unavailable.symbolsMore', { symbols, count: group.overflow, reason })
+    : t('components.markets.unavailable.symbols', { symbols, reason });
+}
+
 export class MarketPanel extends Panel {
   private _markets: MarketData[] = [];
   private _marketsRateLimited = false;
+  private _marketsUnavailable: readonly MarketQuoteUnavailable[] = [];
   private _disclosures: ChinaCorporateDisclosureSnapshot | null = null;
 
   constructor() {
@@ -31,9 +64,14 @@ export class MarketPanel extends Panel {
     bindMarketChartActivation(this.content, () => this._markets, openMarketChartModal);
   }
 
-  public renderMarkets(data: MarketData[], rateLimited?: boolean): void {
+  public renderMarkets(
+    data: MarketData[],
+    rateLimited?: boolean,
+    unavailable?: readonly MarketQuoteUnavailable[],
+  ): void {
     this._markets = data;
     this._marketsRateLimited = Boolean(rateLimited);
+    this._marketsUnavailable = unavailable ?? [];
     this._renderMarketsAndDisclosures();
   }
 
@@ -73,6 +111,7 @@ export class MarketPanel extends Panel {
       unavailableMessage: this._marketsRateLimited
         ? t('common.rateLimitedMarket')
         : t('common.failedMarketData'),
+      unavailableSymbolLines: groupUnavailableSymbols(this._marketsUnavailable).map(unavailableSymbolLine),
     });
     if (content.kind === 'retry') {
       this.showRetrying(content.message);
