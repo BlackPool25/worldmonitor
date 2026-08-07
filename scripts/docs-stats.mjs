@@ -348,6 +348,117 @@ function parseBootstrapKeyTiers(source = read('shared/bootstrap-tier-keys.js')) 
   return tiers;
 }
 
+// ---- /api/health probed-key registry (api/health.js) ----
+//
+// Four published example responses quote `summary.total`, which is the single
+// number a reader uses to sanity-check whether their own response looks
+// complete. #6300: all four sat at 194 while production reported 256 — a
+// quarter of the fleet missing — and the figure had been copied forward often
+// enough (two English pages, two zh mirrors, plus a PR body quoting them) that
+// the agreement read as corroboration rather than as one stale number.
+//
+// Text-parsed rather than imported, like every other stat here: the docs-stats
+// CI job runs on bare Node with no `npm install`, and the runtime registry size
+// additionally depends on process.env.IRAN_EVENTS_ENABLED — an env-dependent
+// number must not land in the committed docs/generated/stats.json.
+//
+// The two object literals are NOT the whole registry: health.js mutates them
+// after declaration. Hardcoding that arithmetic is the same trap the docs fell
+// into — it would keep reporting a confident number that silently drifts the
+// moment a third mutation lands. So every mutation site is DISCOVERED and must
+// be one this function accounts for; an unrecognized one fails the gate loudly
+// instead of quietly publishing a wrong total.
+const HEALTH_REGISTRY_MUTATION_RE = new RegExp(
+  [
+    // `delete BOOTSTRAP_KEYS.iranEvents;`
+    String.raw`delete\s+(?:BOOTSTRAP_KEYS|STANDALONE_KEYS)\s*[.[][^\n]*`,
+    // `BOOTSTRAP_KEYS[name] = ...;` — the `=[^=]` tail keeps reads
+    // (`STANDALONE_KEYS[sibling] ?? …`) and comparisons out of the match.
+    String.raw`(?:BOOTSTRAP_KEYS|STANDALONE_KEYS)\s*(?:\[[^\]]*\]|\.\w+)\s*=[^=][^\n]*`,
+    // `Object.assign(BOOTSTRAP_KEYS, …)`
+    String.raw`Object\.assign\(\s*(?:BOOTSTRAP_KEYS|STANDALONE_KEYS)[^\n]*`,
+  ].join('|'),
+  'g',
+);
+
+// Every mutation this function knows how to price, in `normalizeMutation` form
+// (trimmed, inner whitespace collapsed). Adding a mutation to api/health.js
+// means teaching this list what it does to the count — that is the point.
+const HEALTH_REGISTRY_ACCOUNTED_MUTATIONS = [
+  // +1 per consumer-price market other than `ae` (which keeps its historical
+  // name in the BOOTSTRAP_KEYS literal).
+  'BOOTSTRAP_KEYS[name] = `consumer-prices:coverage:${market}`;',
+  // -1: the iran-events sunset drops the key unless IRAN_EVENTS_ENABLED=true,
+  // which defaults to false — so the documented (production) registry omits it.
+  'delete BOOTSTRAP_KEYS.iranEvents;',
+];
+
+const normalizeMutation = (line) => line.trim().replace(/\s+/g, ' ');
+
+// Depth-1 entries of a registry object literal. parseObjectBlockBody preserves
+// the original indentation, so a top-level key sits at exactly two spaces; a
+// nested object's keys would sit at four or more and are correctly excluded.
+// Comment lines start with `//` or `*` and cannot match the identifier group.
+function countRegistryEntries(source, name) {
+  const body = parseObjectBlockBody(source, `const ${name}`, `${name} in api/health.js`);
+  const keys = [...body.matchAll(/^ {2}([A-Za-z_$][\w$]*):/gm)].map((m) => m[1]);
+  if (keys.length === 0) throw new Error(`docs-stats: ${name} in api/health.js yielded no keys`);
+  const dupe = keys.find((k, i) => keys.indexOf(k) !== i);
+  if (dupe) throw new Error(`docs-stats: ${name} in api/health.js declares "${dupe}" twice`);
+  return keys;
+}
+
+function parseHealthProbedKeys(source = read('api/health.js')) {
+  const found = [...source.matchAll(HEALTH_REGISTRY_MUTATION_RE)].map((m) => normalizeMutation(m[0]));
+  const unaccounted = found.filter((m) => !HEALTH_REGISTRY_ACCOUNTED_MUTATIONS.includes(m));
+  if (unaccounted.length) {
+    throw new Error(
+      'docs-stats: api/health.js mutates its key registries in a way parseHealthProbedKeys does not '
+      + `account for, so summary.total cannot be derived: ${sorted(unaccounted).join(' | ')}. `
+      + 'Teach HEALTH_REGISTRY_ACCOUNTED_MUTATIONS what it does to the count.',
+    );
+  }
+  for (const expected of HEALTH_REGISTRY_ACCOUNTED_MUTATIONS) {
+    if (!found.includes(expected)) {
+      throw new Error(
+        `docs-stats: api/health.js no longer contains the accounted-for mutation \`${expected}\` — `
+        + 'summary.total would be derived from stale arithmetic.',
+      );
+    }
+  }
+
+  const bootstrapKeys = countRegistryEntries(source, 'BOOTSTRAP_KEYS');
+  const standaloneKeys = countRegistryEntries(source, 'STANDALONE_KEYS');
+
+  // +N: the consumer-price loop registers every market except `ae`.
+  const marketsBlock = source.match(/const CONSUMER_PRICE_HEALTH_MARKETS = Object\.freeze\(\[([^\]]*)\]\)/);
+  if (!marketsBlock) {
+    throw new Error('docs-stats: could not parse CONSUMER_PRICE_HEALTH_MARKETS in api/health.js');
+  }
+  const markets = [...marketsBlock[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  if (!markets.includes('ae')) {
+    throw new Error("docs-stats: CONSUMER_PRICE_HEALTH_MARKETS no longer contains 'ae', which the loop skips");
+  }
+  if (!/if \(market === 'ae'\) continue;/.test(source)) {
+    throw new Error("docs-stats: the consumer-price health loop no longer skips 'ae'");
+  }
+  const addedMarkets = markets.filter((m) => m !== 'ae').length;
+
+  // -1: iran-events is sunset unless IRAN_EVENTS_ENABLED=true (default false).
+  // Asserting it is present in the literal keeps the subtraction from
+  // double-counting a key that was already removed from the declaration.
+  if (!bootstrapKeys.includes('iranEvents')) {
+    throw new Error('docs-stats: BOOTSTRAP_KEYS no longer declares iranEvents, so the sunset delete subtracts twice');
+  }
+  if (!/const IRAN_EVENTS_ENABLED = .*\?\? 'false'/.test(source)) {
+    throw new Error('docs-stats: IRAN_EVENTS_ENABLED no longer defaults to false — the documented registry size changed');
+  }
+
+  const bootstrap = bootstrapKeys.length + addedMarkets - 1;
+  const standalone = standaloneKeys.length;
+  return { bootstrap, standalone, total: bootstrap + standalone };
+}
+
 function parseJsonLdBlocks(html) {
   return [...html.matchAll(/<script\s+type="application\/ld\+json">\s*([\s\S]*?)\s*<\/script>/g)]
     .map((m) => JSON.parse(m[1]));
@@ -656,6 +767,7 @@ function computeStats() {
     mcpAppUiResources: mcpApps.uiResources,
     mcpAppLinkedTools: mcpApps.linkedTools,
     bootstrapCache: parseBootstrapCacheContract(),
+    healthProbedKeys: parseHealthProbedKeys(),
   };
 }
 
@@ -854,6 +966,27 @@ function claims(s) {
     { file: 'blog-site/src/content/blog/ai-powered-intelligence-without-the-cloud.md', re: /architecture \((\d+)\s+proto files, \d+\s+typed services\)/, value: s.protoFiles },
     { file: 'blog-site/src/content/blog/ai-powered-intelligence-without-the-cloud.md', re: /architecture \(\d+\s+proto files, (\d+)\s+typed services\)/, value: s.protoServices },
     { file: 'blog-site/src/content/blog/worldmonitor-vs-traditional-intelligence-tools.md', re: /using the (\d+)\s+typed API services/, value: s.protoServices },
+
+    // ---- /api/health example response bodies (#6300) ----
+    // `summary.total` is the number a reader uses to decide whether their own
+    // response looks complete, and all four pages published 194 against a live
+    // 256. Anchored on the `"summary": {` line and captured positionally, so a
+    // claim cannot be satisfied by a neighbouring count — every one of these
+    // bodies quotes several integers in a row.
+    //
+    // `ok` is pinned to the same stat on purpose: each example declares an
+    // all-OK fleet, so ok === total is what makes the body internally
+    // consistent. Pinning `total` alone would let `ok` drift back out of step
+    // with it the next time a key is added, which is the same class of silently
+    // wrong published number this gate exists to stop.
+    { file: 'docs/health-endpoints.mdx', re: /"summary":\s*\{\s*"total":\s*(\d+)/, value: s.healthProbedKeys.total },
+    { file: 'docs/health-endpoints.mdx', re: /"summary":\s*\{\s*"total":\s*\d+,\s*"ok":\s*(\d+)/, value: s.healthProbedKeys.total },
+    { file: 'docs/api-platform.mdx', re: /"summary":\s*\{\s*"total":\s*(\d+)/, value: s.healthProbedKeys.total },
+    { file: 'docs/api-platform.mdx', re: /"summary":\s*\{\s*"total":\s*\d+,\s*"ok":\s*(\d+)/, value: s.healthProbedKeys.total },
+    { file: 'docs/zh/health-endpoints.mdx', re: /"summary":\s*\{\s*"total":\s*(\d+)/, value: s.healthProbedKeys.total },
+    { file: 'docs/zh/health-endpoints.mdx', re: /"summary":\s*\{\s*"total":\s*\d+,\s*"ok":\s*(\d+)/, value: s.healthProbedKeys.total },
+    { file: 'docs/zh/api-platform.mdx', re: /"summary":\s*\{\s*"total":\s*(\d+)/, value: s.healthProbedKeys.total },
+    { file: 'docs/zh/api-platform.mdx', re: /"summary":\s*\{\s*"total":\s*\d+,\s*"ok":\s*(\d+)/, value: s.healthProbedKeys.total },
   ];
 }
 
@@ -1382,6 +1515,7 @@ export {
   validateMcpAppsDocs,
   parseBootstrapCacheContract,
   parseBootstrapKeyTiers,
+  parseHealthProbedKeys,
   validateBootstrapCacheDocs,
   bootstrapCacheDocSources,
   BOOTSTRAP_CACHE_DOC_FILES,

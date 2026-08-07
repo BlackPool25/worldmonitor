@@ -297,5 +297,10 @@
     "defaultCacheControl": "public, s-maxage=600, stale-while-revalidate=120, stale-if-error=900",
     "defaultCdnTier": "fast",
     "nonCacheable": "no-store"
+  },
+  "healthProbedKeys": {
+    "bootstrap": 109,
+    "standalone": 147,
+    "total": 256
   }
 }
