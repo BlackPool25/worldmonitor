@@ -252,9 +252,15 @@ export function applySectorValuationFreshness(
 
 export const CACHE_TOOLS: ToolDef[] = [
   {
+    // Intentionally fixed-universe, unlike the ListMarketQuotes RPC: this reads
+    // and filters the seeded bootstrap snapshot and never gap-fetches an
+    // unseeded ticker through a provider (#6305). An arbitrary equity the
+    // seeder does not carry is absent here by design — `symbols` narrows the
+    // snapshot, it does not request new instruments. Documented in
+    // docs/finance-data.mdx § Client parity.
     name: 'get_market_data',
     _outputBudgetBytes: 131072,
-    description: 'Real-time equity quotes, commodity prices (including gold futures GC=F), crypto prices, forex FX rates (USD/EUR, USD/JPY etc.), sector performance and valuation coverage, ETF flows, and Gulf market quotes from WorldMonitor\'s curated bootstrap cache.',
+    description: 'Real-time equity quotes, commodity prices (including gold futures GC=F), crypto prices, forex FX rates (USD/EUR, USD/JPY etc.), sector performance and valuation coverage, ETF flows, and Gulf market quotes from WorldMonitor\'s curated bootstrap cache. Covers the curated symbol universe only — it filters that snapshot rather than looking up arbitrary tickers.',
     inputSchema: {
       type: 'object',
       properties: {

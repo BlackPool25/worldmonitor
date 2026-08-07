@@ -685,6 +685,11 @@ const cloudPreferred = new Set();
 // Routes/prefixes that should always proxy to cloud. The sidecar lacks
 // WS_RELAY_URL (Yahoo/Finnhub relay) and seeded Redis data. These routes
 // return 200-with-empty-data locally, so normal cloudFallback won't trigger.
+//
+// `/api/market/v1/` covers ListMarketQuotes, so the desktop app gets the same
+// seed-first contract as the web dashboard — including custom watchlist
+// symbols resolved through the cloud provider adapter (#6305). Serving it
+// locally would find no seed snapshot and report every symbol unavailable.
 const cloudPreferredPrefixes = !process.env.WS_RELAY_URL
   ? [
     '/api/market/v1/',

@@ -80,14 +80,31 @@ These tables are the human-facing route map for finance, market, macro, energy, 
 
 ### Customizable Market Watchlist
 
-The Markets panel supports user-customizable stock and commodity symbol lists, allowing analysts to track specific instruments beyond the default index set. The watchlist accepts multiple formats:
+The Markets panel supports a user-customizable watchlist, letting analysts track specific instruments beyond the default index set. Tickers are added through a search-first picker in the Watchlist modal: typing a ticker or company name queries `/api/symbol-search` (a cached Finnhub search wrapper) and the analyst picks from resolved results, so every stored entry is a symbol the pipeline recognizes.
 
-- **Index symbols**: `^GSPC`, `^DJI`, `^IXIC`
-- **Stock tickers**: `AAPL`, `BRK-B`, `NVDA`
-- **Crypto pairs**: `BTC-USD`, `ETH-USD`
-- **Friendly labels**: `TSLA|Tesla Inc` (pipe-separated display name)
+The picker resolves equities and indices through Finnhub search. Commodity and FX symbols in Yahoo notation (`GC=F`, `EURUSD=X`) are not watchlist material — they are served by their own RPCs against a fixed configured set, and the quote provider declines them rather than spending a lookup on a guaranteed miss.
 
-Symbols are entered via a modal dialog accessible from the Markets panel settings icon. The input accepts comma-separated, newline-separated, or `SYMBOL|Label` formats. Watchlist state is stored in `localStorage` as `wm-market-watchlist-v1` (max 50 symbols, deduplicated). Changes emit a `wm-market-watchlist-changed` CustomEvent for live synchronization across panels without page reload.
+Watchlist state is stored in `localStorage` as `wm-market-watchlist-v1`, deduplicated by symbol and capped at **50 custom entries**. The cap bounds the custom picks only — they are appended to the default universe, which is already larger than 50. Changes emit a `wm-market-watchlist-changed` CustomEvent for live synchronization across panels without a page reload.
+
+#### How a requested symbol is resolved
+
+`GET /api/market/v1/list-market-quotes` resolves symbols **seed-first**:
+
+1. Requested symbols are normalized, deduplicated, and bounded (120 per request).
+2. The fixed Railway seed snapshot (`market:stocks-bootstrap:v1`) answers everything it carries — **a seed hit performs no upstream request**.
+3. Only the remaining symbols reach the quote provider, through a Redis-cached per-symbol lookup bounded by count (10 per request), concurrency, and a wall-clock deadline. Repeat requests for the same symbol reuse the cached quote.
+4. Quotes are merged in requested order.
+5. Every requested symbol that produced no quote is returned in `unavailable` with a reason (`NOT_FOUND`, `PROVIDER_ERROR`, `PROVIDER_RATE_LIMITED`, `PROVIDER_NOT_CONFIGURED`, `REQUEST_LIMIT_EXCEEDED`, `UPSTREAM_BUDGET_EXHAUSTED`, `SEED_UNAVAILABLE`) and surfaced in the panel. Nothing is silently dropped.
+
+Transient provider failures are never cached — only a definitive "no such symbol" is. If the seed snapshot is missing or unreadable, the request reports `SEED_UNAVAILABLE` rather than falling through to the provider, so one degraded snapshot cannot amplify into a per-caller upstream fan-out. The endpoint carries an explicit fail-closed rate policy because it is provider-backed.
+
+#### Client parity
+
+| Client | Contract |
+| --- | --- |
+| Web dashboard | Calls the RPC directly. Full seed-first resolution, including custom symbols. |
+| Desktop (Tauri sidecar) | Force-proxies `/api/market/v1/*` to the cloud API, so it gets the identical contract and identical custom-symbol support. |
+| MCP `get_market_data` | **Intentionally different**: a fixed-universe read of the `market:stocks-bootstrap:v1` cache. It filters that snapshot by ticker and never gap-fetches, so it answers only symbols the Railway seeder carries. Use the RPC for arbitrary tickers. |
 
 Commodity futures on the watchlist (e.g. `GC=F`, `CL=F`) are served via market quotes when the Markets panel requests them. The dedicated commodity quotes RPC (`list-commodity-quotes`) is limited to the configured seed set in `shared/commodities.json` — empty `symbols` returns that full set; an unsupported symbol is rejected with HTTP 400 rather than silently dropped. Custom non-seed watchlist tickers are tracked separately (#6305).
 

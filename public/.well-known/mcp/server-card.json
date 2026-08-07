@@ -34,7 +34,7 @@
   "tools": [
     {
       "name": "get_market_data",
-      "description": "Real-time equity quotes, commodity prices (including gold futures GC=F), crypto prices, forex FX rates (USD/EUR, USD/JPY etc.), sector performance and valuation coverage, ETF flows, and Gulf market quotes from WorldMonitor's curated bootstrap cache."
+      "description": "Real-time equity quotes, commodity prices (including gold futures GC=F), crypto prices, forex FX rates (USD/EUR, USD/JPY etc.), sector performance and valuation coverage, ETF flows, and Gulf market quotes from WorldMonitor's curated bootstrap cache. Covers the curated symbol universe only — it filters that snapshot rather than looking up arbitrary tickers."
     },
     {
       "name": "get_conflict_events",
