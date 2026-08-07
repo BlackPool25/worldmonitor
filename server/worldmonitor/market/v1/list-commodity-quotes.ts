@@ -107,21 +107,10 @@ export async function listCommodityQuotes(
 ): Promise<ListCommodityQuotesResponse> {
   const parsed = parseStringArray(req.symbols);
 
-  // Empty symbols → configured defaults. This is the documented contract and
-  // the reason an unsupported symbol must be rejected rather than silently
-  // dropped: a requested-but-unsupported commodity is a client error, and the
-  // alternative (returning a subset) would look like a success that is gone.
-  if (parsed.length === 0) {
-    try {
-      const bootstrap = await getCachedJson(BOOTSTRAP_KEY, true) as ListCommodityQuotesResponse | null;
-      return { quotes: bootstrap?.quotes ?? [] };
-    } catch {
-      return { quotes: [] };
-    }
-  }
-
   // Validation happens before any seed read: an unsupported symbol 400s even
-  // when the seed is unavailable, so the rejection is explicit and never masked.
+  // when the seed is unavailable, so the rejection is explicit and never
+  // masked (never a silent partial success). Empty symbols pass validation
+  // and resolve to [] → filterCommoditySeed returns the full configured set.
   const { symbols } = resolveCommodityQuery(parsed);
 
   try {
