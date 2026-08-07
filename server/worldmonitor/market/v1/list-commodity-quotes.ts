@@ -1,6 +1,13 @@
 /**
  * RPC: ListCommodityQuotes -- reads seeded commodity data from Railway seed cache.
- * All external Yahoo Finance calls happen in ais-relay.cjs on Railway.
+ * All external quote fetching happens in seed-commodity-quotes.mjs on Railway.
+ *
+ * Contract (narrowed, see #6307):
+ *   - Empty `symbols` returns the full configured default commodity set.
+ *   - Only symbols in the configured commodity set (shared/commodities.json)
+ *     are supported. Requesting an unsupported symbol returns HTTP 400.
+ *   - Symbols are normalized (trim, de-whitespace, upper), deduplicated, and
+ *     capped before the seed read. Results are returned in request order.
  */
 
 import type {
@@ -11,23 +18,98 @@ import type {
 } from '../../../../src/generated/server/worldmonitor/market/v1/service_server';
 import { parseStringArray } from './_shared';
 import { getCachedJson } from '../../../_shared/redis';
+import commodityConfig from '../../../../shared/commodities.json';
 
 const BOOTSTRAP_KEY = 'market:commodities-bootstrap:v1';
+const MAX_SYMBOLS = 64;
+
+/** Yahoo symbols supported by the seeded commodity set (source of truth). */
+export const SUPPORTED_COMMODITY_SYMBOLS: ReadonlySet<string> = new Set(
+  commodityConfig.commodities.map((c) => c.symbol),
+);
+
+/**
+ * Error carrying statusCode=400 so server/error-mapper.ts surfaces it as
+ * HTTP 400 with the message (the mapper branches on `'statusCode' in error`).
+ */
+export class UnsupportedCommoditySymbolError extends Error {
+  readonly statusCode = 400;
+  constructor(symbols: string[]) {
+    super(`Unsupported commodity symbol${symbols.length === 1 ? '' : 's'}: ${symbols.join(', ')}`);
+    this.name = 'UnsupportedCommoditySymbolError';
+  }
+}
+
+export function normalizeCommoditySymbol(raw: string): string {
+  return raw.trim().replace(/\s+/g, '').slice(0, 32).toUpperCase();
+}
+
+/**
+ * Resolve requested symbols against the supported commodity set.
+ * - Empty request → `{ symbols: [] }` (caller returns the full default set).
+ * - Caps cardinality (over-cap is truncated) and deduplicates in request order.
+ * - Throws UnsupportedCommoditySymbolError on any requested symbol that is
+ *   not in the supported set — unsupported symbols are explicit, never silent.
+ */
+export function resolveCommodityQuery(
+  rawSymbols: string[],
+  supported: ReadonlySet<string> = SUPPORTED_COMMODITY_SYMBOLS,
+  maxSymbols: number = MAX_SYMBOLS,
+): { symbols: string[]; overCap: boolean } {
+  const symbols: string[] = [];
+  const seen = new Set<string>();
+  const unsupported: string[] = [];
+  for (const raw of rawSymbols) {
+    const symbol = normalizeCommoditySymbol(raw);
+    if (!symbol || seen.has(symbol)) continue;
+    if (!supported.has(symbol)) {
+      unsupported.push(symbol);
+      continue;
+    }
+    seen.add(symbol);
+    symbols.push(symbol);
+  }
+  if (unsupported.length > 0) throw new UnsupportedCommoditySymbolError(unsupported);
+  return { symbols: symbols.slice(0, maxSymbols), overCap: symbols.length > maxSymbols };
+}
+
+/** Filter seed quotes to the requested symbols, preserving seed order. */
+export function filterCommoditySeed(
+  quotes: CommodityQuote[],
+  symbols: string[],
+): CommodityQuote[] {
+  if (symbols.length === 0) return quotes;
+  const wanted = new Set(symbols);
+  return quotes.filter((q) => wanted.has(q.symbol));
+}
 
 export async function listCommodityQuotes(
   _ctx: ServerContext,
   req: ListCommodityQuotesRequest,
 ): Promise<ListCommodityQuotesResponse> {
-  const symbols = parseStringArray(req.symbols);
-  if (!symbols.length) return { quotes: [] };
+  const parsed = parseStringArray(req.symbols);
+
+  // Empty symbols → configured defaults. This is the documented contract and
+  // the reason an unsupported symbol must be rejected rather than silently
+  // dropped: a requested-but-unsupported commodity is a client error, and the
+  // alternative (returning a subset) would look like a success that is gone.
+  if (parsed.length === 0) {
+    try {
+      const bootstrap = await getCachedJson(BOOTSTRAP_KEY, true) as ListCommodityQuotesResponse | null;
+      return { quotes: bootstrap?.quotes ?? [] };
+    } catch {
+      return { quotes: [] };
+    }
+  }
+
+  // Validation happens before any seed read: an unsupported symbol 400s even
+  // when the seed is unavailable, so the rejection is explicit and never masked.
+  const { symbols } = resolveCommodityQuery(parsed);
 
   try {
     const bootstrap = await getCachedJson(BOOTSTRAP_KEY, true) as ListCommodityQuotesResponse | null;
     if (!bootstrap?.quotes?.length) return { quotes: [] };
-
-    const symbolSet = new Set(symbols);
-    const filtered = bootstrap.quotes.filter((q: CommodityQuote) => symbolSet.has(q.symbol));
-    return { quotes: filtered };
+    return { quotes: filterCommoditySeed(bootstrap.quotes, symbols) };
   } catch {
     return { quotes: [] };
   }

@@ -210,17 +210,24 @@ paths:
             tags:
                 - MarketService
             summary: ListCommodityQuotes
-            description: ListCommodityQuotes retrieves commodity price quotes from Yahoo Finance.
+            description: |-
+                ListCommodityQuotes retrieves commodity price quotes. Reads the seeded
+                 commodity snapshot; only symbols in the configured commodity set
+                 (shared/commodities.json) are supported.
             operationId: ListCommodityQuotes
             parameters:
                 - name: symbols
                   in: query
-                  description: Commodity symbols to retrieve (Yahoo symbols). Empty returns defaults.
+                  description: |-
+                    Commodity symbols to retrieve (Yahoo symbols). Empty returns the seed
+                     defaults. Only symbols in the configured commodity set
+                     (shared/commodities.json) are supported; requesting an unsupported
+                     symbol returns HTTP 400.
                   required: false
                   style: form
                   explode: true
                   example:
-                      - "AAPL"
+                      - "GC=F"
                   schema:
                     type: array
                     items:
@@ -2485,7 +2492,11 @@ components:
                     type: array
                     items:
                         type: string
-                        description: Commodity symbols to retrieve (Yahoo symbols). Empty returns defaults.
+                        description: |-
+                            Commodity symbols to retrieve (Yahoo symbols). Empty returns the seed
+                             defaults. Only symbols in the configured commodity set
+                             (shared/commodities.json) are supported; requesting an unsupported
+                             symbol returns HTTP 400.
             description: ListCommodityQuotesRequest specifies which commodities to retrieve.
         ListCommodityQuotesResponse:
             type: object

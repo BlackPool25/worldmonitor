@@ -378,6 +378,20 @@ function collectParamExamples(spec, label, operationId, paramName) {
   return found;
 }
 
+// Like collectParamExamples but tolerates a missing parameter (returns []),
+// for assertions that operate across several specs where one may not define it.
+function collectionForOperation(spec, label, operationId, paramName) {
+  const found = [];
+  for (const { path, method, op } of operationEntries(spec)) {
+    if (op.operationId !== operationId) continue;
+    const param = (op.parameters ?? []).find((p) => p?.name === paramName);
+    if (!param) continue;
+    const values = Array.isArray(param.example) ? param.example : [param.example];
+    for (const value of values) found.push({ value, where: `${label} ${method.toUpperCase()} ${path} param ${paramName}` });
+  }
+  return found;
+}
+
 function assertParamExampleSet(specs, operationId, paramName, acceptedValues) {
   for (const [label, spec] of specs) {
     for (const { value, where } of collectParamExamples(spec, label, operationId, paramName)) {
@@ -943,6 +957,32 @@ describe('OpenAPI curated example values', () => {
 
     for (const [label, spec] of specs) {
       assertRouteIntelligenceHs2Example(spec, label);
+    }
+  });
+
+  // ListCommodityQuotes only accepts supported commodity symbols (see #6307);
+  // the generic `symbol` heuristic emits `AAPL`, which the handler now rejects
+  // with HTTP 400. The injector must pin the sample to a supported symbol.
+  it('uses only supported commodity symbols in ListCommodityQuotes examples', () => {
+    const supported = new Set(
+      JSON.parse(readFileSync(resolve(root, 'shared/commodities.json'), 'utf8'))
+        .commodities.map((c) => c.symbol),
+    );
+    assert.ok(supported.has('GC=F'), 'expected gold futures GC=F in the configured commodity set');
+
+    const specs = [
+      ['MarketService.openapi.json', JSON.parse(readFileSync(resolve(apiDir, 'MarketService.openapi.json'), 'utf8'))],
+      ['MarketService.openapi.yaml', loadYaml(readFileSync(resolve(apiDir, 'MarketService.openapi.yaml'), 'utf8'))],
+      ['worldmonitor.openapi.yaml', loadYaml(readFileSync(resolve(apiDir, 'worldmonitor.openapi.yaml'), 'utf8'))],
+    ];
+
+    for (const [label, spec] of specs) {
+      const found = collectionForOperation(spec, label, 'ListCommodityQuotes', 'symbols');
+      assert.ok(found.length > 0, `${label}: expected ListCommodityQuotes symbols parameter examples`);
+      for (const { value, where } of found) {
+        assert.notEqual(value, 'example', `${where}: placeholder commodity symbol`);
+        assert.ok(supported.has(String(value)), `${where}: commodity symbol '${value}' is not in the supported seed set`);
+      }
     }
   });
 });

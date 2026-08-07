@@ -20,7 +20,7 @@ These tables are the human-facing route map for finance, market, macro, energy, 
 |---|---|---|
 | Market quotes | `GET /api/market/v1/list-market-quotes` | Markets panel, customizable watchlist, equity / index quotes. |
 | Crypto quotes | `GET /api/market/v1/list-crypto-quotes` | Crypto panel defaults; bootstrap-first via `cryptoQuotes`. |
-| Commodity quotes | `GET /api/market/v1/list-commodity-quotes` | Commodities, Energy Risk Brent tile, gold / crude watchlists; bootstrap-first via `commodityQuotes`. |
+| Commodity quotes | `GET /api/market/v1/list-commodity-quotes` | Commodities, Energy Risk Brent tile, gold / crude watchlists; bootstrap-first via `commodityQuotes`. Empty `symbols` returns the configured seed set; only seed-set symbols are supported. |
 | Sector summary | `GET /api/market/v1/get-sector-summary` | Sector heatmap and valuation context; bootstrap-first via `sectors`. |
 | Stablecoin markets | `GET /api/market/v1/list-stablecoin-markets` | Stablecoin peg-health panel; bootstrap-first via `stablecoinMarkets`. |
 | ETF flows | `GET /api/market/v1/list-etf-flows` | BTC spot ETF tracker; bootstrap-first via `etfFlows`. |
@@ -84,11 +84,12 @@ The Markets panel supports user-customizable stock and commodity symbol lists, a
 
 - **Index symbols**: `^GSPC`, `^DJI`, `^IXIC`
 - **Stock tickers**: `AAPL`, `BRK-B`, `NVDA`
-- **Commodities**: `GC=F` (gold), `CL=F` (crude oil)
 - **Crypto pairs**: `BTC-USD`, `ETH-USD`
 - **Friendly labels**: `TSLA|Tesla Inc` (pipe-separated display name)
 
 Symbols are entered via a modal dialog accessible from the Markets panel settings icon. The input accepts comma-separated, newline-separated, or `SYMBOL|Label` formats. Watchlist state is stored in `localStorage` as `wm-market-watchlist-v1` (max 50 symbols, deduplicated). Changes emit a `wm-market-watchlist-changed` CustomEvent for live synchronization across panels without page reload.
+
+Commodity symbols are limited to the configured seed set (see `shared/commodities.json`, e.g. `GC=F` gold, `CL=F` crude oil). The commodity quotes RPC serves only this set — an unsupported symbol is rejected rather than silently dropped, and an empty request returns the full default set.
 
 ### Macro Signal Analysis (Market Radar)
 

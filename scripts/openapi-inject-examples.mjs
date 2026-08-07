@@ -224,6 +224,13 @@ function overrideStringExample(key, context = {}) {
   if (key === 'seriesid' || key === 'seriesids') {
     if (where.includes('fred')) return FRED_SERIES_EXAMPLE_ID;
   }
+  // ListCommodityQuotes only accepts supported commodity symbols (see #6307);
+  // the generic `symbol` heuristic emits `AAPL` which the handler now rejects
+  // with HTTP 400. Pin a supported commodity futures symbol instead. The array
+  // param key is `symbols`, so anchor on the operation like the other overrides.
+  if (key === 'symbols' && (where.includes('listcommodityquotes') || where.includes('list-commodity-quotes'))) {
+    return 'GC=F';
+  }
   return undefined;
 }
 
