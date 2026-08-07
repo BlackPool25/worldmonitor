@@ -278,6 +278,10 @@ describe('/api/health probed-key count doc gate (#6300)', () => {
   for (const [label, line] of [
     ['a compound assignment', "  STANDALONE_KEYS.lateKey ??= 'late:key:v1';\n"],
     ['Object.defineProperty', "  Object.defineProperty(STANDALONE_KEYS, 'dp', { value: 'x', enumerable: true });\n"],
+    // No Object.assign on either registry today, so this alternation is the one
+    // branch with no live example to keep it honest — a regex regression here
+    // would surface only once someone wrote health.js in that style.
+    ['Object.assign', "  Object.assign(STANDALONE_KEYS, { bulkKey: 'bulk:key:v1' });\n"],
     ['an alias binding', '  const REG = STANDALONE_KEYS;\n'],
   ] as const) {
     it(`discovers a registry write via ${label}`, () => {
