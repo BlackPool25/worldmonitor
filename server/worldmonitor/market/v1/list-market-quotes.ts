@@ -257,7 +257,13 @@ export async function listMarketQuotes(
   }
 
   const bootstrap = seed.status === 'hit' ? (seed.value as ListMarketQuotesResponse | null) : null;
-  if (!bootstrap?.quotes?.length) return seedUnavailableResponse([...accepted, ...dropped]);
+  // Array.isArray, not a truthy `.length`: the previous implementation wrapped
+  // the whole handler in a try/catch, so a corrupt snapshot degraded to an
+  // empty response instead of throwing. Validate the shape to keep that
+  // fail-soft behaviour without the catch-all that also hid real bugs.
+  if (!Array.isArray(bootstrap?.quotes) || bootstrap.quotes.length === 0) {
+    return seedUnavailableResponse([...accepted, ...dropped]);
+  }
 
   // No symbol filter: the caller wants the seed universe as-is.
   if (accepted.length === 0) return { ...bootstrap, unavailable: bootstrap.unavailable ?? [] };

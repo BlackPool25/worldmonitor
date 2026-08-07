@@ -350,6 +350,19 @@ describe('listMarketQuotes seed-first resolution', () => {
     assert.deepEqual(h.finnhubCalls, [], 'a degraded seed must not amplify into one upstream call per symbol');
   });
 
+  it('degrades to seed-unavailable on a corrupt snapshot instead of throwing', async () => {
+    // The pre-#6305 handler wrapped everything in a try/catch, so a malformed
+    // payload produced an empty response. Keep that fail-soft edge.
+    const h = installHarness({ provider: { RIVN: okQuote(12, 1) } });
+    h.redis.set(BOOTSTRAP_KEY, { quotes: 'not-an-array', finnhubSkipped: false });
+
+    const resp = await listMarketQuotes(CTX, { symbols: ['AAPL', 'RIVN'] });
+
+    assert.deepEqual(resp.quotes, []);
+    assert.equal(reasonFor(resp, 'AAPL'), 'MARKET_QUOTE_UNAVAILABLE_REASON_SEED_UNAVAILABLE');
+    assert.deepEqual(h.finnhubCalls, []);
+  });
+
   it('never fans out to the provider when the seed snapshot is absent', async () => {
     const h = installHarness({ seed: null, provider: { RIVN: okQuote(12, 1) } });
 
