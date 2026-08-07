@@ -16,6 +16,7 @@ import type {
   ListCommodityQuotesResponse,
   CommodityQuote,
 } from '../../../../src/generated/server/worldmonitor/market/v1/service_server';
+import { ValidationError } from '../../../../src/generated/server/worldmonitor/market/v1/service_server';
 import { parseStringArray } from './_shared';
 import { getCachedJson } from '../../../_shared/redis';
 import commodityConfig from '../../../../shared/commodities.json';
@@ -28,28 +29,36 @@ export const SUPPORTED_COMMODITY_SYMBOLS: ReadonlySet<string> = new Set(
   commodityConfig.commodities.map((c) => c.symbol),
 );
 
-/**
- * Error carrying statusCode=400 so server/error-mapper.ts surfaces it as
- * HTTP 400 with the message (the mapper branches on `'statusCode' in error`).
- */
-export class UnsupportedCommoditySymbolError extends Error {
-  readonly statusCode = 400;
-  constructor(symbols: string[]) {
-    super(`Unsupported commodity symbol${symbols.length === 1 ? '' : 's'}: ${symbols.join(', ')}`);
-    this.name = 'UnsupportedCommoditySymbolError';
-  }
-}
-
 export function normalizeCommoditySymbol(raw: string): string {
   return raw.trim().replace(/\s+/g, '').slice(0, 32).toUpperCase();
+}
+
+/**
+ * Throw the generated ValidationError for unsupported requested symbols.
+ *
+ * ValidationError is the documented 400 shape: the sebuf generated dispatch
+ * (service_server.ts) catches instanceof ValidationError and serializes it as
+ * `{ violations: [...] }` — matching the published OpenAPI 400 `ValidationError`
+ * schema. A bare `{ message }` 400 (e.g. an error carrying statusCode=400 via
+ * the error mapper) is NOT in that operation's 400 oneOf, so using it here
+ * would document a response shape the handler never actually returns.
+ */
+export function throwUnsupportedCommodityError(symbols: string[]): never {
+  throw new ValidationError([
+    {
+      field: 'symbols',
+      description: `Unsupported commodity symbol${symbols.length === 1 ? '' : 's'}: ${symbols.join(', ')}`,
+    },
+  ]);
 }
 
 /**
  * Resolve requested symbols against the supported commodity set.
  * - Empty request → `{ symbols: [] }` (caller returns the full default set).
  * - Caps cardinality (over-cap is truncated) and deduplicates in request order.
- * - Throws UnsupportedCommoditySymbolError on any requested symbol that is
- *   not in the supported set — unsupported symbols are explicit, never silent.
+ * - Throws ValidationError (→ HTTP 400 `{ violations }`) on any requested
+ *   symbol that is not in the supported set — unsupported symbols are
+ *   explicit, never silent.
  */
 export function resolveCommodityQuery(
   rawSymbols: string[],
@@ -78,7 +87,7 @@ export function resolveCommodityQuery(
     seen.add(symbol);
     symbols.push(symbol);
   }
-  if (unsupported.length > 0) throw new UnsupportedCommoditySymbolError(unsupported);
+  if (unsupported.length > 0) throwUnsupportedCommodityError(unsupported);
   return { symbols: symbols.slice(0, maxSymbols), overCap: symbols.length > maxSymbols };
 }
 
