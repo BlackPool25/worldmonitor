@@ -158,6 +158,75 @@ test('classifyKey: consumer-price coverage requires diagnostics and exposes reta
   assert.equal(entry.coverage.retailers[0].coverageStatus, 'failed');
 });
 
+// #6182: COVERAGE_PARTIAL is the same status whether the pages never loaded or
+// a price was extracted and the validator refused it, and those need opposite
+// fixes. The reason map is the only thing that separates them, so health must
+// relay it — under a closed vocabulary, like every other producer code.
+test('classifyKey: consumer-price coverage relays bounded failure reasons and drops unknown codes', () => {
+  const key = BOOTSTRAP_KEYS.consumerPricesCoverage;
+  const entry = classifyKey('consumerPricesCoverage', key, { allowOnDemand: false }, makeCtx({
+    strens: { [key]: 2048 },
+    metaValues: {
+      [SEED_META.consumerPricesCoverage.key]: seedMeta({
+        recordCount: 4,
+        coverage: {
+          status: 'partial',
+          completedPages: 8,
+          failedPages: 2,
+          completionRatio: 0.8,
+          rejectedCount: 3,
+          failureReasons: {
+            'missing-price': 2,
+            'validator-rejected': 1,
+            'not-a-real-reason': 9,
+            'provider-error': -4,
+          },
+          retailers: [{
+            slug: 'retailer-a',
+            name: 'Retailer A',
+            coverageStatus: 'failed',
+            pagesAttempted: 2,
+            pagesSucceeded: 0,
+            failedPages: 2,
+            rejectedCount: 1,
+            completionRatio: 0,
+            failureReasons: { 'missing-price': 2, 'bogus-code': 1 },
+          }],
+        },
+      }),
+    },
+  }));
+
+  assert.deepEqual(entry.coverage.failureReasons, {
+    'missing-price': 2,
+    'validator-rejected': 1,
+  });
+  assert.deepEqual(entry.coverage.retailers[0].failureReasons, { 'missing-price': 2 });
+});
+
+test('classifyKey: consumer-price coverage without failure reasons reports an empty map', () => {
+  const key = BOOTSTRAP_KEYS.consumerPricesCoverage;
+  const entry = classifyKey('consumerPricesCoverage', key, { allowOnDemand: false }, makeCtx({
+    strens: { [key]: 2048 },
+    metaValues: {
+      [SEED_META.consumerPricesCoverage.key]: seedMeta({
+        recordCount: 4,
+        coverage: {
+          status: 'partial',
+          completedPages: 8,
+          failedPages: 2,
+          completionRatio: 0.8,
+          rejectedCount: 3,
+          retailers: [{ slug: 'retailer-a', coverageStatus: 'partial' }],
+        },
+      }),
+    },
+  }));
+
+  assert.deepEqual(entry.coverage.failureReasons, {});
+  assert.deepEqual(entry.coverage.retailers[0].failureReasons, {});
+});
+
 test('classifyKey: missing consumer-price coverage metadata fails closed', () => {
   const key = BOOTSTRAP_KEYS.consumerPricesCoverage;
   const entry = classifyKey('consumerPricesCoverage', key, { allowOnDemand: false }, makeCtx({

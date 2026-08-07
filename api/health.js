@@ -955,6 +955,38 @@ const consumerPriceCoverageActivationKey = (market) => (
   `seed-activated:consumer-prices:coverage:v${CONSUMER_PRICE_COVERAGE_SCHEMA_VERSION}:${market}`
 );
 
+// #6182 — the terminal failure class behind a partial market's counts.
+//
+// The vocabulary is per-producer and CLOSED, like every other code health
+// echoes back to operators: anything outside this list is dropped rather than
+// relayed. Keep in lockstep with COVERAGE_FAILURE_REASONS in
+// consumer-prices-core/src/jobs/scrape-coverage.ts; tests/consumer-prices-
+// coverage-contract.test.mjs pins the two together.
+export const COVERAGE_FAILURE_REASONS = Object.freeze([
+  'provider-cooldown',
+  'provider-error',
+  'missing-price',
+  'quantity-as-price',
+  'currency-mismatch',
+  'title-mismatch',
+  'validator-rejected',
+  'parsed-zero-products',
+  'pin-validator-rejected',
+  'unknown-error',
+]);
+
+// Counts must be whole and positive: the map is a breakdown of errorsCount, so
+// a fractional or negative entry is producer drift, not a diagnostic.
+function sanitizeCoverageFailureReasons(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const clean = {};
+  for (const reason of COVERAGE_FAILURE_REASONS) {
+    const count = Number(raw[reason]);
+    if (Number.isSafeInteger(count) && count > 0) clean[reason] = count;
+  }
+  return clean;
+}
+
 // Per-market and deliberately not a shared constant: adding a ninth market
 // later must open a fresh, separately-reviewed window for THAT market only.
 // A single shared deadline would silently re-soften the eight that already
@@ -1240,7 +1272,7 @@ function readSeedMeta(seedCfg, keyMetaValues, keyMetaErrors, now) {
       unavailableGroups: decisionDiagnostics.unavailableGroups,
     }
     : null;
-  // Per-market coverage: optional { status, completedPages, failedPages, completionRatio, rejectedCount, retailers }
+  // Per-market coverage: optional { status, completedPages, failedPages, completionRatio, rejectedCount, failureReasons, retailers }
   // written by consumer-prices publish.ts and other seeders that track partial completion.
   // null when the seeder didn't write coverage fields.
   const coverageRetailers = Array.isArray(meta?.coverage?.retailers)
@@ -1253,6 +1285,7 @@ function readSeedMeta(seedCfg, keyMetaValues, keyMetaErrors, now) {
         failedPages: Number(retailer?.failedPages) || 0,
         rejectedCount: Number(retailer?.rejectedCount) || 0,
         completionRatio: retailer?.completionRatio == null ? null : Number(retailer.completionRatio) || 0,
+        failureReasons: sanitizeCoverageFailureReasons(retailer?.failureReasons),
       }))
     : null;
   const coverage = meta?.coverage && typeof meta.coverage === 'object'
@@ -1262,6 +1295,7 @@ function readSeedMeta(seedCfg, keyMetaValues, keyMetaErrors, now) {
         failedPages: Number(meta.coverage.failedPages) || 0,
         completionRatio: meta.coverage.completionRatio == null ? null : Number(meta.coverage.completionRatio) || 0,
         rejectedCount: Number(meta.coverage.rejectedCount) || 0,
+        failureReasons: sanitizeCoverageFailureReasons(meta.coverage.failureReasons),
         retailers: coverageRetailers,
       }
     : null;

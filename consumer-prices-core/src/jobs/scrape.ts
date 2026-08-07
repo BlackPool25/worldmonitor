@@ -20,7 +20,10 @@ import { AUTO_MATCH_THRESHOLD, type ValidatorResult } from '../adapters/validato
 import {
   classifyValidatorOutcome,
   createScrapeRunStatement,
+  FailureReasonTally,
+  isMissingColumnError,
   isRunBudgetExhausted,
+  legacyUpdateScrapeRunStatement,
   resolveRunBudgetMs,
   resolveRunStatus,
   updateScrapeRunStatement,
@@ -62,16 +65,32 @@ async function updateScrapeRun(
   pagesSucceeded: number,
   errorsCount: number,
   rejectedCount: number,
+  failureReasons: Record<string, number>,
 ) {
-  const statement = updateScrapeRunStatement({
+  const update = {
     runId,
     status,
     pagesAttempted,
     pagesSucceeded,
     errorsCount,
     rejectedCount,
-  });
-  await query(statement.sql, statement.params);
+    failureReasons,
+  };
+  const statement = updateScrapeRunStatement(update);
+  try {
+    await query(statement.sql, statement.params);
+  } catch (err) {
+    // Migration 011 has not been applied yet (no Railway service runs the
+    // migration runner). Give up the diagnostic column, never the run row —
+    // an unwritten run stays status='running' and buildCoverageSnapshot,
+    // which only reads terminal runs, would freeze the market's coverage.
+    if (!isMissingColumnError(err)) throw err;
+    logger.warn(
+      `Run ${runId}: scrape_runs.failure_reasons is missing — apply migration 011; recording counts without failure attribution`,
+    );
+    const legacy = legacyUpdateScrapeRunStatement(update);
+    await query(legacy.sql, legacy.params);
+  }
 }
 
 // Pin disable + auto-recovery helpers extracted to ./scrape-pin-recovery.ts
@@ -141,8 +160,12 @@ export async function scrapeRetailer(slug: string) {
 
   let pagesAttempted = 0;
   let pagesSucceeded = 0;
-  let errorsCount = 0;
   let rejectedCount = 0;
+  // #6182: the error count IS the tally's total. Keeping a separate
+  // `errorsCount` counter alongside it would make "every error has a recorded
+  // reason" a convention that any future `errorsCount++` could silently break;
+  // deriving it makes the two impossible to disagree.
+  const failureReasons = new FailureReasonTally();
 
   const delay = config.rateLimit?.delayBetweenRequestsMs ?? 2_000;
 
@@ -177,7 +200,7 @@ export async function scrapeRetailer(slug: string) {
 
       if (products.length === 0) {
         logger.warn(`  [${target.id}] parsed 0 products — counting as error`);
-        errorsCount++;
+        failureReasons.recordParsedZeroProducts();
         if (isDirect && pinnedProductId && pinnedMatchId) {
           await handlePinError(pinnedProductId, pinnedMatchId, target.id);
         }
@@ -208,7 +231,7 @@ export async function scrapeRetailer(slug: string) {
           logger.warn(
             `  [${target.id}] pin validator reject — skipping observation, counting as pin error. reasons=${validator?.reasons?.join(',') || 'unknown'} score=${validator?.score?.toFixed(2) || '0.00'} title="${product.rawTitle}"`,
           );
-          errorsCount += validatorOutcome.errorCount;
+          if (validatorOutcome.errorCount > 0) failureReasons.recordPinValidatorRejection();
           if (pinnedProductId && pinnedMatchId) {
             await handlePinError(pinnedProductId, pinnedMatchId, target.id);
           }
@@ -317,7 +340,11 @@ export async function scrapeRetailer(slug: string) {
 
       pagesSucceeded++;
     } catch (err) {
-      errorsCount++;
+      // `failures` carries the adapter's per-candidate classification. An error
+      // that is not a SearchTargetError has none, and recordPageFailure files
+      // it as unknown-error rather than dropping it — an unattributed page is
+      // itself a finding, and a silent drop would undercount the run's errors.
+      failureReasons.recordPageFailure(err instanceof SearchTargetError ? err.failures : []);
       if (err instanceof SearchTargetError) rejectedCount += err.rejectedCount;
       logger.error(`  [${target.id}] failed: ${err}`);
       if (isDirect && pinnedProductId && pinnedMatchId) {
@@ -328,9 +355,21 @@ export async function scrapeRetailer(slug: string) {
     if (pagesAttempted < targets.length) await sleep(delay);
   }
 
+  const errorsCount = failureReasons.total;
   const status = resolveRunStatus(errorsCount, pagesSucceeded, budgetExhausted);
-  await updateScrapeRun(runId, status, pagesAttempted, pagesSucceeded, errorsCount, rejectedCount);
-  logger.info(`Run ${runId} finished: ${status} (${pagesSucceeded}/${pagesAttempted} pages, rejected=${rejectedCount})`);
+  const failureReasonsJson = failureReasons.toJSON();
+  await updateScrapeRun(
+    runId,
+    status,
+    pagesAttempted,
+    pagesSucceeded,
+    errorsCount,
+    rejectedCount,
+    failureReasonsJson,
+  );
+  logger.info(
+    `Run ${runId} finished: ${status} (${pagesSucceeded}/${pagesAttempted} pages, rejected=${rejectedCount}, reasons=${JSON.stringify(failureReasonsJson)})`,
+  );
 
   const parseSuccessRate = pagesAttempted > 0 ? (pagesSucceeded / pagesAttempted) * 100 : 0;
   const isSuccess = status === 'completed' || status === 'partial';
