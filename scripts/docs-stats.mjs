@@ -368,18 +368,51 @@ function parseBootstrapKeyTiers(source = read('shared/bootstrap-tier-keys.js')) 
 // moment a third mutation lands. So every mutation site is DISCOVERED and must
 // be one this function accounts for; an unrecognized one fails the gate loudly
 // instead of quietly publishing a wrong total.
+const HEALTH_PROBED_REGISTRIES = ['BOOTSTRAP_KEYS', 'STANDALONE_KEYS'];
+
 const HEALTH_REGISTRY_MUTATION_RE = new RegExp(
   [
     // `delete BOOTSTRAP_KEYS.iranEvents;`
     String.raw`delete\s+(?:BOOTSTRAP_KEYS|STANDALONE_KEYS)\s*[.[][^\n]*`,
-    // `BOOTSTRAP_KEYS[name] = ...;` — the `=[^=]` tail keeps reads
-    // (`STANDALONE_KEYS[sibling] ?? …`) and comparisons out of the match.
-    String.raw`(?:BOOTSTRAP_KEYS|STANDALONE_KEYS)\s*(?:\[[^\]]*\]|\.\w+)\s*=[^=][^\n]*`,
-    // `Object.assign(BOOTSTRAP_KEYS, …)`
-    String.raw`Object\.assign\(\s*(?:BOOTSTRAP_KEYS|STANDALONE_KEYS)[^\n]*`,
+    // `BOOTSTRAP_KEYS[name] = ...;` — including the compound forms (`??=`,
+    // `||=`, `&&=`), which register a key just as effectively. The `[^=]` tail
+    // keeps reads (`STANDALONE_KEYS[sibling] ?? …`) and `===` out of the match.
+    String.raw`(?:BOOTSTRAP_KEYS|STANDALONE_KEYS)\s*(?:\[[^\]]*\]|\.\w+)\s*(?:\?\?|\|\||&&)?=[^=][^\n]*`,
+    // `Object.assign(BOOTSTRAP_KEYS, …)` / `Object.defineProperty(…)`
+    String.raw`Object\.(?:assign|defineProperty|defineProperties)\(\s*(?:BOOTSTRAP_KEYS|STANDALONE_KEYS)[^\n]*`,
+    // Aliasing the registry to another binding — writes through the alias are
+    // invisible to every pattern above, so the alias itself is the mutation
+    // site to flag. `\s*[;,)]` keeps ordinary indexed reads
+    // (`… ?? BOOTSTRAP_KEYS[sibling]`, followed by `[`) out of the match.
+    String.raw`=\s*(?:BOOTSTRAP_KEYS|STANDALONE_KEYS)\s*[;,)][^\n]*`,
   ].join('|'),
   'g',
 );
+
+// Comments are blanked before the mutation scan and the registry-body parse.
+// Two distinct silent failures come from reading them as code:
+//   1. A commented-out `// delete BOOTSTRAP_KEYS.iranEvents;` normalizes to the
+//      exact accounted string, satisfying the very presence check whose error
+//      message is "stale arithmetic" while the runtime registry keeps the key.
+//   2. `parseObjectBlockBody` counts raw braces, so one `}` inside a comment in
+//      a registry literal ends the block early and yields a confident short
+//      count rather than an error.
+// Blanked in place (not deleted) so line and column offsets survive — the key
+// matcher below keys on an exact two-space indent.
+//
+// LINE comments must go FIRST. api/health.js:793 contains the line comment
+// `// list synchronized with consumer-prices-core/configs/retailers/*.yaml.`,
+// whose `/*` opens a block comment that the block matcher then runs 1098 lines
+// to the next `*/` to close — blanking the consumer-price loop, the iranEvents
+// delete, and most of STANDALONE_KEYS along with it. Stripping line comments
+// first removes that text before any `/*` is looked for.
+//
+// A `/*` inside a string or regex literal would still mislead the block pass;
+// nothing in this file has one today, and the registry cross-count plus the
+// runtime-pinning test both fail loudly if that ever changes.
+const blankComments = (src) => src
+  .replace(/^([ \t]*)\/\/[^\n]*$/gm, '$1')
+  .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '));
 
 // Every mutation this function knows how to price, in `normalizeMutation` form
 // (trimmed, inner whitespace collapsed). Adding a mutation to api/health.js
@@ -398,17 +431,86 @@ const normalizeMutation = (line) => line.trim().replace(/\s+/g, ' ');
 // Depth-1 entries of a registry object literal. parseObjectBlockBody preserves
 // the original indentation, so a top-level key sits at exactly two spaces; a
 // nested object's keys would sit at four or more and are correctly excluded.
-// Comment lines start with `//` or `*` and cannot match the identifier group.
 function countRegistryEntries(source, name) {
   const body = parseObjectBlockBody(source, `const ${name}`, `${name} in api/health.js`);
+  // The literal's closing brace sits at column 0, so a correctly bounded body
+  // ends on a blank line. Anything else means the brace counter stopped early
+  // on a brace inside a string, and the short count that follows would look
+  // perfectly plausible.
+  if (!/\n[ \t]*$/.test(body)) {
+    throw new Error(`docs-stats: ${name} in api/health.js did not terminate at a top-level closing brace`);
+  }
   const keys = [...body.matchAll(/^ {2}([A-Za-z_$][\w$]*):/gm)].map((m) => m[1]);
   if (keys.length === 0) throw new Error(`docs-stats: ${name} in api/health.js yielded no keys`);
   const dupe = keys.find((k, i) => keys.indexOf(k) !== i);
   if (dupe) throw new Error(`docs-stats: ${name} in api/health.js declares "${dupe}" twice`);
+  // Whole-body conformance check. The matcher above reads exactly ONE shape —
+  // a bare identifier key at a two-space indent, one per line — and silently
+  // ignores every other legal shape: a quoted key, a computed `[CONST]` key, a
+  // `...SPREAD`, a key indented four spaces, a second key on the same line.
+  // Each of those changes `Object.entries(registry)` without changing this
+  // count, and `keys.length === 0` is far too weak an alarm for that.
+  //
+  // Both registries are uniformly flat today (every value is a string literal
+  // or an identifier, one entry per line), so demanding that EVERY non-blank
+  // line conform is a true invariant rather than a guess. A future entry shape
+  // that breaks it gets an explicit "teach the counter" failure instead of a
+  // quietly smaller number. Comments are already blanked by the caller.
+  const nonConforming = body
+    .split('\n')
+    .filter((line) => line.trim() !== '' && !/^ {2}[A-Za-z_$][\w$]*:\s*\S/.test(line));
+  if (nonConforming.length) {
+    throw new Error(
+      `docs-stats: ${name} in api/health.js has ${nonConforming.length} entr${nonConforming.length === 1 ? 'y' : 'ies'} `
+      + `this counter cannot read (it reads one identifier key per line at a two-space indent): `
+      + `${nonConforming.map((l) => l.trim()).join(' | ')}`,
+    );
+  }
+  // A second key sharing a conforming line still counts once. Every entry ends
+  // in a trailing comma, so comparing comma count to key count catches it.
+  const commas = (body.match(/,/g) || []).length;
+  if (commas !== keys.length) {
+    throw new Error(
+      `docs-stats: ${name} in api/health.js has ${commas} entry terminators but ${keys.length} readable keys `
+      + '— more than one entry on a line, or a value containing a comma.',
+    );
+  }
   return keys;
 }
 
-function parseHealthProbedKeys(source = read('api/health.js')) {
+// summary.total is one entry per key in EVERY registry the endpoint's `sources`
+// array walks — not per key in the two registries this function happens to
+// price. Adding a third registry there is the single edit that reproduces #6300
+// exactly: production grows while every gate stays pinned at the old number.
+// So read the array rather than assume it.
+function parseProbedRegistries(source) {
+  const block = source.match(/const sources = \[([\s\S]*?)\n {2}\];/);
+  if (!block) throw new Error('docs-stats: could not parse the `sources` registry array in api/health.js');
+  const listed = [...block[1].matchAll(/\[\s*([A-Za-z_$][\w$]*)\s*,/g)].map((m) => m[1]);
+  if (!sameStringSet(listed, HEALTH_PROBED_REGISTRIES)) {
+    throw new Error(
+      'docs-stats: api/health.js probes a different set of key registries than parseHealthProbedKeys prices '
+      + `(${describeSetDelta(listed, HEALTH_PROBED_REGISTRIES)}) — summary.total cannot be derived.`,
+    );
+  }
+  return listed;
+}
+
+function parseHealthProbedKeys(rawSource = read('api/health.js')) {
+  const source = blankComments(rawSource);
+  parseProbedRegistries(source);
+
+  // The registry size equals summary.total only because the endpoint counts
+  // every entry unconditionally. A `continue` or a variant/env gate inserted
+  // ahead of the increment would shrink production's total while this parse —
+  // and the unit test that pins it to `Object.keys(...).length` — stayed put.
+  if (!/for \(const \[name, redisKey\] of Object\.entries\(registry\)\) \{\s*\n\s*totalChecks\+\+;/.test(source)) {
+    throw new Error(
+      'docs-stats: api/health.js no longer counts every registry entry unconditionally, '
+      + 'so summary.total is no longer the registry size.',
+    );
+  }
+
   const found = [...source.matchAll(HEALTH_REGISTRY_MUTATION_RE)].map((m) => normalizeMutation(m[0]));
   const unaccounted = found.filter((m) => !HEALTH_REGISTRY_ACCOUNTED_MUTATIONS.includes(m));
   if (unaccounted.length) {
@@ -442,7 +544,30 @@ function parseHealthProbedKeys(source = read('api/health.js')) {
   if (!/if \(market === 'ae'\) continue;/.test(source)) {
     throw new Error("docs-stats: the consumer-price health loop no longer skips 'ae'");
   }
-  const addedMarkets = markets.filter((m) => m !== 'ae').length;
+  // Mirror of the iranEvents presence guard below. `BOOTSTRAP_KEYS[name] = …`
+  // OVERWRITES a same-named literal entry at runtime (count unchanged) while
+  // this parse would add one for it — so a market name also declared in the
+  // literal over-counts by one, exactly as a missing iranEvents would
+  // under-count by one.
+  const addedNames = markets.filter((m) => m !== 'ae').map((m) => `consumerPricesCoverage${m.toUpperCase()}`);
+  // Same overwrite semantics within the market list itself: a repeated market
+  // assigns the same property twice at runtime (count unchanged) while a naive
+  // `.length` here would add one per iteration.
+  const repeated = addedNames.find((n, i) => addedNames.indexOf(n) !== i);
+  if (repeated) {
+    throw new Error(
+      `docs-stats: CONSUMER_PRICE_HEALTH_MARKETS yields "${repeated}" more than once — `
+      + 'the runtime registers it once while this count would add it per occurrence.',
+    );
+  }
+  const collision = addedNames.find((name) => bootstrapKeys.includes(name));
+  if (collision) {
+    throw new Error(
+      `docs-stats: BOOTSTRAP_KEYS already declares "${collision}", which the consumer-price loop also `
+      + 'registers — the runtime overwrites it while this count would add it twice.',
+    );
+  }
+  const addedMarkets = addedNames.length;
 
   // -1: iran-events is sunset unless IRAN_EVENTS_ENABLED=true (default false).
   // Asserting it is present in the literal keeps the subtraction from
@@ -454,9 +579,25 @@ function parseHealthProbedKeys(source = read('api/health.js')) {
     throw new Error('docs-stats: IRAN_EVENTS_ENABLED no longer defaults to false — the documented registry size changed');
   }
 
+  // The effective registries: the literal, plus the loop's markets, minus the
+  // sunset key. Names — not just counts — so the unit test can compare SETS
+  // against the imported runtime registries; two compensating errors (one real
+  // key missed, one phantom invented) net to an identical count but not to an
+  // identical set. computeStats stores only the counts: dumping 256 key names
+  // into the committed stats.json would bury the claims it actually publishes.
+  const effectiveBootstrap = [...bootstrapKeys, ...addedNames].filter((k) => k !== 'iranEvents');
   const bootstrap = bootstrapKeys.length + addedMarkets - 1;
   const standalone = standaloneKeys.length;
-  return { bootstrap, standalone, total: bootstrap + standalone };
+  if (effectiveBootstrap.length !== bootstrap) {
+    throw new Error(`docs-stats: internal — bootstrap arithmetic (${bootstrap}) disagrees with its key list (${effectiveBootstrap.length})`);
+  }
+  return {
+    bootstrap,
+    standalone,
+    total: bootstrap + standalone,
+    bootstrapKeys: effectiveBootstrap,
+    standaloneKeys,
+  };
 }
 
 function parseJsonLdBlocks(html) {
@@ -767,7 +908,10 @@ function computeStats() {
     mcpAppUiResources: mcpApps.uiResources,
     mcpAppLinkedTools: mcpApps.linkedTools,
     bootstrapCache: parseBootstrapCacheContract(),
-    healthProbedKeys: parseHealthProbedKeys(),
+    // Counts only — see parseHealthProbedKeys on why the key names stay out.
+    healthProbedKeys: (({ bootstrap, standalone, total }) => ({ bootstrap, standalone, total }))(
+      parseHealthProbedKeys(),
+    ),
   };
 }
 
@@ -967,26 +1111,10 @@ function claims(s) {
     { file: 'blog-site/src/content/blog/ai-powered-intelligence-without-the-cloud.md', re: /architecture \(\d+\s+proto files, (\d+)\s+typed services\)/, value: s.protoServices },
     { file: 'blog-site/src/content/blog/worldmonitor-vs-traditional-intelligence-tools.md', re: /using the (\d+)\s+typed API services/, value: s.protoServices },
 
-    // ---- /api/health example response bodies (#6300) ----
-    // `summary.total` is the number a reader uses to decide whether their own
-    // response looks complete, and all four pages published 194 against a live
-    // 256. Anchored on the `"summary": {` line and captured positionally, so a
-    // claim cannot be satisfied by a neighbouring count — every one of these
-    // bodies quotes several integers in a row.
-    //
-    // `ok` is pinned to the same stat on purpose: each example declares an
-    // all-OK fleet, so ok === total is what makes the body internally
-    // consistent. Pinning `total` alone would let `ok` drift back out of step
-    // with it the next time a key is added, which is the same class of silently
-    // wrong published number this gate exists to stop.
-    { file: 'docs/health-endpoints.mdx', re: /"summary":\s*\{\s*"total":\s*(\d+)/, value: s.healthProbedKeys.total },
-    { file: 'docs/health-endpoints.mdx', re: /"summary":\s*\{\s*"total":\s*\d+,\s*"ok":\s*(\d+)/, value: s.healthProbedKeys.total },
-    { file: 'docs/api-platform.mdx', re: /"summary":\s*\{\s*"total":\s*(\d+)/, value: s.healthProbedKeys.total },
-    { file: 'docs/api-platform.mdx', re: /"summary":\s*\{\s*"total":\s*\d+,\s*"ok":\s*(\d+)/, value: s.healthProbedKeys.total },
-    { file: 'docs/zh/health-endpoints.mdx', re: /"summary":\s*\{\s*"total":\s*(\d+)/, value: s.healthProbedKeys.total },
-    { file: 'docs/zh/health-endpoints.mdx', re: /"summary":\s*\{\s*"total":\s*\d+,\s*"ok":\s*(\d+)/, value: s.healthProbedKeys.total },
-    { file: 'docs/zh/api-platform.mdx', re: /"summary":\s*\{\s*"total":\s*(\d+)/, value: s.healthProbedKeys.total },
-    { file: 'docs/zh/api-platform.mdx', re: /"summary":\s*\{\s*"total":\s*\d+,\s*"ok":\s*(\d+)/, value: s.healthProbedKeys.total },
+    // /api/health `summary.total` (#6300) is pinned by validateHealthSummaryDocs
+    // rather than by claims: a claim runs `text.match()`, which reads only the
+    // FIRST match on a page, so a second example body appended below the pinned
+    // one would publish an unpinned number. The validator checks every block.
   ];
 }
 
@@ -1174,6 +1302,107 @@ function bootstrapCacheDocSources(pages = null) {
     failures.push(`${file}: known /api/bootstrap cache surface no longer publishes the contract (missing ${BOOTSTRAP_CACHE_ANCHOR})`);
   }
   return { docs, failures };
+}
+
+// ---- /api/health summary example bodies (#6300) ----
+//
+// `"onDemandWarn"` is the anchor: it is unique to this endpoint's summary
+// object, and the double quotes keep it inside JSON examples rather than the
+// surrounding prose, which names the same field in backticks.
+const HEALTH_SUMMARY_ANCHOR = '"onDemandWarn"';
+
+// The floor, for the same reason BOOTSTRAP_CACHE_DOC_FILES has one: scope is
+// DISCOVERED so a sibling page nobody remembered gets checked too, but a known
+// surface that loses its example must fail rather than drop quietly out of
+// scope. Two of these four are zh mirrors — the pages #6300 shows are exactly
+// the ones a hand-maintained list forgets.
+const HEALTH_SUMMARY_DOC_FILES = [
+  'docs/health-endpoints.mdx',
+  'docs/api-platform.mdx',
+  'docs/zh/health-endpoints.mdx',
+  'docs/zh/api-platform.mdx',
+];
+
+function healthSummaryDocSources(pages = null) {
+  const candidates = pages ?? Object.fromEntries(
+    walk('docs').filter((f) => f.endsWith('.mdx')).map((file) => [file, read(file)]),
+  );
+  const docs = {};
+  const failures = [];
+  for (const [file, text] of Object.entries(candidates)) {
+    if (text.includes(HEALTH_SUMMARY_ANCHOR)) docs[file] = text;
+  }
+  for (const file of HEALTH_SUMMARY_DOC_FILES) {
+    if (docs[file]) continue;
+    failures.push(
+      `${file}: known /api/health surface no longer publishes a summary example (missing ${HEALTH_SUMMARY_ANCHOR})`,
+    );
+  }
+  return { docs, failures };
+}
+
+// EVERY summary block on a publishing page is checked, not just the first.
+// That is the whole reason this is a validator and not a claim: `claims()` uses
+// `text.match()`, so appending a second example body below the pinned one would
+// publish a number the gate never reads — reproducing #6300 on a docs-only PR,
+// which also skips the `unit` job and so gets no other coverage at all.
+//
+// Two properties are asserted per block, and only two, so a page stays free to
+// illustrate a WARNING fleet rather than only an all-OK one:
+//   - `total` equals the registry size. True of any response, whatever its status.
+//   - the buckets sum to `total`. `summary.warn` is already net of onDemandWarn
+//     (api/health.js computes `realWarnCount = counts.warn - counts.onDemandWarn`),
+//     and staleContent/rolloutPending are documented SUBSETS of warn, so the
+//     partition is exactly ok + warn + onDemandWarn + crit. This is what caught
+//     the pre-#6300 api-platform.mdx body, which showed a concrete "HEALTHY"
+//     alongside 5 warns.
+function validateHealthSummaryDocs(stats, docs = null) {
+  const failures = [];
+  if (docs === null) {
+    const discovered = healthSummaryDocSources();
+    failures.push(...discovered.failures);
+    docs = discovered.docs;
+  }
+  const total = stats.healthProbedKeys.total;
+
+  for (const [file, text] of Object.entries(docs)) {
+    const blocks = [...text.matchAll(/"summary":\s*\{([^{}]*)\}/g)];
+    if (blocks.length === 0) {
+      failures.push(`${file}: publishes ${HEALTH_SUMMARY_ANCHOR} but no readable "summary" object`);
+      continue;
+    }
+    blocks.forEach(([, body], i) => {
+      const where = blocks.length > 1 ? `${file} (summary example ${i + 1} of ${blocks.length})` : file;
+      const field = (name) => {
+        const m = new RegExp(`"${name}":\\s*(\\d+)`).exec(body);
+        return m ? Number(m[1]) : null;
+      };
+      const counts = {};
+      for (const name of ['total', 'ok', 'warn', 'onDemandWarn', 'staleContent', 'rolloutPending', 'crit']) {
+        counts[name] = field(name);
+        if (counts[name] === null) failures.push(`${where}: /api/health summary example is missing "${name}"`);
+      }
+      if (Object.values(counts).some((v) => v === null)) return;
+
+      if (counts.total !== total) {
+        failures.push(`${where}: summary.total is ${counts.total}, but /api/health probes ${total} keys`);
+      }
+      const partition = counts.ok + counts.warn + counts.onDemandWarn + counts.crit;
+      if (partition !== counts.total) {
+        failures.push(
+          `${where}: ok + warn + onDemandWarn + crit = ${partition}, which must equal total (${counts.total})`,
+        );
+      }
+      for (const subset of ['staleContent', 'rolloutPending']) {
+        if (counts[subset] > counts.warn) {
+          failures.push(
+            `${where}: ${subset} (${counts[subset]}) is documented as a subset of warn (${counts.warn})`,
+          );
+        }
+      }
+    });
+  }
+  return failures;
 }
 
 // keyTiers is read here rather than carried in stats.json: it is validator
@@ -1440,6 +1669,7 @@ const DOC_VALIDATORS = [
   validateSupportedLanguagesRegistry,
   validateMcpAppsDocs,
   validateBootstrapCacheDocs,
+  validateHealthSummaryDocs,
   validatePlanLayerEntitlementCopy,
   validateCategoryExplainerCopy,
 ];
@@ -1516,6 +1746,11 @@ export {
   parseBootstrapCacheContract,
   parseBootstrapKeyTiers,
   parseHealthProbedKeys,
+  parseProbedRegistries,
+  validateHealthSummaryDocs,
+  healthSummaryDocSources,
+  HEALTH_SUMMARY_DOC_FILES,
+  HEALTH_SUMMARY_ANCHOR,
   validateBootstrapCacheDocs,
   bootstrapCacheDocSources,
   BOOTSTRAP_CACHE_DOC_FILES,
