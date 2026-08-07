@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { loadEnvFile, CHROME_UA, runSeed, writeExtraKeyWithMeta, sleep, verifySeedKey, resolveProxyForConnect, fredFetchJson } from './_seed-utils.mjs';
+import { loadEnvFile, CHROME_UA, runSeed, writeExtraKey, writeExtraKeyWithMeta, writeSeedMeta, sleep, verifySeedKey, resolveProxyForConnect, fredFetchJson } from './_seed-utils.mjs';
 import { tokensToContentMeta, DAY_MIN } from './_content-age-helpers.mjs';
 
 loadEnvFile(import.meta.url);
@@ -47,6 +47,18 @@ const _un2iso2 = JSON.parse(_readFileSync(_join(__dirname, 'shared', 'un-to-iso2
 // Populated by fetchWtoReporters() before any data fetches
 let ALL_REPORTERS = [];
 
+// True when ALL_REPORTERS came from the local un-to-iso2.json fallback rather
+// than from WTO. The fallback is a smaller, frozen list (239 codes against the
+// 278 the /reporters endpoint advertised on 2026-08-07), so a run that used it
+// does not know the real reporter universe — see publishTradeFlows, which
+// refuses to publish a coverage manifest from such a run.
+let REPORTER_LIST_IS_FALLBACK = false;
+
+/** Test seam companion to _setAllReportersForTesting. */
+export function _setReporterListIsFallbackForTesting(value) {
+  REPORTER_LIST_IS_FALLBACK = Boolean(value);
+}
+
 // Test-only seam — lets regression tests for fetchTariffTrends /
 // fetchTradeRestrictions exercise the real batch loop without first
 // running fetchWtoReporters (which would also hit the network). Production
@@ -67,10 +79,12 @@ async function fetchWtoReporters() {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
     ALL_REPORTERS = data.map(r => String(r.code)).filter(c => /^\d+$/.test(c) && c !== '000');
+    REPORTER_LIST_IS_FALLBACK = false;
     console.log(`  WTO reporters: ${ALL_REPORTERS.length} economies`);
   } catch (err) {
     console.warn(`[WTO] Failed to fetch reporter list: ${err.message}, using un-to-iso2.json fallback`);
     ALL_REPORTERS = Object.keys(_un2iso2);
+    REPORTER_LIST_IS_FALLBACK = true;
   }
 }
 
@@ -481,20 +495,74 @@ async function fetchEffectiveTariffRateFromFred() {
   }
 }
 
-// ─── Trade Flows (WTO) — pre-seed major reporters vs World + key bilateral pairs ───
+// ─── Trade Flows (WTO) — pre-seed every reporter versus World ───
 
-const BILATERAL_PAIRS = [
-  ['840', '156'], // US ↔ China
-  ['840', '276'], // US ↔ Germany
-  ['840', '392'], // US ↔ Japan
-  ['840', '124'], // US ↔ Canada
-  ['840', '484'], // US ↔ Mexico
-  ['156', '840'], // China ↔ US
-  ['156', '276'], // China ↔ Germany
-  ['826', '156'], // UK ↔ China
-  ['000', '156'], // World ↔ China
-  ['000', '840'], // World ↔ US
-];
+export const WORLD_PARTNER_CODE = '000';
+
+// One seeded window per pair, sliced by the handler to whatever lookback the
+// caller asked for. Previously the window was baked into the cache key
+// (`…:${years}`) and only ever written at years=10, so every other supported
+// lookback built a key nothing had written and came back as an upstream
+// outage (issue #6309). Keeping the maximum here and slicing at read time
+// makes all 1-30 answerable from the same fetch.
+//
+// Must stay equal to the `years` maximum in
+// proto/worldmonitor/trade/v1/get_trade_flows.proto — a seeded window shorter
+// than the contract maximum silently truncates the widest supported request.
+// tests/trade-flows-coverage.test.mts pins the two together.
+export const TRADE_FLOW_SEED_YEARS = 30;
+
+export const TRADE_FLOW_KEY_PREFIX = 'trade:flows:v2';
+// Coverage manifest: the pairs this seeder intends to publish. Read by the
+// handler ONLY after a data-key miss, so it costs the served path nothing and
+// lets a miss be named — a pair outside the manifest is a coverage answer, a
+// pair inside it whose key is gone is a fault.
+export const TRADE_FLOW_COVERAGE_KEY = `${TRADE_FLOW_KEY_PREFIX}:index`;
+// One aggregate meta key for the whole flow fleet. Per-key meta (249 extra
+// Redis writes per run) had no reader; health needs one freshness signal plus
+// the coverage counts that separate "we never seeded this" from "WTO is down".
+export const TRADE_FLOW_META_KEY = 'seed-meta:trade:flows';
+
+/** Cache key for one seeded pair. Mirrored by the handler; pinned by tests. */
+export function tradeFlowSeedKey(reporter, partner) {
+  return `${TRADE_FLOW_KEY_PREFIX}:${reporter}:${partner}`;
+}
+
+/** Manifest member for one seeded pair. Mirrored by the handler; pinned by tests. */
+export function tradeFlowCoverageId(reporter, partner) {
+  return `${reporter}:${partner}`;
+}
+
+// There is deliberately no bilateral pair list here.
+//
+// This file used to carry ten curated pairs (US-China, US-Germany, …). None of
+// them has ever produced a cache key, and none can: the WTO timeseries
+// indicators these flows are built from, ITS_MTV_AX and ITS_MTV_AM, publish a
+// World total only. Measured against api.wto.org on 2026-08-07 with the
+// production key:
+//
+//   GET /indicators                     -> ITS_MTV_AX numberPartners = 3
+//   GET /data?i=ITS_MTV_AX&r=840&p=all  -> one partner, "000" (World)
+//   GET /data?i=ITS_MTV_AX&r=840&p=156  -> HTTP 204, no content
+//
+// and Redis held 256 `trade:flows:v1:*` keys at the time, every one of them a
+// `:000:` World pair. So the pair list was dead configuration that quietly
+// widened the advertised contract to a partner space upstream does not have.
+//
+// Keeping it would be worse than useless now: the coverage manifest below is
+// what tells the handler a miss is a fault rather than a coverage answer, so an
+// unattainable pair inside it would be reported as a broken seed forever.
+export function tradeFlowPairUniverse(reporters) {
+  const seen = new Set();
+  const pairs = [];
+  for (const reporter of reporters) {
+    const id = tradeFlowCoverageId(reporter, WORLD_PARTNER_CODE);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    pairs.push([reporter, WORLD_PARTNER_CODE]);
+  }
+  return pairs;
+}
 
 function parseFlowRows(data, indicator) {
   const dataset = Array.isArray(data) ? data : data?.Dataset ?? data?.dataset ?? [];
@@ -506,21 +574,40 @@ function parseFlowRows(data, indicator) {
   }).filter(Boolean);
 }
 
-function buildFlowRecords(rows, reporterCode, partnerCode) {
+/**
+ * Fold export and import rows into one record per year.
+ *
+ * Returns `{ records, incompleteYears }`. A year WTO answered on only one side
+ * is NOT emitted: the previous version defaulted the missing leg to 0, which
+ * publishes a fabricated zero the panel charts and that the next year's
+ * year-over-year is differenced against — indistinguishable from trade actually
+ * collapsing to nothing. `incompleteYears` counts what that guard dropped so
+ * the run reports it instead of silently shrinking coverage.
+ */
+export function buildFlowRecords(rows, reporterCode, partnerCode) {
   const byYear = new Map();
   let reporterName = reporterCode;
-  let partnerName = partnerCode === '000' ? 'World' : partnerCode;
+  let partnerName = partnerCode === WORLD_PARTNER_CODE ? 'World' : partnerCode;
   for (const row of rows) {
-    if (!byYear.has(row.year)) byYear.set(row.year, { exports: 0, imports: 0 });
+    if (!byYear.has(row.year)) byYear.set(row.year, { exports: null, imports: null });
     const e = byYear.get(row.year);
     if (row.indicator === 'ITS_MTV_AX') e.exports = row.value; else e.imports = row.value;
     if (row.reporterName) reporterName = row.reporterName;
-    if (row.partnerName && partnerCode !== '000') partnerName = row.partnerName;
+    if (row.partnerName && partnerCode !== WORLD_PARTNER_CODE) partnerName = row.partnerName;
   }
-  const sortedYears = [...byYear.keys()].sort((a, b) => a - b);
-  return sortedYears.map((year, i) => {
+  const completeYears = [...byYear.keys()]
+    .filter((year) => {
+      const e = byYear.get(year);
+      return Number.isFinite(e.exports) && Number.isFinite(e.imports);
+    })
+    .sort((a, b) => a - b);
+  const records = completeYears.map((year, i) => {
     const cur = byYear.get(year);
-    const prev = i > 0 ? byYear.get(sortedYears[i - 1]) : null;
+    // Year-over-year only means anything across ADJACENT years. Differencing
+    // across a WTO gap (or across a year the completeness guard above dropped)
+    // and labelling the result yoy overstates a multi-year move as a one-year
+    // one. No adjacent prior year → no change to report.
+    const prev = i > 0 && completeYears[i - 1] === year - 1 ? byYear.get(year - 1) : null;
     return {
       reportingCountry: reporterName,
       partnerCountry: partnerName,
@@ -530,11 +617,22 @@ function buildFlowRecords(rows, reporterCode, partnerCode) {
       productSector: 'Total merchandise',
     };
   });
+  return { records, incompleteYears: byYear.size - completeYears.length };
 }
 
-async function fetchFlowPair(reporter, partner, years, flows) {
-  const currentYear = new Date().getFullYear();
-  const startYear = currentYear - years;
+/**
+ * Fetch one reporter/partner pair over the full seeded window.
+ *
+ * Publishes into `flows` only when BOTH indicators answered. `wtoFetch` returns
+ * null for every failure mode and `{ Dataset: [] }` for a 204, so a null is a
+ * failed request rather than an empty answer — and a pair built from one
+ * successful side would persist half a bilateral relationship under a key the
+ * handler serves as complete. Skipping leaves the previous key alive under its
+ * TTL for the next run to replace.
+ */
+export async function fetchFlowPair(reporter, partner, flows, stats, now = new Date()) {
+  const currentYear = now.getFullYear();
+  const startYear = currentYear - TRADE_FLOW_SEED_YEARS;
   const base = { r: reporter, p: partner, ps: `${startYear}-${currentYear}`, pc: 'TO', fmt: 'json', mode: 'full', max: '500' };
   const [exportsResult, importsResult] = await Promise.allSettled([
     wtoFetch('/data', { ...base, i: 'ITS_MTV_AX' }),
@@ -542,30 +640,167 @@ async function fetchFlowPair(reporter, partner, years, flows) {
   ]);
   const exportsData = exportsResult.status === 'fulfilled' ? exportsResult.value : null;
   const importsData = importsResult.status === 'fulfilled' ? importsResult.value : null;
-  const rows = [...(exportsData ? parseFlowRows(exportsData, 'ITS_MTV_AX') : []), ...(importsData ? parseFlowRows(importsData, 'ITS_MTV_AM') : [])];
-  const records = buildFlowRecords(rows, reporter, partner);
-  const cacheKey = `trade:flows:v1:${reporter}:${partner}:${years}`;
-  if (records.length > 0) {
-    flows[cacheKey] = { flows: records, fetchedAt: new Date().toISOString(), upstreamUnavailable: false };
+  if (!exportsData || !importsData) {
+    stats.upstreamFailures++;
+    return;
   }
+  // Bound the payload by the window we asked for. WTO's `max` caps rows
+  // upstream, but a row outside `ps` would otherwise be stored and then served
+  // as if it were inside the advertised window.
+  const rows = [
+    ...parseFlowRows(exportsData, 'ITS_MTV_AX'),
+    ...parseFlowRows(importsData, 'ITS_MTV_AM'),
+  ].filter((row) => row.year >= startYear && row.year <= currentYear);
+  const { records, incompleteYears } = buildFlowRecords(rows, reporter, partner);
+  stats.incompleteYearsDropped += incompleteYears;
+  if (records.length === 0) {
+    // Both indicators answered and neither had anything for this pair. That is
+    // a definitive upstream answer, not a failure, so the pair is dropped from
+    // advertised coverage — leaving it in would report "the seed is broken" for
+    // a combination WTO simply does not carry.
+    stats.emptyPairs++;
+    stats.emptyPairIds.push(tradeFlowCoverageId(reporter, partner));
+    return;
+  }
+  stats.pairsSeeded++;
+  flows[tradeFlowSeedKey(reporter, partner)] = {
+    flows: records,
+    fetchedAt: new Date().toISOString(),
+    upstreamUnavailable: false,
+    unavailableReason: '',
+    coverageStartYear: records[0].year,
+    coverageEndYear: records[records.length - 1].year,
+  };
 }
 
-async function fetchTradeFlows() {
+export async function fetchTradeFlows() {
   const flows = {};
-  const years = 10;
+  const now = new Date();
+  const pairs = tradeFlowPairUniverse(ALL_REPORTERS);
+  const stats = {
+    pairsAttempted: pairs.length,
+    pairsSeeded: 0,
+    upstreamFailures: 0,
+    emptyPairs: 0,
+    emptyPairIds: [],
+    incompleteYearsDropped: 0,
+  };
 
-  for (const reporter of ALL_REPORTERS) {
-    await fetchFlowPair(reporter, '000', years, flows);
+  for (const [reporter, partner] of pairs) {
+    await fetchFlowPair(reporter, partner, flows, stats, now);
     await sleep(500);
   }
 
-  for (const [reporter, partner] of BILATERAL_PAIRS) {
-    await fetchFlowPair(reporter, partner, years, flows);
-    await sleep(500);
-  }
+  const coverage = {
+    ...stats,
+    startYear: now.getFullYear() - TRADE_FLOW_SEED_YEARS,
+    endYear: now.getFullYear(),
+  };
+  console.log(
+    `  Trade flows: ${stats.pairsSeeded}/${stats.pairsAttempted} pairs seeded `
+    + `(${stats.upstreamFailures} upstream failures, ${stats.emptyPairs} empty, `
+    + `${stats.incompleteYearsDropped} one-sided years dropped)`,
+  );
+  // Advertised coverage is intent MINUS what upstream definitively answered
+  // empty. The distinction is the whole point of the manifest:
+  //   - a pair a WTO *failure* dropped stays advertised, so the handler calls a
+  //     miss `seed_missing` — a fault, worth retrying, never CDN-cached;
+  //   - a pair WTO *answered nothing for* is removed, so the handler calls it
+  //     `not_covered` — an honest contract answer.
+  // Keeping the second class in would report ~22 reporters (measured 2026-08-07:
+  // 256 published against 278 attempted) as a broken seed forever.
+  const emptyIds = new Set(stats.emptyPairIds);
+  const advertised = pairs
+    .map(([reporter, partner]) => tradeFlowCoverageId(reporter, partner))
+    .filter((id) => !emptyIds.has(id))
+    .sort();
 
-  console.log(`  Trade flows: ${Object.keys(flows).length} pairs (${ALL_REPORTERS.length} world + ${BILATERAL_PAIRS.length} bilateral)`);
-  return flows;
+  return {
+    coverage,
+    flows,
+    //
+    // The run counters ride here rather than in seed-meta's `coverage` field.
+    // api/health.js parses that field with the consumer-prices page/retailer
+    // schema, so a differently-shaped object is published as an all-zero
+    // completedPages/failedPages block — a misleading operator signal, which is
+    // the failure class this issue exists to remove. Health gets the number it
+    // can actually interpret, `recordCount`, via its minRecordCount floor.
+    manifest: {
+      pairs: advertised,
+      startYear: coverage.startYear,
+      endYear: coverage.endYear,
+      stats,
+      // Publication gate, not payload — see publishTradeFlows.
+      reporterListIsFallback: REPORTER_LIST_IS_FALLBACK,
+      fetchedAt: new Date().toISOString(),
+    },
+  };
+}
+
+/**
+ * Publish the flow fleet: one key per seeded pair, then the coverage manifest,
+ * then a single freshness/coverage meta record.
+ *
+ * Order matters on the last two. The manifest is what lets a handler miss be
+ * named, and the meta record is what health reads as "this fleet is fresh" — so
+ * the meta goes last, after everything it vouches for is in Redis.
+ */
+export async function publishTradeFlows({ flows, manifest }) {
+  // Per-key isolation. writeExtraKey already retries transient failures, so a
+  // throw here is exhaustion or a permanent 4xx — for ONE pair. Letting it
+  // propagate would discard every pair after it (already fetched, already in
+  // memory, ~9 minutes of WTO calls), skip the manifest and the meta record,
+  // and abort the tariff and customs-revenue writes that follow in fetchAll.
+  // One bad pair must not cost the fleet.
+  const failedKeys = [];
+  for (const [key, data] of Object.entries(flows)) {
+    try {
+      await writeExtraKey(key, data, TRADE_TTL);
+    } catch (err) {
+      failedKeys.push(key);
+      console.warn(`  Trade flows: write failed for ${key}: ${err?.message || err}`);
+    }
+  }
+  if (failedKeys.length > 0) {
+    console.warn(`  Trade flows: ${failedKeys.length}/${Object.keys(flows).length} key writes failed`);
+  }
+  // Health must count what actually landed, not what was fetched. Reporting the
+  // fetch count would let a Redis-side partial failure read as full coverage.
+  const written = Object.keys(flows).length - failedKeys.length;
+  // The manifest is the only thing that lets the handler answer `not_covered`,
+  // and `not_covered` is the one verdict that leaves upstreamUnavailable false
+  // — which is exactly the one the gateway lets the CDN hold (`daily` tier,
+  // s-maxage 14400; every other reason forces no-store through
+  // getRpcNoStoreReasonFromPayload). A manifest that under-states coverage
+  // therefore publishes "this economy is not covered", cached for hours, about
+  // economies this seeder covers perfectly well.
+  //
+  // Two ways a run reaches that state, both reachable without any code fault:
+  //   - the WTO /reporters call failed and ALL_REPORTERS fell back to the local
+  //     un-to-iso2.json list, frozen at 239 codes against the 278 WTO
+  //     advertised on 2026-08-07;
+  //   - WTO_API_KEY is unset or rotated, so fetchWtoReporters returns early and
+  //     leaves ALL_REPORTERS at its `[]` initializer — a total outage that would
+  //     otherwise publish an EMPTY manifest and turn every request into a
+  //     cacheable `not_covered`.
+  //
+  // Refusing the write leaves the previous manifest alive under its own TTL, or
+  // none at all, which the handler reports as `coverage_unknown`:
+  // upstreamUnavailable true, no-store, honest about not knowing.
+  const untrustworthy = manifest.reporterListIsFallback
+    ? 'reporter list came from the local fallback'
+    : manifest.pairs.length === 0
+      ? 'the run advertised zero pairs'
+      : null;
+  if (untrustworthy) {
+    console.warn(`  Trade flows: not publishing a coverage manifest — ${untrustworthy}`);
+  } else {
+    await writeExtraKey(TRADE_FLOW_COVERAGE_KEY, manifest, TRADE_TTL);
+  }
+  // recordCount is the number of pairs actually IN Redis, which is what
+  // api/health.js compares against its minRecordCount floor. Deliberately no
+  // `coverage` argument — see the manifest comment in fetchTradeFlows.
+  await writeSeedMeta(TRADE_FLOW_KEY_PREFIX, written, TRADE_FLOW_META_KEY);
 }
 
 // ─── Trade Barriers (WTO) ───
@@ -892,7 +1127,7 @@ async function fetchAll() {
   // Write secondary keys BEFORE returning (runSeed calls process.exit after primary write)
   if (ba) await writeExtraKeyWithMeta(KEYS.barriers, ba, TRADE_TTL, ba.barriers?.length ?? 0);
   if (re) await writeExtraKeyWithMeta(KEYS.restrictions, re, TRADE_TTL, re.restrictions?.length ?? 0);
-  if (fl) { for (const [key, data] of Object.entries(fl)) await writeExtraKeyWithMeta(key, data, TRADE_TTL, data.flows?.length ?? 0); }
+  if (fl) await publishTradeFlows(fl);
   if (ta) { for (const [key, data] of Object.entries(ta)) await writeExtraKeyWithMeta(key, data, TARIFF_TTL, data.datapoints?.length ?? 0); }
   if (cu) await writeExtraKeyWithMeta(KEYS.customsRevenue, cu, CUSTOMS_TTL, cu.months?.length ?? 0);
 

@@ -113,7 +113,13 @@ onEntitlementChange(() => {
 
 const emptyRestrictions: GetTradeRestrictionsResponse = { restrictions: [], fetchedAt: '', upstreamUnavailable: false };
 const emptyTariffs: GetTariffTrendsResponse = { datapoints: [], fetchedAt: '', upstreamUnavailable: false };
-const emptyFlows: GetTradeFlowsResponse = { flows: [], fetchedAt: '', upstreamUnavailable: false };
+// The client-side empty is a local degrade (feature off, breaker open, thrown
+// request) — it is not a server verdict, so it carries no unavailableReason.
+// Only the handler names a reason.
+const emptyFlows: GetTradeFlowsResponse = {
+  flows: [], fetchedAt: '', upstreamUnavailable: false,
+  unavailableReason: '', coverageStartYear: 0, coverageEndYear: 0,
+};
 const emptyBarriers: GetTradeBarriersResponse = { barriers: [], fetchedAt: '', upstreamUnavailable: false };
 const emptyRevenue: GetCustomsRevenueResponse = { months: [], fetchedAt: '', upstreamUnavailable: false };
 const emptyComtrade: ListComtradeFlowsResponse = { flows: [], fetchedAt: '', upstreamUnavailable: false };

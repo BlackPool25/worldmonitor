@@ -249,21 +249,34 @@ paths:
             parameters:
                 - name: reporting_country
                   in: query
-                  description: WTO member code of reporting country.
+                  description: |-
+                    WTO member code of reporting country, as a 3-digit UN M49 code
+                     (for example "840" = United States). Empty selects the "840" default.
                   required: false
                   example: "840"
                   schema:
                     type: string
+                    pattern: '^([0-9]{3})?$'
                 - name: partner_country
                   in: query
-                  description: WTO member code of partner country.
+                  description: |-
+                    WTO member code of partner country, as a 3-digit UN M49 code.
+                     Empty selects "000" = World, which is the only partner currently covered:
+                     the WTO indicators behind these flows (ITS_MTV_AX, ITS_MTV_AM) publish a
+                     World total and answer 204 for every named partner. Any other code is
+                     accepted by validation and answered with unavailable_reason
+                     "not_covered", so coverage can widen without a contract change.
                   required: false
                   example: "156"
                   schema:
                     type: string
+                    pattern: '^([0-9]{3})?$'
                 - name: years
                   in: query
-                  description: Number of years to look back (default 10, max 30).
+                  description: |-
+                    Number of years to look back from the newest seeded year, inclusive of
+                     both endpoints (years = 10 returns 11 calendar years). 0 selects the
+                     default of 10; the maximum is 30, which is the full seeded window.
                   required: false
                   example: 1
                   schema:
@@ -283,6 +296,8 @@ paths:
                     content:
                         application/json:
                             example:
+                                "coverageEndYear": 1
+                                "coverageStartYear": 1
                                 "fetchedAt": "2026-01-15T12:00:00Z"
                                 "flows":
                                     - "exportValueUsd": 1.5
@@ -290,7 +305,7 @@ paths:
                                       "partnerCountry": "156"
                                       "productSector": "diesel"
                                       "reportingCountry": "840"
-                                "upstreamUnavailable": false
+                                "unavailableReason": "example"
                             schema:
                                 $ref: '#/components/schemas/GetTradeFlowsResponse'
                 "400":
@@ -926,15 +941,37 @@ components:
             properties:
                 reportingCountry:
                     type: string
-                    description: WTO member code of reporting country.
+                    pattern: ^([0-9]{3})?$
+                    description: |-
+                        WTO member code of reporting country, as a 3-digit UN M49 code
+                         (for example "840" = United States). Empty selects the "840" default.
                 partnerCountry:
                     type: string
-                    description: WTO member code of partner country.
+                    pattern: ^([0-9]{3})?$
+                    description: |-
+                        WTO member code of partner country, as a 3-digit UN M49 code.
+                         Empty selects "000" = World, which is the only partner currently covered:
+                         the WTO indicators behind these flows (ITS_MTV_AX, ITS_MTV_AM) publish a
+                         World total and answer 204 for every named partner. Any other code is
+                         accepted by validation and answered with unavailable_reason
+                         "not_covered", so coverage can widen without a contract change.
                 years:
                     type: integer
+                    maximum: 30
+                    minimum: 0
                     format: int32
-                    description: Number of years to look back (default 10, max 30).
-            description: Request for bilateral trade flow data.
+                    description: |-
+                        Number of years to look back from the newest seeded year, inclusive of
+                         both endpoints (years = 10 returns 11 calendar years). 0 selects the
+                         default of 10; the maximum is 30, which is the full seeded window.
+            description: |-
+                Request for bilateral trade flow data.
+
+                 Coverage is seed-backed: Railway pre-fetches a fixed set of
+                 reporter/partner pairs from WTO and this API serves slices of that history.
+                 It never calls WTO per request, so a well-formed combination outside the
+                 seeded set is reported as uncovered (see GetTradeFlowsResponse.
+                 unavailable_reason) rather than fetched on demand.
         GetTradeFlowsResponse:
             type: object
             properties:
@@ -947,7 +984,31 @@ components:
                     description: ISO 8601 timestamp when data was fetched from WTO.
                 upstreamUnavailable:
                     type: boolean
-                    description: True if upstream fetch failed and results may be stale/empty.
+                    description: |-
+                        True when flows could not be served because of a fault — a seeded pair
+                         whose cache entry is gone, or a cache read that failed. False when flows
+                         are served AND when the request names a combination that is simply not
+                         part of seeded coverage, which is a contract answer rather than an outage.
+                unavailableReason:
+                    type: string
+                    description: |-
+                        Empty when flows are served. Otherwise one of a closed vocabulary that
+                         says why they are not, so a caller can tell a coverage gap from a fault:
+                           "invalid_request"    request codes were malformed
+                           "not_covered"        well-formed, but this pair is not seeded
+                           "seed_missing"       pair is seeded, but its cache entry is absent
+                           "coverage_unknown"   coverage manifest unreadable, so neither can be ruled out
+                           "cache_unavailable"  the cache read itself failed
+                coverageStartYear:
+                    type: integer
+                    format: int32
+                    description: |-
+                        First and last calendar year covered by `flows`. Both are 0 when no flows
+                         are returned. This is the effective window after slicing to `years`, which
+                         may be narrower than the requested lookback when the seed starts later.
+                coverageEndYear:
+                    type: integer
+                    format: int32
             description: Response containing trade flow records.
         TradeFlowRecord:
             type: object

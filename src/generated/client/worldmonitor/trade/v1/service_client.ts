@@ -66,6 +66,9 @@ export interface GetTradeFlowsResponse {
   flows: TradeFlowRecord[];
   fetchedAt: string;
   upstreamUnavailable: boolean;
+  unavailableReason: string;
+  coverageStartYear: number;
+  coverageEndYear: number;
 }
 
 export interface TradeFlowRecord {

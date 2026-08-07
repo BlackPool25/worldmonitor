@@ -187,6 +187,8 @@ const EXCLUDED_FROM_MCP = new Map([
     'deferred: strict health seed probe added by #5055; disruptions are consumed by chokepoint hazard scoring until a PortWatch MCP expansion exists.'],
   ['seed-meta:comtrade:bilateral-hs4',
     'operational: meta-only aggregate health probe added by #5055 for sharded comtrade:bilateral-hs4:{iso2}:v1 payloads; no queryable data slice lives at this key.'],
+  ['seed-meta:trade:flows',
+    'operational: meta-only aggregate health probe added by #6309 for sharded trade:flows:v2:{reporter}:{partner} payloads; no queryable data slice lives at this key. The rows themselves are served by GET /api/trade/v1/get-trade-flows and are not MCP-exposed (get_supply_chain_data carries comtrade:flows:v1, which is UN Comtrade, not WTO).'],
   ['research:arxiv:v1:cs.AI::50',
     'deferred: strict health seed probe added by #5055; future research MCP expansion can expose the ArXiv/HN trending feed.'],
 

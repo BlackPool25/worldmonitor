@@ -3852,7 +3852,12 @@ export class DataLoaderManager implements AppModule {
       const [restrictions, tariffs, flows, barriers, revenue, comtrade] = await Promise.allSettled([
         fetchTradeRestrictions([], 50),
         fetchTariffTrends('840', '156', '', 10),
-        fetchTradeFlows('840', '156', 10),
+        // Partner '000' is World. This asked for '156' (China) until #6309:
+        // WTO's ITS_MTV_AX/AM indicators publish a World total only and answer
+        // 204 for any other partner, so the flows tab requested a combination
+        // the seed could never hold and rendered the upstream-unavailable
+        // banner on every load.
+        fetchTradeFlows('840', '000', 10),
         fetchTradeBarriers([], '', 50),
         fetchCustomsRevenue(),
         fetchComtradeFlows(),
