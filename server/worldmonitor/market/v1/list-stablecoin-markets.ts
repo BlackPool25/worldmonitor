@@ -141,6 +141,13 @@ function unavailableResponse(unresolved: UnresolvedStablecoin[]): ListStablecoin
  * so existing clients see no new value there; `dataStatus` is where coverage
  * is actually reported.
  */
+function healthStatusFor(coinCount: number, depeggedCount: number): string {
+  if (coinCount === 0) return 'UNAVAILABLE';
+  if (depeggedCount === 0) return 'HEALTHY';
+  if (depeggedCount === 1) return 'CAUTION';
+  return 'WARNING';
+}
+
 function summarize(coins: Stablecoin[]): StablecoinSummary {
   let totalMarketCap = 0;
   let totalVolume24h = 0;
@@ -157,13 +164,7 @@ function summarize(coins: Stablecoin[]): StablecoinSummary {
     totalVolume24h,
     coinCount: coins.length,
     depeggedCount,
-    healthStatus: coins.length === 0
-      ? 'UNAVAILABLE'
-      : depeggedCount === 0
-        ? 'HEALTHY'
-        : depeggedCount === 1
-          ? 'CAUTION'
-          : 'WARNING',
+    healthStatus: healthStatusFor(coins.length, depeggedCount),
   };
 }
 
@@ -240,7 +241,14 @@ function toStablecoin(item: CoinGeckoMarketItem): Stablecoin {
 /**
  * Resolves IDs the snapshot does not carry, in ONE batched provider call.
  *
- * Keyed on the exact ID set so a repeated gap request is served from Redis.
+ * Keyed on the exact ID SET, so reuse is per request shape, not per coin:
+ * `[frax]` and `[frax, paxos-standard]` are different keys and each fetches
+ * frax. Deliberate for now — nothing sends a non-empty `coins` yet (the panel
+ * sends `[]`), so per-coin keys would optimise a traffic pattern that does not
+ * exist, and the per-ID negative-caching they need has to keep the
+ * PROVIDER_ERROR/NOT_FOUND split intact. Revisit when a real caller with
+ * overlapping ID sets appears; the 25-ID cap and the endpoint rate policy are
+ * what bound the cost until then.
  * `cacheFetcherErrors: false` is load-bearing: it keeps a provider outage
  * (rethrown, reported PROVIDER_ERROR, retried after a short backoff) distinct
  * from a definitive "no such coin" (cached negative, reported NOT_FOUND).
