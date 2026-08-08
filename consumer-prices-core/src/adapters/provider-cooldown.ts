@@ -18,7 +18,7 @@
  * `probeInterval` attempts instead of never.
  */
 
-export const COOLDOWN_OPEN_THRESHOLD = 2;
+const COOLDOWN_OPEN_THRESHOLD = 2;
 export const COOLDOWN_PROBE_INTERVAL = 4;
 
 export class ProviderCooldownGate {
@@ -38,9 +38,19 @@ export class ProviderCooldownGate {
     return false;
   }
 
-  recordSuccess(): void {
+  /**
+   * Record a successful call. Returns true when this success CLOSED a
+   * cooldown — i.e. the call was the recovery probe (or a success while the
+   * gate was open) — so callers can log the open->closed transition with the
+   * same visibility recordFailure() gives the opening one. By probe time the
+   * skip window is exhausted (`isOpen` is already false), so the failure
+   * streak, not the window, is what identifies a recovery.
+   */
+  recordSuccess(): boolean {
+    const closedCooldown = this.consecutiveFailures >= COOLDOWN_OPEN_THRESHOLD;
     this.consecutiveFailures = 0;
     this.skipsRemaining = 0;
+    return closedCooldown;
   }
 
   /**

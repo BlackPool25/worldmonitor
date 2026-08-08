@@ -115,7 +115,7 @@ describe('price-evidence gate', () => {
     expect(products[0]?.price).toBe(4.6);
   });
 
-  it('keeps the historical accept path when the provider returns no page content', async () => {
+  it('keeps the historical accept path when the provider returns no page content — but observably', async () => {
     const exa = {
       search: vi.fn().mockResolvedValue([{ url: PRODUCT_URL }]),
     } as unknown as ExaProvider;
@@ -129,6 +129,53 @@ describe('price-evidence gate', () => {
     const products = await adapter.parseListing(context, result);
 
     expect(products[0]?.price).toBe(4.6);
+    // The abstention must never be silent (#6182 review): a fleet-wide drift
+    // to 'no-content' is the gate dying while runs still look verified.
+    expect(context.logger.warn).toHaveBeenCalledWith(expect.stringContaining('[search:price-evidence]'));
+    expect(products[0]?.rawPayload.priceEvidence).toBe('no-content');
+  });
+
+  it('stamps a verified evidence outcome into the persisted payload', async () => {
+    const exa = {
+      search: vi.fn().mockResolvedValue([{ url: PRODUCT_URL }]),
+    } as unknown as ExaProvider;
+    const firecrawl = {
+      extract: vi.fn().mockResolvedValue({
+        data: goodExtract,
+        pageContent: 'Meadows White Sandwich Bread 400g\n\n$4.60\n\nAdd to cart',
+      }),
+    } as unknown as FirecrawlProvider;
+
+    const adapter = new SearchAdapter(exa, firecrawl);
+    const context = makeContext(makeConfig());
+    const result = await adapter.fetchTarget(context, makeTarget());
+    const products = await adapter.parseListing(context, result);
+
+    expect(products[0]?.rawPayload.priceEvidence).toBe('verified');
+    expect(context.logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('[search:price-evidence]'));
+  });
+
+  it('rejects unproven prices for non-strict retailers too (the gate is unconditional)', async () => {
+    const exa = {
+      search: vi.fn().mockResolvedValue([{ url: PRODUCT_URL }]),
+    } as unknown as ExaProvider;
+    const firecrawl = {
+      extract: vi.fn().mockResolvedValue({
+        data: goodExtract,
+        pageContent: "We couldn't find the page you were looking for.",
+      }),
+    } as unknown as FirecrawlProvider;
+
+    const adapter = new SearchAdapter(exa, firecrawl);
+    const context = makeContext(makeConfig({ requireStrictValidator: false }));
+    const err = await adapter
+      .fetchTarget(context, makeTarget())
+      .then(() => null, (e: unknown) => e);
+
+    expect(err).toBeInstanceOf(SearchTargetError);
+    expect((err as SearchTargetError).failures.some((f) => f.reason === 'price-evidence-missing')).toBe(true);
+    // rejectedCount attribution stays strict-mode-only, like its siblings.
+    expect((err as SearchTargetError).rejectedCount).toBe(0);
   });
 
   it('escalates to the Exa fallback when Firecrawl fails the evidence check', async () => {
@@ -201,6 +248,14 @@ describe('half-open provider cooldown', () => {
     expect(outcomes.slice(2 + COOLDOWN_PROBE_INTERVAL)).toEqual(['ok', 'ok']);
     // The skip window made no provider calls: 2 failures + probe + final = 4.
     expect((firecrawl.extract as ReturnType<typeof vi.fn>).mock.calls.length).toBe(4);
+    // The skip window also spent no DISCOVERY calls: the fetchTarget-level
+    // short-circuit fires before Exa search, so only the 2 opening targets,
+    // the probe target, and the final target searched.
+    expect((exa.search as ReturnType<typeof vi.fn>).mock.calls.length).toBe(4);
+    // Recovery is observable: the probe success logs the close transition.
+    expect(context.logger.info).toHaveBeenCalledWith(
+      expect.stringContaining('recovered — cooldown closed after a successful probe'),
+    );
   });
 });
 
@@ -246,6 +301,78 @@ describe('bounded discovery re-draw', () => {
     await expect(adapter.fetchTarget(context, makeTarget())).rejects.toThrow(/failed host\/path check/);
     expect((exa.search as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2);
     expect(firecrawl.extract).not.toHaveBeenCalled();
+  });
+
+  it('gives an EMPTY first draw the same single wider retry', async () => {
+    const exa = {
+      search: vi
+        .fn()
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ url: PRODUCT_URL }]),
+    } as unknown as ExaProvider;
+    const firecrawl = {
+      extract: vi.fn().mockResolvedValue({
+        data: goodExtract,
+        pageContent: '$4.60 Meadows White Sandwich Bread',
+      }),
+    } as unknown as FirecrawlProvider;
+
+    const adapter = new SearchAdapter(exa, firecrawl);
+    const context = makeContext(makeConfig({ urlPathContains: '/p/' }));
+    const result = await adapter.fetchTarget(context, makeTarget());
+    const products = await adapter.parseListing(context, result);
+
+    expect(products[0]?.price).toBe(4.6);
+    expect((exa.search as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2);
+  });
+
+  it('caps the wider retry at 20 results even for large configured widths', async () => {
+    const exa = {
+      search: vi
+        .fn()
+        .mockResolvedValueOnce([{ url: 'https://www.coldstorage.com.sg/img/uploads/flyer.pdf' }])
+        .mockResolvedValueOnce([{ url: PRODUCT_URL }]),
+    } as unknown as ExaProvider;
+    const firecrawl = {
+      extract: vi.fn().mockResolvedValue({
+        data: goodExtract,
+        pageContent: '$4.60 Meadows White Sandwich Bread',
+      }),
+    } as unknown as FirecrawlProvider;
+
+    const adapter = new SearchAdapter(exa, firecrawl);
+    const context = makeContext(makeConfig({ urlPathContains: '/p/', numResults: 15 }));
+    await adapter.fetchTarget(context, makeTarget());
+
+    expect((exa.search as ReturnType<typeof vi.fn>).mock.calls[1]?.[1]).toMatchObject({ numResults: 20 });
+  });
+
+  it('survives the retry call itself throwing without feeding the discovery cooldown', async () => {
+    const junk = [{ url: 'https://www.coldstorage.com.sg/img/uploads/flyer.pdf' }];
+    const exa = {
+      search: vi
+        .fn()
+        .mockResolvedValueOnce(junk)
+        .mockRejectedValueOnce(new Error('Exa search HTTP 503'))
+        // A following target's primary search must run normally (no cooldown).
+        .mockResolvedValueOnce([{ url: PRODUCT_URL }]),
+    } as unknown as ExaProvider;
+    const firecrawl = {
+      extract: vi.fn().mockResolvedValue({
+        data: goodExtract,
+        pageContent: '$4.60 Meadows White Sandwich Bread',
+      }),
+    } as unknown as FirecrawlProvider;
+
+    const adapter = new SearchAdapter(exa, firecrawl);
+    const context = makeContext(makeConfig({ urlPathContains: '/p/' }));
+
+    // The retry rejection surfaces as the NORMAL zero-candidate error, not the
+    // raw retry error, and does not open the discovery cooldown.
+    await expect(adapter.fetchTarget(context, makeTarget())).rejects.toThrow(/failed host\/path check/);
+    const second = await adapter.fetchTarget(context, makeTarget());
+    const products = await adapter.parseListing(context, second);
+    expect(products[0]?.price).toBe(4.6);
   });
 });
 

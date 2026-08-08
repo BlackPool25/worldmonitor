@@ -20,14 +20,17 @@ describe('ProviderCooldownGate', () => {
     expect(gate.consumeSkip()).toBe(false);
   });
 
-  it('closes fully when the probe succeeds', () => {
+  it('closes fully when the probe succeeds, and reports the close', () => {
     const gate = new ProviderCooldownGate(2);
     gate.recordFailure();
     gate.recordFailure();
     gate.consumeSkip();
     gate.consumeSkip();
     expect(gate.consumeSkip()).toBe(false); // probe turn
-    gate.recordSuccess();
+    // The probe success reports that it closed a cooldown (callers log it);
+    // an ordinary success with no pending cooldown reports false.
+    expect(gate.recordSuccess()).toBe(true);
+    expect(gate.recordSuccess()).toBe(false);
     expect(gate.isOpen).toBe(false);
     expect(gate.consumeSkip()).toBe(false);
     // A later single failure does not immediately reopen.

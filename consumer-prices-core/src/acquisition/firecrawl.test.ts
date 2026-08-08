@@ -124,4 +124,16 @@ describe('FirecrawlProvider.extract', () => {
     const body = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body)) as { waitFor?: number };
     expect(body.waitFor).toBe(8_000);
   });
+
+  it('omits waitFor from the body when not configured', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true, data: { extract: { price: 1 } } }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await new FirecrawlProvider('test-key').extract('https://retailer.example/p/bread', schema, { timeout: 30_000 });
+
+    const body = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body)) as { waitFor?: number };
+    expect(body.waitFor).toBeUndefined();
+  });
 });

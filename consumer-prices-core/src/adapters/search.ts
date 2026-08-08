@@ -23,7 +23,7 @@ import type { AdapterContext, FetchResult, ParsedProduct, RetailerAdapter, Targe
 import { MARKET_NAMES } from './market-names.js';
 import { parseSize } from '../normalizers/size.js';
 import { validateSearchHit, type ValidatorResult } from './validator.js';
-import { priceEvidenceOnPage } from './price-evidence.js';
+import { priceEvidenceOnPage, type PriceEvidence } from './price-evidence.js';
 import { ProviderCooldownGate } from './provider-cooldown.js';
 import type { BasketItem } from '../config/types.js';
 import type { AcquisitionProviderName, SearchOptions, SearchResult } from '../acquisition/types.js';
@@ -224,6 +224,12 @@ interface ExtractionSuccess {
   extracted: ExtractedProduct;
   validator: ValidatorResult;
   provider: ExtractionProviderName;
+  /** Outcome of the on-page price verification for the accepted extraction.
+   * 'no-content' means the gate could NOT run (provider returned no rendered
+   * content) — persisted so an audit can tell a proven price from an
+   * unproven one; a fleet-wide drift to 'no-content' is the gate silently
+   * dying (#6182 review). */
+  priceEvidence: PriceEvidence;
 }
 
 interface ExtractionAttempt {
@@ -242,6 +248,7 @@ interface SearchPayload {
   itemConstraints?: ItemConstraints;
   validator?: ValidatorResult;
   extractionProvider?: ExtractionProviderName;
+  priceEvidence?: PriceEvidence;
   direct?: boolean;
   pinnedProductId?: string;
   matchId?: string;
@@ -406,7 +413,13 @@ export class SearchAdapter implements RetailerAdapter {
         currency: { type: 'string' as const, required: true, description: `Currency code, should be ${currency}` },
         inStock: {
           type: 'boolean' as const,
-          required: false,
+          // Required (#6182 review): the softened prompt now admits printed
+          // prices on out-of-stock pages, and parseListing defaults a MISSING
+          // inStock to true — so an extractor that omits availability would
+          // record an OOS product as purchasable. Requiring the field makes
+          // the extractor state it explicitly; the downstream default remains
+          // as a last-resort for off-contract responses.
+          required: true,
           description: 'Whether the product is currently in stock and purchasable',
         },
         sizeText: {
@@ -445,7 +458,14 @@ export class SearchAdapter implements RetailerAdapter {
             : await this.exa.extract<ExtractedProduct>(url, extractSchema, { timeout: 30_000 });
         data = result.data ?? {};
         pageContent = result.pageContent;
-        gate.recordSuccess();
+        // The open->closed transition deserves the same log visibility as the
+        // opening warn: without it, "did the provider recover" is only
+        // answerable by the absence of further warnings (#6182 review).
+        if (gate.recordSuccess()) {
+          ctx.logger.info(
+            `  [search:provider-cooldown] ${ctx.config.slug}: ${provider === 'firecrawl' ? 'Firecrawl' : 'Exa'} extraction recovered — cooldown closed after a successful probe`,
+          );
+        }
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err);
         failures.push({ provider, reason: 'provider-error', detail });
@@ -468,12 +488,22 @@ export class SearchAdapter implements RetailerAdapter {
       // makes the softer printed-price-wins prompt safe — a fabricated value
       // (the #6270 class) has no digits on the page and dies here regardless
       // of prompt wording. 'no-content' (provider returned no render) keeps
-      // the historical accept-on-extract behavior rather than failing closed.
-      if (priceEvidenceOnPage(price, pageContent) === 'unverified') {
+      // the historical accept-on-extract behavior rather than failing closed —
+      // but it must never be SILENT: the abstention is logged per candidate
+      // and stamped into the payload, because a fleet-wide drift to
+      // 'no-content' (a provider quietly dropping rendered content from its
+      // response) is this gate dying while every run still looks verified.
+      const priceEvidence = priceEvidenceOnPage(price, pageContent);
+      if (priceEvidence === 'unverified') {
         failures.push({ provider, reason: 'price-evidence-missing', detail: `${price} not found in page content` });
         // Escalates: the other provider renders the page independently and can
         // both re-read and re-evidence the price.
         continue;
+      }
+      if (priceEvidence === 'no-content') {
+        ctx.logger.warn(
+          `  [search:price-evidence] ${ctx.config.slug}/${canonicalName}: no page content from ${provider} — evidence gate skipped`,
+        );
       }
 
       const extractedCurrency = data.currency?.trim();
@@ -555,7 +585,7 @@ export class SearchAdapter implements RetailerAdapter {
         data.inStock = true;
       }
 
-      return { result: { extracted: data, validator, provider }, failures };
+      return { result: { extracted: data, validator, provider, priceEvidence }, failures };
     }
 
     return { result: null, failures };
@@ -596,6 +626,7 @@ export class SearchAdapter implements RetailerAdapter {
               itemConstraints,
               validator: result.validator,
               extractionProvider: result.provider,
+              priceEvidence: result.priceEvidence,
               direct: true,
               pinnedProductId,
               matchId,
@@ -617,11 +648,7 @@ export class SearchAdapter implements RetailerAdapter {
     // Half-open (#6182): while the skip window lasts, the target fails fast on
     // provider-cooldown; the attempt after the window proceeds as the recovery
     // probe (the probe call itself happens inside _extractFromUrl).
-    if (
-      this.firecrawlGate.isOpen &&
-      ctx.config.searchConfig?.extractionFallback !== 'exa' &&
-      this.firecrawlGate.consumeSkip()
-    ) {
+    if (ctx.config.searchConfig?.extractionFallback !== 'exa' && this.firecrawlGate.consumeSkip()) {
       throw new SearchTargetError(
         `Firecrawl extraction cooldown is open for "${canonicalName}"`,
         0,
@@ -637,7 +664,7 @@ export class SearchAdapter implements RetailerAdapter {
     // provider per candidate. Aborting here would turn a fallback outage into
     // a whole-basket loss, which is the COVERAGE_PARTIAL this adapter exists
     // to prevent.
-    if (this.exaDiscoveryGate.isOpen && this.exaDiscoveryGate.consumeSkip()) {
+    if (this.exaDiscoveryGate.consumeSkip()) {
       throw new SearchTargetError(
         `Exa discovery cooldown is open for "${canonicalName}"`,
         0,
@@ -660,7 +687,11 @@ export class SearchAdapter implements RetailerAdapter {
     let exaResults: SearchResult[];
     try {
       exaResults = await this.exa.search(discoveryRequest.query, discoveryRequest.options);
-      this.exaDiscoveryGate.recordSuccess();
+      if (this.exaDiscoveryGate.recordSuccess()) {
+        ctx.logger.info(
+          `  [search:provider-cooldown] ${ctx.config.slug}: Exa discovery recovered — cooldown closed after a successful probe`,
+        );
+      }
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       if (this.exaDiscoveryGate.recordFailure()) {
@@ -674,10 +705,6 @@ export class SearchAdapter implements RetailerAdapter {
       throw new SearchTargetError(`Exa search failed for "${canonicalName}": ${detail}`, 0, [
         { provider: 'exa', reason: 'provider-error', detail },
       ]);
-    }
-
-    if (exaResults.length === 0) {
-      throw new Error(`Exa: no pages found for "${canonicalName}" on ${domain}`);
     }
 
     const pathFilters = normalizePathFilters(cfg?.urlPathContains);
@@ -700,19 +727,22 @@ export class SearchAdapter implements RetailerAdapter {
     // (#6182). Exa's ranking for a domain+query is not stable run to run —
     // Pão de Açúcar's 2026-08-08 02:00 scrape drew store-flyer PDFs and
     // marketing pages for 7 of 11 items (0 in-policy URLs each) while the
-    // identical query minutes later drew 4-5/5 live /produto/ pages. A single
-    // wider retry converts that transient bad draw into a normal page instead
-    // of a lost one; a genuinely empty index still fails after exactly one
-    // extra search call.
-    if (survivingUrls.length === 0 && exaResults.length > 0) {
+    // identical query minutes later drew 4-5/5 live /produto/ pages. An EMPTY
+    // first draw earns the same single retry as an out-of-policy one — a
+    // transient zero is no more permanent than a transient bad ranking. A
+    // single wider retry converts either into a normal page; a genuinely
+    // empty index still fails after exactly one extra search call. The width
+    // is clamped so a config with a large numResults cannot double into an
+    // unbounded (and unusable — extraction is candidate-capped anyway) draw.
+    if (survivingUrls.length === 0) {
       const retryOptions = {
         ...discoveryRequest.options,
-        numResults: Math.max((discoveryRequest.options.numResults ?? 3) * 2, 8),
+        numResults: Math.min(Math.max((discoveryRequest.options.numResults ?? 3) * 2, 8), 20),
       };
       try {
         const retryResults = await this.exa.search(discoveryRequest.query, retryOptions);
         ctx.logger.info(
-          `  [search:discovery-retry] ${ctx.config.slug}/${canonicalName}: 0 in-policy URLs on first draw, retried wider (numResults=${retryOptions.numResults}) -> ${retryResults.length} results`,
+          `  [search:discovery-retry] ${ctx.config.slug}/${canonicalName}: ${exaResults.length === 0 ? 'empty first draw' : '0 in-policy URLs on first draw'}, retried wider (numResults=${retryOptions.numResults}) -> ${retryResults.length} results`,
         );
         exaResults = [...exaResults, ...retryResults];
         discoveredUrls = filterInPolicy(exaResults);
@@ -726,6 +756,10 @@ export class SearchAdapter implements RetailerAdapter {
           `  [search:discovery-retry] ${ctx.config.slug}/${canonicalName}: retry failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
         );
       }
+    }
+
+    if (exaResults.length === 0) {
+      throw new Error(`Exa: no pages found for "${canonicalName}" on ${domain}`);
     }
     // Discovery may legitimately need a wide net (a retailer whose live route
     // ranks low), but extraction cost must not scale with it — each extra
@@ -821,6 +855,7 @@ export class SearchAdapter implements RetailerAdapter {
         itemConstraints,
         validator: picked.validator,
         extractionProvider: picked.provider,
+        priceEvidence: picked.priceEvidence,
         direct: false,
       } satisfies SearchPayload),
       statusCode: 200,
@@ -829,7 +864,7 @@ export class SearchAdapter implements RetailerAdapter {
   }
 
   async parseListing(ctx: AdapterContext, result: FetchResult): Promise<ParsedProduct[]> {
-    const { extracted, productUrl, canonicalName, basketSlug, itemCategory, itemConstraints, validator, extractionProvider, direct, pinnedProductId, matchId } =
+    const { extracted, productUrl, canonicalName, basketSlug, itemCategory, itemConstraints, validator, extractionProvider, priceEvidence, direct, pinnedProductId, matchId } =
       JSON.parse(result.html) as SearchPayload;
 
     const priceResult = z.number().positive().finite().safeParse(extracted?.price);
@@ -870,7 +905,7 @@ export class SearchAdapter implements RetailerAdapter {
         // inStock defaults to true when the structured extractor does not return the field.
         // This is a conservative assumption — monitor for out-of-stock false positives.
         inStock: extracted.inStock ?? true,
-        rawPayload: { extracted, basketSlug, itemCategory, canonicalName, itemConstraints, validator, extractionProvider, direct, pinnedProductId, matchId },
+        rawPayload: { extracted, basketSlug, itemCategory, canonicalName, itemConstraints, validator, extractionProvider, priceEvidence, direct, pinnedProductId, matchId },
       },
     ];
   }
