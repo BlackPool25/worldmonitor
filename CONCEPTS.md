@@ -26,7 +26,13 @@ The freshness clock a seeder declares over the *observation dates inside* the pa
 
 Two rules follow from what the contract reduces to. It reports a single newest timestamp, so a payload assembled from *several independently-failing sources* must derive one clock per source and report the **oldest** of them; reducing all their dates together takes the newest, and the still-living source then hides the dead one indefinitely — an alarm that can only fire when every source dies at once. And an undatable payload must report nothing rather than a default, because "we cannot date this" and "this is stale" warrant the same response, while a fabricated recent date warrants none.
 
-Sizing the budget belongs to the source's own publication calendar, measured rather than assumed: the widest gap the source routinely takes — a holiday cluster, a non-working period, a weekend either side — plus room for one missed run. A budget guessed generously enough to never false-alarm has usually also stopped detecting the freeze it exists for. See also: Seed-Owned Key, Activation Marker.
+Sizing the budget belongs to the source's own publication calendar, measured rather than assumed: the widest gap the source routinely takes — a holiday cluster, a non-working period, a weekend either side — plus room for one missed run. A budget guessed generously enough to never false-alarm has usually also stopped detecting the freeze it exists for. See also: Seed-Owned Key, Activation Marker, LKG Preservation.
+
+### LKG Preservation
+
+A seeder's fail-safe of re-publishing its previous accepted payload when the current cycle's output is rejected by validation, rather than overwriting good data with a degraded result. Preservation refreshes nothing: the preserved payload keeps its original content clock, so under repeated rejection the served data ages continuously while the producer's own run metadata stays current.
+
+Two consequences follow. Any consumer that gates acceptance on content age begins failing closed once the preserved payload's age crosses that consumer's budget — a string of rejected cycles becomes a *continuous* consumer-facing outage, not a per-cycle blip. And the outage's apparent rhythm at any single consumer is that consumer's own call schedule sampling the window, not the producer's cadence — so clustered failure timestamps localize the caller, never the defect. Distinct from the client-side Last-Good Digest, which retains a *delivered* response. See also: Content-Age Contract, Seed-Owned Key, Last-Good Digest.
 
 ### Activation Marker
 
@@ -412,3 +418,4 @@ would degrade into noise.
 - *"Pool"* had been used for both a labelled market category and the complete set of markets — these are distinct. A pool is always a labelled subset; the complete set has no pool and must be requested as an explicit union.
 - *"Variant"* resolves differently per surface — a served host on the web, a locally stored selection on desktop. Only the web sense is addressable by URL; a desktop artifact is never variant-specific, so a variant accompanying a desktop artifact request is an identity label rather than a selector.
 - *"wingbits"* as a publication source means different things across the two Theater Posture producers — the military-flights seeder's keyed regional supplement after adsb.lol, but the relay loop's last-resort fallback. The recorded producer disambiguates which reading applies; never compare the token across producers.
+- *"Last-known-good"* names two distinct mechanisms — producer-side LKG Preservation (a seeder re-publishing its previous accepted payload on rejected output) and the client-side Last-Good Digest (a client retaining a delivered response as its offline fallback). They fail differently: preservation ages the *served* data for every consumer; retention ages only one client's fallback.
