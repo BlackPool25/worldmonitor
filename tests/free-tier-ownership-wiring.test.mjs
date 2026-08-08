@@ -114,9 +114,47 @@ describe('free-tier ownership production wiring', () => {
     // ownership: a shared link overwrote the cloud-synced layer preference and
     // seeded gate ownership the user never chose.
     const urlCallSites = app.match(
-      /sanitizeMapLayersForTier\([\s\S]{0,160}?ephemeralSnapshot: true/g,
+      /sanitizeMapLayersForTier\([\s\S]{0,220}?ephemeralSnapshot: true/g,
     ) ?? [];
-    assert.equal(urlCallSites.length, 2, 'both URL layer paths must pass ephemeralSnapshot');
+    assert.equal(urlCallSites.length, 3, 'every URL-derived layer path must pass ephemeralSnapshot');
     assert.doesNotMatch(app, /consumeProOwnership/, 'the superseded option must be gone');
+
+    // state.mapLayers IS the URL snapshot when the session booted from a deep
+    // link, and the boot-time ephemeral pass no-ops while the tier is
+    // unresolved — so THIS heal is the one that actually acts. Running it
+    // non-ephemerally seeded ownership from the link and persisted it.
+    const healStart = app.indexOf('private healLockedMapLayers(');
+    const healEnd = app.indexOf('syncDataFreshnessWithLayers();', healStart);
+    assert.ok(healStart >= 0 && healEnd > healStart, 'healLockedMapLayers must exist');
+    const healBody = app.slice(healStart, healEnd);
+    assert.match(
+      healBody,
+      /this\.sanitizeMapLayersForTier\(\s*this\.state\.mapLayers,\s*fallbackActive,\s*initialUrlLayers \? \{ ephemeralSnapshot: true \} : \{\},?\s*\)/,
+      'the live-layer heal must stay ephemeral for a deep-linked session',
+    );
+  });
+
+  it('releases the handoff when the cloud blob actually lands, not when a retry is armed', () => {
+    // The 503 retry re-enters onSignIn inside cloud-prefs-sync and never comes
+    // back through App's wrapper, so without this release the only path out was
+    // the expiry — which fired at 8s against pre-cloud state while Retry-After
+    // can legitimately run to 60s.
+    const applyStart = app.indexOf('private applyCloudSyncedPrefsToRuntime(');
+    const applyEnd = app.indexOf('invalidatePanelStorageCacheForKeys(keys);', applyStart);
+    assert.ok(applyStart >= 0 && applyEnd > applyStart, 'cloud apply handler must exist');
+    const applyHead = app.slice(applyStart, applyEnd);
+    assert.match(
+      applyHead,
+      /this\.releasePreferenceHandoffOnCloudApply\(\);/,
+      'the applied-blob event must release the handoff',
+    );
+    // Order matters: releasing after the deferral is read would leave this
+    // generation deferred and defeat the fix.
+    assert.ok(
+      applyHead.indexOf('releasePreferenceHandoffOnCloudApply')
+        < applyHead.indexOf('const tierReconciliationDeferred'),
+      'the release must happen before the deferral is evaluated',
+    );
+    assert.match(app, /\(\) => hasPendingCloudPrefsRetry\(\),/, 'expiry must postpone on a pending retry');
   });
 });

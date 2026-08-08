@@ -21,9 +21,16 @@ function manualTimers() {
       pending.delete(handle as unknown as number);
     },
     get armed() { return pending.size; },
+    /**
+     * Fire exactly the timers armed at entry. Each is removed BEFORE it runs,
+     * so a callback that re-arms (the expiry postponing itself) leaves a live
+     * timer behind instead of having it cleared out from under it.
+     */
     fireAll() {
-      for (const fn of [...pending.values()]) fn();
-      pending.clear();
+      for (const [id, fn] of [...pending.entries()]) {
+        pending.delete(id);
+        fn();
+      }
     },
   };
 }
@@ -118,6 +125,55 @@ describe('tier preference account handoff', () => {
     assert.equal(timers.armed, 0);
     timers.fireAll();
     assert.equal(reconciled, 0, 'a signed-out handoff must not reconcile');
+  });
+
+  // Regression: withholding completion while a 503 retry is pending is only
+  // safe if the expiry does not then reconcile against the same pre-cloud
+  // state. Retry-After is clamped to 60s but one grace window is 8s, so the
+  // expiry must wait the retry out rather than fire through it.
+  it('postpones expiry while a cloud retry is still pending', () => {
+    const timers = manualTimers();
+    let retryPending = true;
+    const handoff = new TierPreferenceHandoff({
+      schedule: timers.schedule,
+      cancel: timers.cancel,
+      graceMs: 10,
+      maxTotalDeferralMs: 100,
+    });
+    let reconciled = 0;
+    handoff.begin('account-a', () => { reconciled += 1; }, () => retryPending);
+
+    timers.fireAll();
+    assert.equal(reconciled, 0, 'must not reconcile while the retry is in flight');
+    assert.equal(handoff.shouldDefer('account-a'), true, 'handoff stays armed');
+
+    // The retry lands; the next window may now give up waiting.
+    retryPending = false;
+    timers.fireAll();
+    assert.equal(reconciled, 1);
+    assert.equal(handoff.shouldDefer('account-a'), false);
+  });
+
+  it('stops postponing at the ceiling so a stuck retry cannot defer forever', () => {
+    const timers = manualTimers();
+    const handoff = new TierPreferenceHandoff({
+      schedule: timers.schedule,
+      cancel: timers.cancel,
+      graceMs: 10,
+      maxTotalDeferralMs: 30,
+    });
+    let reconciled = 0;
+    // A retry that never clears — the pathological case.
+    handoff.begin('account-a', () => { reconciled += 1; }, () => true);
+
+    for (let i = 0; i < 10; i += 1) timers.fireAll();
+
+    assert.equal(reconciled, 1, 'enforcement must win once the ceiling is reached');
+    assert.equal(
+      handoff.shouldDefer('account-a'),
+      false,
+      'a permanently failing sync delays enforcement but must never cancel it',
+    );
   });
 
   it('supersedes a previous expiry when a new handoff begins', () => {

@@ -288,6 +288,8 @@ export class App {
   private bootstrapHydrationState: BootstrapHydrationState = getBootstrapHydrationState();
   private cachedModeBannerEl: HTMLElement | null = null;
   private pendingCloudRecoverySyncVersion: number | undefined;
+  /** Token of the in-flight preference handoff, so the cloud-applied event can release it. */
+  private pendingPreferenceHandoffGeneration: number | undefined;
   private readonly tierPreferenceHandoff = new TierPreferenceHandoff();
   private readonly handleWmSessionDegraded = (event?: Event): void => {
     if (!this.state.isDestroyed) {
@@ -351,6 +353,13 @@ export class App {
 
     const keySet = new Set(keys);
     let freeTierLimitsInvoked = false;
+    // This event fires from applyCloudBlob, so reaching it means the signing-in
+    // account's cloud preferences have ACTUALLY landed — the terminal signal the
+    // handoff is waiting for. Releasing it here (rather than when the sign-in
+    // promise settles, which a 503 resolves the moment a retry is merely armed)
+    // is what lets the reconciliation below run against cloud state instead of
+    // the local state it is replacing.
+    this.releasePreferenceHandoffOnCloudApply();
     const tierReconciliationDeferred = this.shouldDeferTierPreferenceReconciliation();
     invalidatePanelStorageCacheForKeys(keys);
 
@@ -1851,7 +1860,13 @@ export class App {
         const preferenceHandoffGeneration = this.tierPreferenceHandoff.begin(
           userId,
           () => { this.reconcileTierOwnedPreferences(); },
+          // A 503 keeps the sign-in legitimately in flight for up to
+          // Retry-After, which can outlast one grace window. Waiting beats
+          // reconciling against pre-cloud state; the handoff's own ceiling
+          // stops that wait from becoming indefinite.
+          () => hasPendingCloudPrefsRetry(),
         );
+        this.pendingPreferenceHandoffGeneration = preferenceHandoffGeneration;
 
         // Rebind Convex watches to the real Clerk userId (was bound to anon UUID at init)
         // destroyEntitlementSubscription deliberately PRESERVES the last
@@ -1881,10 +1896,13 @@ export class App {
               const finishPreferenceHandoff = (): void => {
                 // A 503 resolves this promise as soon as the RETRY IS ARMED,
                 // before any cloud blob is applied. Completing here would
-                // reconcile — and upload — pre-cloud local state. Leave the
-                // handoff armed: its bounded expiry still guarantees a pass,
-                // and the retry's own applyCloudBlob re-reconciles via
-                // CLOUD_PREFS_APPLIED_EVENT.
+                // reconcile — and upload — pre-cloud local state.
+                //
+                // Leave the handoff armed instead. The retry re-enters
+                // onSignIn inside cloud-prefs-sync and never comes back
+                // through this wrapper, so the release comes from
+                // applyCloudSyncedPrefsToRuntime when the blob actually lands,
+                // and from the handoff's bounded expiry if it never does.
                 if (hasPendingCloudPrefsRetry()) return;
                 const currentUserId = getAuthState().user?.id ?? null;
                 if (this.tierPreferenceHandoff.complete(
@@ -2211,6 +2229,22 @@ export class App {
     return this.tierPreferenceHandoff.shouldDefer(getAuthState().user?.id ?? null);
   }
 
+  /**
+   * Release the handoff because the account's cloud blob just landed.
+   *
+   * The caller then reconciles inline, so this deliberately does NOT reconcile
+   * itself — doing both would run the pass twice per applied generation.
+   */
+  private releasePreferenceHandoffOnCloudApply(): void {
+    const generation = this.pendingPreferenceHandoffGeneration;
+    if (generation === undefined) return;
+    const currentUserId = getAuthState().user?.id ?? null;
+    if (currentUserId === null) return;
+    if (this.tierPreferenceHandoff.complete(generation, currentUserId, currentUserId)) {
+      this.pendingPreferenceHandoffGeneration = undefined;
+    }
+  }
+
   /** Reconcile all gate-owned preferences against one settled account view. */
   private reconcileTierOwnedPreferences(): boolean {
     if (this.shouldDeferTierPreferenceReconciliation()) return false;
@@ -2331,7 +2365,18 @@ export class App {
         this.state.initialUrlState.layers = healedUrlLayers;
       }
     }
-    const healed = this.sanitizeMapLayersForTier(this.state.mapLayers, fallbackActive);
+    // When the session booted from a `?layers=` link, state.mapLayers IS that
+    // URL-derived view (seeded from the same local in the constructor), so this
+    // heal must stay ephemeral too. The boot-time ephemeral pass usually
+    // no-ops — shouldSanitizeLockedLayers is false while the tier is still
+    // unresolved — which makes THIS the call that actually acts, and a
+    // non-ephemeral run here would seed gate ownership from the link and write
+    // it to the stored preference, undoing the deep-link fix entirely.
+    const healed = this.sanitizeMapLayersForTier(
+      this.state.mapLayers,
+      fallbackActive,
+      initialUrlLayers ? { ephemeralSnapshot: true } : {},
+    );
     if (healed === this.state.mapLayers) return;
     this.state.mapLayers = healed;
     this.state.map?.setLayers(healed);
