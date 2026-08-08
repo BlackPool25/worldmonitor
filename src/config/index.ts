@@ -66,6 +66,7 @@ export {
   isFreePanelCapCounted,
   restoreFreeMapPanelAccess,
   restoreProGatedPanels,
+  userSetPanelEnabled,
   shouldDeferFreeTierEnforcement,
   FREE_MAX_PANELS,
   FREE_MAX_SOURCES,

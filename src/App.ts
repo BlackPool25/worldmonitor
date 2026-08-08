@@ -843,7 +843,11 @@ export class App {
       const newVariantKeys = new Set(VARIANT_DEFAULTS[currentVariant] ?? []);
       for (const key of Object.keys(panelSettings)) {
         if (!newVariantKeys.has(key) && !isDynamicPanel(key) && panelSettings[key]) {
-          panelSettings[key] = { ...panelSettings[key]!, enabled: false };
+          // Variant reset asserts its own ownership over `enabled`, so drop any
+          // stale gate marker — otherwise the next Pro reconcile re-enables a
+          // panel this reset deliberately turned off.
+          const { proGated: _staleGateMarker, ...rest } = panelSettings[key]!;
+          panelSettings[key] = { ...rest, enabled: false };
         }
       }
       for (const key of newVariantKeys) {

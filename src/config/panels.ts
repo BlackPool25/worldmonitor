@@ -1312,6 +1312,25 @@ export function enforceFreePanelLimit(
 }
 
 /**
+ * Apply a USER-initiated enable/disable to a panel config.
+ *
+ * Every user toggle path must go through this. `proGated` means "the GATE owns
+ * this disable"; the moment the user takes a position on the panel themselves,
+ * the gate no longer owns it and the marker must go — otherwise a panel the
+ * gate once clamped keeps the marker through a user re-enable, and a LATER
+ * deliberate hide is indistinguishable from gate damage, so the next Pro
+ * reconcile resurrects a panel the user chose to hide (and cloud-syncs that to
+ * every device).
+ *
+ * Mutates in place: every call site already owns a live entry in the
+ * panelSettings map it is about to persist.
+ */
+export function userSetPanelEnabled(config: PanelConfig, enabled: boolean): void {
+  config.enabled = enabled;
+  delete config.proGated;
+}
+
+/**
  * Inverse of the cw-* half of `enforceFreePanelLimit`: re-enable the custom
  * widgets that the free-tier gate hid, and clear the marker.
  *

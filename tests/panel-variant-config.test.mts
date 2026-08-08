@@ -14,6 +14,7 @@ import {
   restoreFreeMapPanelAccess,
   restoreProGatedPanels,
   shouldDeferFreeTierEnforcement,
+  userSetPanelEnabled,
 } from '../src/config/panels.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -203,6 +204,39 @@ describe('variant panel config resolution', () => {
     );
     assert.equal(restoreProGatedPanels(userHidden).p00?.enabled, false,
       'a deliberately hidden panel must stay hidden');
+  });
+
+  it('a user toggle takes ownership: a later deliberate hide survives going Pro', () => {
+    // The marker means "the GATE owns this disable". If it survives a USER
+    // re-enable, a later deliberate hide is indistinguishable from gate damage
+    // and the next Pro reconcile resurrects a panel the user chose to hide —
+    // then cloud-syncs that resurrection to every device.
+    //
+    // The over-cap fixture above hides its panel BEFORE the clamp, so the
+    // marker is never set on it. This covers the real sequence: clamp, user
+    // re-enables, user later hides.
+    const original: Record<string, { name: string; enabled: boolean; priority: number }> = {};
+    for (let i = 0; i < FREE_MAX_PANELS + 1; i += 1) {
+      const key = `q${String(i).padStart(2, '0')}`;
+      original[key] = { name: key, enabled: true, priority: 1 };
+    }
+    const clampedKey = Object.keys(original)[FREE_MAX_PANELS]!;
+
+    const clamped = enforceFreePanelLimit(original, false);
+    assert.equal(clamped[clampedKey]?.enabled, false);
+    assert.equal(clamped[clampedKey]?.proGated, true, 'the gate owns this disable');
+
+    // 1. User re-enables it themselves (Cmd+K, settings toggle, undo-close).
+    userSetPanelEnabled(clamped[clampedKey]!, true);
+    assert.equal(clamped[clampedKey]?.proGated, undefined,
+      'a user toggle transfers ownership away from the gate — the marker must go');
+
+    // 2. Later, the user deliberately hides it.
+    userSetPanelEnabled(clamped[clampedKey]!, false);
+
+    // 3. Going Pro must NOT resurrect it.
+    assert.equal(restoreProGatedPanels(clamped)[clampedKey]?.enabled, false,
+      'a panel the user hid after re-enabling it must stay hidden');
   });
 
   it('defers free-tier enforcement until both Clerk and the entitlement snapshot settle', () => {
