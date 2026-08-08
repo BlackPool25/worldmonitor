@@ -176,6 +176,60 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
+/**
+ * Mask a login address for disclosure to the UNVERIFIED checkout inbox:
+ * "login@example.com" → "l•••@example.com". Recognizable to its owner,
+ * useless to a stranger who received the pointer because the buyer typo'd
+ * the checkout address. The full address is only ever written to the login
+ * inbox itself and to the admin alert.
+ */
+function maskEmail(address: string): string {
+  const at = address.indexOf("@");
+  if (at <= 1) return address;
+  return `${address[0]}•••${address.slice(at)}`;
+}
+
+/**
+ * Best-effort sign-in pointer to the checkout inbox (#6330). The buyer typed
+ * this address at checkout and demonstrably watches it (it also receives the
+ * Dodo receipt) — without this, the only inbox they may check goes silent
+ * while the welcome lands somewhere they may not think to look. The address
+ * is buyer-typed and may be one Resend rejects outright (typo'd domain), so
+ * a failure here must never propagate — log and continue.
+ */
+async function sendSignInPointer(
+  apiKey: string,
+  checkoutEmail: string,
+  loginEmail: string,
+  planName: string,
+): Promise<void> {
+  try {
+    await sendEmail(
+      apiKey,
+      checkoutEmail,
+      `Your World Monitor subscription is active — where to sign in`,
+      `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 600px; margin: 0 auto; background: #0a0a0a; color: #e0e0e0;">
+        <div style="background: #4ade80; height: 4px;"></div>
+        <div style="padding: 40px 32px;">
+          <p style="font-size: 22px; font-weight: 700; color: #fff; margin: 0 0 12px;">Payment received — you're all set.</p>
+          <p style="font-size: 14px; color: #999; line-height: 1.5; margin: 0 0 12px;">Your ${planName} subscription is active. This address (${escapeHtml(checkoutEmail)}) is the billing contact for the subscription.</p>
+          <p style="font-size: 14px; color: #999; line-height: 1.5; margin: 0 0 24px;">To open your dashboard, sign in with <strong style="color: #fff;">${escapeHtml(maskEmail(loginEmail))}</strong> — your sign-in code will arrive in that inbox.</p>
+          <div style="text-align: center;">
+            <a href="https://worldmonitor.app" style="display: inline-block; background: #4ade80; color: #0a0a0a; padding: 14px 36px; text-decoration: none; font-weight: 800; font-size: 13px; text-transform: uppercase; letter-spacing: 1.5px; border-radius: 2px;">Open World Monitor</a>
+          </div>
+          <p style="font-size: 11px; color: #666; text-align: center; margin: 24px 0 0;">Questions? Reply to this email or contact ${ADMIN_EMAIL}.</p>
+        </div>
+      </div>`,
+      ADMIN_EMAIL,
+    );
+    console.log(`[subscriptionEmails] Sign-in pointer sent to checkout address`);
+  } catch (err) {
+    console.error(
+      `[subscriptionEmails] Sign-in pointer to checkout address failed (continuing): ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
 function userWelcomeHtml(planName: string, planKey: string, signInEmail?: string): string {
   const isPro = PRO_PLANS.has(planKey);
   // Pro path: headline leads with the value prop, CTA points at the brief
@@ -211,7 +265,7 @@ function userWelcomeHtml(planName: string, planKey: string, signInEmail?: string
       <p style="font-size: 14px; color: #999; margin: 0; line-height: 1.5;">Your subscription is now active. Here's what's unlocked:</p>
       ${
         signInEmail
-          ? `<p style="font-size: 13px; color: #999; margin: 12px 0 0; line-height: 1.5;">Sign in with <strong style="color: #fff;">${escapeHtml(signInEmail)}</strong> — the address you entered at checkout was used for billing only and is not a World Monitor login.</p>`
+          ? `<p style="font-size: 13px; color: #999; margin: 12px 0 0; line-height: 1.5;">Sign in with <strong style="color: #fff;">${escapeHtml(signInEmail)}</strong> — the address you entered at checkout is kept as your billing contact.</p>`
           : ""
       }
     </div>
@@ -343,53 +397,34 @@ export const sendSubscriptionEmails = internalAction({
 
     const planName = PLAN_DISPLAY[args.planKey] ?? args.planKey;
 
+    // Each of the three sends is independently guarded: a rejection or outage
+    // on any one of them must not swallow the others. A scheduled
+    // internalAction is not auto-retried, so an unguarded throw is a permanent
+    // loss of everything sequenced after it — the welcome (customer), the
+    // pointer (customer's checkout inbox), and the admin alert (the only ops
+    // signal that a paid conversion happened) each matter on their own.
+
     // 1. Welcome email to user. reply_to routes "Reply to this email" (in the
     // Pro support line) to ADMIN_EMAIL — FROM is noreply@ and Gmail honours
     // Reply-To over From when both are present.
-    await sendEmail(
-      apiKey,
-      args.userEmail,
-      `Welcome to World Monitor ${planName}`,
-      userWelcomeHtml(planName, args.planKey, args.checkoutEmail ? args.userEmail : undefined),
-      ADMIN_EMAIL,
-    );
-    console.log(`[subscriptionEmails] Welcome email sent to ${args.userEmail}`);
-
-    // 1b. Sign-in pointer to the checkout inbox. The buyer typed this address
-    // at checkout and demonstrably watches it (it also receives the Dodo
-    // receipt) — without this, the only inbox they may check goes silent
-    // while the welcome lands somewhere they may not think to look.
-    // Best-effort: the address is buyer-typed and may be one Resend rejects
-    // outright (typo'd domain), so a failure here must not swallow the admin
-    // notification below — log and continue instead of throwing.
-    if (args.checkoutEmail) {
-      try {
+    try {
       await sendEmail(
         apiKey,
-        args.checkoutEmail,
-        `Your World Monitor subscription is active — where to sign in`,
-        `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 600px; margin: 0 auto; background: #0a0a0a; color: #e0e0e0;">
-          <div style="background: #4ade80; height: 4px;"></div>
-          <div style="padding: 40px 32px;">
-            <p style="font-size: 22px; font-weight: 700; color: #fff; margin: 0 0 12px;">Payment received — you're all set.</p>
-            <p style="font-size: 14px; color: #999; line-height: 1.5; margin: 0 0 12px;">Your ${planName} subscription is active. This address (${escapeHtml(args.checkoutEmail)}) was used for billing only — it is not a World Monitor login.</p>
-            <p style="font-size: 14px; color: #999; line-height: 1.5; margin: 0 0 24px;">Sign in with <strong style="color: #fff;">${escapeHtml(args.userEmail)}</strong> — your sign-in code will arrive in that inbox.</p>
-            <div style="text-align: center;">
-              <a href="https://worldmonitor.app" style="display: inline-block; background: #4ade80; color: #0a0a0a; padding: 14px 36px; text-decoration: none; font-weight: 800; font-size: 13px; text-transform: uppercase; letter-spacing: 1.5px; border-radius: 2px;">Open World Monitor</a>
-            </div>
-            <p style="font-size: 11px; color: #666; text-align: center; margin: 24px 0 0;">Questions? Reply to this email or contact ${ADMIN_EMAIL}.</p>
-          </div>
-        </div>`,
+        args.userEmail,
+        `Welcome to World Monitor ${planName}`,
+        userWelcomeHtml(planName, args.planKey, args.checkoutEmail ? args.userEmail : undefined),
         ADMIN_EMAIL,
       );
-      console.log(
-        `[subscriptionEmails] Sign-in pointer sent to checkout address for ${args.userEmail}`,
+      console.log(`[subscriptionEmails] Welcome email sent to ${args.userEmail}`);
+    } catch (err) {
+      console.error(
+        `[subscriptionEmails] Welcome email failed (continuing): ${err instanceof Error ? err.message : String(err)}`,
       );
-      } catch (err) {
-        console.error(
-          `[subscriptionEmails] Sign-in pointer to checkout address failed (continuing): ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
+    }
+
+    // 1b. Sign-in pointer to the checkout inbox (#6330) — see sendSignInPointer.
+    if (args.checkoutEmail) {
+      await sendSignInPointer(apiKey, args.checkoutEmail, args.userEmail, planName);
     }
 
     // 2. Admin notification — leads with what the user actually paid (and how
@@ -402,22 +437,28 @@ export const sendSubscriptionEmails = internalAction({
       taxInclusive: args.taxInclusive,
       discountId: args.discountId,
     });
-    await sendEmail(
-      apiKey,
-      ADMIN_EMAIL,
-      `[WM] New User Subscribed to ${planName}`,
-      `<div style="font-family: monospace; padding: 20px; background: #0a0a0a; color: #e0e0e0;">
+    try {
+      await sendEmail(
+        apiKey,
+        ADMIN_EMAIL,
+        `[WM] New User Subscribed to ${planName}`,
+        `<div style="font-family: monospace; padding: 20px; background: #0a0a0a; color: #e0e0e0;">
         <p style="color: #4ade80; font-size: 16px; font-weight: bold;">New Subscription</p>
         <table style="font-size: 14px; line-height: 1.8;">
           <tr><td style="color: #888; padding-right: 16px;">Plan:</td><td style="color: #fff;">${planName}</td></tr>
           <tr><td style="color: #888; padding-right: 16px;">Email:</td><td style="color: #fff;">${escapeHtml(args.userEmail)}</td></tr>
           ${args.checkoutEmail ? `<tr><td style="color: #888; padding-right: 16px;">Billing Email:</td><td style="color: #fff;">${escapeHtml(args.checkoutEmail)}</td></tr>` : ""}
           ${priceRows}
-          <tr><td style="color: #888; padding-right: 16px;">User ID:</td><td style="color: #fff; font-size: 12px;">${args.userId}</td></tr>
+          <tr><td style="color: #888; padding-right: 16px;">User ID:</td><td style="color: #fff; font-size: 12px;">${escapeHtml(args.userId)}</td></tr>
         </table>
       </div>`,
-    );
-    console.log(`[subscriptionEmails] Admin notification sent for ${args.userEmail}`);
+      );
+      console.log(`[subscriptionEmails] Admin notification sent for ${args.userEmail}`);
+    } catch (err) {
+      console.error(
+        `[subscriptionEmails] Admin notification failed (continuing): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   },
 });
 
@@ -432,6 +473,10 @@ export const sendReactivationEmail = internalAction({
   args: {
     userEmail: v.string(),
     planKey: v.string(),
+    // #6330: same contract as sendSubscriptionEmails — set only when the Dodo
+    // checkout email differs from the login email in `userEmail`. A returning
+    // checkout is exactly as capable of alias divergence as a first one.
+    checkoutEmail: v.optional(v.string()),
   },
   handler: async (_ctx, args) => {
     const apiKey = process.env.RESEND_API_KEY;
@@ -441,24 +486,40 @@ export const sendReactivationEmail = internalAction({
     }
 
     const planName = PLAN_DISPLAY[args.planKey] ?? args.planKey;
-    await sendEmail(
-      apiKey,
-      args.userEmail,
-      `Welcome back to World Monitor ${planName}`,
-      `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 600px; margin: 0 auto; background: #0a0a0a; color: #e0e0e0;">
+    const signInLine = args.checkoutEmail
+      ? `<p style="font-size: 13px; color: #999; line-height: 1.5; margin: 0 0 24px;">Sign in with <strong style="color: #fff;">${escapeHtml(args.userEmail)}</strong> — the address you entered at checkout is kept as your billing contact.</p>`
+      : "";
+    try {
+      await sendEmail(
+        apiKey,
+        args.userEmail,
+        `Welcome back to World Monitor ${planName}`,
+        `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 600px; margin: 0 auto; background: #0a0a0a; color: #e0e0e0;">
         <div style="background: #4ade80; height: 4px;"></div>
         <div style="padding: 40px 32px;">
           <p style="font-size: 22px; font-weight: 700; color: #fff; margin: 0 0 12px;">Welcome back.</p>
-          <p style="font-size: 14px; color: #999; line-height: 1.5; margin: 0 0 24px;">Your ${planName} subscription is active again and your premium access has been restored.</p>
+          <p style="font-size: 14px; color: #999; line-height: 1.5; margin: 0 0 ${args.checkoutEmail ? "12px" : "24px"};">Your ${planName} subscription is active again and your premium access has been restored.</p>
+          ${signInLine}
           <div style="text-align: center;">
             <a href="https://worldmonitor.app/dashboard" style="display: inline-block; background: #4ade80; color: #0a0a0a; padding: 14px 36px; text-decoration: none; font-weight: 800; font-size: 13px; text-transform: uppercase; letter-spacing: 1.5px; border-radius: 2px;">Open World Monitor</a>
           </div>
           <p style="font-size: 11px; color: #666; text-align: center; margin: 24px 0 0;">Questions? Reply to this email or contact ${ADMIN_EMAIL}.</p>
         </div>
       </div>`,
-      ADMIN_EMAIL,
-    );
-    console.log(`[subscriptionEmails] Reactivation email sent to ${args.userEmail}`);
+        ADMIN_EMAIL,
+      );
+      console.log(`[subscriptionEmails] Reactivation email sent to ${args.userEmail}`);
+    } catch (err) {
+      console.error(
+        `[subscriptionEmails] Reactivation email failed (continuing): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    // Sign-in pointer to the checkout inbox — same rationale as the welcome
+    // path (#6330); best-effort by construction.
+    if (args.checkoutEmail) {
+      await sendSignInPointer(apiKey, args.checkoutEmail, args.userEmail, planName);
+    }
   },
 });
 

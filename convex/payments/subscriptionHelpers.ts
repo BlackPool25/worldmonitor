@@ -1063,7 +1063,11 @@ export async function handleSubscriptionActive(
       await ctx.scheduler.runAfter(
         0,
         internal.payments.subscriptionEmails.sendReactivationEmail,
-        { userEmail: recipientEmail, planKey },
+        {
+          userEmail: recipientEmail,
+          planKey,
+          checkoutEmail: checkoutEmailDiffers ? email.trim() : undefined,
+        },
       );
       console.log(`[subscriptionHelpers] subscription.active: scheduled reactivation email (subscriptionId=${data.subscription_id})`);
     } else {
