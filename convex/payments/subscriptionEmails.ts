@@ -162,7 +162,21 @@ function featureCardsHtml(planKey: string): string {
       </tr>`;
 }
 
-function userWelcomeHtml(planName: string, planKey: string): string {
+/**
+ * Minimal HTML-escape for user-influenced strings (email addresses) that get
+ * interpolated into email markup. Addresses come from Clerk identities and
+ * buyer-typed Dodo checkout fields — treat both as untrusted display text.
+ */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function userWelcomeHtml(planName: string, planKey: string, signInEmail?: string): string {
   const isPro = PRO_PLANS.has(planKey);
   // Pro path: headline leads with the value prop, CTA points at the brief
   // (the single highest-retention action for a new Pro). API path preserved
@@ -195,6 +209,11 @@ function userWelcomeHtml(planName: string, planKey: string): string {
     <div style="background: #111; border: 1px solid #1a1a1a; border-left: 3px solid #4ade80; padding: 20px 24px; margin-bottom: 28px;">
       <p style="font-size: 18px; font-weight: 600; color: #fff; margin: 0 0 8px;">${headline}</p>
       <p style="font-size: 14px; color: #999; margin: 0; line-height: 1.5;">Your subscription is now active. Here's what's unlocked:</p>
+      ${
+        signInEmail
+          ? `<p style="font-size: 13px; color: #999; margin: 12px 0 0; line-height: 1.5;">Sign in with <strong style="color: #fff;">${escapeHtml(signInEmail)}</strong> — the address you entered at checkout was used for billing only and is not a World Monitor login.</p>`
+          : ""
+      }
     </div>
 
     <table cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom: 28px;">
@@ -310,6 +329,10 @@ export const sendSubscriptionEmails = internalAction({
     currency: v.optional(v.string()),
     taxInclusive: v.optional(v.boolean()),
     discountId: v.optional(v.string()),
+    // #6330: set only when the Dodo checkout email differs from the login
+    // email in `userEmail`. Adds the sign-in line to the welcome, a pointer
+    // email to the checkout inbox, and the Billing Email row for admin.
+    checkoutEmail: v.optional(v.string()),
   },
   handler: async (_ctx, args) => {
     const apiKey = process.env.RESEND_API_KEY;
@@ -327,10 +350,47 @@ export const sendSubscriptionEmails = internalAction({
       apiKey,
       args.userEmail,
       `Welcome to World Monitor ${planName}`,
-      userWelcomeHtml(planName, args.planKey),
+      userWelcomeHtml(planName, args.planKey, args.checkoutEmail ? args.userEmail : undefined),
       ADMIN_EMAIL,
     );
     console.log(`[subscriptionEmails] Welcome email sent to ${args.userEmail}`);
+
+    // 1b. Sign-in pointer to the checkout inbox. The buyer typed this address
+    // at checkout and demonstrably watches it (it also receives the Dodo
+    // receipt) — without this, the only inbox they may check goes silent
+    // while the welcome lands somewhere they may not think to look.
+    // Best-effort: the address is buyer-typed and may be one Resend rejects
+    // outright (typo'd domain), so a failure here must not swallow the admin
+    // notification below — log and continue instead of throwing.
+    if (args.checkoutEmail) {
+      try {
+      await sendEmail(
+        apiKey,
+        args.checkoutEmail,
+        `Your World Monitor subscription is active — where to sign in`,
+        `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 600px; margin: 0 auto; background: #0a0a0a; color: #e0e0e0;">
+          <div style="background: #4ade80; height: 4px;"></div>
+          <div style="padding: 40px 32px;">
+            <p style="font-size: 22px; font-weight: 700; color: #fff; margin: 0 0 12px;">Payment received — you're all set.</p>
+            <p style="font-size: 14px; color: #999; line-height: 1.5; margin: 0 0 12px;">Your ${planName} subscription is active. This address (${escapeHtml(args.checkoutEmail)}) was used for billing only — it is not a World Monitor login.</p>
+            <p style="font-size: 14px; color: #999; line-height: 1.5; margin: 0 0 24px;">Sign in with <strong style="color: #fff;">${escapeHtml(args.userEmail)}</strong> — your sign-in code will arrive in that inbox.</p>
+            <div style="text-align: center;">
+              <a href="https://worldmonitor.app" style="display: inline-block; background: #4ade80; color: #0a0a0a; padding: 14px 36px; text-decoration: none; font-weight: 800; font-size: 13px; text-transform: uppercase; letter-spacing: 1.5px; border-radius: 2px;">Open World Monitor</a>
+            </div>
+            <p style="font-size: 11px; color: #666; text-align: center; margin: 24px 0 0;">Questions? Reply to this email or contact ${ADMIN_EMAIL}.</p>
+          </div>
+        </div>`,
+        ADMIN_EMAIL,
+      );
+      console.log(
+        `[subscriptionEmails] Sign-in pointer sent to checkout address for ${args.userEmail}`,
+      );
+      } catch (err) {
+        console.error(
+          `[subscriptionEmails] Sign-in pointer to checkout address failed (continuing): ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
 
     // 2. Admin notification — leads with what the user actually paid (and how
     // it compares to list price) instead of the opaque subscription_id, which
@@ -350,7 +410,8 @@ export const sendSubscriptionEmails = internalAction({
         <p style="color: #4ade80; font-size: 16px; font-weight: bold;">New Subscription</p>
         <table style="font-size: 14px; line-height: 1.8;">
           <tr><td style="color: #888; padding-right: 16px;">Plan:</td><td style="color: #fff;">${planName}</td></tr>
-          <tr><td style="color: #888; padding-right: 16px;">Email:</td><td style="color: #fff;">${args.userEmail}</td></tr>
+          <tr><td style="color: #888; padding-right: 16px;">Email:</td><td style="color: #fff;">${escapeHtml(args.userEmail)}</td></tr>
+          ${args.checkoutEmail ? `<tr><td style="color: #888; padding-right: 16px;">Billing Email:</td><td style="color: #fff;">${escapeHtml(args.checkoutEmail)}</td></tr>` : ""}
           ${priceRows}
           <tr><td style="color: #888; padding-right: 16px;">User ID:</td><td style="color: #fff; font-size: 12px;">${args.userId}</td></tr>
         </table>
