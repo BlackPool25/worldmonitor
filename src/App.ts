@@ -169,12 +169,14 @@ import { showProBanner } from '@/components/ProBanner';
 import { getAuthState, initAuthState, subscribeAuthState } from '@/services/auth-state';
 import {
   CLOUD_PREFS_APPLIED_EVENT,
+  CLOUD_PREFS_SIGN_IN_TERMINAL_EVENT,
   getSyncVersion,
   hasPendingCloudPrefsRetry,
   install as installCloudPrefsSync,
   onSignIn as cloudPrefsSignIn,
   onSignOut as cloudPrefsSignOut,
   type CloudPrefsAppliedDetail,
+  type CloudPrefsSignInTerminalDetail,
 } from '@/utils/cloud-prefs-sync';
 import {
   migrateFrontlineEuropeDefaultsV3,
@@ -347,19 +349,35 @@ export class App {
     const detail = (ev as CustomEvent<CloudPrefsAppliedDetail>).detail;
     this.applyCloudSyncedPrefsToRuntime(detail?.keys ?? [], detail?.syncVersion);
   };
+  private readonly handleCloudPrefsSignInTerminal = (ev: Event): void => {
+    const detail = (ev as CustomEvent<CloudPrefsSignInTerminalDetail>).detail;
+    const pendingGeneration = this.pendingPreferenceHandoffGeneration;
+    if (
+      detail?.origin !== 'sign-in'
+      || pendingGeneration === undefined
+      || detail.handoffGeneration !== pendingGeneration
+    ) {
+      return;
+    }
+
+    const currentUserId = getAuthState().user?.id ?? null;
+    if (this.tierPreferenceHandoff.complete(
+      pendingGeneration,
+      detail.accountId,
+      currentUserId,
+    )) {
+      this.pendingPreferenceHandoffGeneration = undefined;
+      // A terminal sign-in attempt is the only handoff release signal. Run
+      // one complete pass even when the cloud blob changed no local keys.
+      this.reconcileTierOwnedPreferences();
+    }
+  };
 
   private applyCloudSyncedPrefsToRuntime(keys: readonly string[], cloudSyncVersion?: number): void {
     if (keys.length === 0) return;
 
     const keySet = new Set(keys);
     let freeTierLimitsInvoked = false;
-    // This event fires from applyCloudBlob, so reaching it means the signing-in
-    // account's cloud preferences have ACTUALLY landed — the terminal signal the
-    // handoff is waiting for. Releasing it here (rather than when the sign-in
-    // promise settles, which a 503 resolves the moment a retry is merely armed)
-    // is what lets the reconciliation below run against cloud state instead of
-    // the local state it is replacing.
-    this.releasePreferenceHandoffOnCloudApply();
     const tierReconciliationDeferred = this.shouldDeferTierPreferenceReconciliation();
     invalidatePanelStorageCacheForKeys(keys);
 
@@ -1779,6 +1797,10 @@ export class App {
     initAuthAnalytics();
     installCloudPrefsSync(SITE_VARIANT);
     window.addEventListener(CLOUD_PREFS_APPLIED_EVENT, this.handleCloudPrefsApplied);
+    window.addEventListener(
+      CLOUD_PREFS_SIGN_IN_TERMINAL_EVENT,
+      this.handleCloudPrefsSignInTerminal,
+    );
     // Install the followed-countries auth listener once. Drives the
     // anon→signed-in handoff (mergeAnonymousLocal mutation) and sign-out
     // cleanup. Idempotent.
@@ -1892,33 +1914,9 @@ export class App {
             initEntitlementSubscription,
             initSubscriptionWatch,
             cloudPrefsSignIn: (nextUserId) => {
-              const completion = cloudPrefsSignIn(nextUserId, SITE_VARIANT);
-              const finishPreferenceHandoff = (): void => {
-                // A 503 resolves this promise as soon as the RETRY IS ARMED,
-                // before any cloud blob is applied. Completing here would
-                // reconcile — and upload — pre-cloud local state.
-                //
-                // Leave the handoff armed instead. The retry re-enters
-                // onSignIn inside cloud-prefs-sync and never comes back
-                // through this wrapper, so the release comes from
-                // applyCloudSyncedPrefsToRuntime when the blob actually lands,
-                // and from the handoff's bounded expiry if it never does.
-                if (hasPendingCloudPrefsRetry()) return;
-                const currentUserId = getAuthState().user?.id ?? null;
-                if (this.tierPreferenceHandoff.complete(
-                  preferenceHandoffGeneration,
-                  nextUserId,
-                  currentUserId,
-                )) {
-                  this.reconcileTierOwnedPreferences();
-                }
-              };
-              // Use both branches instead of `finally`: the promise returned
-              // by `finally` would mirror a rejection and become unhandled
-              // because startAccountAuthHandoff intentionally fire-and-forgets
-              // this effect.
-              void completion.then(finishPreferenceHandoff, finishPreferenceHandoff);
-              return completion;
+              return cloudPrefsSignIn(nextUserId, SITE_VARIANT, {
+                handoffGeneration: preferenceHandoffGeneration,
+              });
             },
           },
         });
@@ -2028,6 +2026,7 @@ export class App {
         cloudPrefsSignOut();
         resetEntitlementState();
         this.tierPreferenceHandoff.clear();
+        this.pendingPreferenceHandoffGeneration = undefined;
       }
       _prevUserId = userId;
       // Run after account handoff/reset so this pass cannot enforce the
@@ -2229,22 +2228,6 @@ export class App {
     return this.tierPreferenceHandoff.shouldDefer(getAuthState().user?.id ?? null);
   }
 
-  /**
-   * Release the handoff because the account's cloud blob just landed.
-   *
-   * The caller then reconciles inline, so this deliberately does NOT reconcile
-   * itself — doing both would run the pass twice per applied generation.
-   */
-  private releasePreferenceHandoffOnCloudApply(): void {
-    const generation = this.pendingPreferenceHandoffGeneration;
-    if (generation === undefined) return;
-    const currentUserId = getAuthState().user?.id ?? null;
-    if (currentUserId === null) return;
-    if (this.tierPreferenceHandoff.complete(generation, currentUserId, currentUserId)) {
-      this.pendingPreferenceHandoffGeneration = undefined;
-    }
-  }
-
   /** Reconcile all gate-owned preferences against one settled account view. */
   private reconcileTierOwnedPreferences(): boolean {
     if (this.shouldDeferTierPreferenceReconciliation()) return false;
@@ -2298,6 +2281,11 @@ export class App {
     // chose, so an ephemeral snapshot is sanitized for display only.
     const ephemeral = options.ephemeralSnapshot ?? false;
     const premium = hasPremiumAccess();
+    // A Pro deep link is already entitled. Preserve the exact URL-derived
+    // display snapshot and do not even read durable gate ownership: restoring
+    // it here would enable layers the shared link deliberately omitted.
+    if (premium && ephemeral) return layers;
+
     const existingOwnership = new Set(
       loadFromStorage<string[]>(STORAGE_KEYS.mapLayerGateOwnership, []),
     );
@@ -2312,7 +2300,6 @@ export class App {
       // === layers` is never true — an identity check here silently persisted
       // on every pass. Compare by value.
       const unchanged = mapLayerStatesEqual(layers, restored);
-      if (ephemeral) return unchanged ? layers : restored;
       const persistence = persistGateOwnershipTransition(
         'pro',
         () => unchanged
@@ -2700,6 +2687,8 @@ export class App {
 
   public destroy(): void {
     this.state.isDestroyed = true;
+    this.tierPreferenceHandoff.clear();
+    this.pendingPreferenceHandoffGeneration = undefined;
     this.viewportHydrationReady = false;
     cancelBootstrapSlowTier();
     window.removeEventListener('scroll', this.handleViewportPrime, { capture: true });
@@ -2709,6 +2698,10 @@ export class App {
     window.removeEventListener(I18N_RESOURCES_LOADED_EVENT, this.handleI18nResourcesLoaded);
     window.removeEventListener(WM_FOLLOWED_COUNTRIES_CAP_DROP, this.handleFollowedCountriesCapDrop);
     window.removeEventListener(CLOUD_PREFS_APPLIED_EVENT, this.handleCloudPrefsApplied);
+    window.removeEventListener(
+      CLOUD_PREFS_SIGN_IN_TERMINAL_EVENT,
+      this.handleCloudPrefsSignInTerminal,
+    );
     if (this.visiblePanelPrimeRaf !== null) {
       window.cancelAnimationFrame(this.visiblePanelPrimeRaf);
       this.visiblePanelPrimeRaf = null;

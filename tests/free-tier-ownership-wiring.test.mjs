@@ -62,26 +62,15 @@ describe('free-tier ownership production wiring', () => {
     );
 
     const handoffStart = app.indexOf('cloudPrefsSignIn: (nextUserId) => {');
-    const handoffEnd = app.indexOf('return completion;', handoffStart);
+    const handoffEnd = app.indexOf('},\n          },', handoffStart);
     assert.ok(handoffStart >= 0 && handoffEnd > handoffStart, 'cloudPrefsSignIn wrapper must exist');
     const handoffBody = app.slice(handoffStart, handoffEnd);
-    assert.match(handoffBody, /const completion = cloudPrefsSignIn\(nextUserId, SITE_VARIANT\)/);
-    // A 503 resolves the sign-in promise as soon as the retry is armed, before
-    // any cloud blob is applied; completing then reconciles pre-cloud state.
     assert.match(
       handoffBody,
-      /if \(hasPendingCloudPrefsRetry\(\)\) return;/,
-      'a pending 503 retry must not be treated as a settled handoff',
+      /cloudPrefsSignIn\(nextUserId, SITE_VARIANT, \{\s*handoffGeneration: preferenceHandoffGeneration,/,
+      'the sign-in attempt must carry its caller-owned handoff generation',
     );
-    // The generation token fences a late completion from a previous attempt
-    // for the SAME account id.
-    assert.match(
-      handoffBody,
-      /tierPreferenceHandoff\.complete\(\s*preferenceHandoffGeneration,\s*nextUserId,\s*currentUserId,?\s*\)/,
-      'completion must present the generation token, not the id alone',
-    );
-    assert.match(handoffBody, /reconcileTierOwnedPreferences\(\)/);
-    assert.match(handoffBody, /completion\.then\(finishPreferenceHandoff, finishPreferenceHandoff\)/);
+    assert.doesNotMatch(handoffBody, /\.then\(/, 'promise settlement is not a terminal cloud signal');
   });
 
   it('never advances the legacy variant key outside the durable transition', () => {
@@ -134,27 +123,43 @@ describe('free-tier ownership production wiring', () => {
     );
   });
 
-  it('releases the handoff when the cloud blob actually lands, not when a retry is armed', () => {
-    // The 503 retry re-enters onSignIn inside cloud-prefs-sync and never comes
-    // back through App's wrapper, so without this release the only path out was
-    // the expiry — which fired at 8s against pre-cloud state while Retry-After
-    // can legitimately run to 60s.
+  it('releases the handoff only from a matching scoped sign-in terminal event', () => {
     const applyStart = app.indexOf('private applyCloudSyncedPrefsToRuntime(');
     const applyEnd = app.indexOf('invalidatePanelStorageCacheForKeys(keys);', applyStart);
     assert.ok(applyStart >= 0 && applyEnd > applyStart, 'cloud apply handler must exist');
     const applyHead = app.slice(applyStart, applyEnd);
-    assert.match(
-      applyHead,
-      /this\.releasePreferenceHandoffOnCloudApply\(\);/,
-      'the applied-blob event must release the handoff',
-    );
-    // Order matters: releasing after the deferral is read would leave this
-    // generation deferred and defeat the fix.
-    assert.ok(
-      applyHead.indexOf('releasePreferenceHandoffOnCloudApply')
-        < applyHead.indexOf('const tierReconciliationDeferred'),
-      'the release must happen before the deferral is evaluated',
+    assert.doesNotMatch(applyHead, /tierPreferenceHandoff\.complete/,
+      'generic apply events, including local migrations, must not release the handoff');
+
+    const terminalStart = app.indexOf('private readonly handleCloudPrefsSignInTerminal');
+    const terminalEnd = app.indexOf('private applyCloudSyncedPrefsToRuntime', terminalStart);
+    assert.ok(terminalStart >= 0 && terminalEnd > terminalStart, 'terminal handler must exist');
+    const terminalBody = app.slice(terminalStart, terminalEnd);
+    assert.match(terminalBody, /detail\?\.origin !== 'sign-in'/);
+    assert.match(terminalBody, /detail\.handoffGeneration !== pendingGeneration/);
+    assert.match(terminalBody, /detail\.accountId,\s*currentUserId/);
+    assert.equal(
+      (terminalBody.match(/this\.reconcileTierOwnedPreferences\(\)/g) ?? []).length,
+      1,
+      'a matching terminal event must run one full reconciliation pass',
     );
     assert.match(app, /\(\) => hasPendingCloudPrefsRetry\(\),/, 'expiry must postpone on a pending retry');
+  });
+
+  it('disarms an armed preference handoff before App module teardown', () => {
+    const destroyStart = app.indexOf('public destroy(): void {');
+    const destroyEnd = app.indexOf('private async initFindingsBadge', destroyStart);
+    assert.ok(destroyStart >= 0 && destroyEnd > destroyStart, 'App.destroy must exist');
+    const destroyBody = app.slice(destroyStart, destroyEnd);
+    const clearIndex = destroyBody.indexOf('this.tierPreferenceHandoff.clear();');
+    const generationIndex = destroyBody.indexOf('this.pendingPreferenceHandoffGeneration = undefined;');
+    const moduleTeardownIndex = destroyBody.indexOf('// Destroy all modules in reverse order');
+
+    assert.ok(clearIndex >= 0, 'destroy must cancel the armed handoff expiry');
+    assert.ok(generationIndex > clearIndex, 'destroy must invalidate the pending generation');
+    assert.ok(
+      moduleTeardownIndex > generationIndex,
+      'handoff teardown must finish before module teardown can trigger late effects',
+    );
   });
 });
