@@ -2161,10 +2161,14 @@ export class App {
   }
 
   /**
-   * Put back the custom widgets the free-tier gate hid, now that we know the
-   * user is Pro. Covers the free→pro upgrade, and heals users whose widgets
-   * were disabled by a pre-fix build (see the one-time recovery below —
-   * those entries pre-date the `proGated` marker, so they need the sweep).
+   * Put back everything the free-tier gate hid, now that we know the user is
+   * Pro: the cw-* custom widgets AND the panels the count cap clamped off past
+   * FREE_MAX_PANELS. Both now carry `proGated`, so the targeted restore covers
+   * both; only the legacy sweep below stays widget-specific.
+   *
+   * Covers the free→pro upgrade, and heals users whose widgets were disabled
+   * by a pre-fix build (see the one-time recovery below — those entries
+   * pre-date the `proGated` marker, so they need the sweep).
    */
   private restoreProGatedCustomWidgets(cloudSyncVersion?: number): boolean {
     const panelSettings = loadFromStorage<Record<string, PanelConfig>>(STORAGE_KEYS.panels, {});

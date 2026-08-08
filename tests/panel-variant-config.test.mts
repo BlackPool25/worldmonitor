@@ -154,6 +154,57 @@ describe('variant panel config resolution', () => {
     });
   });
 
+  it('restores COUNT-CAP-disabled panels for Pro, not just custom widgets', () => {
+    // The free-tier gate disables panels two ways: cw-* widgets (stamped
+    // proGated, restored by the test above) and everything past
+    // FREE_MAX_PANELS by the count cap. Only the first is stamped, and
+    // restoreProGatedPanels restores only what is stamped — so the count cap
+    // is a ONE-WAY DOOR.
+    //
+    // Concretely: a user over the cap while free (or during any window where
+    // the tier read as free) gets `enabled: false` PERSISTED into
+    // STORAGE_KEYS.panels for their lowest-priority panels. Going Pro never
+    // puts them back. The panel stays listed in Cmd+K and checkable in
+    // settings while being absent from the dashboard — a ghost.
+    //
+    // The sort is (priority asc, key asc), so at a flat priority the
+    // alphabetically-last keys go over the cliff first — which is why
+    // late-alphabet panels are the ones that vanish.
+    const original: Record<string, { name: string; enabled: boolean; priority: number }> = {};
+    for (let i = 0; i < FREE_MAX_PANELS + 5; i += 1) {
+      const key = `p${String(i).padStart(2, '0')}`;
+      original[key] = { name: key, enabled: true, priority: 1 };
+    }
+    const overCapKeys = Object.keys(original).slice(FREE_MAX_PANELS);
+    assert.equal(overCapKeys.length, 5, 'fixture must actually exceed the cap');
+
+    const clamped = enforceFreePanelLimit(original, false);
+    for (const key of overCapKeys) {
+      assert.equal(clamped[key]?.enabled, false, `${key} should be clamped off on the free tier`);
+    }
+    assert.equal(
+      countFreePanelCapUsage(clamped), FREE_MAX_PANELS,
+      'the clamp must leave exactly the cap enabled',
+    );
+
+    const restored = restoreProGatedPanels(clamped);
+    for (const key of overCapKeys) {
+      assert.equal(
+        restored[key]?.enabled, true,
+        `${key} was disabled by the free-tier cap, not by the user — going Pro must put it back`,
+      );
+    }
+
+    // The restore must not become a blanket enable-everything: a panel the
+    // USER turned off has to stay off.
+    const userHidden = enforceFreePanelLimit(
+      { ...original, p00: { name: 'p00', enabled: false, priority: 1 } },
+      false,
+    );
+    assert.equal(restoreProGatedPanels(userHidden).p00?.enabled, false,
+      'a deliberately hidden panel must stay hidden');
+  });
+
   it('defers free-tier enforcement until both Clerk and the entitlement snapshot settle', () => {
     // Clerk still pending: always defer — a signed-in Pro user is
     // indistinguishable from an anonymous one.
