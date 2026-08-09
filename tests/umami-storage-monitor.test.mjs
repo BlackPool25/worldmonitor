@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import YAML from 'yaml';
 
@@ -12,6 +16,10 @@ import {
 } from '../scripts/check-umami-storage.mjs';
 
 const NOW = Date.parse('2026-08-01T12:00:00.000Z');
+const DAY_MS = 24 * 60 * 60 * 1000;
+const storageCheckScript = fileURLToPath(
+  new URL('../scripts/check-umami-storage.mjs', import.meta.url),
+);
 const workflowSource = readFileSync(
   new URL('../.github/workflows/umami-storage-monitor.yml', import.meta.url),
   'utf8',
@@ -28,6 +36,32 @@ function volume(overrides = {}) {
     status: 'Ready',
     ...overrides,
   };
+}
+
+function runStorageCheckCli({ currentSizeMB, samples = [], volumeOverrides = {} }) {
+  const directory = mkdtempSync(join(tmpdir(), 'wm-umami-storage-monitor-'));
+  const inputPath = join(directory, 'volumes.json');
+  const statePath = join(directory, 'state.json');
+
+  try {
+    writeFileSync(inputPath, JSON.stringify([volume({ currentSizeMB, ...volumeOverrides })]));
+    writeFileSync(statePath, JSON.stringify({
+      version: 1,
+      volumeIdentity: 'volume-1',
+      capacityMB: 50_000,
+      samples,
+    }));
+    return spawnSync(
+      process.execPath,
+      [storageCheckScript, '--input', inputPath, '--state', statePath],
+      {
+        encoding: 'utf8',
+        env: { ...process.env, UMAMI_POSTGRES_SERVICE_NAME: 'Postgres Umami' },
+      },
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 describe('Umami storage monitor', () => {
@@ -83,6 +117,38 @@ describe('Umami storage monitor', () => {
     assert.equal(result.usagePercent, 90);
     assert.equal(result.status, 'critical');
     assert.equal(result.alerting, true);
+  });
+
+  it('reports a capacity warning without failing the scheduled workflow', () => {
+    const run = runStorageCheckCli({
+      currentSizeMB: 28_000,
+      samples: [{
+        sampledAt: new Date(Date.now() - 7 * DAY_MS).toISOString(),
+        currentSizeMB: 22_800,
+      }],
+    });
+
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(run.stdout, /Umami storage warning:/);
+    assert.match(run.stderr, /::warning::Umami Postgres storage needs retention or capacity action/);
+  });
+
+  it('fails the scheduled workflow at critical capacity', () => {
+    const run = runStorageCheckCli({ currentSizeMB: 45_000 });
+
+    assert.equal(run.status, 1);
+    assert.match(run.stdout, /Umami storage critical:/);
+    assert.match(run.stderr, /::error::Umami Postgres storage is at a critical capacity/);
+  });
+
+  it('fails the scheduled workflow when Railway volume processing fails', () => {
+    const run = runStorageCheckCli({
+      currentSizeMB: 28_000,
+      volumeOverrides: { status: 'Failed' },
+    });
+
+    assert.equal(run.status, 1);
+    assert.match(run.stderr, /Umami storage monitor failed: Umami volume is not ready: Failed/);
   });
 
   it('fails closed when Railway reports a non-ready volume', () => {
