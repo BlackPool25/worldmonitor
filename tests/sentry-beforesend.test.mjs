@@ -397,6 +397,15 @@ describe('zero-frame async-rejection patterns (timeout / DOMException / OOM / DO
     // value shapes are matched.
     ['NetworkError when attempting to fetch resource.', 'TypeError'],
     ['TypeError: NetworkError when attempting to fetch resource.', 'TypeError'],
+    // Injected page script inserting its own unparseable source
+    // (WORLDMONITOR-YW). Chrome prefixes the parse error with the DOM API that
+    // triggered it. Our own script-appending call sites (analytics, DebugBear,
+    // Clerk, news embeds) keep a source-mapped .ts frame, so the first-party
+    // case is asserted "lets through" by this same loop — the coverage the
+    // superseded ungated ignoreErrors entry could not provide.
+    ["Failed to execute 'appendChild' on 'Node': Unexpected identifier 'x'", 'SyntaxError'],
+    ["Failed to execute 'appendChild' on 'Node': Unexpected token '}'", 'SyntaxError'],
+    ["SyntaxError: Failed to execute 'appendChild' on 'Node': Unexpected end of input", 'SyntaxError'],
   ];
 
   for (const [msg, type] of zeroFrameErrors) {
@@ -415,6 +424,32 @@ describe('zero-frame async-rejection patterns (timeout / DOMException / OOM / DO
       assert.ok(beforeSend(event) !== null, `"${msg}" with first-party stack should NOT be suppressed`);
     });
   }
+
+  // The shape WORLDMONITOR-YW actually arrived in: an injected script's parse
+  // failure carries only `<anonymous>` frames, which nonInfraFrames strips —
+  // so neither the empty-stack nor the extension-URL case above reproduces it.
+  it("suppresses the injected-script appendChild parse failure with only <anonymous> frames", () => {
+    const event = makeEvent(
+      "Failed to execute 'appendChild' on 'Node': Unexpected identifier 'x'",
+      'SyntaxError',
+      [{ filename: '<anonymous>', lineno: 1 }, { filename: '<anonymous>', lineno: 1 }],
+    );
+    assert.equal(beforeSend(event), null);
+  });
+
+  it('lets through an appendChild parse failure attributed to a first-party script loader', () => {
+    // analytics.ts / debugbear-rum.ts / clerk.ts / LiveNewsPanel.ts all append a
+    // third-party <script>; if one of those inserts unparseable source the frame
+    // is ours and the event must still reach the dashboard. The superseded
+    // ignoreErrors entry had no frames to check and dropped this case.
+    const event = makeEvent(
+      "Failed to execute 'appendChild' on 'Node': Unexpected identifier 'x'",
+      'SyntaxError',
+      [{ filename: 'src/services/analytics.ts', lineno: 494, function: 'loadUmamiScript' },
+        { filename: '<anonymous>', lineno: 1 }],
+    );
+    assert.ok(beforeSend(event) !== null);
+  });
 });
 
 // ─── All ambiguous errors require confirmed third-party stack ────────────

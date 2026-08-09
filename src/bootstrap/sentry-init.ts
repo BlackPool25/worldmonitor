@@ -189,7 +189,6 @@ function buildSentryInitOptions(): Parameters<SentryNs['init']>[0] {
       /Se requiere plan premium/,
       /hybridExecute is not defined/,
       /reading 'postMessage'/,
-      /appendChild.*Unexpected token/,
       /\bmag is not defined\b/,
       /evaluating '[^']*\.luma/,
       /translateNotifyError/,
@@ -839,6 +838,22 @@ function buildSentryInitOptions(): Parameters<SentryNs['init']>[0] {
           // This is the WebKit phrasing; the V8 `reading 'postMessage'` variant is
           // already suppressed via the ignoreErrors entry above.
           || /null is not an object \(evaluating '[^']*\.postMessage'\)/.test(msg)
+          // Chrome composes `Failed to execute 'appendChild' on 'Node': <parse
+          // error>` when a script element is inserted and its source fails to
+          // parse synchronously. The DOM-API prefix means SOME caller passed
+          // unparseable script text — and we do have first-party callers that
+          // append third-party scripts (analytics.ts → abacus, debugbear-rum.ts,
+          // clerk.ts, LiveNewsPanel.ts embeds). Those keep a source-mapped .ts
+          // frame, so `!hasFirstParty` is what separates them from an injected
+          // page script inserting its own broken source with only `<anonymous>`
+          // frames. This supersedes the ungated `/appendChild.*Unexpected token/`
+          // ignoreErrors entry, which both missed the `Unexpected identifier`
+          // phrasing and — having no access to frames — would have swallowed a
+          // parse failure attributable to one of those first-party loaders
+          // (WORLDMONITOR-YW: Chrome 150 on Chrome OS, two `<anonymous>:1`
+          // frames). Left deliberately phrasing-agnostic after `Unexpected ` so
+          // every engine's token/identifier/keyword/EOF wording is covered.
+          || /appendChild.*Unexpected /.test(msg)
         )
       ) return null;
       if (hasAnyStack && !hasFirstParty && (
