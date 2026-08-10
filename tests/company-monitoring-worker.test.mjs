@@ -5,6 +5,7 @@ import {
   COMPANY_MONITORING_WORKER_ACTIVATION_KEY,
   COMPANY_MONITORING_WORKER_HEALTH_KEY,
   COMPANY_MONITORING_WORKER_META_KEY,
+  createCompanyMonitoringClaimExecutor,
   createCompanyMonitoringWorker,
   createConvexFetch,
   createRedisHealthPublisher,
@@ -57,6 +58,20 @@ function convexClient(responses, calls = []) {
 }
 
 describe('company monitoring Railway worker', () => {
+  it('routes only X to the installed adapter and keeps Exa outside this slice', async () => {
+    const execute = createCompanyMonitoringClaimExecutor({ bearerToken: '' });
+    assert.deepEqual(await execute({ source: 'x' }), {
+      type: 'provider_error',
+      reason: 'authentication_failed',
+      costUsdMicros: 0,
+    });
+    assert.deepEqual(await execute({ source: 'exa' }), {
+      type: 'provider_error',
+      reason: 'provider_unavailable',
+      costUsdMicros: 0,
+    });
+  });
+
   it('bounds Convex requests and identifies the server-side worker', async () => {
     let captured;
     const guardedFetch = createConvexFetch(async (_input, init) => {

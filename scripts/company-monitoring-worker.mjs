@@ -19,6 +19,7 @@ import { ConvexHttpClient } from 'convex/browser';
 import { anyApi } from 'convex/server';
 
 import { loadEnvFile } from './_seed-utils.mjs';
+import { createXRecentSearchExecutor } from './lib/company-monitoring-x-provider.mjs';
 import { isMainModule } from './lib/main-module.mjs';
 
 export const COMPANY_MONITORING_WORKER_HEALTH_KEY = 'company-monitoring:worker-health:v1';
@@ -161,6 +162,12 @@ async function unavailableExecutor() {
     reason: 'provider_unavailable',
     costUsdMicros: 0,
   };
+}
+
+/** Route only the implemented provider slice. Exa remains deliberately dark. */
+export function createCompanyMonitoringClaimExecutor(options = {}) {
+  const executeX = createXRecentSearchExecutor(options);
+  return (work) => work?.source === 'x' ? executeX(work) : unavailableExecutor();
 }
 
 /**
@@ -346,6 +353,9 @@ async function main() {
       'COMPANY_MONITORING_WORKER_SECRET',
       'UPSTASH_REDIS_REST_URL',
       'UPSTASH_REDIS_REST_TOKEN',
+      'X_BEARER_TOKEN',
+      'X_POST_STORAGE_MODE',
+      'X_RECENT_SEARCH_REQUEST_COST_USD_MICROS',
     ],
   });
   const convexUrl = process.env.CONVEX_URL;
@@ -355,10 +365,16 @@ async function main() {
   }
 
   const client = new ConvexHttpClient(convexUrl, { fetch: createConvexFetch() });
+  const executeClaim = createCompanyMonitoringClaimExecutor({
+    bearerToken: process.env.X_BEARER_TOKEN,
+    storageMode: process.env.X_POST_STORAGE_MODE,
+    requestCostUsdMicros: Number(process.env.X_RECENT_SEARCH_REQUEST_COST_USD_MICROS ?? 0),
+  });
   const worker = createCompanyMonitoringWorker({
     client,
     secret,
     workerId: `railway-${process.pid}-${randomUUID()}`,
+    executeClaim,
     publishHealth: createRedisHealthPublisher(),
   });
   let shutdownSignal = 'SIGTERM';
