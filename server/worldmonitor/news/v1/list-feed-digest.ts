@@ -39,6 +39,8 @@ import {
 } from '../../../_shared/cache-keys';
 import { getRelayBaseUrl, getRelayHeaders } from '../../../_shared/relay';
 import diplomacyKeywordsData from '../../../../shared/diplomacy-keywords.json';
+// #6428: entity corroboration must count publishers, not feed labels.
+import { publisherFamilyFor } from '../../../../shared/publisher-families.js';
 
 const RSS_ACCEPT = 'application/rss+xml, application/xml, text/xml, */*';
 
@@ -972,9 +974,16 @@ function computeEntityCorroborationSignals(
         buckets.set(key, bucket);
       }
       bucket.items.push(item);
-      if (item.source) {
-        bucket.sources.add(item.source);
-        if (getSourceTier(item.source) <= 2) bucket.tier12Sources.add(item.source);
+      // #6428: bucket by publisher FAMILY. Keyed on the raw feed label, one
+      // newsroom's editions ("Reuters World" + "Reuters US") reached the
+      // >= 2 gate below on their own and manufactured an entity-corroboration
+      // signal that feeds importanceScore and the diplomacy severity
+      // promotion. The tier is a property of the LABEL, so a family joins
+      // tier12Sources when any of its labels is tier 1-2.
+      const family = publisherFamilyFor(item.source);
+      if (family) {
+        bucket.sources.add(family);
+        if (getSourceTier(item.source) <= 2) bucket.tier12Sources.add(family);
       }
     }
   }
