@@ -91,7 +91,7 @@
   "workflowCount": 32,
   "freshnessSources": 35,
   "freshnessRequiredForRisk": 2,
-  "feedDefinitions": 628,
+  "feedDefinitions": 633,
   "sourceAttribution": {
     "activeHosts": 530,
     "structuredHosts": 290,
