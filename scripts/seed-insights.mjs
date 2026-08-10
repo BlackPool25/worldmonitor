@@ -20,7 +20,7 @@ import {
   DIPLOMACY_KEYWORDS,
   ENTITY_BIGRAMS,
 } from './_clustering.mjs';
-import { countPublisherFamilies } from './shared/publisher-families.js';
+import { MIN_CORROBORATING_PUBLISHERS } from './shared/publisher-families.js';
 import { extractCountryCode } from './shared/geo-extract.mjs';
 import { buildChinaNewsCoverage } from './_china-news-coverage.mjs';
 import { unwrapEnvelope } from './_seed-envelope-source.mjs';
@@ -865,9 +865,11 @@ async function fetchInsights() {
 
   // #6428: "multi-source" is a claim about publishers. Counting c.sources
   // counted feed labels, so a cluster carried only by one newsroom's own
-  // editions was published as multi-source.
+  // editions was published as multi-source. clusterItems already resolved the
+  // families onto the cluster — read it rather than recomputing.
   const multiSourceCount = clusters.filter(
-    c => countPublisherFamilies(c.sources) >= 2 || c.entityCorroboration === true,
+    c => (c.uniquePublisherCount ?? 0) >= MIN_CORROBORATING_PUBLISHERS
+      || c.entityCorroboration === true,
   ).length;
   const fastMovingCount = 0; // velocity not available in digest items
 
@@ -890,7 +892,7 @@ async function fetchInsights() {
       // to a user, so it counts PUBLISHERS. `sources` stays the label list —
       // it is what the UI credits and links, and collapsing it would drop
       // attribution the publisher is owed.
-      uniqueSourceCount: countPublisherFamilies(story.sources),
+      uniqueSourceCount: story.uniquePublisherCount ?? 0,
       sources: Array.isArray(story.sources) ? story.sources : [],
       lastUpdated: story.lastUpdated,
       memberTitles: Array.isArray(story.memberTitles) ? story.memberTitles : [story.primaryTitle],

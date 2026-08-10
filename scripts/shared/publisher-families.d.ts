@@ -4,6 +4,7 @@ export interface PublisherFamily {
 }
 
 export declare const PUBLISHER_FAMILIES: Readonly<Record<string, PublisherFamily>>;
+export declare const MIN_CORROBORATING_PUBLISHERS: number;
 
 export declare function publisherFamilyFor(label: unknown): string;
 export declare function publisherFamiliesFor(labels: unknown): Set<string>;

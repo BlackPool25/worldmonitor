@@ -40,7 +40,7 @@ import {
 import { getRelayBaseUrl, getRelayHeaders } from '../../../_shared/relay';
 import diplomacyKeywordsData from '../../../../shared/diplomacy-keywords.json';
 // #6428: entity corroboration must count publishers, not feed labels.
-import { publisherFamilyFor } from '../../../../shared/publisher-families.js';
+import { MIN_CORROBORATING_PUBLISHERS, publisherFamilyFor } from '../../../../shared/publisher-families.js';
 
 const RSS_ACCEPT = 'application/rss+xml, application/xml, text/xml, */*';
 
@@ -990,7 +990,7 @@ function computeEntityCorroborationSignals(
 
   const signals = new Map<string, EntityCorroborationSignal>();
   for (const bucket of buckets.values()) {
-    if (bucket.sources.size < 2) continue;
+    if (bucket.sources.size < MIN_CORROBORATING_PUBLISHERS) continue;
     for (const item of bucket.items) {
       const previous = signals.get(item.titleHash!);
       signals.set(item.titleHash!, {

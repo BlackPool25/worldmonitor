@@ -25,7 +25,6 @@ const MIRRORED_FILES = [
   'iso2-to-region.json',
   'iso3-to-iso2.json',
   'publisher-families.js',
-  'publisher-families.json',
   'story-identity.js',
   'un-to-iso2.json',
 ];

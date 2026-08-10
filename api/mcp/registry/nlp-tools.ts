@@ -513,10 +513,17 @@ export const NLP_TOOLS: ToolDef[] = [
         .map(cluster => ({
           cluster,
           sources: [...new Set(cluster.allItems.map(item => item.source))],
+          // #6428: `sources` is the feed-LABEL list — kept for attribution, but
+          // it is not the corroboration number. One newsroom ships many labels
+          // ("Reuters World" + "Reuters US"), so counting them let one wire
+          // satisfy the `min_sources` filter this tool documents as "distinct
+          // outlets ... real corroboration, not one outlet filing twice".
+          // clusterNewsCore already resolved the publisher families.
+          distinctPublishers: cluster.uniquePublisherCount,
         }))
-        .filter(({ sources }) => sources.length >= minSources)
+        .filter(({ distinctPublishers }) => distinctPublishers >= minSources)
         .slice(0, limit);
-      const projected = selectedClusters.map(({ cluster, sources }) => {
+      const projected = selectedClusters.map(({ cluster, sources, distinctPublishers }) => {
         const projectedSources = sources.slice(0, 8);
         const provenanceBySource = new Map(
           [...new Set([cluster.primarySource, ...projectedSources])]
@@ -529,9 +536,11 @@ export const NLP_TOOLS: ToolDef[] = [
           primarySourceProvenance: provenanceBySource.get(cluster.primarySource)!,
           link: cluster.primaryLink,
           memberCount: cluster.sourceCount,
-          // Corroboration is distinct outlets, not headline count — one outlet
-          // can file several near-identical headlines into the same cluster.
-          distinctSourceCount: sources.length,
+          // Corroboration is distinct PUBLISHERS, not headline count and not
+          // feed-label count — one outlet can file several near-identical
+          // headlines into the same cluster, and can file them under several
+          // of its own feeds (#6428).
+          distinctSourceCount: distinctPublishers,
           sources: projectedSources,
           sourceProvenance: projectedSources.map((source) => ({
             source,

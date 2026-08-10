@@ -441,6 +441,27 @@ describe('_clustering.mjs', () => {
       assert.equal(publisherFamilyCount(wireCluster()), 1);
     });
 
+    it('resolves uniquePublisherCount onto the cluster itself', () => {
+      // seed-insights reads this field for uniqueSourceCount and
+      // multiSourceCount rather than recomputing, so it is load-bearing:
+      // if clusterItems stopped setting it, both published numbers would
+      // silently fail closed to 0 instead of erroring.
+      const oneWire = clusterItems([
+        { title: 'Missile attack kills troops in border strike officials say', source: 'Reuters World', link: 'http://a' },
+        { title: 'Missile attack kills troops in border strike officials say more', source: 'Reuters US', link: 'http://b' },
+      ]);
+      assert.equal(oneWire.length, 1, 'fixture must cluster or this asserts nothing');
+      assert.equal(oneWire[0].sourceCount, 2, 'sourceCount stays the article count');
+      assert.equal(oneWire[0].uniquePublisherCount, 1);
+
+      const twoPublishers = clusterItems([
+        { title: 'Missile attack kills troops in border strike officials say', source: 'Reuters World', link: 'http://a' },
+        { title: 'Missile attack kills troops in border strike officials say more', source: 'BBC World', link: 'http://b' },
+      ]);
+      assert.equal(twoPublishers.length, 1);
+      assert.equal(twoPublishers[0].uniquePublisherCount, 2);
+    });
+
     it('denies brief-lead eligibility to a cluster carried by one publisher only', () => {
       assert.equal(isBriefLeadEligible(wireCluster()), false);
     });

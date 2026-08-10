@@ -30,8 +30,12 @@ This is the correctness prerequisite that [source-label RRF needs independent co
 | `assignStoryIdentity` (`dedup.mjs`) | `Set` of labels | inflated `corroborationCount` → `importanceScore` (5 sources × 20 pts) |
 | `computeEntityCorroborationSignals` | `Set` of labels | manufactured entity corroboration, which is the gate's *second* arm |
 | `uniqueSourceCount`, "✓ N sources", "N sources", MULTI-SOURCE, CSV `Sources` | labels — or worse, **articles** | the number shown to a user overstated independence |
+| `synthesisUserPrompt` (`_insights-brief.mjs`) | labels | the count fed to the LLM that **writes the published brief** |
+| `get_news_clusters` `distinctSourceCount` + `min_sources` (MCP) | labels | contradicted its own published "distinct outlets ... not one outlet filing twice" |
+| `get_keyword_spikes` diversity gate (`keyword-spike-core.js`, `trending-keywords.ts`) | labels | one newsroom's feeds alone could raise a spike alert |
+| digest notification cooldown bypass (`digest-delivery-plan.mjs`) | labels | one newsroom's extra editions bought a story past the quiet period |
 
-The client badges were the worst case: they read `sourceCount`, the **article** count, so one outlet republishing itself rendered as two sources.
+The client badges were the worst case: they read `sourceCount`, the **article** count, so one outlet republishing itself rendered as two sources. The last four rows were found by code review, not by the original sweep — the lesson is that "count the sources" is spelled a dozen different ways across a codebase this size, and grepping the obvious gate names finds only the ones you already knew about.
 
 ## Measurement
 
@@ -54,7 +58,7 @@ Two harnesses, because they answer different questions. Each computes both varia
 | 1,144 | `Yahoo Finance` + `Yahoo Finance Commodities` | Yahoo Finance |
 | 375 | `Reuters Business` + `Reuters Energy` | Reuters |
 
-**2. Live pipeline** — the current `news:digest:v1:full:en` replayed through the real `clusterItems` → `selectTopStories` → `pickBriefCluster`. 282 items, 255 clusters: corpus-eligible clusters fall 13 → 8 at families ≥ 2, and a brief lead remains available. Five of the thirteen were one publisher, including `["Reuters US","Reuters Asia"]` and `["BBC Middle East","BBC World"]`.
+**2. Live pipeline** — `news:digest:v1:full:en` replayed through the real `clusterItems` → `selectTopStories` → `pickBriefCluster`, sampled every 10 minutes for 70 minutes (8 samples). Corpus-eligible clusters fall from 10–13 to 6–8 at families ≥ 2, and **all 8 samples retained a brief lead**. In the first sample, five of the thirteen "corroborated" clusters were one publisher — including `["Reuters US","Reuters Asia"]` and `["BBC Middle East","BBC World"]`.
 
 ## Why the threshold stays at 2
 
@@ -67,12 +71,15 @@ Raising the bar again is a decision for after the map covers cross-publisher syn
 
 ## The map, and how it fails
 
-`shared/publisher-families.json` curates label → family. `shared/publisher-families.js` resolves it and **fails closed in the direction that never invents independence**: an unmapped label becomes its own namespaced family (`label:<name>`), so a new feed is never silently folded into another publisher's byline, and never disappears from the count either — it simply cannot corroborate anything but itself.
+`shared/publisher-families.js` carries the curated label → family table and resolves it. It **fails closed in the direction that never invents independence**: an unmapped label becomes its own namespaced family (`label:<name>`, case-normalized so one feed whose casing drifts between the client and server configs cannot become two publishers), so a new feed is never silently folded into another publisher's byline, and never disappears from the count either — it simply cannot corroborate anything but itself.
 
-Curated data rots both ways, so `tests/publisher-families.test.mjs` locks both:
+The table is an inline literal, not a `.json`. This module is reached by four runtimes, and the two JSON-import forms are mutually incompatible across them: `with { type: 'json' }` breaks the Vercel bundle, and a bare JSON import throws `ERR_IMPORT_ATTRIBUTE_MISSING` under Node 22+. `shared/ticker-extract.js` recorded that burn as a comment — a comment does not fail CI, and review caught this change re-introducing exactly it, so `tests/no-json-import-attributes-on-edge-path.test.mjs` now walks the real import graph from every `api/` entrypoint and fails there instead.
+
+Curated data rots in three directions, so `tests/publisher-families.test.mjs` locks all three:
 
 - **Dead entries** — a mapped label no feed config declares is a rename or a typo that silently stopped merging its publisher.
 - **Missing entries** — any two feed labels resolving to the same publisher host must land in one family. This is derived from the feed configs, so the next feed added for a publisher already in the map fails the test instead of quietly inflating a count. It earned its keep immediately: it caught a Yahoo Finance pair the hand-written map missed.
+- **Over-merges** — a family spanning several publisher hosts must declare why. Over-merging is the opposite failure: it *understates* corroboration, shrinking the eligible pool toward the #5947 dark-brief direction, and every other check here passes it. This one caught a Deutsche Welle feed-subdomain span on its first run.
 
 Aggregator hosts (`news.google.com`, feedburner, megaphone) are excluded from that invariant — two labels sharing a syndication transport prove nothing about the publisher, so those merges are curated by hand or left separate.
 

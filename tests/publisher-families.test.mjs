@@ -1,7 +1,7 @@
 /**
  * Publisher-family map contract (#6428).
  *
- * `shared/publisher-families.json` is the data every corroboration gate now
+ * `shared/publisher-families.js` carries the data every corroboration gate now
  * counts with. Curated data rots in two directions, so both are locked here:
  *
  *   - DEAD ENTRIES: a label in the map that no feed config declares is a typo
@@ -19,6 +19,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  MIN_CORROBORATING_PUBLISHERS,
   PUBLISHER_FAMILIES,
   countPublisherFamilies,
   publisherFamiliesFor,
@@ -108,13 +109,68 @@ const FEED_LABELS = collectFeedLabels();
 
 describe('publisher-families map data', () => {
   it('parsed the feed configs (guards a silently empty inventory)', () => {
+    // Sized just under the real counts at the time of writing (633 labels,
+    // 413 with a resolvable host). A loose floor is a weak guard: the
+    // extractor could lose a third of its matches and still clear it, and
+    // every assertion below would narrow silently.
     assert.ok(
-      FEED_LABELS.size > 300,
-      `expected the feed configs to yield hundreds of labels, got ${FEED_LABELS.size} — ` +
+      FEED_LABELS.size >= 600,
+      `expected ~633 labels from the feed configs, got ${FEED_LABELS.size} — ` +
         'the extractor stopped matching and every assertion below is vacuous',
     );
     const withHosts = [...FEED_LABELS.values()].filter((hosts) => hosts.size > 0).length;
-    assert.ok(withHosts > 200, `expected most labels to resolve a publisher host, got ${withHosts}`);
+    assert.ok(
+      withHosts >= 390,
+      `expected ~413 labels to resolve a publisher host, got ${withHosts} — ` +
+        'the URL extractor regressed and the host invariant now covers less than it claims',
+    );
+  });
+
+  it('never merges labels that publish from different hosts without a declared reason', () => {
+    // The host invariant above is one-directional: it proves should-be-together
+    // labels ARE together. Nothing stopped a family from wrongly folding in an
+    // independent outlet — which shrinks the eligible pool (the #5947
+    // dark-brief direction) and passes every other check here.
+    //
+    // Cross-host families are legitimate but must be deliberate, so each one is
+    // named with the reason it spans hosts.
+    const CROSS_HOST_FAMILIES = {
+      bbc: 'feeds.bbci.co.uk for the English editions, bbc.com for Afrique/Mundo',
+      dw: 'rss.dw.com feed subdomain alongside dw.com — one Deutsche Welle newsroom',
+      bloomberg: 'bloomberg.com plus tier-only "Bloomberg" and a Google News keyword feed',
+      'hacker-news': 'hnrss.org plus news.ycombinator.com ("YC News" is the HN front page)',
+      reuters: 'reuters.com plus tier-only "Reuters" and a Google News keyword feed',
+      'the-verge': 'theverge.com plus tier-only podcast labels and a Google News shows feed',
+      'y-combinator': 'ycombinator.com plus a Google News keyword feed',
+      a16z: 'a16z.com / a16z.news plus Google News keyword feeds — no single host',
+      acquired: 'podcast, reached only through Google News keyword feeds',
+      asharq: 'asharqbusiness.com and asharq.com — one newsroom, two properties',
+      ndtv: 'both labels arrive via feedburner, which identifies no publisher',
+      pivot: 'one show across a tier-only label and a megaphone.fm feed',
+    };
+
+    const offenders = [];
+    for (const [familyId, entry] of Object.entries(PUBLISHER_FAMILIES)) {
+      const hosts = new Set();
+      for (const label of entry.labels) {
+        for (const host of FEED_LABELS.get(label) ?? []) hosts.add(host);
+      }
+      if (hosts.size <= 1) continue;
+      if (familyId in CROSS_HOST_FAMILIES) continue;
+      offenders.push(`${familyId} spans ${[...hosts].sort().join(', ')}`);
+    }
+
+    assert.deepEqual(
+      offenders.sort(),
+      [],
+      'these families merge labels from different publisher hosts with no declared reason — ' +
+        'an over-merge understates corroboration and can starve the brief. Either split them, ' +
+        'or add the family to CROSS_HOST_FAMILIES with why it legitimately spans hosts:\n  ' +
+        offenders.join('\n  '),
+    );
+
+    const stale = Object.keys(CROSS_HOST_FAMILIES).filter((id) => !(id in PUBLISHER_FAMILIES));
+    assert.deepEqual(stale, [], 'CROSS_HOST_FAMILIES names families that no longer exist');
   });
 
   it('maps only labels that a feed config or the tier table declares', () => {
@@ -127,7 +183,7 @@ describe('publisher-families map data', () => {
     assert.deepEqual(
       unknown,
       [],
-      'publisher-families.json names labels no feed config declares. A renamed or ' +
+      'publisher-families.js names labels no feed config declares. A renamed or ' +
         'removed feed leaves a dead entry that stops merging its publisher:\n  ' +
         unknown.join('\n  '),
     );
@@ -187,7 +243,41 @@ describe('publisher-families map data', () => {
       [],
       'these feed labels publish from the same host but count as separate publishers, ' +
         'so one publisher can corroborate itself. Add them to a family in ' +
-        'shared/publisher-families.json:\n  ' + split.join('\n  '),
+        'shared/publisher-families.js:\n  ' + split.join('\n  '),
+    );
+  });
+});
+
+describe('corroboration threshold is one constant, not three literals', () => {
+  // #6428 review: the brief-lead gate, the seeder's entity bucket, and the
+  // digest's entity bucket all ask "how many publishers make this
+  // corroborated?" They were three separate literal 2s. Three gates that must
+  // agree, with no mechanism forcing them to, is how one of them gets tuned
+  // and the other two silently disagree.
+  const GATES = [
+    ['scripts/_clustering.mjs', /bucket\.sources\.size < MIN_CORROBORATING_PUBLISHERS/],
+    ['scripts/_clustering.mjs', /countPublisherFamilies\(cluster\?\.sources\) >= MIN_CORROBORATING_PUBLISHERS/],
+    ['server/worldmonitor/news/v1/list-feed-digest.ts', /bucket\.sources\.size < MIN_CORROBORATING_PUBLISHERS/],
+    ['scripts/seed-insights.mjs', />= MIN_CORROBORATING_PUBLISHERS/],
+  ];
+
+  for (const [file, pattern] of GATES) {
+    it(`${file} reads the shared constant (${pattern.source.slice(0, 40)}...)`, () => {
+      const src = readFileSync(resolve(ROOT, file), 'utf-8');
+      assert.match(
+        src,
+        pattern,
+        `${file} must gate on MIN_CORROBORATING_PUBLISHERS, not a bare literal — ` +
+          'a hardcoded threshold here drifts from the others the moment one is tuned',
+      );
+    });
+  }
+
+  it('exposes the threshold as a usable number', () => {
+    assert.equal(typeof MIN_CORROBORATING_PUBLISHERS, 'number');
+    assert.ok(
+      Number.isInteger(MIN_CORROBORATING_PUBLISHERS) && MIN_CORROBORATING_PUBLISHERS >= 2,
+      'below 2 no gate would require corroboration at all',
     );
   });
 });
@@ -213,9 +303,17 @@ describe('publisher-families resolution', () => {
 
   it('fails closed: an unmapped label is its own family, never merged', () => {
     const family = publisherFamilyFor('Some Brand New Feed');
-    assert.equal(family, 'label:Some Brand New Feed');
+    assert.equal(family, 'label:some brand new feed');
     assert.equal(countPublisherFamilies(['Some Brand New Feed', 'Another New Feed']), 2);
-    assert.equal(publisherNameForFamily(family), 'Some Brand New Feed');
+    assert.equal(publisherNameForFamily(family), 'some brand new feed');
+  });
+
+  it('does not let one unmapped feed become two publishers through casing drift', () => {
+    // The client and server feed configs are hand-maintained separately; a
+    // label that differs only in case between them would otherwise resolve to
+    // two singleton families and clear the two-publisher gate by itself.
+    assert.equal(publisherFamilyFor('Brand New Feed'), publisherFamilyFor('brand new feed'));
+    assert.equal(countPublisherFamilies(['Brand New Feed', 'brand new feed']), 1);
   });
 
   it('absorbs casing and whitespace drift between the feed configs', () => {

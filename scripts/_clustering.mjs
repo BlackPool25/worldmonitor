@@ -11,7 +11,11 @@ import { clusterTexts } from './shared/story-identity.js';
 // feed labels. Nine BBC editions are one publisher; the resolver collapses
 // them, and fails closed (unmapped label = its own family) so a new feed can
 // never be silently merged into someone else's byline.
-import { countPublisherFamilies, publisherFamiliesFor } from './shared/publisher-families.js';
+import {
+  MIN_CORROBORATING_PUBLISHERS,
+  countPublisherFamilies,
+  publisherFamiliesFor,
+} from './shared/publisher-families.js';
 
 const require = createRequire(import.meta.url);
 const SOURCE_TIERS = require('./shared/source-tiers.json');
@@ -281,13 +285,16 @@ export function recencyWeight(cluster, nowMs = Date.now()) {
  *
  * #6428: this used to be two feed LABELS, which two editions of one newsroom
  * satisfied. Two publishers is a strictly stronger bar at the same number, so
- * the threshold was re-measured against a live digest rather than left at 2 by
- * assumption — see docs/solutions/best-practices/corroboration-counts-publisher-families.md.
+ * the threshold was re-measured rather than left at 2 by assumption — see
+ * docs/solutions/best-practices/corroboration-counts-publisher-families.md.
+ *
+ * Re-exported from the shared module so this gate, the entity bucket below,
+ * and the digest's sibling bucket in list-feed-digest.ts cannot drift apart.
  */
-export const BRIEF_LEAD_MIN_PUBLISHERS = 2;
+export { MIN_CORROBORATING_PUBLISHERS };
 
 export function isBriefLeadEligible(cluster) {
-  return countPublisherFamilies(cluster?.sources) >= BRIEF_LEAD_MIN_PUBLISHERS
+  return countPublisherFamilies(cluster?.sources) >= MIN_CORROBORATING_PUBLISHERS
     || cluster?.entityCorroboration === true;
 }
 
@@ -336,7 +343,7 @@ export function computeEntityCorroboration(clusters, nowMs = Date.now()) {
   }
 
   for (const bucket of buckets.values()) {
-    if (bucket.sources.size < BRIEF_LEAD_MIN_PUBLISHERS) continue;
+    if (bucket.sources.size < MIN_CORROBORATING_PUBLISHERS) continue;
     for (const cluster of bucket.clusters) {
       cluster.entityCorroboration = true;
       cluster.corroborationSourceCount = Math.max(

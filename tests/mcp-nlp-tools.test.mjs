@@ -726,6 +726,77 @@ describe('#5697 NLP MCP tools', () => {
         globalThis.fetch = originalFetchImpl;
       }
     });
+
+    // #6428: the case above only exercises the SAME label twice, which a plain
+    // Set already collapses. The bug this guards is one publisher arriving
+    // under several of its OWN feed labels — the tool's documented promise is
+    // "distinct outlets ... real corroboration, not one outlet filing twice",
+    // and a label count cannot keep it.
+    it('counts one publisher once across its own feed labels', async () => {
+      const originalFetchImpl = globalThis.fetch;
+      const digest = (sources) => ({
+        generatedAt: '2026-07-28T12:00:00.000Z',
+        categories: {
+          politics: {
+            items: sources.map((source, i) => ({
+              source,
+              title: `Sanctions package advances through committee ${'vote '.repeat(i)}`.trim(),
+              link: `https://s/${i}`,
+              publishedAt: 1785405600000 + i * 1000,
+              isAlert: false,
+            })),
+          },
+        },
+      });
+      const serve = (sources) => {
+        globalThis.fetch = async (input, init = {}) => {
+          const url = String(input);
+          if (url.includes('/api/news/v1/list-feed-digest')) {
+            requests.push({ url, init });
+            return Response.json(digest(sources));
+          }
+          return originalFetchImpl(input, init);
+        };
+      };
+
+      try {
+        serve(['Reuters World', 'Reuters US', 'Reuters Business']);
+        const oneWire = await callTool('get_news_clusters', { min_sources: 1 });
+        assert.equal(oneWire.result.totalClusters, 1, 'fixture must cluster into one story');
+        assert.equal(
+          oneWire.result.clusters[0].distinctSourceCount,
+          1,
+          'three Reuters feed labels are one publisher',
+        );
+        assert.equal(
+          oneWire.result.clusters[0].memberCount,
+          3,
+          'memberCount stays the article count — it is a volume signal, not corroboration',
+        );
+        assert.deepEqual(
+          oneWire.result.clusters[0].sources,
+          ['Reuters World', 'Reuters US', 'Reuters Business'],
+          'the label list stays intact for attribution',
+        );
+
+        serve(['Reuters World', 'Reuters US', 'Reuters Business']);
+        const filtered = await callTool('get_news_clusters', { min_sources: 2 });
+        assert.equal(
+          filtered.result.clusters.length,
+          0,
+          'min_sources filters on publishers, so one wire cannot satisfy min_sources: 2',
+        );
+
+        // Premise check: three real publishers must still pass, or the two
+        // assertions above would hold on a clustering failure instead.
+        serve(['Reuters World', 'BBC World', 'Al Jazeera']);
+        const genuine = await callTool('get_news_clusters', { min_sources: 2 });
+        assert.equal(genuine.result.clusters.length, 1);
+        assert.equal(genuine.result.clusters[0].distinctSourceCount, 3);
+      } finally {
+        globalThis.fetch = originalFetchImpl;
+      }
+    });
   });
 
   describe('get_keyword_spikes', () => {
