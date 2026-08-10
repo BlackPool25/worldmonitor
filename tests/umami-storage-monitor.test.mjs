@@ -213,8 +213,23 @@ describe('Umami storage monitor', () => {
 
   it('wires the read-only Railway check and bounded SQL contract', () => {
     assert.match(workflowSource, /railway volume .* list --json/);
-    assert.match(workflowSource, /actions\/cache@/);
     assert.match(workflowSource, /check-umami-storage\.mjs/);
+
+    // The combined actions/cache declares `post-if: success()`, so its save is
+    // skipped whenever the job fails — and this job can now fail on the
+    // retention runner alarm. Split restore/save, with the save unconditional,
+    // is what keeps the growth baseline accumulating across a red run.
+    const saveStep = workflow.jobs.monitor.steps.find(
+      (step) => (step.uses ?? '').startsWith('actions/cache/save@'),
+    );
+    assert.match(workflowSource, /actions\/cache\/restore@/);
+    assert.ok(saveStep, 'the growth baseline must be saved by an explicit step');
+    assert.equal(saveStep.if, '${{ !cancelled() }}');
+    assert.doesNotMatch(
+      workflowSource,
+      /uses: actions\/cache@/,
+      'the combined action would drop the sample on any failing run',
+    );
     assert.match(retentionSql, /LIMIT 10000/);
     assert.match(retentionSql, /64 \* 1024 \* 1024/);
     assert.doesNotMatch(executableRetentionSql, /\bTRUNCATE\b/);
@@ -304,6 +319,28 @@ describe('Umami storage monitor', () => {
       Number(timeout) >= 120,
       `statement_timeout ${timeout}s is inside the measured cold-batch range`,
     );
+  });
+
+  it('keeps the runbook numbers equal to the numbers the SQL actually uses', () => {
+    // The runbook states the horizon and the timeout as fact, and an operator
+    // mid-incident reads it as the live value. Nothing but this test stops the
+    // SQL moving and the prose staying put — the timeout assertion above is a
+    // floor on purpose (it encodes the measured cold-batch constraint, not one
+    // blessed number), so a floor alone would let 300 -> 180 pass silently.
+    const runbook = readFileSync(
+      new URL('../docs/analytics-collector-operations.md', import.meta.url),
+      'utf8',
+    );
+
+    const [, documentedHorizon] = runbook.match(/\*\*The horizon is ([^.*]+)\.\*\*/u) ?? [];
+    const [, declaredHorizon] = executableRetentionSql.match(/\\set\s+retention_horizon\s+'([^']+)'/u) ?? [];
+    assert.ok(documentedHorizon, 'the runbook must state the horizon');
+    assert.equal(documentedHorizon, declaredHorizon);
+
+    const [, documentedTimeout] = runbook.match(/\*\*`statement_timeout` is (\d+)s/u) ?? [];
+    const [, declaredTimeout] = executableRetentionSql.match(/SET statement_timeout = '(\d+)s';/u) ?? [];
+    assert.ok(documentedTimeout, 'the runbook must state the statement timeout');
+    assert.equal(documentedTimeout, declaredTimeout);
   });
 
   it('supersedes stale probes without broadening production credential access', () => {

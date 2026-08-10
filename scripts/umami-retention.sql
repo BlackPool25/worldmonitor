@@ -43,8 +43,14 @@ SELECT NOT pg_try_advisory_lock(hashtextextended('worldmonitor.umami.retention',
 -- probes of the delete itself, at ~1.5ms each — and roughly four times that
 -- when the pages are cold. The previous 60s sat inside that range, so the tick
 -- died on the cold half and rolled the whole transaction back (#6375). 300s
--- clears the cold case with margin and still leaves a tick far short of the
--- 15-minute cron period.
+-- clears the cold case with margin.
+--
+-- This is a PER-STATEMENT budget, so it does not bound the tick: eight
+-- statements could in principle run ~40 minutes, well past the 15-minute cron
+-- period. That is survivable only because of the try-lock above — a tick that
+-- arrives while the previous one is still working skips and exits 0 instead of
+-- piling up or crashing. If you ever replace that lock with a blocking one,
+-- this timeout becomes a wall-clock problem and needs a session deadline.
 SET statement_timeout = '300s';
 SET lock_timeout = '5s';
 
@@ -52,8 +58,15 @@ SET lock_timeout = '5s';
 -- single slow statement discarded every earlier statement's finished work: the
 -- production log for the 2026-08-10 12:22 tick reported `DELETE 1369`, then
 -- cancelled the next statement on the timeout, and threw both away. Ordering
--- still runs children before parents, so an aborted tick can only ever leave
--- the database further along, never inconsistent.
+-- still runs children before parents, so an aborted tick leaves the database
+-- further along rather than half-torn.
+--
+-- The precise guarantee, since there are no foreign keys here: every child that
+-- EXISTED when the parent delete's statement snapshot opened is gone before its
+-- parent. Under READ COMMITTED that says nothing about a child inserted after
+-- that snapshot — the collector could in principle orphan one. It does not,
+-- because it only ever writes children for events it is creating now, and this
+-- file only ever deletes parents older than the horizon.
 
 -- Event data goes first, and is bounded by its OWN created_at rather than by a
 -- join to the parent event. Joining to the parent made this statement scan

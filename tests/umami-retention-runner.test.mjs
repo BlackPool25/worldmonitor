@@ -94,6 +94,13 @@ describe('Umami retention runner check (#6375)', () => {
       [[], 'NO_DEPLOYMENTS'],
       [[record({ status: 'SKIPPED' }), record({ id: 'b', status: 'SKIPPED' })], 'NO_RUNNING_DEPLOYMENT'],
       [[record({ status: 'BRAND_NEW_RAILWAY_STATUS' })], 'UNKNOWN_STATUS'],
+      // A truncated read is not evidence of a healthy tick. Before this guard,
+      // [{"status":"SUCCESS"}] exited 0 and printed HEALTHY.
+      [[{ status: 'SUCCESS' }], 'INCOMPLETE_RECORD'],
+      [[{ status: 'SUCCESS', id: 'deployment-1' }], 'INCOMPLETE_RECORD'],
+      [[{ status: 'SUCCESS', createdAt: '2026-08-10T12:38:21.680Z' }], 'INCOMPLETE_RECORD'],
+      [[record({ createdAt: 'not-a-timestamp' })], 'INCOMPLETE_RECORD'],
+      [[record({ id: '' })], 'INCOMPLETE_RECORD'],
     ];
 
     for (const [payload, verdict] of cases) {
@@ -103,7 +110,21 @@ describe('Umami retention runner check (#6375)', () => {
     }
   });
 
-  it('does not let an unmodelled status be skipped past to a healthier record', () => {
+  it('ignores an unmodelled status older than the record that decides health', () => {
+    // REMOVING is the transition every superseded deployment passes through.
+    // Alarming on one sitting behind the deciding record would hold the
+    // 15-minute workflow red forever over a record with no bearing on health.
+    const result = evaluateRetentionRunner([
+      record({ id: 'new', status: 'SUCCESS', createdAt: '2026-08-10T13:00:00.000Z' }),
+      record({ id: 'stale', status: 'REMOVING', createdAt: '2026-08-09T12:00:00.000Z' }),
+    ]);
+
+    assert.equal(result.verdict, 'HEALTHY');
+    assert.equal(result.alarming, false);
+    assert.equal(result.deploymentId, 'new');
+  });
+
+  it('still alarms on an unmodelled status that hides the deciding record', () => {
     // newestRunning() ignores any status it does not know, so without the
     // explicit guard a new Railway state would silently select an older
     // SUCCESS and report HEALTHY.
@@ -127,8 +148,21 @@ describe('Umami retention runner check (#6375)', () => {
 
     assert.equal(crashed.status, 1);
     assert.match(crashed.stdout, /Umami retention runner CRASHED/);
-    assert.match(crashed.stderr, /::error::/);
+    assert.match(crashed.stderr, /::error::CRASHED/);
     assert.match(crashed.stderr, new RegExp(RETENTION_RUNNER_SERVICE));
+    // The tick commits per statement now, so a crash is partial, not void.
+    // Telling an operator nothing was retired sends them hunting the wrong bug.
+    assert.doesNotMatch(crashed.stdout, /rolled back|no rows were retired/);
+
+    // A read we could not make is not a statement about the database.
+    const unreadable = runCli([{ status: 'SKIPPED', id: 'a', createdAt: '2026-08-10T12:00:00.000Z' }]);
+    assert.equal(unreadable.status, 1);
+    assert.doesNotMatch(
+      unreadable.stderr,
+      /Umami Postgres will fill/,
+      'only CRASHED may claim the database is filling',
+    );
+    assert.match(unreadable.stderr, /unobserved/);
 
     const healthy = runCli([record()]);
     assert.equal(healthy.status, 0);
@@ -154,6 +188,20 @@ describe('Umami retention runner check (#6375)', () => {
     assert.match(readStep.run, new RegExp(`--service ${RETENTION_RUNNER_SERVICE}`));
     const [, limit] = readStep.run.match(/--limit (\d+)/) ?? [];
     assert.equal(Number(limit), RETENTION_HISTORY_WINDOW);
+    // Without these the Railway CLI call is unauthenticated and the step fails
+    // closed on every run — noisy, and it buries the signal it exists to carry.
+    assert.deepEqual(Object.keys(readStep.env ?? {}).sort(), ['RAILWAY_PROJECT_ID', 'RAILWAY_TOKEN']);
+    assert.equal(readStep.env.RAILWAY_TOKEN, '${{ secrets.RAILWAY_PRODUCTION_TOKEN }}');
+    assert.equal(readStep.env.RAILWAY_PROJECT_ID, '${{ vars.RAILWAY_PROJECT_ID }}');
+
+    // The runbook hands the operator the same command to run by hand. A shallower
+    // window there returns push refusals and hides the tick they came to look at.
+    const runbook = readFileSync(
+      new URL('../docs/analytics-collector-operations.md', import.meta.url),
+      'utf8',
+    );
+    const [, documentedLimit] = runbook.match(/--service umami-retention --limit (\d+)/u) ?? [];
+    assert.equal(Number(documentedLimit), RETENTION_HISTORY_WINDOW);
   });
 
   it('runs the runner alarm even when the capacity step already failed', () => {

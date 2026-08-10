@@ -22,6 +22,7 @@ import { parseArgs as parseNodeArgs } from 'node:util';
 import { isMainModule } from './lib/main-module.mjs';
 import {
   REJECTED_STATUS,
+  createdAtMs,
   isKnownStatus,
   newestRunning,
   orderByRecency,
@@ -29,11 +30,14 @@ import {
 
 export const RETENTION_RUNNER_SERVICE = 'umami-retention';
 
-// Deep enough that ordinary push traffic cannot bury the newest tick record.
-// Every push to main writes a SKIPPED refusal for this service ("No changes to
-// watched files"), and those arrive far faster than the 4 ticks/hour, so a
-// shallow window can contain nothing but refusals.
-export const RETENTION_HISTORY_WINDOW = 20;
+// Deep enough that ordinary push traffic cannot bury the record that decides
+// health. A cron tick does NOT create a deployment record — it re-runs the
+// active one — so the record we need is written only by a deploy or redeploy
+// and can be days old while the service is perfectly healthy. Meanwhile every
+// push to main writes a SKIPPED refusal for this service ("No changes to
+// watched files"), so refusals accumulate and the record we want sinks. Depth
+// is the only defence, and it costs the same single CLI call either way.
+export const RETENTION_HISTORY_WINDOW = 200;
 
 export function normalizeDeploymentRows(payload) {
   if (Array.isArray(payload)) return payload;
@@ -65,19 +69,27 @@ export function evaluateRetentionRunner(payload) {
     };
   }
 
-  const unknown = rows.find((row) => !isKnownStatus(row?.status));
+  const ordered = orderByRecency(rows);
+  const running = newestRunning(ordered);
+
+  // Only an unmodelled status NEWER than the selected record can change the
+  // verdict, by hiding a record that should have been chosen instead. Scanning
+  // the whole window instead would let one stale `REMOVING` — the transition
+  // every superseded deployment passes through — hold the alarm red forever
+  // over a record that has no bearing on the answer.
+  const runningAtMs = running ? createdAtMs(running) : Number.NEGATIVE_INFINITY;
+  const unknown = ordered.find(
+    (row) => !isKnownStatus(row?.status) && createdAtMs(row) >= runningAtMs,
+  );
   if (unknown) {
-    // A status this repo does not model makes "which record ran" a guess, and
-    // newestRunning would silently skip past it to an older, healthier record.
     return {
       verdict: 'UNKNOWN_STATUS',
       alarming: true,
-      detail: `Railway reported an unmodelled deployment status ${JSON.stringify(unknown?.status ?? null)}`,
+      detail: `Railway reported an unmodelled deployment status ${JSON.stringify(unknown?.status ?? null)} `
+        + 'newer than the newest record that ran, so which record decides health is a guess',
     };
   }
 
-  const ordered = orderByRecency(rows);
-  const running = newestRunning(ordered);
   if (!running) {
     const refusals = ordered.filter((row) => row?.status === REJECTED_STATUS).length;
     return {
@@ -88,6 +100,22 @@ export function evaluateRetentionRunner(payload) {
     };
   }
 
+  // A record carrying a status and nothing else is not evidence of a healthy
+  // tick, it is a truncated read. Without this, `[{"status":"SUCCESS"}]` exits
+  // 0 and reports HEALTHY — a green alarm built on a record that identifies no
+  // deployment and names no time.
+  const identified = typeof running.id === 'string' && running.id.length > 0;
+  const timed = Number.isFinite(Date.parse(running.createdAt ?? ''));
+  if (!identified || !timed) {
+    return {
+      verdict: 'INCOMPLETE_RECORD',
+      alarming: true,
+      status: running.status,
+      detail: 'the newest running deployment record is missing its id or a parseable createdAt, '
+        + 'so it cannot be trusted as proof a tick ran',
+    };
+  }
+
   const crashed = running.status === 'CRASHED';
   return {
     verdict: crashed ? 'CRASHED' : 'HEALTHY',
@@ -95,8 +123,13 @@ export function evaluateRetentionRunner(payload) {
     deploymentId: running.id ?? null,
     status: running.status,
     createdAt: running.createdAt ?? null,
+    // Precise, because this sentence is what someone reads at 03:00. The tick
+    // no longer runs in one transaction, so a crash does NOT mean nothing was
+    // retired — statements that committed before the failure stand, and every
+    // statement after it never ran. The tick is partial, not void.
     detail: crashed
-      ? 'the retention tick exited non-zero, so its transaction rolled back and no rows were retired'
+      ? 'the newest retention tick exited non-zero: statements before the failure committed, '
+        + 'statements after it never ran, so the tick retired less than a full pass'
       : 'the newest retention deployment that ran did not crash',
   };
 }
@@ -133,10 +166,15 @@ async function main() {
   const result = evaluateRetentionRunner(readJson(inputPath));
   console.log(describe(result));
   if (result.alarming) {
-    console.error(
-      `::error::The ${RETENTION_RUNNER_SERVICE} cron service is not retiring rows; `
-        + 'Umami Postgres will fill until it is fixed.',
-    );
+    // Only CRASHED is a statement about the database. The other alarming
+    // verdicts mean we could not read Railway well enough to judge — an
+    // expired token, an API blip, a renamed service, a status we do not model.
+    // Both fail the run, but telling an operator "Postgres will fill" when the
+    // truth is "the token expired" is how an alarm loses its audience.
+    const consequence = result.verdict === 'CRASHED'
+      ? `The ${RETENTION_RUNNER_SERVICE} cron service is failing, so Umami Postgres will fill until it is fixed.`
+      : `Could not establish whether ${RETENTION_RUNNER_SERVICE} is retiring rows, so it is unobserved.`;
+    console.error(`::error::${result.verdict}: ${result.detail}. ${consequence}`);
     process.exitCode = 1;
   }
 }

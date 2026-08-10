@@ -188,6 +188,23 @@ schema state requires the recorded database backup.
 statement reads that declaration — the tables must never carry their own
 interval literal.
 
+> **Take a backup before merging any change to `retention_horizon`.** Shortening
+> the horizon is irreversible and it ships itself: `scripts/umami-retention.sql`
+> is a watched path for the `umami-retention` service
+> (`scripts/railway-services.json`), `railway-deploy-trigger.yml` redeploys
+> watched-path services automatically once main goes green, and the next cron
+> tick lands within 15 minutes. There is no review step between the merge button
+> and the first bulk delete.
+>
+> Railway does **not** back this volume up for you — checked 2026-08-10, the
+> `Postgres Umami` volume instance has an **empty backup schedule** and only
+> two ad-hoc backups (2026-08-02, 2026-08-04). Assume no restore point exists
+> unless you just made one.
+>
+> So, in order: take a fresh backup of the `Postgres Umami` volume, record its
+> ID in the PR description, and only then merge. Lengthening the horizon needs
+> no backup — it deletes strictly less.
+
 30 days is a capacity number, not a preference. Size any future change the same
 way, from measured bytes per retained day rather than from how much history
 feels nice to keep:
@@ -201,11 +218,22 @@ feels nice to keep:
 | **Cost per retained day** | **~0.9 GB** |
 | Railway volume | 50 GB |
 
-At ~0.9 GB/day a 30-day window settles near 27 GB, or 54 % of the volume. The
-90-day window this file used until #6375 needed about 79 GB and could never fit;
-the volume was projected full in 27.7 days. Grow the volume before growing the
-horizon, and re-measure both intake and bytes/row first — bytes/row is dominated
-by Umami's index set, so it moves whenever the schema does.
+At ~0.9 GB/day a 30-day window settles near 27 GB of **logical** data, or 54 %
+of the volume. The 90-day window this file used until #6375 needed about 79 GB
+and could never fit; the volume was projected full in 27.7 days. Grow the volume
+before growing the horizon, and re-measure both intake and bytes/row first —
+bytes/row is dominated by Umami's index set, so it moves whenever the schema
+does.
+
+**Expect the volume reading to plateau, not to fall.** `DELETE` marks tuples
+dead; autovacuum makes that space reusable *inside* the relation but does not
+return it to the filesystem. So the success signal after a horizon cut is that
+`currentSizeMB` stops climbing while the logical size drops — not that the
+number goes down. The monitor is built for this: growth at or below zero makes
+projected headroom infinite, and 68.9 % usage is well under the 80 % warning.
+If you ever need the space back for real, that is a separate, scheduled
+`pg_repack` on `website_event` (its 18 GB of indexes is where the bloat sits),
+not something this job can do.
 
 A controlled maintenance process runs the file once per tick; no statement
 loops inside one invocation. Each delete is capped at 10,000 rows,
@@ -252,6 +280,27 @@ SELECT count(*), min(d.created_at - e.created_at), max(d.created_at - e.created_
 FROM event_data d JOIN website_event e ON e.event_id = d.website_event_id
 WHERE d.created_at >= now() - interval '3 days';
 ```
+
+### After a horizon change ships
+
+The runner alarm only proves the tick did not crash. It cannot tell you the tick
+retired the *right* rows. Run this read-only query after the first few ticks, and
+again a day later — `over_horizon` must fall monotonically toward zero, and
+`oldest` must walk forward:
+
+```sql
+SELECT 'website_event' AS table_name, min(created_at) AS oldest, max(created_at) AS newest,
+       count(*) FILTER (WHERE created_at < now() - interval '30 days') AS over_horizon
+FROM website_event
+UNION ALL
+SELECT 'event_data', min(created_at), max(created_at),
+       count(*) FILTER (WHERE created_at < now() - interval '30 days')
+FROM event_data;
+```
+
+A frozen `oldest` with a non-zero `over_horizon` across several ticks is the
+#6375 signature — the tick is running but committing nothing. Read the active
+deployment's runtime logs next, not its status.
 
 The contract preserves website configuration and saved replay definitions.
 Before enabling the job, take a database backup and verify the table names
@@ -332,7 +381,7 @@ To read what the last tick actually did:
 
 ```
 railway deployment list --project "$RAILWAY_PROJECT_ID" --environment production \
-  --service umami-retention --limit 20 --json
+  --service umami-retention --limit 200 --json
 ```
 
 Every push to `main` writes a `SKIPPED` refusal ("No changes to watched files")
