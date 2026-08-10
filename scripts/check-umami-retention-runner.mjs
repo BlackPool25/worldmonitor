@@ -135,7 +135,26 @@ export function evaluateRetentionRunner(payload) {
 }
 
 function readJson(path) {
-  return JSON.parse(readFileSync(path, 'utf8'));
+  const raw = readFileSync(path, 'utf8');
+  // The workflow's `railway ... > file` redirect creates the file before the
+  // CLI runs, so a Railway-side failure leaves an empty or half-written file
+  // rather than no file. Bare `JSON.parse` then reports "Unexpected end of
+  // JSON input", which sends the reader looking for a bug in this check
+  // instead of at the step above it.
+  if (raw.trim() === '') {
+    throw new Error(
+      `${path} is empty — the Railway read that writes it did not complete; `
+        + 'check the "Read retention runner deployments" step for the real error',
+    );
+  }
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    throw new Error(
+      `${path} is not valid JSON (${error.message}) — it is most likely a truncated `
+        + 'Railway response; check the "Read retention runner deployments" step',
+    );
+  }
 }
 
 export function parseArguments(argv) {

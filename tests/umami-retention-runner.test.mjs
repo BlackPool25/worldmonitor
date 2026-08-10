@@ -170,6 +170,27 @@ describe('Umami retention runner check (#6375)', () => {
     assert.doesNotMatch(healthy.stderr, /::error::/);
   });
 
+  it('names the failing step when the Railway read left an empty or torn file', () => {
+    // `railway ... > file` creates the file before the CLI runs, so a
+    // Railway-side failure leaves an empty or half-written file, not no file.
+    // Both must fail, and both must point at the step that actually broke.
+    const directory = mkdtempSync(join(tmpdir(), 'wm-umami-retention-torn-'));
+    try {
+      for (const [name, contents] of [['empty', ''], ['torn', '[{"status":"SUCC']]) {
+        const inputPath = join(directory, `${name}.json`);
+        writeFileSync(inputPath, contents);
+        const run = spawnSync(process.execPath, [checkScript, '--input', inputPath], {
+          encoding: 'utf8',
+        });
+
+        assert.equal(run.status, 1, `${name} input must fail closed`);
+        assert.match(run.stderr, /Read retention runner deployments/, `${name} must name the real step`);
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('fails closed when the input is missing rather than passing silently', () => {
     const missing = spawnSync(
       process.execPath,
