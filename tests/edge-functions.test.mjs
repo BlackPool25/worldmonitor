@@ -56,6 +56,11 @@ describe('scripts/shared/ stays in sync with shared/', () => {
     'brief-llm-core.js',
     'brief-llm-core.d.ts',
     'correlation-runtime-mode.js',
+    // #6428: publisher-family resolution for corroboration counting, consumed
+    // by scripts/_clustering.mjs (Railway rootDirectory=scripts) and by the
+    // edge digest. Must stay byte-identical.
+    'publisher-families.js',
+    'publisher-families.d.ts',
     // U6/U7: pure URL classifier consumed by the brief filter (edge) AND
     // by the audit script under scripts/. Must stay byte-identical.
     'url-classifier.js',
