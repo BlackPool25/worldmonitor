@@ -21,7 +21,7 @@
  * about the wire it came from: the ingest parser stamps `item.source =
  * feed.name` (server/worldmonitor/news/v1/list-feed-digest.ts) and drops the
  * RSS `<source>` element that names the originating publisher. Recovering
- * that is tracked separately; it is a parser change, not a map change.
+ * that is tracked in #6430; it is a parser change, not a map change.
  */
 import PUBLISHER_FAMILY_DATA from './publisher-families.json' with { type: 'json' };
 

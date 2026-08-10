@@ -78,12 +78,13 @@ Aggregator hosts (`news.google.com`, feedburner, megaphone) are excluded from th
 
 ## Known limit: cross-publisher syndication
 
-This map collapses **one publisher's own labels**. It cannot see that an unrelated outlet reprinted a Reuters wire, because the feed label carries no information about the wire: the ingest parser stamps `item.source = feed.name` and drops the RSS `<source>` element that names the originating publisher. Recovering that is a parser change, not a map change, and it is tracked separately. Until then a corroboration count is an upper bound on independence — a much tighter one than before, but still an upper bound.
+This map collapses **one publisher's own labels**. It cannot see that an unrelated outlet reprinted a Reuters wire, because the feed label carries no information about the wire: the ingest parser stamps `item.source = feed.name` and drops the RSS `<source>` element that names the originating publisher. Recovering that is a parser change, not a map change, and it is tracked in [#6430](https://github.com/koala73/worldmonitor/issues/6430). Until then a corroboration count is an upper bound on independence — a much tighter one than before, but still an upper bound.
 
-The same limit applies to the ~87 keyword-query Google News feeds ("Oil & Gas", "AI News"), which identify a *query*, not a publisher. Where such a feed is named after a publisher (`Reuters Crypto`, `Bloomberg Crypto`, `a16z Insights`) it is folded into that publisher's family — the conservative direction. The rest stay their own family under the fail-closed default.
+The same limit applies to the keyword-query Google News feeds ("Oil & Gas", "AI News") — 82 of the 366 labels in the server digest config — which identify a *query*, not a publisher. Where such a feed is named after a publisher (`Reuters Crypto`, `Bloomberg Crypto`, `a16z Insights`) it is folded into that publisher's family — the conservative direction. The rest stay their own family under the fail-closed default.
 
 ## Related
 
 - [source-label-rrf-needs-independent-corroboration](./source-label-rrf-needs-independent-corroboration.md) — the record that named this failure mode and deferred [#5991](https://github.com/koala73/worldmonitor/issues/5991) for it
 - [#5947](https://github.com/koala73/worldmonitor/issues/5947) — why the brief reserves a slot for a corroborated cluster, and why the eligible pool must not go thin
+- [#6430](https://github.com/koala73/worldmonitor/issues/6430) — the parser drops the RSS `<source>` element that would close the cross-publisher half
 - [#5981](https://github.com/koala73/worldmonitor/issues/5981) — entity-resolution-first correlation epic
