@@ -20,6 +20,7 @@ import {
   DIPLOMACY_KEYWORDS,
   ENTITY_BIGRAMS,
 } from './_clustering.mjs';
+import { countPublisherFamilies } from './shared/publisher-families.js';
 import { extractCountryCode } from './shared/geo-extract.mjs';
 import { buildChinaNewsCoverage } from './_china-news-coverage.mjs';
 import { unwrapEnvelope } from './_seed-envelope-source.mjs';
@@ -862,7 +863,12 @@ async function fetchInsights() {
     });
   }
 
-  const multiSourceCount = clusters.filter(c => (c.sources?.length ?? 0) >= 2 || c.entityCorroboration === true).length;
+  // #6428: "multi-source" is a claim about publishers. Counting c.sources
+  // counted feed labels, so a cluster carried only by one newsroom's own
+  // editions was published as multi-source.
+  const multiSourceCount = clusters.filter(
+    c => countPublisherFamilies(c.sources) >= 2 || c.entityCorroboration === true,
+  ).length;
   const fastMovingCount = 0; // velocity not available in digest items
 
   const enrichedStories = topStories.map(story => {
@@ -879,7 +885,12 @@ async function fetchInsights() {
       primaryLink: story.primaryLink,
       pubDate: story.pubDate,
       sourceCount: story.sourceCount,
-      uniqueSourceCount: Array.isArray(story.sources) ? story.sources.length : 0,
+      // #6428: uniqueSourceCount is the corroboration breadth number every
+      // consumer (InsightsPanel badge, MCP get_news_intelligence) quotes back
+      // to a user, so it counts PUBLISHERS. `sources` stays the label list —
+      // it is what the UI credits and links, and collapsing it would drop
+      // attribution the publisher is owed.
+      uniqueSourceCount: countPublisherFamilies(story.sources),
       sources: Array.isArray(story.sources) ? story.sources : [],
       lastUpdated: story.lastUpdated,
       memberTitles: Array.isArray(story.memberTitles) ? story.memberTitles : [story.primaryTitle],

@@ -113,7 +113,9 @@ export function collectStoryData(
     news: sortedNews.slice(0, 5).map(n => ({
       title: n.primaryTitle,
       threatLevel: (n.threat?.level || 'info') as ThreatLevel,
-      sourceCount: n.sourceCount,
+      // #6428: the shared story card renders "N sources" — publishers, not
+      // articles (see story-renderer.ts).
+      sourceCount: n.uniquePublisherCount,
     })),
     theater: theater ? {
       theaterName: theater.theaterName,

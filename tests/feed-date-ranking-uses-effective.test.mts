@@ -77,32 +77,32 @@ const ALLOW_LIST: AllowEntry[] = [
   // characterized behavior-identical).
   {
     file: 'shared/news-clustering-core.js',
-    line: 55,
+    line: 59,
     reason: 'effectivePubDateMs implementation — the helper itself necessarily calls .getTime() on the underlying Date.',
   },
   {
     file: 'shared/news-clustering-core.js',
-    line: 66,
+    line: 70,
     reason: 'effectivePubDateMs implementation — string-input branch reconstructs Date and reads getTime; covered by the finite guard on the same line.',
   },
   {
     file: 'shared/news-clustering-core.js',
-    line: 107,
+    line: 111,
     reason: 'generateClusterId sort produces a stable identity string from earliest pubDate; not a freshness comparator.',
   },
   {
     file: 'shared/news-clustering-core.js',
-    line: 109,
+    line: 113,
     reason: 'generateClusterId uses earliest pubDate.getTime() in the identity string prefix.',
   },
   {
     file: 'shared/news-clustering-core.js',
-    line: 205,
+    line: 209,
     reason: 'cluster date aggregation for firstSeen/lastUpdated metadata; not a per-item ranking comparator.',
   },
   {
     file: 'src/services/clustering.ts',
-    line: 138,
+    line: 139,
     reason: 'allDates aggregation for cluster firstSeen/lastUpdated metadata; not a per-item ranking comparator.',
   },
   {
