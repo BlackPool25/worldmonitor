@@ -675,6 +675,8 @@
       "scripts/shared/country-names.json",
       "scripts/shared/diplomacy-keywords.json",
       "scripts/shared/geo-extract.mjs",
+      "scripts/shared/publisher-families.js",
+      "scripts/shared/publisher-families.json",
       "scripts/shared/source-tiers.json",
       "scripts/shared/story-identity.js"
     ],
