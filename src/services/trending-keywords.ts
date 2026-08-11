@@ -23,7 +23,7 @@ import {
   isLikelyProperNoun,
   toTermKey,
 } from '../../shared/keyword-spike-core.js';
-import { publisherFamilyFor, publisherNameForFamily } from '../../shared/publisher-families.js';
+import { PUBLISHER_FAMILIES, publisherFamilyFor } from '../../shared/publisher-families.js';
 import { t } from '@/services/i18n';
 
 export { extractEntities };
@@ -334,7 +334,11 @@ function distinctPublisherNames(headlines: StoredHeadline[]): string[] {
   for (const headline of headlines) {
     const family = publisherFamilyFor(headline.source);
     if (!family || byFamily.has(family)) continue;
-    byFamily.set(family, publisherNameForFamily(family));
+    // A curated family displays its publisher name ("BBC" for "BBC Africa").
+    // An unmapped label displays its own original text — the singleton family
+    // id is case-normalized so counting cannot be fooled by casing drift, and
+    // that normalized id is a key, not something to show a user.
+    byFamily.set(family, PUBLISHER_FAMILIES[family]?.publisher ?? headline.source.trim());
   }
   return [...byFamily.values()];
 }

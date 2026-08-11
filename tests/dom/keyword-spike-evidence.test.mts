@@ -407,6 +407,57 @@ describe('keyword_spike payload excludes unusable source names from the count', 
     expect(data.sourceCount).toBe(3);
   });
 
+  // #6428: "mentioned in N different news sources" is a corroboration claim.
+  // headline.source is a FEED LABEL and one newsroom ships many, so a
+  // label-keyed count let a single publisher raise the alert on its own.
+  it('counts one publisher once across its own feed labels', async () => {
+    await initTestI18n();
+    updateTrendingConfig({
+      blockedTerms: [],
+      minSpikeCount: 5,
+      spikeMultiplier: 3,
+      autoSummarize: false,
+    });
+    const pubDate = new Date();
+    ingestHeadlines([
+      { source: 'Reuters World', title: 'Ports brace for Kelmarq tariff review', link: 'https://example.com/k/1' },
+      { source: 'Reuters US', title: 'Growers protest Kelmarq tariff schedule', link: 'https://example.com/k/2' },
+      { source: 'Reuters Business', title: 'Retailers model Kelmarq tariff costs', link: 'https://example.com/k/3' },
+      { source: 'Reuters Asia', title: 'Analysts weigh Kelmarq tariff fallout', link: 'https://example.com/k/4' },
+      { source: 'Reuters Energy', title: 'Traders watch Kelmarq tariff deadline', link: 'https://example.com/k/5' },
+    ].map(item => ({ ...item, pubDate })));
+
+    // Five Reuters desks are one publisher, so the two-publisher gate rejects
+    // the spike outright — no signal is emitted at all.
+    await expect(drainSpikeFor(/kelmarq/i)).rejects.toThrow();
+  });
+
+  it('still counts genuinely independent publishers, and names them once each', async () => {
+    await initTestI18n();
+    updateTrendingConfig({
+      blockedTerms: [],
+      minSpikeCount: 5,
+      spikeMultiplier: 3,
+      autoSummarize: false,
+    });
+    const pubDate = new Date();
+    ingestHeadlines([
+      { source: 'Reuters World', title: 'Ports brace for Zorvane tariff review', link: 'https://example.com/z/1' },
+      { source: 'Reuters US', title: 'Growers protest Zorvane tariff schedule', link: 'https://example.com/z/2' },
+      { source: 'BBC World', title: 'Retailers model Zorvane tariff costs', link: 'https://example.com/z/3' },
+      { source: 'BBC Africa', title: 'Analysts weigh Zorvane tariff fallout', link: 'https://example.com/z/4' },
+      { source: 'Al Jazeera', title: 'Traders watch Zorvane tariff deadline', link: 'https://example.com/z/5' },
+    ].map(item => ({ ...item, pubDate })));
+
+    const signal = await drainSpikeFor(/zorvane/i);
+    const data = dataOf(signal);
+    // Two Reuters desks and two BBC editions collapse to their publishers, so
+    // the count the user reads and the chips beside it are both three — the
+    // #6414 invariant, now stated in publishers.
+    expect([...(data.sourceNames ?? [])].sort()).toEqual(['Al Jazeera', 'BBC', 'Reuters']);
+    expect(data.sourceCount).toBe(3);
+  });
+
   it('does not let a blank source satisfy the minimum-source gate', async () => {
     await initTestI18n();
     updateTrendingConfig({
