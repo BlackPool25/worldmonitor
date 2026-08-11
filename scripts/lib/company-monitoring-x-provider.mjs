@@ -929,7 +929,7 @@ export function createXRecentSearchExecutor(options = {}) {
     const availableStart = Math.min(work.windowEnd - 1, Math.max(work.windowStart, retentionStart));
     const returnedWindow = { startAt: availableStart, endAt: work.windowEnd };
     const reconciledPosts = [];
-    let complianceEvents = [];
+    const complianceEvents = [];
     let complianceUnavailable = false;
     const allTrackedPosts = sortedSubjects.flatMap((subject) =>
       (Array.isArray(subject.trackedPosts) ? subject.trackedPosts : []).map((tracked) => ({

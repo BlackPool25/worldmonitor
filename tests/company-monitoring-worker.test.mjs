@@ -7,12 +7,15 @@ import {
   COMPANY_MONITORING_WORKER_ACTIVATION_KEY,
   COMPANY_MONITORING_WORKER_HEALTH_KEY,
   COMPANY_MONITORING_WORKER_META_KEY,
-  createCompanyMonitoringClaimExecutor,
+  createCompanyMonitoringExecutor,
   createCompanyMonitoringWorker,
   createConvexFetch,
   createRedisHealthPublisher,
 } from '../scripts/company-monitoring-worker.mjs';
-import { COMPANY_MONITORING_LEASE_FINALIZATION_RESERVE_MS } from '../scripts/lib/company-monitoring-x-provider.mjs';
+import {
+  COMPANY_MONITORING_LEASE_FINALIZATION_RESERVE_MS,
+  createXRecentSearchExecutor,
+} from '../scripts/lib/company-monitoring-x-provider.mjs';
 
 const CLAIM = {
   status: 'claimed',
@@ -69,7 +72,9 @@ describe('company monitoring Railway worker', () => {
   });
 
   it('routes only X to the installed adapter and keeps Exa outside this slice', async () => {
-    const execute = createCompanyMonitoringClaimExecutor({ bearerToken: '' });
+    const execute = createCompanyMonitoringExecutor({
+      xExecutor: createXRecentSearchExecutor({ bearerToken: '' }),
+    });
     assert.deepEqual(await execute({ source: 'x' }), {
       type: 'provider_error',
       reason: 'authentication_failed',
@@ -80,6 +85,16 @@ describe('company monitoring Railway worker', () => {
       reason: 'provider_unavailable',
       costUsdMicros: 0,
     });
+  });
+
+  it('routes Exa and X through their independent installed adapters', async () => {
+    const execute = createCompanyMonitoringExecutor({
+      exaExecutor: async () => ({ provider: 'exa' }),
+      xExecutor: async () => ({ provider: 'x' }),
+    });
+
+    assert.deepEqual(await execute({ source: 'exa' }), { provider: 'exa' });
+    assert.deepEqual(await execute({ source: 'x' }), { provider: 'x' });
   });
 
   it('bounds Convex requests and identifies the server-side worker', async () => {
@@ -150,6 +165,32 @@ describe('company monitoring Railway worker', () => {
     });
     assert.equal(health.at(-1).status, 'error');
     assert.equal(health.at(-1).outcome, 'non_reassuring');
+  });
+
+  it('routes Exa work through the adapter and finalizes only its closed receipt projection', async () => {
+    const calls = [];
+    const reports = [];
+    const executeClaim = createCompanyMonitoringExecutor({
+      exaExecutor: async (work) => {
+        reports.push({ workId: work.workId, providerRows: 2 });
+        return { finalizeResult: COMPLETE_RESULT, report: reports.at(-1) };
+      },
+    });
+    const worker = createCompanyMonitoringWorker({
+      client: convexClient([
+        CLAIM,
+        { status: 'completed', reason: 'complete', receipt: {} },
+      ], calls),
+      secret: 'worker-secret',
+      workerId: 'worker-a',
+      executeClaim,
+      publishHealth: async () => true,
+    });
+
+    assert.equal(await worker.tick(), 'completed');
+    assert.deepEqual(reports, [{ workId: 'work-1', providerRows: 2 }]);
+    assert.deepEqual(calls[1].result, COMPLETE_RESULT);
+    assert.equal('report' in calls[1].result, false);
   });
 
   it('leaves a fetched result unfinalized on a hard crash and safely finalizes the replayed work', async () => {

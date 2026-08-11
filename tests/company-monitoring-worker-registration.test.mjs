@@ -26,6 +26,7 @@ describe('company monitoring worker deployment registration', () => {
     ]);
     for (const dependency of [
       'scripts/company-monitoring-worker.mjs',
+      'scripts/lib/company-monitoring-exa.mjs',
       'scripts/lib/company-monitoring-x-provider.mjs',
       'scripts/_proxy-utils.cjs',
       'scripts/_seed-utils.mjs',

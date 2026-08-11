@@ -167,35 +167,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          # The health-probe cutover gate compares the exact PR base with the
+          # candidate tree. A shallow checkout would make that gate vacuous.
+          fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24'
           cache: 'npm'
       - run: npm ci
+      - name: Enforce health-probe cutovers
+        env:
+          HEALTH_PROBE_CUTOVER_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: node --import tsx scripts/check-health-probe-cutovers.mts "$HEALTH_PROBE_CUTOVER_BASE"
       - name: Build dashboard artifacts for built-output tests
         run: VITE_VARIANT=full ./node_modules/.bin/vite build
       - run: WM_EXPECT_BUILT_OUTPUT=1 npm run test:data
       - name: Edge function bundle check
-        run: |
-          # JS edge entries (existing loop, unchanged).
-          find api/ -name "*.js" -not -name "_*" -not -name "*.test.*" | while read f; do
-            npx esbuild "$f" --bundle --format=esm --platform=browser --outfile=/dev/null || {
-              echo "ERROR: esbuild failed to bundle $f"
-              exit 1
-            }
-          done
-          # TS edge entries — opt-in allowlist. Most TS endpoints pull in
-          # loaders esbuild doesn't ship by default (e.g. @vercel/og WASM
-          # imports under api/brief/carousel/...), so we don't auto-include
-          # api/*.ts the way we do api/*.js. Add a new entry to this list
-          # ONLY after confirming `npx esbuild <file> --bundle --format=esm
-          # --platform=browser --outfile=/dev/null` succeeds locally.
-          for f in api/mcp.ts; do
-            npx esbuild "$f" --bundle --format=esm --platform=browser --outfile=/dev/null || {
-              echo "ERROR: esbuild failed to bundle $f"
-              exit 1
-            }
-          done
+        # Shared checker with caller-specific profiles. Tracked files are the
+        # deployable contract, so ignored Node sidecar bundles left by local
+        # builds are never inputs.
+        run: node scripts/check-edge-function-bundles.mjs --caller=ci
       - name: Sidecar handler bundles build (#5902)
         # The desktop sidecar loads esbuild-bundled api/{domain}/v1/[rpc].js
         # handlers whose import graph spans src/ and server/ (via the @/

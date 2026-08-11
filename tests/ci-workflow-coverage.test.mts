@@ -42,6 +42,7 @@ const REQUIRED_CI_SMOKE_SPECS = [
   'e2e/variant-live-smoke.spec.ts',
   'e2e/mcp-grant-consent.spec.ts',
   'e2e/dashboard-news-request-budget.spec.ts',
+  'e2e/keyword-spike-flow.spec.ts',
 ] as const;
 
 const REQUIRED_TEST_JOBS = [
@@ -593,6 +594,15 @@ describe('CI workflow coverage', () => {
       testWorkflow.includes('^src-tauri\\/sidecar\\/'),
       'test.yml must not classify src-tauri/sidecar changes as docs-only changes',
     );
+  });
+
+  it('shares tracked edge bundle discovery with pre-push', () => {
+    const edgeBundleStep = workflowStepBlock(testWorkflow, 'Edge function bundle check');
+    assert.match(
+      edgeBundleStep,
+      /^\s+run: node scripts\/check-edge-function-bundles\.mjs --caller=ci\s*$/m,
+    );
+    assert.doesNotMatch(edgeBundleStep, /find api\//);
   });
 
   it('routes Tauri config edits into the job that runs the one-binary gate (#5908)', () => {

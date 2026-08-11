@@ -23,6 +23,10 @@ import {
   COMPANY_MONITORING_LEASE_FINALIZATION_RESERVE_MS,
   createXRecentSearchExecutor,
 } from './lib/company-monitoring-x-provider.mjs';
+import {
+  COMPANY_MONITORING_EXA_CONTRACT,
+  createExaCohortExecutor,
+} from './lib/company-monitoring-exa.mjs';
 import { isMainModule } from './lib/main-module.mjs';
 
 export const COMPANY_MONITORING_WORKER_HEALTH_KEY = 'company-monitoring:worker-health:v1';
@@ -175,10 +179,20 @@ async function unavailableExecutor() {
   };
 }
 
-/** Route only the implemented provider slice. Exa remains deliberately dark. */
-export function createCompanyMonitoringClaimExecutor(options = {}) {
-  const executeX = createXRecentSearchExecutor(options);
-  return (work) => work?.source === 'x' ? executeX(work) : unavailableExecutor();
+export function createCompanyMonitoringExecutor(options = {}) {
+  const { exaExecutor, xExecutor } = options;
+  return async (work) => {
+    if (work?.source === 'exa' && typeof exaExecutor === 'function') return exaExecutor(work);
+    if (work?.source === 'x' && typeof xExecutor === 'function') return xExecutor(work);
+    return unavailableExecutor();
+  };
+}
+
+function finalizeResult(execution) {
+  if (execution?.finalizeResult && typeof execution.finalizeResult === 'object') {
+    return execution.finalizeResult;
+  }
+  return execution;
 }
 
 /**
@@ -274,7 +288,7 @@ export function createCompanyMonitoringWorker(options) {
     inFlight = true;
     let result;
     try {
-      result = await executeClaim(claim.work);
+      result = finalizeResult(await executeClaim(claim.work));
     } catch {
       counters.executorErrors += 1;
       result = await unavailableExecutor();
@@ -367,6 +381,7 @@ async function main() {
       'X_BEARER_TOKEN',
       'X_POST_STORAGE_MODE',
       'X_RECENT_SEARCH_REQUEST_COST_USD_MICROS',
+      'EXA_API_KEYS',
     ],
   });
   const convexUrl = process.env.CONVEX_URL;
@@ -376,10 +391,16 @@ async function main() {
   }
 
   const client = new ConvexHttpClient(convexUrl, { fetch: createConvexFetch() });
-  const executeClaim = createCompanyMonitoringClaimExecutor({
-    bearerToken: process.env.X_BEARER_TOKEN,
-    storageMode: process.env.X_POST_STORAGE_MODE,
-    requestCostUsdMicros: Number(process.env.X_RECENT_SEARCH_REQUEST_COST_USD_MICROS ?? 0),
+  const executeClaim = createCompanyMonitoringExecutor({
+    exaExecutor: createExaCohortExecutor({
+      apiKeys: (process.env.EXA_API_KEYS ?? '').split(/[\n,]+/),
+      runtimeApproved: COMPANY_MONITORING_EXA_CONTRACT.paidRuntimeApproved,
+    }),
+    xExecutor: createXRecentSearchExecutor({
+      bearerToken: process.env.X_BEARER_TOKEN,
+      storageMode: process.env.X_POST_STORAGE_MODE,
+      requestCostUsdMicros: Number(process.env.X_RECENT_SEARCH_REQUEST_COST_USD_MICROS ?? 0),
+    }),
   });
   const worker = createCompanyMonitoringWorker({
     client,
