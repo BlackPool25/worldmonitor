@@ -1161,8 +1161,19 @@ export default defineSchema({
       v.literal("customer_reference"),
     ),
     value: v.string(),
-    provenance: v.literal("customer"),
-    trustState: v.literal("unverified"),
+    provenance: v.union(v.literal("customer"), v.literal("independent_provider")),
+    trustState: v.union(
+      v.literal("unverified"),
+      v.literal("verified"),
+      v.literal("expired"),
+      v.literal("rejected"),
+    ),
+    allowedUses: v.optional(v.array(v.union(
+      v.literal("discovery"),
+      v.literal("attribution"),
+      v.literal("primary_evidence"),
+    ))),
+    expiresAt: v.optional(v.number()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
@@ -1170,7 +1181,8 @@ export default defineSchema({
 
   // One current official-X authority decision per company. The immutable
   // account ID is the binding key; handles are current display/routing data.
-  // Claim IDs retain the exact customer evidence used for each decision.
+  // Claim IDs retain the exact independently verified domain evidence and
+  // customer handle claim used for each decision.
   companyMonitoringXIdentities: defineTable({
     ownerAccountId: v.string(),
     companyId: v.string(),
@@ -1227,6 +1239,21 @@ export default defineSchema({
     ])
     .index("by_account_postId", ["ownerAccountId", "postId"])
     .index("by_account_company_postId", ["ownerAccountId", "companyId", "postId"]),
+
+  // Every X edit-history ID resolves to one canonical evidence row. This
+  // keeps later compliance events for any edit sibling from leaving another
+  // version active after a deletion.
+  companyMonitoringXPostAliases: defineTable({
+    ownerAccountId: v.string(),
+    companyId: v.string(),
+    postId: v.string(),
+    canonicalPostId: v.string(),
+    authorAccountId: v.string(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_account_postId", ["ownerAccountId", "postId"])
+    .index("by_account_company", ["ownerAccountId", "companyId"]),
 
   // One durable company/source obligation. The closed state variants keep a
   // single uniqueness row while a work item's terminal receipt preserves the

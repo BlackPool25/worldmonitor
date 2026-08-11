@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { describe, test } from 'node:test';
 
 import {
+  COMPANY_MONITORING_LEASE_FINALIZATION_RESERVE_MS,
   assertSafeOfficialUrl,
   compileXRecentSearchPacks,
   createXRecentSearchExecutor,
@@ -66,6 +67,32 @@ function workFor(subjects, overrides = {}) {
   };
 }
 
+function profileDomainProof(domain) {
+  return {
+    url: 'https://t.co/company-profile',
+    entities: {
+      url: {
+        urls: [{
+          url: 'https://t.co/company-profile',
+          expanded_url: `https://${domain}/`,
+        }],
+      },
+    },
+  };
+}
+
+function xProfileFor(tracer, overrides = {}) {
+  return {
+    id: tracer.accountId,
+    username: tracer.currentHandle,
+    name: tracer.profileName,
+    verified: true,
+    protected: false,
+    ...profileDomainProof(tracer.officialDomain),
+    ...overrides,
+  };
+}
+
 function verifyTracer(tracer, overrides = {}) {
   return verifyOfficialXIdentity({
     subject: {
@@ -84,14 +111,7 @@ function verifyTracer(tracer, overrides = {}) {
       finalUrl: tracer.officialPageUrl,
       html: tracer.officialHtml,
     },
-    profile: {
-      id: tracer.accountId,
-      username: tracer.currentHandle,
-      name: tracer.profileName,
-      verified: true,
-      protected: false,
-      ...overrides.profile,
-    },
+    profile: xProfileFor(tracer, overrides.profile),
     checkedAt: CHECKED_AT,
     expiresAt: CHECKED_AT + 7 * DAY,
     priorIdentity: overrides.priorIdentity,
@@ -157,6 +177,54 @@ describe('Company Monitoring official X identity verification', () => {
     assert.equal(result.demotionReason, 'official_link_lost');
     assert.equal(result.badgeVerified, true);
     assert.deepEqual(result.allowedUses, []);
+  });
+
+  test('requires matching official-page and X-profile domain links for authority', async () => {
+    const tracer = fixture.liveTracers[0];
+    const matching = await verifyTracer(tracer, {
+      profile: profileDomainProof(tracer.officialDomain),
+    });
+    assert.equal(matching.state, 'authoritative');
+
+    const directProfileUrl = await verifyTracer(tracer, {
+      profile: { url: `https://${tracer.officialDomain}/`, entities: undefined },
+    });
+    assert.equal(directProfileUrl.state, 'authoritative');
+
+    const absent = await verifyTracer(tracer, {
+      profile: { url: undefined, entities: undefined },
+    });
+    assert.equal(absent.state, 'demoted');
+    assert.equal(absent.demotionReason, 'official_link_lost');
+
+    const lookalikeDomain = 'stripe.customer.example.com';
+    const lookalike = await verifyOfficialXIdentity({
+      subject: {
+        companyId: tracer.companyId,
+        name: tracer.name,
+        domicileCountry: tracer.domicileCountry,
+        officialDomain: lookalikeDomain,
+        officialPageUrl: `https://${lookalikeDomain}/`,
+        domainClaimId: tracer.domainClaimId,
+        xHandleClaimId: tracer.xHandleClaimId,
+        claimedHandle: tracer.currentHandle,
+      },
+      page: {
+        url: `https://${lookalikeDomain}/`,
+        finalUrl: `https://${lookalikeDomain}/`,
+        html: tracer.officialHtml,
+      },
+      profile: {
+        id: tracer.accountId,
+        username: tracer.currentHandle,
+        name: tracer.profileName,
+        ...profileDomainProof(tracer.officialDomain),
+      },
+      checkedAt: CHECKED_AT,
+      expiresAt: CHECKED_AT + 7 * DAY,
+    });
+    assert.equal(lookalike.state, 'demoted');
+    assert.equal(lookalike.demotionReason, 'official_link_lost');
   });
 
   test('rename revalidates by immutable ID while reassignment and account change demote', async () => {
@@ -257,6 +325,49 @@ describe('Company Monitoring official-domain SSRF guard', () => {
       { url: 'https://www.example.com/about', address: '93.184.216.34' },
     ]);
     assert.equal(page.finalUrl, 'https://www.example.com/about');
+  });
+
+  test('shares one total deadline across DNS and every redirect request', async () => {
+    let clock = 1_000;
+    const requestTimeouts = [];
+    const page = await fetchSsrfSafeOfficialPage('https://example.com/', {
+      allowedDomains: ['example.com'],
+      timeoutMs: 100,
+      now: () => clock,
+      resolveHostname: async () => {
+        clock += 20;
+        return ['93.184.216.34'];
+      },
+      requestPinned: async ({ url, timeoutMs }) => {
+        requestTimeouts.push(timeoutMs);
+        clock += 20;
+        if (url.hostname === 'example.com') {
+          return { status: 302, headers: { location: 'https://www.example.com/about' }, body: '' };
+        }
+        return {
+          status: 200,
+          headers: { 'content-type': 'text/html' },
+          body: '<html>Example</html>',
+        };
+      },
+    });
+
+    assert.equal(page.finalUrl, 'https://www.example.com/about');
+    assert.deepEqual(requestTimeouts, [80, 40]);
+  });
+
+  test('bounds a stalled injected DNS resolver by the total deadline', { timeout: 250 }, async () => {
+    await assert.rejects(
+      () => fetchSsrfSafeOfficialPage('https://example.com/', {
+        allowedDomains: ['example.com'],
+        timeoutMs: 25,
+        resolveHostname: async () => new Promise(() => {}),
+        requestPinned: async () => {
+          throw new Error('must not request before DNS completes');
+        },
+      }),
+      /timed out/i,
+    );
   });
 
   test('fails closed on mixed DNS answers and redirect rebinding before the unsafe request', async () => {
@@ -375,13 +486,7 @@ describe('Company Monitoring X recent-search packing and compliance normalizatio
         calls.push({ url, init });
         if (url.pathname.includes('/users/by/username/')) {
           return new Response(JSON.stringify({
-            data: {
-              id: tracer.accountId,
-              username: tracer.currentHandle,
-              name: tracer.profileName,
-              verified: true,
-              protected: false,
-            },
+            data: xProfileFor(tracer),
           }), { status: 200, headers: { 'content-type': 'application/json' } });
         }
         if (url.pathname === '/2/tweets/search/recent') {
@@ -423,6 +528,8 @@ describe('Company Monitoring X recent-search packing and compliance normalizatio
     assert.equal(result.xIngestion.packing[0].query, '(from:stripe) -is:retweet');
     assert.deepEqual(result.xIngestion.gaps, []);
     assert.equal(result.xIngestion.complianceEventCount, 1);
+    const profileCall = calls.find(({ url }) => url.pathname.includes('/users/by/username/'));
+    assert.equal(profileCall.url.searchParams.get('user.fields'), 'id,name,username,verified,protected,url,entities');
     assert.ok(calls.every(({ init }) => init.headers.get('Authorization') === 'Bearer x-test-token'));
     assert.ok(calls.every(({ init }) => init.headers.get('User-Agent') === 'worldmonitor-company-monitoring-x/1.0'));
   });
@@ -443,7 +550,7 @@ describe('Company Monitoring X recent-search packing and compliance normalizatio
           return new Response('{}', { status: 503, headers: { 'content-type': 'application/json' } });
         }
         const body = url.pathname.includes('/users/by/username/')
-          ? { data: { id: tracer.accountId, username: tracer.currentHandle, name: tracer.profileName } }
+          ? { data: xProfileFor(tracer) }
           : { data: [], includes: { users: [] }, meta: { result_count: 0 } };
         return new Response(JSON.stringify(body), {
           status: 200,
@@ -501,7 +608,7 @@ describe('Company Monitoring X recent-search packing and compliance normalizatio
         const url = new URL(input);
         let body;
         if (url.pathname.includes('/users/by/username/')) {
-          body = { data: { id: tracer.accountId, username: tracer.currentHandle, name: tracer.profileName } };
+          body = { data: xProfileFor(tracer) };
         } else if (url.pathname === '/2/tweets') {
           body = {
             data: [],
@@ -566,7 +673,7 @@ describe('Company Monitoring X recent-search packing and compliance normalizatio
       fetchImpl: async (input) => {
         const url = new URL(input);
         const body = url.pathname.includes('/users/by/username/')
-          ? { data: { id: tracer.accountId, username: tracer.currentHandle, name: tracer.profileName } }
+          ? { data: xProfileFor(tracer) }
           : {
             data: [fixture.recentSearchPage.data[0]],
             includes: { users: [fixture.recentSearchPage.includes.users[0]] },
@@ -637,7 +744,7 @@ describe('Company Monitoring X recent-search packing and compliance normalizatio
           const index = Number(handle.match(/^c(?:ohort)?(\d+)/)?.[1]);
           const tracer = tracers[index];
           return Response.json({
-            data: { id: tracer.accountId, username: handle, name: tracer.profileName },
+            data: xProfileFor(tracer, { username: handle }),
           });
         }
         return Response.json({ data: [], includes: { users: [] }, meta: { result_count: 0 } });
@@ -671,7 +778,7 @@ describe('Company Monitoring X recent-search packing and compliance normalizatio
       fetchImpl: async (input) => {
         const url = new URL(input);
         if (url.pathname.includes('/users/by/username/')) {
-          return Response.json({ data: { id: tracer.accountId, username: tracer.currentHandle, name: tracer.profileName } });
+          return Response.json({ data: xProfileFor(tracer) });
         }
         return Response.json({ data: [], includes: { users: [] }, meta: { result_count: 0 } });
       },
@@ -680,6 +787,49 @@ describe('Company Monitoring X recent-search packing and compliance normalizatio
     const result = await execute(workFor(subjects));
     assert.equal(result.coverage, 'partial');
     assert.equal(result.emptyValidated, false);
+    assert.ok(result.xIngestion.gaps.some((gap) => gap.reason === 'provider_partial'));
+  });
+
+  test('retains the current identity when another claimed domain cannot be verified', async () => {
+    const tracer = fixture.liveTracers[0];
+    const subject = subjectFor(tracer, {
+      currentIdentity: {
+        accountId: tracer.accountId,
+        currentHandle: tracer.currentHandle,
+        state: 'authoritative',
+        expiresAt: CHECKED_AT + DAY,
+        officialDomain: tracer.officialDomain,
+        officialPageUrl: tracer.officialPageUrl,
+      },
+      domains: [
+        { claimId: tracer.domainClaimId, value: tracer.officialDomain },
+        { claimId: tracer.domainClaimId, value: `status.${tracer.officialDomain}` },
+      ],
+    });
+    const execute = createXRecentSearchExecutor({
+      bearerToken: 'x-test-token',
+      now: () => CHECKED_AT,
+      fetchOfficialPage: async (url) => {
+        if (new URL(url).hostname.startsWith('status.')) throw new Error('temporary DNS failure');
+        return {
+          url,
+          finalUrl: url,
+          html: `<html><body>${tracer.name} United States</body></html>`,
+        };
+      },
+      fetchImpl: async (input) => {
+        const url = new URL(input);
+        if (url.pathname.startsWith('/2/users/')) {
+          return Response.json({ data: xProfileFor(tracer) });
+        }
+        throw new Error(`unexpected X request ${url.pathname}`);
+      },
+    });
+
+    const result = await execute(workFor([subject]));
+    assert.equal(result.coverage, 'partial');
+    assert.deepEqual(result.xIngestion.identities, []);
+    assert.deepEqual(result.xIngestion.packing, []);
     assert.ok(result.xIngestion.gaps.some((gap) => gap.reason === 'provider_partial'));
   });
 
@@ -698,7 +848,7 @@ describe('Company Monitoring X recent-search packing and compliance normalizatio
           const username = decodeURIComponent(url.pathname.split('/').pop());
           const tracer = username.toLowerCase() === second.currentHandle.toLowerCase() ? second : first;
           return Response.json({
-            data: { id: first.accountId, username: tracer.currentHandle, name: tracer.profileName },
+            data: xProfileFor(tracer, { id: first.accountId }),
           });
         }
         return Response.json({
@@ -747,7 +897,7 @@ describe('Company Monitoring X recent-search packing and compliance normalizatio
       fetchImpl: async (input) => {
         const url = new URL(input);
         if (url.pathname.startsWith('/2/users/')) {
-          return Response.json({ data: { id: tracer.accountId, username: tracer.currentHandle, name: tracer.profileName } });
+          return Response.json({ data: xProfileFor(tracer) });
         }
         if (url.pathname === '/2/tweets') {
           return Response.json({
@@ -811,7 +961,7 @@ describe('Company Monitoring X recent-search packing and compliance normalizatio
         if (url.pathname.startsWith('/2/users/')) {
           const value = decodeURIComponent(url.pathname.split('/').pop());
           const tracer = tracers.find((candidate) => candidate.accountId === value || candidate.currentHandle === value);
-          return Response.json({ data: { id: tracer.accountId, username: tracer.currentHandle, name: tracer.profileName } });
+          return Response.json({ data: xProfileFor(tracer) });
         }
         if (url.pathname === '/2/tweets') {
           const ids = url.searchParams.get('ids').split(',');
@@ -868,7 +1018,7 @@ describe('Company Monitoring X recent-search packing and compliance normalizatio
       fetchImpl: async (input) => {
         const url = new URL(input);
         if (url.pathname.startsWith('/2/users/')) {
-          return Response.json({ data: { id: tracer.accountId, username: tracer.currentHandle, name: tracer.profileName } });
+          return Response.json({ data: xProfileFor(tracer) });
         }
         if (url.pathname === '/2/tweets') {
           return Response.json({ data: [], errors: [{ resource_id: deletedPostId, title: 'Resource not found' }] });
@@ -906,7 +1056,9 @@ describe('Company Monitoring X recent-search packing and compliance normalizatio
       },
     });
 
-    const result = await execute(workFor([subjectFor(tracer)], { leaseExpiresAt: CHECKED_AT + 2_500 }));
+    const result = await execute(workFor([subjectFor(tracer)], {
+      leaseExpiresAt: CHECKED_AT + COMPANY_MONITORING_LEASE_FINALIZATION_RESERVE_MS + 500,
+    }));
     assert.equal(result.type, 'result');
     assert.equal(result.coverage, 'partial');
     assert.deepEqual(officialTimeouts, [400]);
@@ -941,7 +1093,7 @@ describe('Company Monitoring X recent-search packing and compliance normalizatio
       fetchImpl: async (input) => {
         const url = new URL(input);
         if (url.pathname.startsWith('/2/users/')) {
-          return Response.json({ data: { id: tracer.accountId, username: tracer.currentHandle, name: tracer.profileName } });
+          return Response.json({ data: xProfileFor(tracer) });
         }
         if (url.pathname === '/2/tweets') {
           return Response.json({

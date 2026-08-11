@@ -19,7 +19,10 @@ import { ConvexHttpClient } from 'convex/browser';
 import { anyApi } from 'convex/server';
 
 import { loadEnvFile } from './_seed-utils.mjs';
-import { createXRecentSearchExecutor } from './lib/company-monitoring-x-provider.mjs';
+import {
+  COMPANY_MONITORING_LEASE_FINALIZATION_RESERVE_MS,
+  createXRecentSearchExecutor,
+} from './lib/company-monitoring-x-provider.mjs';
 import { isMainModule } from './lib/main-module.mjs';
 
 export const COMPANY_MONITORING_WORKER_HEALTH_KEY = 'company-monitoring:worker-health:v1';
@@ -29,8 +32,16 @@ export const COMPANY_MONITORING_WORKER_ACTIVATION_KEY = 'seed-activated:company-
 const HEALTH_TTL_SECONDS = 900;
 const META_TTL_SECONDS = 86_400;
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
-const CONVEX_TIMEOUT_MS = 15_000;
+export const COMPANY_MONITORING_CONVEX_TIMEOUT_MS = 15_000;
+export const COMPANY_MONITORING_FINALIZE_TRANSPORT_BUFFER_MS = 5_000;
 const REDIS_TIMEOUT_MS = 5_000;
+
+if (
+  COMPANY_MONITORING_LEASE_FINALIZATION_RESERVE_MS <
+    COMPANY_MONITORING_CONVEX_TIMEOUT_MS + COMPANY_MONITORING_FINALIZE_TRANSPORT_BUFFER_MS
+) {
+  throw new Error('Company Monitoring provider lease reserve cannot safely finalize through Convex');
+}
 const COUNTER_NAMES = Object.freeze([
   'loops',
   'claims',
@@ -184,7 +195,7 @@ export function createConvexFetch(fetchImpl = globalThis.fetch) {
     return fetchImpl(input, {
       ...init,
       headers,
-      signal: init.signal ?? AbortSignal.timeout(CONVEX_TIMEOUT_MS),
+      signal: init.signal ?? AbortSignal.timeout(COMPANY_MONITORING_CONVEX_TIMEOUT_MS),
     });
   };
 }

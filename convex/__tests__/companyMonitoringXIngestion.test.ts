@@ -23,9 +23,14 @@ installCompanyMonitoringTestEnvironment();
 
 async function seedXWork(
   t: ReturnType<typeof convexTest>,
-  options: { companies?: 1 | 2; checkpoint?: string } = {},
+  options: {
+    companies?: 1 | 2;
+    checkpoint?: string;
+    domainTrust?: "verified" | "unverified";
+  } = {},
 ) {
   const companies = options.companies ?? 1;
+  const domainTrust = options.domainTrust ?? "verified";
   await t.run(async (ctx) => {
     await ctx.db.insert("companyMonitoringAccounts", {
       logicalAccountId: OWNER_ACCOUNT_ID,
@@ -85,8 +90,14 @@ async function seedXWork(
         claimId: row.domainClaimId,
         type: "domain",
         value: row.domain,
-        provenance: "customer",
-        trustState: "unverified",
+        provenance: domainTrust === "verified" ? "independent_provider" : "customer",
+        trustState: domainTrust,
+        ...(domainTrust === "verified"
+          ? {
+              allowedUses: ["attribution" as const, "primary_evidence" as const],
+              expiresAt: NOW + 30 * DAY_MS,
+            }
+          : {}),
         createdAt: NOW,
         updatedAt: NOW,
       });
@@ -217,6 +228,30 @@ async function finalize(t: ReturnType<typeof convexTest>, claim: any, overrides 
 }
 
 describe("Company Monitoring compliant X ingestion", () => {
+  test("does not grant official authority from customer-unverified domain claims", async () => {
+    const t = convexTest(schema, modules);
+    const claim = await seedXWork(t, { domainTrust: "unverified" });
+    expect(claim.work.subjects[0].domains).toEqual([]);
+
+    expect(await finalize(t, claim)).toMatchObject({
+      status: "non_reassuring",
+      reason: "malformed",
+    });
+    const state = await t.run(async (ctx) => ({
+      identities: await ctx.db.query("companyMonitoringXIdentities").collect(),
+      evidence: await ctx.db.query("companyMonitoringXEvidence").collect(),
+      obligation: await ctx.db
+        .query("companyMonitoringScanObligations")
+        .withIndex("by_account_company_source", (q) =>
+          q.eq("ownerAccountId", OWNER_ACCOUNT_ID).eq("companyId", COMPANY_A).eq("source", "x"),
+        )
+        .unique(),
+    }));
+    expect(state.identities).toEqual([]);
+    expect(state.evidence).toEqual([]);
+    expect(state.obligation?.checkpoint).toBeUndefined();
+  });
+
   test("claims exact company evidence and persists authoritative identity, posts, and audit receipt", async () => {
     const t = convexTest(schema, modules);
     const claim = await seedXWork(t);
@@ -345,6 +380,89 @@ describe("Company Monitoring compliant X ingestion", () => {
         state: "authoritative",
         allowedUses: ["primary_evidence", "recent_search"],
       },
+    });
+  });
+
+  test("demotes an identity bound only to a customer-unverified domain", async () => {
+    const t = convexTest(schema, modules);
+    const firstClaim = await seedXWork(t);
+    await finalize(t, firstClaim);
+    await t.run(async (ctx) => {
+      const domainClaim = await ctx.db
+        .query("companyMonitoringClaims")
+        .withIndex("by_account_company", (q) =>
+          q.eq("ownerAccountId", OWNER_ACCOUNT_ID).eq("companyId", COMPANY_A),
+        )
+        .filter((q) => q.eq(q.field("claimId"), DOMAIN_CLAIM_A))
+        .unique();
+      await ctx.db.patch(domainClaim!._id, {
+        provenance: "customer",
+        trustState: "unverified",
+        allowedUses: undefined,
+        expiresAt: undefined,
+        updatedAt: NOW + DAY_MS,
+      });
+    });
+
+    vi.setSystemTime(NOW + DAY_MS);
+    const secondClaim = await t.mutation(ORCHESTRATION.claimNextWorkForTest, {
+      workerId: "x-worker",
+    });
+    expect(secondClaim.work.subjects[0]).toMatchObject({
+      domains: [],
+      currentIdentity: {
+        accountId: ACCOUNT_ID,
+        state: "demoted",
+        demotionReason: "official_link_lost",
+        allowedUses: [],
+      },
+    });
+  });
+
+  test("preserves the immutable account ID after a reassignment demotion", async () => {
+    const t = convexTest(schema, modules);
+    const firstClaim = await seedXWork(t);
+    await finalize(t, firstClaim);
+
+    vi.setSystemTime(NOW + DAY_MS);
+    const secondClaim = await t.mutation(ORCHESTRATION.claimNextWorkForTest, {
+      workerId: "x-worker",
+    });
+    const replacementAccountId = "202812444";
+    expect(await finalize(t, secondClaim, {
+      itemCount: 0,
+      emptyValidated: true,
+      xIngestion: xIngestion(secondClaim, {
+        identities: [identity(COMPANY_A, {
+          accountId: replacementAccountId,
+          state: "demoted",
+          demotionReason: "account_reassigned",
+          allowedUses: [],
+        })],
+        posts: [],
+      }),
+    })).toMatchObject({ status: "completed" });
+
+    const storedIdentity = await t.run(async (ctx) => ctx.db
+      .query("companyMonitoringXIdentities")
+      .withIndex("by_account_company", (q) =>
+        q.eq("ownerAccountId", OWNER_ACCOUNT_ID).eq("companyId", COMPANY_A),
+      )
+      .unique());
+    expect(storedIdentity).toMatchObject({
+      accountId: ACCOUNT_ID,
+      state: "demoted",
+      demotionReason: "account_reassigned",
+      allowedUses: [],
+    });
+
+    vi.setSystemTime(NOW + 2 * DAY_MS);
+    const thirdClaim = await t.mutation(ORCHESTRATION.claimNextWorkForTest, {
+      workerId: "x-worker",
+    });
+    expect(thirdClaim.work.subjects[0].currentIdentity).toMatchObject({
+      accountId: ACCOUNT_ID,
+      state: "demoted",
     });
   });
 
@@ -505,6 +623,31 @@ describe("Company Monitoring compliant X ingestion", () => {
     });
   });
 
+  test("rejects complete coverage when the X returned window omits requested time", async () => {
+    const t = convexTest(schema, modules);
+    const claim = await seedXWork(t, { checkpoint: "checkpoint-before" });
+    const midpoint = claim.work.windowStart + DAY_MS / 2;
+    expect(await finalize(t, claim, {
+      xIngestion: xIngestion(claim, {
+        returnedWindow: { startAt: midpoint, endAt: claim.work.windowEnd },
+      }),
+    })).toMatchObject({ status: "non_reassuring", reason: "malformed" });
+
+    const state = await t.run(async (ctx) => ({
+      identities: await ctx.db.query("companyMonitoringXIdentities").collect(),
+      evidence: await ctx.db.query("companyMonitoringXEvidence").collect(),
+      obligation: await ctx.db
+        .query("companyMonitoringScanObligations")
+        .withIndex("by_account_company_source", (q) =>
+          q.eq("ownerAccountId", OWNER_ACCOUNT_ID).eq("companyId", COMPANY_A).eq("source", "x"),
+        )
+        .unique(),
+    }));
+    expect(state.identities).toEqual([]);
+    expect(state.evidence).toEqual([]);
+    expect(state.obligation?.checkpoint).toBe("checkpoint-before");
+  });
+
   test("rejects a checkpoint-before mismatch without X writes or checkpoint advancement", async () => {
     const t = convexTest(schema, modules);
     const claim = await seedXWork(t, { checkpoint: "checkpoint-before" });
@@ -574,6 +717,12 @@ describe("Company Monitoring compliant X ingestion", () => {
           q.eq("ownerAccountId", OWNER_ACCOUNT_ID).eq("companyId", COMPANY_A),
         )
         .collect(),
+      aliases: await ctx.db
+        .query("companyMonitoringXPostAliases")
+        .withIndex("by_account_company", (q) =>
+          q.eq("ownerAccountId", OWNER_ACCOUNT_ID).eq("companyId", COMPANY_A),
+        )
+        .collect(),
       company: await ctx.db
         .query("companyMonitoringCompanies")
         .withIndex("by_account_companyId", (q) =>
@@ -583,9 +732,56 @@ describe("Company Monitoring compliant X ingestion", () => {
     }));
     expect(rows.identities).toEqual([]);
     expect(rows.evidence).toEqual([]);
+    expect(rows.aliases).toEqual([]);
     expect(rows.company).toMatchObject({ purgePhase: "complete" });
     expect(rows.company?.evidenceRevision).toBeUndefined();
     expect(rows.company?.recomputeRequiredAt).toBeUndefined();
+  });
+
+  test("removes remaining edit aliases when company evidence is already absent", async () => {
+    const t = convexTest(schema, modules);
+    const claim = await seedXWork(t);
+    await finalize(t, claim);
+    await t.run(async (ctx) => {
+      const evidence = await ctx.db
+        .query("companyMonitoringXEvidence")
+        .withIndex("by_account_company", (q) =>
+          q.eq("ownerAccountId", OWNER_ACCOUNT_ID).eq("companyId", COMPANY_A),
+        )
+        .unique();
+      await ctx.db.delete(evidence!._id);
+      const company = await ctx.db
+        .query("companyMonitoringCompanies")
+        .withIndex("by_account_companyId", (q) =>
+          q.eq("ownerAccountId", OWNER_ACCOUNT_ID).eq("companyId", COMPANY_A),
+        )
+        .unique();
+      await ctx.db.patch(company!._id, {
+        lifecycle: "removed",
+        purgeGeneration: 1,
+        purgePhase: "scan",
+        removedAt: NOW,
+      });
+    });
+
+    let status = "scan";
+    for (let attempt = 0; attempt < 5 && status !== "complete"; attempt += 1) {
+      const result = await t.mutation(
+        (internal as any).companyMonitoring.companies.advanceCompanyPurge,
+        { ownerAccountId: OWNER_ACCOUNT_ID, companyId: COMPANY_A, purgeGeneration: 1 },
+      );
+      status = result.status;
+    }
+
+    expect(status).toBe("complete");
+    expect(await t.run(async (ctx) =>
+      ctx.db
+        .query("companyMonitoringXPostAliases")
+        .withIndex("by_account_company", (q) =>
+          q.eq("ownerAccountId", OWNER_ACCOUNT_ID).eq("companyId", COMPANY_A),
+        )
+        .collect()
+    )).toEqual([]);
   });
 
   test("removes identity and evidence rows before account payload purge", async () => {
@@ -618,8 +814,12 @@ describe("Company Monitoring compliant X ingestion", () => {
         .query("companyMonitoringXEvidence")
         .withIndex("by_account_company", (q) => q.eq("ownerAccountId", OWNER_ACCOUNT_ID))
         .collect(),
+      aliases: await ctx.db
+        .query("companyMonitoringXPostAliases")
+        .withIndex("by_account_company", (q) => q.eq("ownerAccountId", OWNER_ACCOUNT_ID))
+        .collect(),
     }));
-    expect(rows).toEqual({ identities: [], evidence: [] });
+    expect(rows).toEqual({ identities: [], evidence: [], aliases: [] });
   });
 
   test("turns deletions into tombstones and requests downstream recomputation once", async () => {
@@ -688,6 +888,199 @@ describe("Company Monitoring compliant X ingestion", () => {
       evidenceRevision: 1,
       recomputeRequiredAt: NOW + DAY_MS,
     });
+  });
+
+  test("keeps one canonical evidence row across edit-history deletion", async () => {
+    const t = convexTest(schema, modules);
+    const originalPostId = "1912345678901234567";
+    const editedPostId = "1912345678901234569";
+    const firstClaim = await seedXWork(t);
+    await finalize(t, firstClaim);
+
+    vi.setSystemTime(NOW + DAY_MS);
+    const editClaim = await t.mutation(ORCHESTRATION.claimNextWorkForTest, {
+      workerId: "x-worker",
+    });
+    await finalize(t, editClaim, {
+      xIngestion: xIngestion(editClaim, {
+        posts: [post({
+          postId: editedPostId,
+          contentState: "edited",
+          text: "Edited official Stripe update",
+          editHistoryPostIds: [originalPostId, editedPostId],
+          observedAt: NOW + DAY_MS,
+        })],
+      }),
+    });
+
+    vi.setSystemTime(NOW + 2 * DAY_MS);
+    const deleteClaim = await t.mutation(ORCHESTRATION.claimNextWorkForTest, {
+      workerId: "x-worker",
+    });
+    await finalize(t, deleteClaim, {
+      xIngestion: xIngestion(deleteClaim, {
+        posts: [post({
+          postId: editedPostId,
+          contentState: "deleted",
+          storageState: "tombstone",
+          text: undefined,
+          editHistoryPostIds: [editedPostId],
+          observedAt: NOW + 2 * DAY_MS,
+        })],
+        complianceEventCount: 1,
+      }),
+    });
+
+    const state = await t.run(async (ctx) => ({
+      evidence: await ctx.db
+        .query("companyMonitoringXEvidence")
+        .withIndex("by_account_company", (q) =>
+          q.eq("ownerAccountId", OWNER_ACCOUNT_ID).eq("companyId", COMPANY_A),
+        )
+        .collect(),
+      aliases: await ctx.db
+        .query("companyMonitoringXPostAliases")
+        .withIndex("by_account_company", (q) =>
+          q.eq("ownerAccountId", OWNER_ACCOUNT_ID).eq("companyId", COMPANY_A),
+        )
+        .collect(),
+      company: await ctx.db
+        .query("companyMonitoringCompanies")
+        .withIndex("by_account_companyId", (q) =>
+          q.eq("ownerAccountId", OWNER_ACCOUNT_ID).eq("companyId", COMPANY_A),
+        )
+        .unique(),
+    }));
+    expect(state.evidence).toHaveLength(1);
+    expect(state.evidence[0]).toMatchObject({
+      postId: originalPostId,
+      contentState: "deleted",
+      storageState: "tombstone",
+      editHistoryPostIds: [originalPostId, editedPostId],
+    });
+    expect(state.aliases).toEqual(expect.arrayContaining([
+      expect.objectContaining({ postId: originalPostId, canonicalPostId: originalPostId }),
+      expect.objectContaining({ postId: editedPostId, canonicalPostId: originalPostId }),
+    ]));
+    expect(state.company).toMatchObject({
+      evidenceRevision: 1,
+      recomputeRequiredAt: NOW + 2 * DAY_MS,
+    });
+  });
+
+  test("keeps an edit-family tombstone when a later sibling is active in the same payload", async () => {
+    const t = convexTest(schema, modules);
+    const originalPostId = "1912345678901234567";
+    const editedPostId = "1912345678901234569";
+    const claim = await seedXWork(t);
+    await finalize(t, claim, {
+      itemCount: 2,
+      xIngestion: xIngestion(claim, {
+        posts: [
+          post({
+            contentState: "deleted",
+            storageState: "tombstone",
+            text: undefined,
+            editHistoryPostIds: [originalPostId],
+          }),
+          post({
+            postId: editedPostId,
+            contentState: "edited",
+            text: "A later active sibling must not resurrect deleted evidence",
+            editHistoryPostIds: [originalPostId, editedPostId],
+          }),
+        ],
+        complianceEventCount: 1,
+      }),
+    });
+
+    const state = await t.run(async (ctx) => ({
+      evidence: await ctx.db
+        .query("companyMonitoringXEvidence")
+        .withIndex("by_account_company", (q) =>
+          q.eq("ownerAccountId", OWNER_ACCOUNT_ID).eq("companyId", COMPANY_A),
+        )
+        .collect(),
+      aliases: await ctx.db
+        .query("companyMonitoringXPostAliases")
+        .withIndex("by_account_company", (q) =>
+          q.eq("ownerAccountId", OWNER_ACCOUNT_ID).eq("companyId", COMPANY_A),
+        )
+        .collect(),
+      company: await ctx.db
+        .query("companyMonitoringCompanies")
+        .withIndex("by_account_companyId", (q) =>
+          q.eq("ownerAccountId", OWNER_ACCOUNT_ID).eq("companyId", COMPANY_A),
+        )
+        .unique(),
+    }));
+    expect(state.evidence).toHaveLength(1);
+    expect(state.evidence[0]).toMatchObject({
+      postId: originalPostId,
+      contentState: "deleted",
+      storageState: "tombstone",
+      editHistoryPostIds: [originalPostId, editedPostId],
+    });
+    expect(state.evidence[0]?.text).toBeUndefined();
+    expect(state.aliases).toEqual(expect.arrayContaining([
+      expect.objectContaining({ postId: originalPostId, canonicalPostId: originalPostId }),
+      expect.objectContaining({ postId: editedPostId, canonicalPostId: originalPostId }),
+    ]));
+    expect(state.company).toMatchObject({ evidenceRevision: 1 });
+  });
+
+  test("does not overwrite a conflicting historical edit alias", async () => {
+    const t = convexTest(schema, modules);
+    const originalPostId = "1912345678901234567";
+    const historicalPostId = "1912345678901234569";
+    const firstClaim = await seedXWork(t);
+    await finalize(t, firstClaim, {
+      xIngestion: xIngestion(firstClaim, {
+        posts: [post({ editHistoryPostIds: [originalPostId, historicalPostId] })],
+      }),
+    });
+    await t.run(async (ctx) => {
+      const historicalAlias = await ctx.db
+        .query("companyMonitoringXPostAliases")
+        .withIndex("by_account_postId", (q) =>
+          q.eq("ownerAccountId", OWNER_ACCOUNT_ID).eq("postId", historicalPostId),
+        )
+        .unique();
+      await ctx.db.patch(historicalAlias!._id, { companyId: COMPANY_B });
+    });
+
+    vi.setSystemTime(NOW + DAY_MS);
+    const secondClaim = await t.mutation(ORCHESTRATION.claimNextWorkForTest, {
+      workerId: "x-worker",
+    });
+    await finalize(t, secondClaim, {
+      xIngestion: xIngestion(secondClaim, {
+        posts: [post({
+          text: "Must not overwrite the poisoned historical alias",
+          observedAt: NOW + DAY_MS,
+        })],
+      }),
+    });
+
+    const state = await t.run(async (ctx) => ({
+      evidence: await ctx.db
+        .query("companyMonitoringXEvidence")
+        .withIndex("by_account_postId", (q) =>
+          q.eq("ownerAccountId", OWNER_ACCOUNT_ID).eq("postId", originalPostId),
+        )
+        .unique(),
+      historicalAlias: await ctx.db
+        .query("companyMonitoringXPostAliases")
+        .withIndex("by_account_postId", (q) =>
+          q.eq("ownerAccountId", OWNER_ACCOUNT_ID).eq("postId", historicalPostId),
+        )
+        .unique(),
+    }));
+    expect(state.evidence).toMatchObject({
+      text: "Official Stripe update",
+      observedAt: NOW,
+    });
+    expect(state.historicalAlias).toMatchObject({ companyId: COMPANY_B });
   });
 
   test("does not cross-bind one immutable account ID across a corporate family", async () => {

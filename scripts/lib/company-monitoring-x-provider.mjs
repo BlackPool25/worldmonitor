@@ -26,7 +26,7 @@ const DEFAULT_MAX_RESPONSE_BYTES = 512 * 1024;
 const DEFAULT_MAX_REDIRECTS = 3;
 const DEFAULT_IDENTITY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_X_REQUESTS_PER_LEASE = 100;
-const LEASE_FINALIZATION_MARGIN_MS = 2_000;
+export const COMPANY_MONITORING_LEASE_FINALIZATION_RESERVE_MS = 20_000;
 
 export class CompanyMonitoringXSsrfError extends Error {
   constructor(message) {
@@ -181,6 +181,30 @@ async function resolveVettedAddresses(hostname, resolveHostname) {
   return [...new Set(addresses)];
 }
 
+function remainingDeadlineMs(deadline, now) {
+  const remaining = deadline - now();
+  if (!Number.isFinite(remaining) || remaining <= 0) {
+    throw new CompanyMonitoringXSsrfError('Official page fetch timed out');
+  }
+  return Math.max(1, Math.floor(remaining));
+}
+
+async function beforeDeadline(operation, deadline, now) {
+  const timeoutMs = remainingDeadlineMs(deadline, now);
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(
+      () => reject(new CompanyMonitoringXSsrfError('Official page fetch timed out')),
+      timeoutMs,
+    );
+  });
+  try {
+    return await Promise.race([Promise.resolve().then(operation), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /**
  * Fetch an official-domain page without re-resolving through a generic fetch.
  * Every redirect is restricted to the claimed domain, resolved again, checked
@@ -191,17 +215,29 @@ export async function fetchSsrfSafeOfficialPage(rawUrl, options = {}) {
   const resolveHostname = options.resolveHostname ?? defaultResolveHostname;
   const requestPinned = options.requestPinned ?? defaultRequestPinned;
   const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const now = options.now ?? Date.now;
+  const deadline = now() + timeoutMs;
   let url = assertSafeOfficialUrl(rawUrl, allowedDomains);
 
   for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount += 1) {
-    const addresses = await resolveVettedAddresses(url.hostname, resolveHostname);
+    const addresses = await beforeDeadline(
+      () => resolveVettedAddresses(url.hostname, resolveHostname),
+      deadline,
+      now,
+    );
     const address = addresses.find((candidate) => candidate.includes('.')) ?? addresses[0];
-    const response = await requestPinned({
-      url,
-      address,
-      timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      maxResponseBytes: options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
-    });
+    const requestTimeoutMs = remainingDeadlineMs(deadline, now);
+    const response = await beforeDeadline(
+      () => requestPinned({
+        url,
+        address,
+        timeoutMs: requestTimeoutMs,
+        maxResponseBytes: options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
+      }),
+      deadline,
+      now,
+    );
     const headers = normalizeHeaders(response.headers);
     if (REDIRECT_STATUSES.has(response.status)) {
       if (redirectCount === maxRedirects) {
@@ -294,6 +330,27 @@ function linkedXHandles(html) {
   return handles;
 }
 
+function profileDeclaredUrls(profile) {
+  const entityUrls = Array.isArray(profile?.entities?.url?.urls)
+    ? profile.entities.url.urls.flatMap((entry) => [entry?.unwound_url, entry?.expanded_url])
+      .filter((value) => typeof value === 'string' && value.length > 0)
+    : [];
+  const candidates = entityUrls.length > 0 ? entityUrls : [profile?.url];
+  return [...new Set(candidates.filter((value) => typeof value === 'string' && value.length > 0))].sort();
+}
+
+function profileLinksOfficialDomain(profile, domain) {
+  return profileDeclaredUrls(profile).some((rawUrl) => {
+    try {
+      const url = new URL(rawUrl);
+      const hostname = url.hostname.toLowerCase().replace(/^www\./, '').replace(/\.$/, '');
+      return url.protocol === 'https:' && domainAllowsHostname(hostname, domain);
+    } catch {
+      return false;
+    }
+  });
+}
+
 function allowedUsesForRole(role) {
   if (role === 'company' || role === 'newsroom' || role === 'investor_relations') {
     return ['primary_evidence', 'recent_search'];
@@ -313,6 +370,7 @@ function identityEvidenceHash(input) {
     accountId: input.profile.id,
     username: String(input.profile.username).toLowerCase(),
     profileName: input.profile.name,
+    profileUrls: profileDeclaredUrls(input.profile),
     domicileCountry: input.subject.domicileCountry,
     checkedAt: input.checkedAt,
   }));
@@ -376,6 +434,9 @@ export async function verifyOfficialXIdentity(input) {
     return identityResult(normalizedInput, 'demoted', reason);
   }
 
+  if (!profileLinksOfficialDomain(input.profile, domain)) {
+    return identityResult(normalizedInput, 'demoted', 'official_link_lost');
+  }
   const handles = linkedXHandles(input.page.html);
   if (!handles.has(profileHandle)) {
     return identityResult(normalizedInput, 'demoted', 'official_link_lost');
@@ -670,7 +731,7 @@ export function createXRecentSearchExecutor(options = {}) {
     let providerPartial = false;
     const remainingCallTimeoutMs = () => {
       if (!Number.isSafeInteger(work.leaseExpiresAt)) return Math.max(1, timeoutMs);
-      const remaining = work.leaseExpiresAt - now() - LEASE_FINALIZATION_MARGIN_MS;
+      const remaining = work.leaseExpiresAt - now() - COMPANY_MONITORING_LEASE_FINALIZATION_RESERVE_MS;
       if (remaining <= 0) throw new XProviderPartialError('Provider lease deadline reached');
       return Math.max(1, Math.min(timeoutMs, remaining));
     };
@@ -720,7 +781,7 @@ export function createXRecentSearchExecutor(options = {}) {
         ? `/2/users/${encodeURIComponent(value)}`
         : `/2/users/by/username/${encodeURIComponent(value)}`;
       const url = new URL(path, 'https://api.x.com');
-      url.searchParams.set('user.fields', 'id,name,username,verified,protected');
+      url.searchParams.set('user.fields', 'id,name,username,verified,protected,url,entities');
       const body = await xJson(url, { reserve });
       if (!body?.data) throw new XProviderError('request_rejected', 'X profile lookup returned no user');
       profileCache.set(key, body.data);
@@ -755,6 +816,7 @@ export function createXRecentSearchExecutor(options = {}) {
       let bestDemotion;
       let verified;
       let attempted = false;
+      let subjectVerificationIncomplete = false;
       for (const domainClaim of domains) {
         const domain = normalizeDomain(domainClaim.value);
         const priorUrl = subject.currentIdentity?.officialDomain === domain
@@ -771,7 +833,7 @@ export function createXRecentSearchExecutor(options = {}) {
             verificationIncomplete = true;
             break subjectLoop;
           }
-          verificationIncomplete = true;
+          subjectVerificationIncomplete = true;
           continue;
         }
 
@@ -823,7 +885,7 @@ export function createXRecentSearchExecutor(options = {}) {
               priorIdentity: publicPriorIdentity(subject.currentIdentity),
             });
           } catch {
-            verificationIncomplete = true;
+            subjectVerificationIncomplete = true;
             continue;
           }
           if (observation.state === 'authoritative') {
@@ -834,8 +896,9 @@ export function createXRecentSearchExecutor(options = {}) {
         }
         if (verified) break;
       }
+      if (subjectVerificationIncomplete) verificationIncomplete = true;
       if (verified) identities.push(verified);
-      else if (bestDemotion) identities.push(bestDemotion);
+      else if (bestDemotion && !subjectVerificationIncomplete) identities.push(bestDemotion);
       else if (attempted) verificationIncomplete = true;
     }
 

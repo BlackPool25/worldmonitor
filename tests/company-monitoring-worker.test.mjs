@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  COMPANY_MONITORING_CONVEX_TIMEOUT_MS,
+  COMPANY_MONITORING_FINALIZE_TRANSPORT_BUFFER_MS,
   COMPANY_MONITORING_WORKER_ACTIVATION_KEY,
   COMPANY_MONITORING_WORKER_HEALTH_KEY,
   COMPANY_MONITORING_WORKER_META_KEY,
@@ -10,6 +12,7 @@ import {
   createConvexFetch,
   createRedisHealthPublisher,
 } from '../scripts/company-monitoring-worker.mjs';
+import { COMPANY_MONITORING_LEASE_FINALIZATION_RESERVE_MS } from '../scripts/lib/company-monitoring-x-provider.mjs';
 
 const CLAIM = {
   status: 'claimed',
@@ -58,6 +61,13 @@ function convexClient(responses, calls = []) {
 }
 
 describe('company monitoring Railway worker', () => {
+  it('reserves enough provider lease time for Convex finalize transport and serialization', () => {
+    assert.ok(
+      COMPANY_MONITORING_LEASE_FINALIZATION_RESERVE_MS >=
+        COMPANY_MONITORING_CONVEX_TIMEOUT_MS + COMPANY_MONITORING_FINALIZE_TRANSPORT_BUFFER_MS,
+    );
+  });
+
   it('routes only X to the installed adapter and keeps Exa outside this slice', async () => {
     const execute = createCompanyMonitoringClaimExecutor({ bearerToken: '' });
     assert.deepEqual(await execute({ source: 'x' }), {

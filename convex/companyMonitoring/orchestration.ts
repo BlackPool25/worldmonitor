@@ -23,6 +23,17 @@ type ProviderErrorReason = Infer<typeof companyMonitoringProviderErrorReasonVali
 type XIngestion = Infer<typeof companyMonitoringXIngestionValidator>;
 type Work = Doc<"companyMonitoringScanWorkItems">;
 type Obligation = Doc<"companyMonitoringScanObligations">;
+type XPostAlias = Pick<
+  Doc<"companyMonitoringXPostAliases">,
+  | "_id"
+  | "ownerAccountId"
+  | "companyId"
+  | "postId"
+  | "canonicalPostId"
+  | "authorAccountId"
+  | "createdAt"
+  | "updatedAt"
+>;
 
 const ACCOUNT_DUE_PAGE_SIZE = 32;
 const ACCOUNT_WORK_PAGE_SIZE = 8;
@@ -44,6 +55,9 @@ const SHA256_HEX = /^[a-f0-9]{64}$/;
 const X_PACK_QUERY = /^\(from:[A-Za-z0-9_]{1,15}(?: OR from:[A-Za-z0-9_]{1,15})*\) -is:retweet$/;
 const MAX_X_PACKS = 25;
 const MAX_X_POSTS = 100;
+const MAX_X_EDIT_HISTORY_POST_IDS = 10;
+const X_PURGE_POST_ALIAS_BATCH_SIZE =
+  X_PURGE_EVIDENCE_BATCH_SIZE * MAX_X_EDIT_HISTORY_POST_IDS;
 const MAX_X_IDENTITIES = COMPANY_MONITORING_SCAN_COHORT_LIMIT;
 const MAX_X_UNEXPECTED_AUTHORS = 100;
 const MAX_X_TEXT_BYTES = 32 * 1024;
@@ -594,13 +608,23 @@ export async function purgeCompanyScanStateBatch(
   for (const evidence of evidencePage.slice(0, X_PURGE_EVIDENCE_BATCH_SIZE)) {
     await ctx.db.delete(evidence._id);
   }
+  const postAliasPage = await ctx.db
+    .query("companyMonitoringXPostAliases")
+    .withIndex("by_account_company", (q) =>
+      q.eq("ownerAccountId", ownerAccountId).eq("companyId", companyId),
+    )
+    .take(X_PURGE_POST_ALIAS_BATCH_SIZE + 1);
+  for (const alias of postAliasPage.slice(0, X_PURGE_POST_ALIAS_BATCH_SIZE)) {
+    await ctx.db.delete(alias._id);
+  }
   await updateAccountDueFromWork(ctx, ownerAccountId);
   return {
     complete:
       page.length <= SCAN_PURGE_OBLIGATION_BATCH_SIZE &&
       receiptLinkPage.length <= SCAN_PURGE_RECEIPT_LINK_BATCH_SIZE &&
       identityPage.length <= X_PURGE_IDENTITY_BATCH_SIZE &&
-      evidencePage.length <= X_PURGE_EVIDENCE_BATCH_SIZE,
+      evidencePage.length <= X_PURGE_EVIDENCE_BATCH_SIZE &&
+      postAliasPage.length <= X_PURGE_POST_ALIAS_BATCH_SIZE,
   };
 }
 
@@ -674,13 +698,21 @@ export async function purgeAccountScanStateBatch(
   for (const evidence of evidencePage.slice(0, X_PURGE_EVIDENCE_BATCH_SIZE)) {
     await ctx.db.delete(evidence._id);
   }
+  const postAliasPage = await ctx.db
+    .query("companyMonitoringXPostAliases")
+    .withIndex("by_account_company", (q) => q.eq("ownerAccountId", ownerAccountId))
+    .take(X_PURGE_POST_ALIAS_BATCH_SIZE + 1);
+  for (const alias of postAliasPage.slice(0, X_PURGE_POST_ALIAS_BATCH_SIZE)) {
+    await ctx.db.delete(alias._id);
+  }
   await updateAccountDueFromWork(ctx, ownerAccountId);
   return {
     complete:
       obligationPage.length <= SCAN_PURGE_OBLIGATION_BATCH_SIZE &&
       receiptLinkPage.length <= SCAN_PURGE_RECEIPT_LINK_BATCH_SIZE &&
       identityPage.length <= X_PURGE_IDENTITY_BATCH_SIZE &&
-      evidencePage.length <= X_PURGE_EVIDENCE_BATCH_SIZE,
+      evidencePage.length <= X_PURGE_EVIDENCE_BATCH_SIZE &&
+      postAliasPage.length <= X_PURGE_POST_ALIAS_BATCH_SIZE,
   };
 }
 
@@ -808,7 +840,7 @@ async function xSubjectsForClaim(
         : undefined;
       const boundClaimsCurrent = Boolean(
         storedIdentity &&
-        boundDomainClaim?.type === "domain" &&
+        claimHasIndependentDomainAuthority(boundDomainClaim, now) &&
         normalizedDomain(boundDomainClaim.value) === normalizedDomain(storedIdentity.officialDomain) &&
         boundHandleClaim?.type === "x_handle"
       );
@@ -842,7 +874,9 @@ async function xSubjectsForClaim(
         companyId: company.companyId,
         name: company.name,
         domicileCountry: company.domicileCountry,
-        domains: claimPage.filter((claim) => claim.type === "domain").map(claimValue),
+        domains: claimPage
+          .filter((claim) => claimHasIndependentDomainAuthority(claim, now))
+          .map(claimValue),
         xHandles: claimPage.filter((claim) => claim.type === "x_handle").map(claimValue),
         trackedPosts: reconciliationEvidence
           .map((evidence) => ({
@@ -1096,6 +1130,20 @@ function normalizedDomain(value: string): string {
   return value.toLowerCase().replace(/^www\./, "").replace(/\.$/, "");
 }
 
+function claimHasIndependentDomainAuthority(
+  claim: Doc<"companyMonitoringClaims"> | undefined,
+  now: number,
+): claim is Doc<"companyMonitoringClaims"> {
+  return Boolean(
+    claim?.type === "domain" &&
+    claim.provenance === "independent_provider" &&
+    claim.trustState === "verified" &&
+    claim.allowedUses?.includes("attribution") &&
+    Number.isSafeInteger(claim.expiresAt) &&
+    claim.expiresAt! > now,
+  );
+}
+
 function officialUrlMatchesDomain(rawUrl: string, domain: string): boolean {
   try {
     const url = new URL(rawUrl);
@@ -1150,6 +1198,7 @@ function validXPostObservation(
     !Number.isSafeInteger(post.observedAt) ||
     post.observedAt < post.createdAt ||
     post.editHistoryPostIds.length === 0 ||
+    post.editHistoryPostIds.length > MAX_X_EDIT_HISTORY_POST_IDS ||
     post.editHistoryPostIds.some((id) => !X_ACCOUNT_ID.test(id)) ||
     new Set(post.editHistoryPostIds).size !== post.editHistoryPostIds.length
   ) return false;
@@ -1258,6 +1307,11 @@ async function validXIngestionForWork(
   const incomplete = result.coverage === "partial" ||
     result.hasMore ||
     result.itemCount === work.resultCap;
+  if (
+    !incomplete &&
+    (payload.returnedWindow.startAt !== work.windowStart ||
+      payload.returnedWindow.endAt !== work.windowEnd)
+  ) return { valid: false };
   if ((incomplete && payload.gaps.length === 0) || (!incomplete && payload.gaps.length > 0)) {
     return { valid: false };
   }
@@ -1289,7 +1343,7 @@ async function validXIngestionForWork(
     const handleClaim = claims.find((claim) => claim.claimId === identity.xHandleClaimId);
     if (
       company.domicileCountry !== identity.domicileCountry ||
-      domainClaim?.type !== "domain" ||
+      !claimHasIndependentDomainAuthority(domainClaim, now) ||
       normalizedDomain(domainClaim.value) !== normalizedDomain(identity.officialDomain) ||
       handleClaim?.type !== "x_handle"
     ) return { valid: false };
@@ -1351,8 +1405,7 @@ async function applyXIdentities(
       binding.state === "authoritative" &&
       binding.expiresAt > now
     );
-    const accountChanged = observation.state === "authoritative" &&
-      Boolean(existing && existing.accountId !== observation.accountId);
+    const accountChanged = Boolean(existing && existing.accountId !== observation.accountId);
     const expired = observation.state === "authoritative" && observation.expiresAt <= now;
     const state = conflicts || accountChanged || expired ? "demoted" as const : observation.state;
     let demotionReason = observation.demotionReason;
@@ -1369,7 +1422,7 @@ async function applyXIdentities(
       xHandleClaimId: observation.xHandleClaimId,
       officialDomain: observation.officialDomain,
       officialPageUrl: observation.officialPageUrl,
-      accountId: accountChanged ? existing!.accountId : observation.accountId,
+      accountId: existing?.accountId ?? observation.accountId,
       currentHandle: observation.currentHandle,
       profileName: observation.profileName,
       domicileCountry: observation.domicileCountry,
@@ -1420,16 +1473,39 @@ async function applyXPosts(
     }
     return companies.get(companyId);
   };
-  for (const post of posts) {
-    const [identity, existing] = await Promise.all([
-      identityFor(post.companyId),
-      ctx.db
-        .query("companyMonitoringXEvidence")
+  const aliases = new Map<string, XPostAlias | null>();
+  const aliasFor = async (postId: string) => {
+    if (!aliases.has(postId)) {
+      aliases.set(postId, await ctx.db
+        .query("companyMonitoringXPostAliases")
         .withIndex("by_account_postId", (q) =>
-          q.eq("ownerAccountId", work.ownerAccountId).eq("postId", post.postId),
+          q.eq("ownerAccountId", work.ownerAccountId).eq("postId", postId),
         )
-        .unique(),
+        .unique());
+    }
+    return aliases.get(postId) ?? null;
+  };
+  for (const post of posts) {
+    const firstEditPostId = post.editHistoryPostIds[0];
+    if (!firstEditPostId) continue;
+    const observedPostIds = [...new Set([...post.editHistoryPostIds, post.postId])];
+    const [identity, observedAliases] = await Promise.all([
+      identityFor(post.companyId),
+      Promise.all(observedPostIds.map(aliasFor)),
     ]);
+    const aliasRows = observedAliases.filter((row): row is XPostAlias => Boolean(row));
+    if (aliasRows.some((row) =>
+      row.companyId !== post.companyId || row.authorAccountId !== post.authorAccountId
+    )) continue;
+    const canonicalIds = new Set(aliasRows.map((row) => row.canonicalPostId));
+    if (canonicalIds.size > 1) continue;
+    const canonicalPostId = aliasRows[0]?.canonicalPostId ?? firstEditPostId;
+    const existing = await ctx.db
+      .query("companyMonitoringXEvidence")
+      .withIndex("by_account_postId", (q) =>
+        q.eq("ownerAccountId", work.ownerAccountId).eq("postId", canonicalPostId),
+      )
+      .unique();
     if (existing && existing.companyId !== post.companyId) continue;
     const authoritativeRecentSearch = Boolean(
       identity?.state === "authoritative" &&
@@ -1444,12 +1520,57 @@ async function applyXPosts(
     );
     if (!authoritativeRecentSearch && !complianceReconciliation) continue;
 
+    const editHistoryPostIds = [...new Set([
+      ...(existing?.editHistoryPostIds ?? []),
+      ...post.editHistoryPostIds,
+      post.postId,
+    ])];
+    if (editHistoryPostIds.length > MAX_X_EDIT_HISTORY_POST_IDS) continue;
+    const editHistoryAliases = await Promise.all(editHistoryPostIds.map(aliasFor));
+    if (editHistoryAliases.some((alias) =>
+      alias && (
+        alias.companyId !== post.companyId ||
+        alias.authorAccountId !== post.authorAccountId ||
+        alias.canonicalPostId !== canonicalPostId
+      )
+    )) continue;
     let evidenceRevision = companyRevisions.get(post.companyId);
     if (evidenceRevision === undefined) {
       const company = await companyFor(post.companyId);
       if (!company || company.lifecycle !== "active") continue;
       evidenceRevision = company.evidenceRevision ?? 0;
       companyRevisions.set(post.companyId, evidenceRevision);
+    }
+    for (const [index, postId] of editHistoryPostIds.entries()) {
+      const alias = editHistoryAliases[index];
+      const aliasRow = {
+        ownerAccountId: work.ownerAccountId,
+        companyId: post.companyId,
+        postId,
+        canonicalPostId,
+        authorAccountId: post.authorAccountId,
+        createdAt: alias?.createdAt ?? now,
+        updatedAt: now,
+      };
+      const aliasId = alias?._id ?? await ctx.db.insert("companyMonitoringXPostAliases", aliasRow);
+      if (alias && (
+        alias.ownerAccountId !== aliasRow.ownerAccountId ||
+        alias.companyId !== aliasRow.companyId ||
+        alias.postId !== aliasRow.postId ||
+        alias.canonicalPostId !== aliasRow.canonicalPostId ||
+        alias.authorAccountId !== aliasRow.authorAccountId ||
+        alias.createdAt !== aliasRow.createdAt ||
+        alias.updatedAt !== aliasRow.updatedAt
+      )) await ctx.db.replace(aliasId, aliasRow);
+      aliases.set(postId, { _id: aliasId, ...aliasRow });
+    }
+    if (existing?.contentState === "deleted" && post.contentState !== "deleted") {
+      await ctx.db.patch(existing._id, {
+        editHistoryPostIds,
+        lastReconciledAt: now,
+        updatedAt: now,
+      });
+      continue;
     }
     if (post.contentState === "deleted" && existing?.contentState !== "deleted") {
       evidenceRevision += 1;
@@ -1466,7 +1587,7 @@ async function applyXPosts(
     const row = {
       ownerAccountId: work.ownerAccountId,
       companyId: post.companyId,
-      postId: post.postId,
+      postId: canonicalPostId,
       authorAccountId: post.authorAccountId,
       currentHandle: post.currentHandle,
       createdAt: existing?.createdAt ?? post.createdAt,
@@ -1474,7 +1595,7 @@ async function applyXPosts(
       contentState: post.contentState,
       storageState: post.storageState,
       ...(post.text !== undefined ? { text: post.text } : {}),
-      editHistoryPostIds: post.editHistoryPostIds,
+      editHistoryPostIds,
       ...(post.withheldCountryCodes ? { withheldCountryCodes: post.withheldCountryCodes } : {}),
       evidenceRevision,
       lastReconciledAt: now,
