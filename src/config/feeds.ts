@@ -658,7 +658,6 @@ const TECH_FEEDS: Record<string, Feed[]> = {
   ],
   accelerators: [
     { name: 'YC News', url: rss('https://news.ycombinator.com/rss') },
-    { name: 'YC Blog', url: rss('https://www.ycombinator.com/blog/rss/') },
     { name: 'Techstars News', url: rss('https://news.google.com/rss/search?q=Techstars+accelerator+when:14d&hl=en-US&gl=US&ceid=US:en') },
     { name: '500 Global News', url: rss('https://news.google.com/rss/search?q="500+Global"+OR+"500+Startups"+accelerator+when:14d&hl=en-US&gl=US&ceid=US:en') },
     { name: 'Demo Day News', url: rss('https://news.google.com/rss/search?q=("demo+day"+OR+"YC+batch"+OR+"accelerator+batch")+startup+when:7d&hl=en-US&gl=US&ceid=US:en') },

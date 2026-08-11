@@ -31,6 +31,7 @@ const classifyResponse = {
 
 const digestResponse = {
   generatedAt: '2026-07-28T12:00:00.000Z',
+  feedStatuses: { Reuters: 'ok', 'AP News': 'ok', BleepingComputer: 'ok' },
   categories: {
     politics: {
       items: [
@@ -170,7 +171,7 @@ describe('#5697 NLP MCP tools', () => {
     return { response, body, result, pipe };
   }
 
-  async function withDigestCategories(categories, run) {
+  async function withDigestCategories(categories, run, feedStatuses = { fixture: 'empty' }) {
     const previousFetch = globalThis.fetch;
     globalThis.fetch = async (input, init = {}) => {
       const url = String(input);
@@ -178,6 +179,7 @@ describe('#5697 NLP MCP tools', () => {
         requests.push({ url, init });
         return Response.json({
           generatedAt: '2026-07-28T12:00:00.000Z',
+          feedStatuses,
           categories,
         });
       }
@@ -209,6 +211,14 @@ describe('#5697 NLP MCP tools', () => {
       byName.get('extract_entities')?.inputSchema.properties.category.enum?.includes('intel'),
       'extract_entities category enum must include intel',
     );
+    assert.deepEqual(
+      byName.get('extract_entities')?.inputSchema.properties.variant.enum,
+      ['full', 'tech'],
+    );
+    assert.ok(
+      byName.get('extract_entities')?.inputSchema.properties.category.enum?.includes('vcblogs'),
+      'extract_entities category enum must include Tech-only buckets',
+    );
     assert.equal(byName.get('get_news_clusters')?.inputSchema.properties.limit.maximum, 25);
     assert.equal(byName.get('get_news_clusters')?.inputSchema.properties.category.type, 'string');
     assert.ok(
@@ -218,6 +228,14 @@ describe('#5697 NLP MCP tools', () => {
     assert.ok(
       byName.get('get_news_clusters')?.inputSchema.properties.category.enum?.includes('intel'),
       'get_news_clusters category enum must include intel',
+    );
+    assert.deepEqual(
+      byName.get('get_news_clusters')?.inputSchema.properties.variant.enum,
+      ['full', 'tech'],
+    );
+    assert.ok(
+      byName.get('get_news_clusters')?.inputSchema.properties.category.enum?.includes('accelerators'),
+      'get_news_clusters category enum must include Tech-only buckets',
     );
     const clusterSchema = byName.get('get_news_clusters')?.outputSchema.properties.clusters.items;
     assert.ok(clusterSchema.required.includes('primarySourceProvenance'));
@@ -412,6 +430,36 @@ describe('#5697 NLP MCP tools', () => {
       });
     });
 
+    it('can aggregate a Tech-only digest category through the bounded variant input', async () => {
+      await withDigestCategories({
+        accelerators: {
+          items: [
+            { source: 'YC News', title: 'Y Combinator startups build on Microsoft cloud', link: 'https://n/yc', publishedAt: 1785405700000 },
+          ],
+        },
+      }, async () => {
+        const { result } = await callTool('extract_entities', {
+          variant: 'tech',
+          category: 'accelerators',
+        });
+        const requestUrl = new URL(requests.at(-1).url);
+        assert.equal(requestUrl.searchParams.get('variant'), 'tech');
+        assert.equal(result.variant, 'tech');
+        assert.equal(result.category, 'accelerators');
+        assert.equal(result.headlineCount, 1);
+        assert.ok(result.entities.some((entity) => entity.entityId === 'MSFT'));
+      });
+    });
+
+    it('rejects an unknown digest variant without fetching', async () => {
+      const requestCount = requests.length;
+      const { result } = await callTool('extract_entities', { variant: 'finance' });
+      assert.equal(result.mode, 'headlines');
+      assert.equal(result.headlineCount, 0);
+      assert.match(result.error, /variant must be one of: full, tech/);
+      assert.equal(requests.length, requestCount);
+    });
+
     it('can restrict digest aggregation to the intel category', async () => {
       await withDigestCategories({
         politics: {
@@ -458,6 +506,34 @@ describe('#5697 NLP MCP tools', () => {
         assert.deepEqual(result.entities, []);
         assert.deepEqual(result.patternEntities, []);
       });
+    });
+
+    it('lists the selected Tech inventory when its digest has no buckets', async () => {
+      await withDigestCategories({}, async () => {
+        const { result } = await callTool('extract_entities', {
+          variant: 'tech',
+          category: 'commodities',
+        });
+        const requestUrl = new URL(requests.at(-1).url);
+        assert.equal(requestUrl.searchParams.get('variant'), 'tech');
+        assert.equal(result.variant, 'tech');
+        assert.equal(result.headlineCount, 0);
+        assert.match(result.note, /accelerators/);
+        assert.doesNotMatch(result.note, /intel/);
+      });
+    });
+
+    it('returns a retryable source outage when the Tech digest has no fallback', async () => {
+      await withDigestCategories({}, async () => {
+        const { body, result } = await callTool('extract_entities', {
+          variant: 'tech',
+          category: 'accelerators',
+        });
+        assert.equal(result, null);
+        assert.equal(body.error?.code, -32003);
+        assert.equal(body.error?.data?.retryable, true);
+        assert.deepEqual(body.error?.data?.unavailable_inputs, ['news:digest:v1:tech:en']);
+      }, {});
     });
 
     it('returns a corrective note when category is unknown', async () => {
@@ -631,6 +707,36 @@ describe('#5697 NLP MCP tools', () => {
         assert.equal(result.note, undefined);
         assert.match(result.clusters[0].title, /Crude oil/);
       });
+    });
+
+    it('can cluster a Tech-only digest category through the bounded variant input', async () => {
+      await withDigestCategories({
+        vcblogs: {
+          items: [
+            { source: 'First Round Review', title: 'Startup founders improve product retention', link: 'https://n/vc', publishedAt: 1785405700000 },
+          ],
+        },
+      }, async () => {
+        const { result } = await callTool('get_news_clusters', {
+          variant: 'tech',
+          category: 'vcblogs',
+        });
+        const requestUrl = new URL(requests.at(-1).url);
+        assert.equal(requestUrl.searchParams.get('variant'), 'tech');
+        assert.equal(result.variant, 'tech');
+        assert.equal(result.category, 'vcblogs');
+        assert.equal(result.headlineCount, 1);
+        assert.equal(result.totalClusters, 1);
+      });
+    });
+
+    it('rejects an unknown clustering variant without fetching', async () => {
+      const requestCount = requests.length;
+      const { result } = await callTool('get_news_clusters', { variant: 'finance' });
+      assert.deepEqual(result.clusters, []);
+      assert.equal(result.headlineCount, 0);
+      assert.match(result.error, /variant must be one of: full, tech/);
+      assert.equal(requests.length, requestCount);
     });
 
     it('can restrict clustering to the intel category', async () => {

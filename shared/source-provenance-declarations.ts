@@ -586,7 +586,6 @@ export const CONFIGURED_SOURCE_PROVENANCE_DECLARATIONS: Readonly<
   "Xinhua": { risk: 'reviewed', type: 'reviewed' },
   "Y Combinator Blog": { risk: 'unknown', type: 'unknown' },
   "Yahoo Finance": { risk: 'unknown', type: 'reviewed' },
-  "YC Blog": { risk: 'unknown', type: 'unknown' },
   "YC Launches": { risk: 'unknown', type: 'unknown' },
   "YC News": { risk: 'unknown', type: 'unknown' },
   "Yes! Magazine": { risk: 'unknown', type: 'unknown' },
