@@ -68,7 +68,7 @@ describe('WatchlistTableView scaled virtualization', () => {
     });
     document.documentElement.style.setProperty('--wm-font-scale', '1');
     document.body.replaceChildren();
-    rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function () {
+    rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
       const element = this as HTMLElement;
       const panel = element.closest<HTMLElement>('.panel');
       const scale = Number(
