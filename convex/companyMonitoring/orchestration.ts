@@ -784,6 +784,7 @@ const X_RECONCILABLE_CONTENT_STATES = [
   "edited",
   "protected",
   "withheld",
+  "deleted",
 ] as const;
 
 async function xEvidenceForReconciliation(
@@ -1563,6 +1564,7 @@ async function applyXPosts(
     return companies.get(companyId);
   };
   const aliases = new Map<string, XPostAlias | null>();
+  const deletedCanonicalPostIds = new Set<string>();
   const aliasFor = async (postId: string) => {
     if (!aliases.has(postId)) {
       aliases.set(postId, await ctx.db
@@ -1653,7 +1655,7 @@ async function applyXPosts(
       )) await ctx.db.replace(aliasId, aliasRow);
       aliases.set(postId, { _id: aliasId, ...aliasRow });
     }
-    if (existing?.contentState === "deleted" && post.contentState !== "deleted") {
+    if (existing && post.contentState !== "deleted" && deletedCanonicalPostIds.has(canonicalPostId)) {
       await ctx.db.patch(existing._id, {
         editHistoryPostIds,
         lastReconciledAt: now,
@@ -1661,7 +1663,11 @@ async function applyXPosts(
       });
       continue;
     }
-    if (post.contentState === "deleted" && existing?.contentState !== "deleted") {
+    if (post.contentState === "deleted") deletedCanonicalPostIds.add(canonicalPostId);
+    const deletionStateChanged = post.contentState === "deleted"
+      ? existing?.contentState !== "deleted"
+      : existing?.contentState === "deleted";
+    if (deletionStateChanged) {
       evidenceRevision += 1;
       companyRevisions.set(post.companyId, evidenceRevision);
       const company = await companyFor(post.companyId);
@@ -1673,6 +1679,10 @@ async function applyXPosts(
         });
       }
     }
+    const redactForCompliance = complianceReconciliation && !authoritativeRecentSearch;
+    const storageState = redactForCompliance && post.contentState !== "deleted"
+      ? "metadata_only" as const
+      : post.storageState;
     const row = {
       ownerAccountId: work.ownerAccountId,
       companyId: post.companyId,
@@ -1682,8 +1692,8 @@ async function applyXPosts(
       createdAt: existing?.createdAt ?? post.createdAt,
       observedAt: post.observedAt,
       contentState: post.contentState,
-      storageState: post.storageState,
-      ...(post.text !== undefined ? { text: post.text } : {}),
+      storageState,
+      ...(!redactForCompliance && post.text !== undefined ? { text: post.text } : {}),
       editHistoryPostIds,
       ...(post.withheldCountryCodes ? { withheldCountryCodes: post.withheldCountryCodes } : {}),
       evidenceRevision,

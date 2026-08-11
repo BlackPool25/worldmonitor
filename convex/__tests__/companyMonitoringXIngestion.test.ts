@@ -466,6 +466,141 @@ describe("Company Monitoring compliant X ingestion", () => {
     });
   });
 
+  test("pins the prior immutable account ID when a replacement account is demoted", async () => {
+    const t = convexTest(schema, modules);
+    const firstClaim = await seedXWork(t);
+    await finalize(t, firstClaim);
+
+    vi.setSystemTime(NOW + DAY_MS);
+    const secondClaim = await t.mutation(ORCHESTRATION.claimNextWorkForTest, {
+      workerId: "x-worker",
+    });
+    const replacementAccountId = "202812445";
+    await finalize(t, secondClaim, {
+      xIngestion: xIngestion(secondClaim, {
+        identities: [identity(COMPANY_A, {
+          accountId: replacementAccountId,
+          currentHandle: "stripe_alt",
+          state: "demoted",
+          demotionReason: "account_changed",
+          allowedUses: [],
+        })],
+        posts: [post({
+          postId: "1912345678901234569",
+          authorAccountId: replacementAccountId,
+          currentHandle: "stripe_alt",
+          text: "replacement account content",
+          editHistoryPostIds: ["1912345678901234569"],
+          observedAt: NOW + DAY_MS,
+        })],
+      }),
+    });
+
+    const stored = await t.run(async (ctx) => ({
+      identity: await ctx.db
+        .query("companyMonitoringXIdentities")
+        .withIndex("by_account_company", (q) =>
+          q.eq("ownerAccountId", OWNER_ACCOUNT_ID).eq("companyId", COMPANY_A),
+        )
+        .unique(),
+      replacementEvidence: await ctx.db
+        .query("companyMonitoringXEvidence")
+        .withIndex("by_account_postId", (q) =>
+          q.eq("ownerAccountId", OWNER_ACCOUNT_ID).eq("postId", "1912345678901234569"),
+        )
+        .unique(),
+    }));
+    expect(stored.identity).toMatchObject({
+      accountId: ACCOUNT_ID,
+      state: "demoted",
+      demotionReason: "account_changed",
+      allowedUses: [],
+    });
+    expect(stored.replacementEvidence).toBeNull();
+  });
+
+  test("redacts a full-text reconciliation update after the identity is demoted", async () => {
+    const t = convexTest(schema, modules);
+    const firstClaim = await seedXWork(t);
+    await finalize(t, firstClaim);
+
+    vi.setSystemTime(NOW + DAY_MS);
+    const secondClaim = await t.mutation(ORCHESTRATION.claimNextWorkForTest, {
+      workerId: "x-worker",
+    });
+    await finalize(t, secondClaim, {
+      xIngestion: xIngestion(secondClaim, {
+        identities: [identity(COMPANY_A, {
+          state: "demoted",
+          demotionReason: "official_link_lost",
+          allowedUses: [],
+        })],
+        posts: [post({ text: "must be removed", observedAt: NOW + DAY_MS })],
+        complianceEventCount: 1,
+      }),
+    });
+
+    const evidence = await t.run(async (ctx) => ctx.db
+      .query("companyMonitoringXEvidence")
+      .withIndex("by_account_postId", (q) =>
+        q.eq("ownerAccountId", OWNER_ACCOUNT_ID).eq("postId", "1912345678901234567"),
+      )
+      .unique());
+    expect(evidence).toMatchObject({
+      contentState: "active",
+      storageState: "metadata_only",
+    });
+    expect(evidence?.text).toBeUndefined();
+  });
+
+  test.each([
+    ["protected", undefined],
+    ["withheld", ["DE", "FR"]],
+  ] as const)("removes retained text when a post becomes %s", async (contentState, countryCodes) => {
+    const t = convexTest(schema, modules);
+    const firstClaim = await seedXWork(t);
+    await finalize(t, firstClaim);
+
+    vi.setSystemTime(NOW + DAY_MS);
+    const secondClaim = await t.mutation(ORCHESTRATION.claimNextWorkForTest, {
+      workerId: "x-worker",
+    });
+    await finalize(t, secondClaim, {
+      xIngestion: xIngestion(secondClaim, {
+        posts: [post({
+          contentState,
+          storageState: "metadata_only",
+          text: undefined,
+          observedAt: NOW + DAY_MS,
+          ...(countryCodes ? { withheldCountryCodes: countryCodes } : {}),
+        })],
+        complianceEventCount: 1,
+      }),
+    });
+    const stored = await t.run(async (ctx) => ({
+      evidence: await ctx.db
+        .query("companyMonitoringXEvidence")
+        .withIndex("by_account_postId", (q) =>
+          q.eq("ownerAccountId", OWNER_ACCOUNT_ID).eq("postId", "1912345678901234567"),
+        )
+        .unique(),
+      company: await ctx.db
+        .query("companyMonitoringCompanies")
+        .withIndex("by_account_companyId", (q) =>
+          q.eq("ownerAccountId", OWNER_ACCOUNT_ID).eq("companyId", COMPANY_A),
+        )
+        .unique(),
+    }));
+    expect(stored.evidence).toMatchObject({
+      contentState,
+      storageState: "metadata_only",
+      ...(countryCodes ? { withheldCountryCodes: countryCodes } : {}),
+    });
+    expect(stored.evidence?.text).toBeUndefined();
+    expect(stored.company?.evidenceRevision).toBeUndefined();
+    expect(stored.company?.recomputeRequiredAt).toBeUndefined();
+  });
+
   test.each([
     ["domain", DOMAIN_CLAIM_A],
     ["handle", HANDLE_CLAIM_A],
@@ -887,6 +1022,47 @@ describe("Company Monitoring compliant X ingestion", () => {
     expect(replayedCompany).toMatchObject({
       evidenceRevision: 1,
       recomputeRequiredAt: NOW + DAY_MS,
+    });
+
+    vi.setSystemTime(NOW + 3 * DAY_MS);
+    const recoveryClaim = await t.mutation(ORCHESTRATION.claimNextWorkForTest, {
+      workerId: "x-worker",
+    });
+    expect(recoveryClaim.work.subjects[0].trackedPosts).toEqual(
+      expect.arrayContaining([expect.objectContaining({
+        postId: "1912345678901234567",
+        contentState: "deleted",
+      })]),
+    );
+    await finalize(t, recoveryClaim, {
+      xIngestion: xIngestion(recoveryClaim, {
+        posts: [post({ observedAt: NOW + 3 * DAY_MS })],
+        complianceEventCount: 1,
+      }),
+    });
+    const recovered = await t.run(async (ctx) => ({
+      evidence: await ctx.db
+        .query("companyMonitoringXEvidence")
+        .withIndex("by_account_postId", (q) =>
+          q.eq("ownerAccountId", OWNER_ACCOUNT_ID).eq("postId", "1912345678901234567"),
+        )
+        .unique(),
+      company: await ctx.db
+        .query("companyMonitoringCompanies")
+        .withIndex("by_account_companyId", (q) =>
+          q.eq("ownerAccountId", OWNER_ACCOUNT_ID).eq("companyId", COMPANY_A),
+        )
+        .unique(),
+    }));
+    expect(recovered.evidence).toMatchObject({
+      contentState: "active",
+      storageState: "full_text",
+      text: "Official Stripe update",
+      evidenceRevision: 2,
+    });
+    expect(recovered.company).toMatchObject({
+      evidenceRevision: 2,
+      recomputeRequiredAt: NOW + 3 * DAY_MS,
     });
   });
 

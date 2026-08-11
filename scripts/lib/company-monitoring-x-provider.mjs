@@ -280,12 +280,14 @@ const ROLE_SUFFIXES = [
 ];
 
 function nameTokens(value) {
-  const tokens = plainText(value, 'name', 256)
+  const normalized = plainText(value, 'name', 256)
+    .normalize('NFKC')
     .toLocaleLowerCase('en-US')
     .replace(/&/g, ' and ')
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim()
-    .split(/\s+/);
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+  if (!normalized) return [];
+  const tokens = normalized.split(/\s+/u);
   while (tokens.length > 1 && COMPANY_SUFFIXES.has(tokens[tokens.length - 1])) tokens.pop();
   return tokens;
 }
@@ -297,6 +299,7 @@ function canonicalName(value) {
 function inferAuthorityRole(companyName, profileName) {
   const company = canonicalName(companyName);
   const profile = canonicalName(profileName);
+  if (!company || !profile) return 'unknown';
   if (profile === company) return 'company';
   for (const [suffix, role] of ROLE_SUFFIXES) {
     if (profile === `${company}${suffix}`) return role;
@@ -305,7 +308,10 @@ function inferAuthorityRole(companyName, profileName) {
 }
 
 function pageMatchesName(html, name) {
-  const pageText = String(html).toLocaleLowerCase('en-US').replace(/[^a-z0-9]+/g, ' ');
+  const pageText = String(html)
+    .normalize('NFKC')
+    .toLocaleLowerCase('en-US')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ');
   const tokens = nameTokens(name);
   return tokens.length > 0 && pageText.includes(tokens.join(' '));
 }
@@ -544,15 +550,16 @@ function normalizeTimestamp(value, field) {
 }
 
 export function normalizeXRecentSearchPage(page, options) {
+  const permittedStorage = options?.permittedStorage === 'full_text' ? 'full_text' : 'metadata_only';
   const bindings = new Map(
     (options?.bindings ?? []).map((binding) => [String(binding.accountId), {
       companyId: String(binding.companyId),
       accountId: String(binding.accountId),
       currentHandle: normalizeHandle(binding.currentHandle),
+      permittedStorage: binding.permittedStorage === 'metadata_only' ? 'metadata_only' : permittedStorage,
     }]),
   );
   const users = new Map((page?.includes?.users ?? []).map((user) => [String(user.id), user]));
-  const permittedStorage = options?.permittedStorage === 'full_text' ? 'full_text' : 'metadata_only';
   const observedAt = normalizeTimestamp(options?.observedAt, 'observedAt');
   const posts = [];
   const unexpectedAuthors = [];
@@ -574,7 +581,8 @@ export function normalizeXRecentSearchPage(page, options) {
         : editHistoryPostIds.length > 1
           ? 'edited'
           : 'active';
-    const mayStoreText = permittedStorage === 'full_text' && (contentState === 'active' || contentState === 'edited');
+    const mayStoreText = binding.permittedStorage === 'full_text' &&
+      (contentState === 'active' || contentState === 'edited');
     posts.push({
       companyId: binding.companyId,
       postId: normalizePostId(raw.id, 'post ID'),
@@ -669,6 +677,43 @@ function publicPriorIdentity(identity) {
     state: identity.state,
     expiresAt: identity.expiresAt,
   };
+}
+
+function isolateCorporateFamilyIdentities(identities, subjects, now) {
+  const authoritativeByAccount = new Map();
+  for (const identity of identities) {
+    if (identity.state !== 'authoritative' || identity.expiresAt <= now) continue;
+    const rows = authoritativeByAccount.get(identity.accountId) ?? [];
+    rows.push(identity);
+    authoritativeByAccount.set(identity.accountId, rows);
+  }
+  const storedOwnersByAccount = new Map();
+  for (const subject of subjects) {
+    const identity = subject.currentIdentity;
+    if (
+      identity?.state !== 'authoritative' ||
+      identity.expiresAt <= now ||
+      !X_ACCOUNT_ID.test(String(identity.accountId ?? ''))
+    ) continue;
+    const owners = storedOwnersByAccount.get(String(identity.accountId)) ?? [];
+    owners.push(String(subject.companyId));
+    storedOwnersByAccount.set(String(identity.accountId), owners);
+  }
+  return identities.map((identity) => {
+    const conflicts = authoritativeByAccount.get(identity.accountId) ?? [];
+    if (conflicts.length < 2 || identity.state !== 'authoritative') return identity;
+    const storedOwners = storedOwnersByAccount.get(identity.accountId) ?? [];
+    const owner = storedOwners.length === 1 && conflicts.some((row) => row.companyId === storedOwners[0])
+      ? storedOwners[0]
+      : undefined;
+    if (owner === identity.companyId) return identity;
+    return {
+      ...identity,
+      state: 'demoted',
+      demotionReason: 'family_conflict',
+      allowedUses: [],
+    };
+  });
 }
 
 function buildCheckpoint(work, packs) {
@@ -774,6 +819,7 @@ export function createXRecentSearchExecutor(options = {}) {
     };
 
     const profileCache = new Map();
+    const profiledAccountIds = new Set();
     const profileBy = async (kind, value, reserve) => {
       const key = `${kind}:${String(value).toLowerCase()}`;
       if (profileCache.has(key)) return profileCache.get(key);
@@ -861,6 +907,7 @@ export function createXRecentSearchExecutor(options = {}) {
             if (error instanceof XProviderError && error.reason === 'request_rejected') continue;
             return providerErrorResult(error, requestCount, requestCostUsdMicros);
           }
+          profiledAccountIds.add(String(profile.id));
           if (profile.protected === true) protectedAccountIds.add(String(profile.id));
           const handleClaim = handles.find((claim) =>
             String(claim.value).toLowerCase() === String(value).toLowerCase()
@@ -902,22 +949,32 @@ export function createXRecentSearchExecutor(options = {}) {
       else if (attempted) verificationIncomplete = true;
     }
 
+    const isolatedIdentities = isolateCorporateFamilyIdentities(identities, sortedSubjects, checkedAt);
+    identities.splice(0, identities.length, ...isolatedIdentities);
+    const identityByCompany = new Map(identities.map((identity) => [identity.companyId, identity]));
     const { packs } = compileXRecentSearchPacks(identities, { now: checkedAt });
     const bindings = packs.flatMap((pack) => pack.accountIds.map((accountId, index) => ({
       companyId: pack.companyIds[index],
       accountId,
       currentHandle: pack.handles[index],
+      permittedStorage: storageMode,
     })));
     const complianceBindings = uniqueBy([
       ...bindings,
       ...sortedSubjects.flatMap((subject) => {
         const identity = subject.currentIdentity;
         if (!identity || !X_ACCOUNT_ID.test(String(identity.accountId ?? ''))) return [];
+        const effectiveIdentity = identityByCompany.get(String(subject.companyId)) ?? identity;
+        const mayStoreText = effectiveIdentity.state === 'authoritative' &&
+          effectiveIdentity.expiresAt > checkedAt &&
+          Array.isArray(effectiveIdentity.allowedUses) &&
+          effectiveIdentity.allowedUses.includes('recent_search');
         try {
           return [{
             companyId: String(subject.companyId),
             accountId: String(identity.accountId),
             currentHandle: normalizeHandle(identity.currentHandle),
+            permittedStorage: mayStoreText ? storageMode : 'metadata_only',
           }];
         } catch {
           return [];
@@ -966,7 +1023,8 @@ export function createXRecentSearchExecutor(options = {}) {
           const error = errorsById.get(String(tracked.postId));
           const errorText = `${error?.title ?? ''} ${error?.detail ?? ''}`;
           const protectedContent = protectedAccountIds.has(String(tracked.authorAccountId)) || /\bprotected\b/i.test(errorText);
-          const definitiveDeletion = Boolean(error) &&
+          const definitiveDeletion = profiledAccountIds.has(String(tracked.authorAccountId)) &&
+            Boolean(error) &&
             /\b(?:not found|does not exist|deleted)\b/i.test(errorText) &&
             !/\b(?:authori[sz]ation|forbidden|suspended|protected)\b/i.test(errorText);
           if (protectedContent || definitiveDeletion) {
@@ -1010,15 +1068,27 @@ export function createXRecentSearchExecutor(options = {}) {
       { bindings: complianceBindings, permittedStorage: storageMode, observedAt: checkedAt },
     );
     for (const author of normalizedCompliance.unexpectedAuthors) unexpectedAuthors.add(author);
+    const coalescedCompliance = new Map();
+    for (const post of normalizedCompliance.posts) {
+      const key = `${post.companyId}:${post.postId}`;
+      const prior = coalescedCompliance.get(key);
+      if (prior?.contentState === 'deleted') continue;
+      coalescedCompliance.set(key, post);
+    }
     let hasMore = false;
-    for (const post of normalizedCompliance.posts.sort((left, right) =>
-      (left.contentState === 'deleted' ? -1 : 0) - (right.contentState === 'deleted' ? -1 : 0)
-    )) {
+    const compliancePosts = [...coalescedCompliance.values()].sort((left, right) =>
+      Number(right.contentState === 'deleted') - Number(left.contentState === 'deleted') ||
+      left.companyId.localeCompare(right.companyId) ||
+      left.postId.localeCompare(right.postId)
+    );
+    let retainedComplianceEventCount = 0;
+    for (const post of compliancePosts) {
       if (postMap.size >= work.resultCap) {
         hasMore = true;
         continue;
       }
       postMap.set(`${post.companyId}:${post.postId}`, post);
+      retainedComplianceEventCount += 1;
     }
     for (const post of reconciledPosts) {
       const key = `${post.companyId}:${post.postId}`;
@@ -1132,7 +1202,7 @@ export function createXRecentSearchExecutor(options = {}) {
         posts,
         unexpectedAuthorAccountIds: [...unexpectedAuthors].sort(),
         requestCount,
-        complianceEventCount: normalizedCompliance.posts.length,
+        complianceEventCount: retainedComplianceEventCount,
       },
     };
   };

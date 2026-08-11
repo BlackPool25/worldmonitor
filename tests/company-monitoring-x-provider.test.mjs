@@ -279,6 +279,17 @@ describe('Company Monitoring official X identity verification', () => {
     assert.equal(lookalike.state, 'demoted');
     assert.equal(lookalike.demotionReason, 'name_mismatch');
   });
+
+  test('does not treat unrelated Unicode-only names as an authority match', async () => {
+    const tracer = cohortTracer(0, {
+      name: '東京電力',
+      profileName: '任天堂',
+      officialHtml: '<span>東京電力 United States</span><a href="https://x.com/cohort0">X</a>',
+    });
+    const result = await verifyTracer(tracer);
+    assert.equal(result.state, 'demoted');
+    assert.equal(result.demotionReason, 'name_mismatch');
+  });
 });
 
 describe('Company Monitoring official-domain SSRF guard', () => {
@@ -401,6 +412,7 @@ describe('Company Monitoring official-domain SSRF guard', () => {
     );
     assert.equal(calls, 1);
   });
+
 });
 
 describe('Company Monitoring X recent-search packing and compliance normalization', () => {
@@ -833,8 +845,22 @@ describe('Company Monitoring X recent-search packing and compliance normalizatio
     assert.ok(result.xIngestion.gaps.some((gap) => gap.reason === 'provider_partial'));
   });
 
-  test('uses each pack aligned binding so a duplicate immutable account stays with the first family owner', async () => {
+  test('keeps a duplicate immutable account with its stored authoritative family owner', async () => {
     const [first, second] = fixture.liveTracers;
+    const subjects = [
+      subjectFor(first),
+      subjectFor(second, {
+        currentIdentity: {
+          accountId: second.accountId,
+          currentHandle: second.currentHandle,
+          state: 'authoritative',
+          allowedUses: ['primary_evidence', 'recent_search'],
+          expiresAt: CHECKED_AT + DAY,
+          officialDomain: second.officialDomain,
+          officialPageUrl: second.officialPageUrl,
+        },
+      }),
+    ];
     const execute = createXRecentSearchExecutor({
       bearerToken: 'x-test-token',
       now: () => CHECKED_AT,
@@ -848,27 +874,38 @@ describe('Company Monitoring X recent-search packing and compliance normalizatio
           const username = decodeURIComponent(url.pathname.split('/').pop());
           const tracer = username.toLowerCase() === second.currentHandle.toLowerCase() ? second : first;
           return Response.json({
-            data: xProfileFor(tracer, { id: first.accountId }),
+            data: xProfileFor(tracer, { id: second.accountId }),
+          });
+        }
+        if (url.pathname.startsWith('/2/users/')) {
+          return Response.json({
+            data: xProfileFor(second),
           });
         }
         return Response.json({
           data: [{
             id: '5000000000000000001',
-            author_id: first.accountId,
+            author_id: second.accountId,
             created_at: new Date(CHECKED_AT - 1_000).toISOString(),
             text: 'Owned by the packed family.',
             edit_history_tweet_ids: ['5000000000000000001'],
           }],
-          includes: { users: [{ id: first.accountId, username: first.currentHandle, protected: false }] },
+          includes: { users: [{ id: second.accountId, username: second.currentHandle, protected: false }] },
           meta: { result_count: 1 },
         });
       },
     });
 
-    const result = await execute(workFor([subjectFor(first), subjectFor(second)]));
-    assert.deepEqual(result.xIngestion.packing.flatMap((pack) => pack.companyIds), [first.companyId]);
-    assert.deepEqual(result.xIngestion.posts.map((post) => post.companyId), [first.companyId]);
-    assert.ok(!result.xIngestion.posts.some((post) => post.companyId === second.companyId));
+    const result = await execute(workFor(subjects));
+    assert.deepEqual(result.xIngestion.packing.flatMap((pack) => pack.companyIds), [second.companyId]);
+    assert.deepEqual(result.xIngestion.posts.map((post) => post.companyId), [second.companyId]);
+    assert.deepEqual(
+      result.xIngestion.identities.map(({ companyId, state, demotionReason }) => ({ companyId, state, demotionReason })),
+      [
+        { companyId: first.companyId, state: 'demoted', demotionReason: 'family_conflict' },
+        { companyId: second.companyId, state: 'authoritative', demotionReason: undefined },
+      ],
+    );
   });
 
   test('returns an unchanged active tracked post so persistence can advance its reconciliation cursor', async () => {
@@ -1037,6 +1074,37 @@ describe('Company Monitoring X recent-search packing and compliance normalizatio
     assert.ok(result.xIngestion.gaps.some((gap) => gap.reason === 'pagination_cap'));
   });
 
+  test('coalesces conflicting compliance events with deletion as the terminal state', async () => {
+    const tracer = fixture.liveTracers[0];
+    const postId = '5000000000000000007';
+    const events = [
+      { type: 'withheld', postId, authorAccountId: tracer.accountId, observedAt: CHECKED_AT, countryCodes: ['DE'] },
+      { type: 'delete', postId, authorAccountId: tracer.accountId, observedAt: CHECKED_AT },
+    ];
+    for (const complianceEvents of [events, [...events].reverse()]) {
+      const execute = createXRecentSearchExecutor({
+        bearerToken: 'x-test-token',
+        now: () => CHECKED_AT,
+        fetchOfficialPage: async () => ({
+          url: tracer.officialPageUrl,
+          finalUrl: tracer.officialPageUrl,
+          html: tracer.officialHtml,
+        }),
+        fetchComplianceEvents: async () => complianceEvents,
+        fetchImpl: async (input) => {
+          const url = new URL(input);
+          if (url.pathname.includes('/users/by/username/')) {
+            return Response.json({ data: xProfileFor(tracer) });
+          }
+          return Response.json({ data: [], includes: { users: [] }, meta: { result_count: 0 } });
+        },
+      });
+      const result = await execute(workFor([subjectFor(tracer)]));
+      assert.deepEqual(result.xIngestion.posts.map((row) => row.contentState), ['deleted']);
+      assert.equal(result.xIngestion.complianceEventCount, 1);
+    }
+  });
+
   test('stops before the lease safety margin and returns a structurally valid partial result', async () => {
     const tracer = fixture.liveTracers[0];
     const clock = [CHECKED_AT, CHECKED_AT + 100, CHECKED_AT + 600];
@@ -1113,5 +1181,103 @@ describe('Company Monitoring X recent-search packing and compliance normalizatio
     assert.equal(result.xIngestion.complianceEventCount, 0);
     assert.equal(result.coverage, 'partial');
     assert.ok(result.xIngestion.gaps.some((gap) => gap.reason === 'compliance_unavailable'));
+  });
+
+  test('does not infer deletion for an author account that was not positively profiled', async () => {
+    const tracer = fixture.liveTracers[0];
+    const oldAccountId = tracer.accountId;
+    const replacementAccountId = '5000000000000000008';
+    const postId = '5000000000000000009';
+    const subject = subjectFor(tracer, {
+      currentIdentity: {
+        accountId: oldAccountId,
+        currentHandle: tracer.currentHandle,
+        state: 'demoted',
+        allowedUses: [],
+        expiresAt: CHECKED_AT - DAY,
+        officialDomain: tracer.officialDomain,
+        officialPageUrl: tracer.officialPageUrl,
+      },
+      trackedPosts: [{ postId, authorAccountId: oldAccountId, contentState: 'active', observedAt: CHECKED_AT - DAY }],
+    });
+    const execute = createXRecentSearchExecutor({
+      bearerToken: 'x-test-token',
+      now: () => CHECKED_AT,
+      fetchOfficialPage: async () => ({ url: tracer.officialPageUrl, finalUrl: tracer.officialPageUrl, html: tracer.officialHtml }),
+      fetchImpl: async (input) => {
+        const url = new URL(input);
+        if (url.pathname === `/2/users/${oldAccountId}`) return Response.json({ errors: [{ title: 'Not found' }] });
+        if (url.pathname.includes('/users/by/username/')) {
+          return Response.json({ data: { id: replacementAccountId, username: tracer.currentHandle, name: tracer.profileName } });
+        }
+        if (url.pathname === '/2/tweets') {
+          return Response.json({ data: [], errors: [{ resource_id: postId, title: 'Resource not found' }] });
+        }
+        return Response.json({ data: [], includes: { users: [] }, meta: { result_count: 0 } });
+      },
+    });
+    const result = await execute(workFor([subject]));
+    assert.deepEqual(result.xIngestion.posts, []);
+    assert.equal(result.xIngestion.complianceEventCount, 0);
+    assert.equal(result.coverage, 'partial');
+    assert.ok(result.xIngestion.gaps.some((gap) => gap.reason === 'compliance_unavailable'));
+  });
+
+  test('never refreshes full post text through a demoted identity binding', async () => {
+    const tracer = fixture.liveTracers[0];
+    const postId = '5000000000000000010';
+    const subject = subjectFor(tracer, {
+      currentIdentity: {
+        accountId: tracer.accountId,
+        currentHandle: tracer.currentHandle,
+        state: 'demoted',
+        allowedUses: [],
+        expiresAt: CHECKED_AT - DAY,
+        officialDomain: tracer.officialDomain,
+        officialPageUrl: tracer.officialPageUrl,
+      },
+      trackedPosts: [{ postId, authorAccountId: tracer.accountId, contentState: 'active', observedAt: CHECKED_AT - DAY }],
+    });
+    const execute = createXRecentSearchExecutor({
+      bearerToken: 'x-test-token',
+      now: () => CHECKED_AT,
+      storageMode: 'full_text',
+      fetchOfficialPage: async () => ({
+        url: tracer.officialPageUrl,
+        finalUrl: tracer.officialPageUrl,
+        html: `<span>${tracer.name} United States</span>`,
+      }),
+      fetchImpl: async (input) => {
+        const url = new URL(input);
+        if (url.pathname.startsWith('/2/users/')) {
+          return Response.json({ data: { id: tracer.accountId, username: tracer.currentHandle, name: tracer.profileName } });
+        }
+        if (url.pathname === '/2/tweets') {
+          return Response.json({
+            data: [{
+              id: postId,
+              author_id: tracer.accountId,
+              created_at: new Date(CHECKED_AT - DAY).toISOString(),
+              text: 'must be discarded',
+              edit_history_tweet_ids: [postId],
+            }],
+            includes: { users: [{ id: tracer.accountId, username: tracer.currentHandle }] },
+          });
+        }
+        return Response.json({ data: [], includes: { users: [] }, meta: { result_count: 0 } });
+      },
+    });
+    const result = await execute(workFor([subject]));
+    assert.deepEqual(result.xIngestion.posts, [{
+      companyId: tracer.companyId,
+      postId,
+      authorAccountId: tracer.accountId,
+      currentHandle: tracer.currentHandle,
+      createdAt: CHECKED_AT - DAY,
+      observedAt: CHECKED_AT,
+      contentState: 'active',
+      storageState: 'metadata_only',
+      editHistoryPostIds: [postId],
+    }]);
   });
 });
