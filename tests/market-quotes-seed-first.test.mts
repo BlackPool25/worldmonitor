@@ -509,6 +509,41 @@ describe('listMarketQuotes seed-first resolution', () => {
     );
   });
 
+  // #6468 was invisible in aggregate because the reason never left the response
+  // body. Without this line the PR's own post-deploy monitoring plan — watch the
+  // PROVIDER_ERROR vs BUDGET_EXHAUSTED mix — has no data source at all.
+  it('leaves one queryable line naming the cutoff reason and its margin', async () => {
+    __setUpstreamDeadlineForTests(30);
+    installHarness({
+      seed: seedPayload(['AAPL']),
+      provider: { STALL: { status: 200, waitForAbort: true } },
+    });
+    const lines: string[] = [];
+    console.warn = (...args: unknown[]) => void lines.push(args.join(' '));
+
+    await listMarketQuotes(CTX, { symbols: ['AAPL', 'STALL'] });
+
+    const cutoff = lines.find((line) => line.includes('gap-fetch cutoffs'));
+    assert.ok(cutoff, 'a cut-off lookup must be visible to an operator, not only to the caller');
+    assert.match(cutoff, /MARKET_QUOTE_UNAVAILABLE_REASON_UPSTREAM_BUDGET_EXHAUSTED/);
+    // The margin is what turns a recurrence of the timer race into a trend
+    // rather than a surprise, so it has to survive in the emitted line.
+    assert.match(cutoff, /"marginMs":-?\d+/);
+  });
+
+  it('stays quiet for a routine unknown ticker', async () => {
+    // The line is scoped to cut-offs on purpose: a watchlist holding one dead
+    // symbol would otherwise warn on every refresh and bury the real signal.
+    installHarness({ seed: seedPayload(['AAPL']) });
+    const lines: string[] = [];
+    console.warn = (...args: unknown[]) => void lines.push(args.join(' '));
+
+    const resp = await listMarketQuotes(CTX, { symbols: ['AAPL', 'NOSUCH'] });
+
+    assert.equal(reasonFor(resp, 'NOSUCH'), 'MARKET_QUOTE_UNAVAILABLE_REASON_NOT_FOUND');
+    assert.deepEqual(lines.filter((line) => line.includes('gap-fetch cutoffs')), []);
+  });
+
   it('reports symbols dropped by the request cardinality bound', async () => {
     const overflow = Array.from({ length: MARKET_QUOTES_REQUEST_LIMIT + 2 }, (_, i) => `BULK${i}`);
     const h = installHarness({ seed: seedPayload(overflow.slice(0, MARKET_QUOTES_REQUEST_LIMIT)) });

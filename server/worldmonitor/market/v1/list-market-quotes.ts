@@ -288,6 +288,9 @@ async function resolveMissingSymbols(missing: string[]): Promise<GapFetchResult>
   // not-found, never for a transient failure (cacheFetcherErrors: false).
   const liveOutcomes = new Map<string, Reason>();
 
+  /** One entry per cut-off lookup, emitted as a single line after the fan-out. */
+  const cutoffs: Array<{ reason: Reason; marginMs: number; err: string }> = [];
+
   await forEachWithConcurrency(attempted, UPSTREAM_CONCURRENCY, async (symbol) => {
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0 || deadlineSignal.aborted) {
@@ -317,17 +320,34 @@ async function resolveMissingSymbols(missing: string[]): Promise<GapFetchResult>
 
       if (cached) quotes.set(symbol, cached);
       else reasons.set(symbol, liveOutcomes.get(symbol) ?? REASON.notFound);
-    } catch {
+    } catch (err) {
+      const now = Date.now();
       const reason = classifyGapFetchFailure({
         deadlineAborted: deadlineSignal.aborted,
-        now: Date.now(),
+        now,
         deadline,
         recorded: liveOutcomes.get(symbol),
       });
       reasons.set(symbol, reason);
       if (reason === REASON.rateLimited) rateLimited = true;
+      // `marginMs` is how much of the window was left when this lookup died:
+      // <= 0 is the deadline, a large positive is the call-budget backstop
+      // firing on its own. `err` names which timer won — a TimeoutError is the
+      // deadline's AbortSignal, a plain Error is the backstop or the provider.
+      cutoffs.push({ reason, marginMs: deadline - now, err: err instanceof Error ? err.name : typeof err });
     }
   });
+
+  // #6468 was invisible in aggregate: the reason a lookup failed reaches
+  // exactly one consumer — an i18n string in the dashboard — so the whole
+  // incident was diagnosable only by a human noticing PROVIDER_ERROR creeping
+  // up. One line per gap fetch (never per symbol) makes the split queryable,
+  // and a `marginMs` trending toward 0 is the early warning that the deadline
+  // and the backstop are converging again. Only cut-off lookups are logged;
+  // a not-found ticker is routine and already visible to the caller.
+  if (cutoffs.length > 0) {
+    console.warn(`[ListMarketQuotes] gap-fetch cutoffs ${JSON.stringify({ attempted: attempted.length, cutoffs })}`);
+  }
 
   return { quotes, reasons, rateLimited, providerConfigured: true };
 }
