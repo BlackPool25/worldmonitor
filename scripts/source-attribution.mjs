@@ -77,6 +77,18 @@ const PROVIDER_OVERRIDES = {
     attribution: 'Hyperliquid; link to the relevant market/API response.',
     status: 'terms-review',
   },
+  'apps.fas.usda.gov': {
+    provider: 'USDA FAS PSD',
+    license: 'U.S. government public-domain PSD Open Data',
+    attribution: 'USDA Foreign Agricultural Service, Production, Supply and Distribution (PSD).',
+    status: 'reviewed',
+  },
+  'fenixservices.fao.org': {
+    provider: 'FAOSTAT',
+    license: 'FAOSTAT CC-BY; attribution to FAO required',
+    attribution: 'FAO. FAOSTAT. https://www.fao.org/faostat/',
+    status: 'reviewed',
+  },
   'publicreporting.cftc.gov': {
     provider: 'CFTC Commitments of Traders',
     license: 'U.S. government public data; endpoint terms apply',
