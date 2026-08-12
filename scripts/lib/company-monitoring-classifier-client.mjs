@@ -106,7 +106,64 @@ function approvedResolvedModels(configuredModel, approvedResolvedModels) {
   return approved;
 }
 
-async function parseProviderEnvelope(response, approvedModels) {
+function providerAttestation(envelope, configuredModel) {
+  const metadata = envelope.openrouter_metadata;
+  const attempts = metadata?.attempts;
+  if (
+    !isRecord(metadata) ||
+    metadata.requested !== configuredModel ||
+    metadata.strategy !== 'direct' ||
+    metadata.attempt !== 1 ||
+    !isRecord(metadata.endpoints) ||
+    !Array.isArray(metadata.endpoints.available) ||
+    (attempts !== undefined && (!Array.isArray(attempts) || attempts.length !== 1)) ||
+    (metadata.pipeline !== undefined &&
+      (!Array.isArray(metadata.pipeline) || metadata.pipeline.length !== 0))
+  ) {
+    throw providerResponseError('Classifier provider did not attest the pinned route');
+  }
+
+  const selected = metadata.endpoints.available.filter((endpoint) =>
+    isRecord(endpoint) && endpoint.selected === true
+  );
+  const attempt = Array.isArray(attempts) ? attempts[0] : undefined;
+  const endpoint = selected[0];
+  if (
+    selected.length !== 1 ||
+    !isRecord(endpoint) ||
+    typeof endpoint.provider !== 'string' ||
+    endpoint.provider.length === 0 ||
+    endpoint.provider !== endpoint.provider.trim() ||
+    endpoint.model !== envelope.model ||
+    (attempt !== undefined && (
+      !isRecord(attempt) ||
+      attempt.provider !== endpoint.provider ||
+      attempt.model !== envelope.model ||
+      attempt.status !== 200
+    ))
+  ) {
+    throw providerResponseError('Classifier provider returned an unpinned route attestation');
+  }
+  return endpoint.provider;
+}
+
+function returnedReasoning(message) {
+  const reasoning = message.reasoning;
+  const details = message.reasoning_details;
+  return (reasoning !== undefined && reasoning !== null && reasoning !== '') ||
+    (details !== undefined && details !== null &&
+      (!Array.isArray(details) || details.length !== 0));
+}
+
+function providerCostUsd(envelope) {
+  const cost = isRecord(envelope.usage) ? envelope.usage.cost : undefined;
+  if (typeof cost !== 'number' || !Number.isFinite(cost) || cost < 0) {
+    throw providerResponseError('Classifier provider did not attest request cost');
+  }
+  return cost;
+}
+
+async function parseProviderEnvelope(response, approvedModels, configuredModel, providerRoute) {
   const responseText = await readBoundedProviderResponse(response);
   let envelope;
   try {
@@ -124,6 +181,8 @@ async function parseProviderEnvelope(response, approvedModels) {
   if (!approvedModels.has(envelope.model)) {
     throw providerResponseError('Classifier provider returned an unapproved resolved model identity');
   }
+  const resolvedProvider = providerAttestation(envelope, configuredModel);
+  const costUsd = providerCostUsd(envelope);
   if (!Array.isArray(envelope.choices) || envelope.choices.length !== 1) {
     throw providerResponseError('Classifier provider must return exactly one choice');
   }
@@ -142,7 +201,8 @@ async function parseProviderEnvelope(response, approvedModels) {
     message.role !== 'assistant' ||
     typeof message.content !== 'string' ||
     ('refusal' in message && message.refusal != null && message.refusal !== '') ||
-    ('tool_calls' in message && message.tool_calls != null)
+    ('tool_calls' in message && message.tool_calls != null) ||
+    returnedReasoning(message)
   ) {
     throw providerResponseError('Classifier provider returned invalid or refused content');
   }
@@ -151,7 +211,12 @@ async function parseProviderEnvelope(response, approvedModels) {
   // policy evaluator owns all model-output validation and fail-closed reasons.
   return {
     content: message.content,
-    resolvedModel: envelope.model,
+    route: {
+      resolvedModel: envelope.model,
+      resolvedProvider,
+      configuredProviderRoute: providerRoute,
+    },
+    costUsd,
   };
 }
 
@@ -167,12 +232,14 @@ export async function requestCompanyMonitoringClassification({
   evidence,
   apiKey,
   model,
+  providerRoute,
   fetchImpl = (...args) => globalThis.fetch(...args),
   timeoutMs = COMPANY_MONITORING_CLASSIFIER_DEFAULT_TIMEOUT_MS,
   approvedResolvedModels: configuredApprovedResolvedModels = [],
 }) {
   const configuredApiKey = requireConfiguredString(apiKey, 'apiKey');
   const configuredModel = requireConfiguredString(model, 'model');
+  const configuredProviderRoute = requireConfiguredString(providerRoute, 'providerRoute');
   const approvedModels = approvedResolvedModels(configuredModel, configuredApprovedResolvedModels);
   const requestTimeoutMs = checkedTimeoutMs(timeoutMs);
   if (typeof fetchImpl !== 'function') {
@@ -184,6 +251,18 @@ export async function requestCompanyMonitoringClassification({
     evidence,
     model: configuredModel,
   });
+  const routedRequestBody = {
+    ...requestBody,
+    temperature: 0,
+    reasoning: { effort: 'none' },
+    provider: {
+      only: [configuredProviderRoute],
+      allow_fallbacks: false,
+      require_parameters: true,
+      data_collection: 'deny',
+      zdr: true,
+    },
+  };
   const signal = AbortSignal.timeout(requestTimeoutMs);
 
   let response;
@@ -195,9 +274,10 @@ export async function requestCompanyMonitoringClassification({
         'Content-Type': 'application/json',
         'HTTP-Referer': OPENROUTER_SITE_URL,
         'X-Title': OPENROUTER_APP_TITLE,
+        'X-OpenRouter-Metadata': 'enabled',
         'User-Agent': SERVICE_USER_AGENT,
       },
-      body: JSON.stringify(requestBody),
+      body: JSON.stringify(routedRequestBody),
       signal,
     });
   } catch (cause) {
@@ -223,5 +303,10 @@ export async function requestCompanyMonitoringClassification({
     );
   }
 
-  return await parseProviderEnvelope(response, approvedModels);
+  return await parseProviderEnvelope(
+    response,
+    approvedModels,
+    configuredModel,
+    configuredProviderRoute,
+  );
 }

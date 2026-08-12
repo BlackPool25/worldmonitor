@@ -1192,7 +1192,6 @@
   {
     "entry": "scripts/company-monitoring-worker.mjs",
     "deployMode": "nixpacks-root-scripts",
-    "lifecycle": "planned",
     "service": "company-monitoring-worker",
     "startCommand": "node company-monitoring-worker.mjs",
     "requiredEnv": [
@@ -1200,7 +1199,11 @@
       "COMPANY_MONITORING_WORKER_SECRET",
       "UPSTASH_REDIS_REST_URL",
       "UPSTASH_REDIS_REST_TOKEN",
-      "X_BEARER_TOKEN"
+      "EXA_API_KEYS",
+      "X_BEARER_TOKEN",
+      "OPENROUTER_API_KEY",
+      "COMPANY_MONITORING_CLASSIFIER_MODEL",
+      "COMPANY_MONITORING_CLASSIFIER_PROVIDER_ROUTE"
     ],
     "watchPatterns": [
       "scripts/_proxy-utils.cjs",
@@ -1208,6 +1211,8 @@
       "scripts/_seed-envelope-source.mjs",
       "scripts/_seed-utils.mjs",
       "scripts/company-monitoring-worker.mjs",
+      "scripts/lib/company-monitoring-classification.mjs",
+      "scripts/lib/company-monitoring-classifier-client.mjs",
       "scripts/lib/company-monitoring-exa.mjs",
       "scripts/lib/company-monitoring-x-provider.mjs",
       "scripts/lib/llm-telemetry.cjs",
@@ -1218,7 +1223,7 @@
       "scripts/package.json"
     ],
     "cronSchedule": null,
-    "documentedAt": "scripts/company-monitoring-worker.mjs (header docblock declares rootDirectory: scripts); lifecycle planned 2026-08-10 pending provisioning \u2014 see #6402"
+    "documentedAt": "scripts/company-monitoring-worker.mjs (header docblock declares rootDirectory: scripts); provisioned in Railway production 2026-08-12"
   },
   {
     "entry": "scripts/scenario-worker.mjs",

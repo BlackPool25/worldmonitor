@@ -137,6 +137,7 @@
     "company-monitoring:digest": "tsx scripts/recompute-company-monitoring-digest.mjs",
     "company-monitoring:curation": "tsx scripts/company-monitoring-curation.mts",
     "company-monitoring:blind-evaluation": "tsx scripts/company-monitoring-blind-evaluation.mts",
+    "company-monitoring:offline-predictions": "tsx scripts/company-monitoring-offline-predictions.mts",
     "test:convex:watch": "vitest --config vitest.config.mts"
   },
   "devDependencies": {
