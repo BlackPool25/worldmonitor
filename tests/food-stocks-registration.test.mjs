@@ -12,6 +12,8 @@ describe('food stocks production registration (#6440)', () => {
     assert.equal(__testing__.STANDALONE_KEYS.foodStocks, 'resilience:food-stocks:v1');
     assert.equal(__testing__.SEED_META.foodStocks.key, 'seed-meta:resilience:food-stocks');
     assert.equal(__testing__.SEED_META.foodStocks.maxStaleMin, 86400);
+    assert.equal(__testing__.SEED_META.foodStocks.cutover?.mode, 'expiring-ack');
+    assert.equal(__testing__.SEED_META.foodStocks.cutover?.issue, 6440);
     assert.match(read('api/seed-health.js'), /'resilience:food-stocks':\s*\{ key: 'seed-meta:resilience:food-stocks',\s*intervalMin: 43200/);
   });
 

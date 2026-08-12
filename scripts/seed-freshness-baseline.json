@@ -71,6 +71,18 @@
       "status": "COVERAGE_PARTIAL",
       "issue": 6362,
       "reason": "US: records match the enabled retailer roster (2), age fresh. Same daily dirty-scrape-run partial grading as consumerPricesCoverage; parent evidence in #6355."
+    },
+    {
+      "name": "foodStocks",
+      "status": "EMPTY",
+      "issue": 6440,
+      "expiresAt": "2026-08-13T12:00:00.000Z",
+      "reason": "New USDA PSD food-stocks probe. seed-bundle-resilience cron is 0 */6 * * *; first scheduled run after this acknowledgement is 12:00 UTC on 2026-08-13. EMPTY is expected until that publish.",
+      "cutover": {
+        "probeKey": "seed-meta:resilience:food-stocks",
+        "activatedAt": "2026-08-12T18:17:04.000Z",
+        "firstScheduledRunAt": "2026-08-13T12:00:00.000Z"
+      }
     }
   ]
 }
