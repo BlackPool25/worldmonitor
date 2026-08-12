@@ -13,6 +13,8 @@ import {
   ALL_PANELS,
   VARIANT_DEFAULTS,
   getEffectivePanelConfig,
+  getInitialPanelSettingsForVariant,
+  isPanelEntitled,
   enforceFreePanelLimit,
   restoreFreeMapPanelAccess,
   restoreProGatedPanels,
@@ -99,7 +101,7 @@ import type { GoldIntelligencePanel } from '@/components/GoldIntelligencePanel';
 import { isDesktopRuntime, waitForSidecarReady } from '@/services/runtime';
 import { hasPremiumAccess } from '@/services/panel-gating';
 import { BETA_MODE } from '@/config/beta';
-import { track, trackEvent, trackDeeplinkOpened, initAuthAnalytics } from '@/services/analytics';
+import { track, trackEvent, trackDeeplinkOpened, initAuthAnalytics, trackMapViewChange } from '@/services/analytics';
 import { preloadCountryGeometry, isCountryGeometryLoaded, getCountryNameByCode } from '@/services/country-geometry';
 import { initI18n, t, I18N_RESOURCES_LOADED_EVENT, type I18nResourcesLoadedDetail } from '@/services/i18n';
 import { initDeferredDashboardFonts } from '@/bootstrap/secondary-startup';
@@ -149,6 +151,11 @@ import { describeFreshness } from '@/services/persistent-cache';
 import { DesktopUpdater } from '@/app/desktop-updater';
 import { CountryIntelManager } from '@/app/country-intel';
 import { registerWebMcpTools } from '@/services/webmcp';
+import {
+  getWebMcpDashboardContext,
+  waitForWebMcpUiReady,
+} from '@/app/webmcp-dashboard';
+import { runDashboardActionBinding } from '@/app/dashboard-action-binding';
 import { refreshDataFreshnessFromHealth } from '@/services/health-freshness';
 import { scheduleAfterFirstPaint } from '@/utils/after-paint';
 import type { SearchManager } from '@/app/search-manager';
@@ -279,6 +286,8 @@ export class App {
   // target panel exists.
   private uiReady!: Promise<void>;
   private resolveUiReady!: () => void;
+  private appDestroyed!: Promise<void>;
+  private resolveAppDestroyed!: () => void;
   // Returned by registerWebMcpTools in browser runtimes — aborting it removes
   // late-provider listeners and unregisters every accepted tool. destroy()
   // triggers it so test harnesses / same-document re-inits don't accumulate
@@ -871,6 +880,9 @@ export class App {
     this.uiReady = new Promise<void>((resolve) => {
       this.resolveUiReady = resolve;
     });
+    this.appDestroyed = new Promise<void>((resolve) => {
+      this.resolveAppDestroyed = resolve;
+    });
 
     const PANEL_ORDER_KEY = 'panel-order';
     const PANEL_SPANS_KEY = 'worldmonitor-panel-spans';
@@ -915,7 +927,7 @@ export class App {
       mapLayers = normalizeExclusiveChoropleths(
         sanitizeLayersForVariant({ ...defaultLayers }, currentVariant as MapVariant), null,
       );
-      panelSettings = { ...DEFAULT_PANELS };
+      panelSettings = getInitialPanelSettingsForVariant(currentVariant);
     } else if (appliedPanelLayoutVariant !== currentVariant) {
       // Variant changed - reset all settings to variant defaults.
       console.log(`[App] Variant check: applied="${appliedPanelLayoutVariant}", current="${currentVariant}"`);
@@ -1679,6 +1691,30 @@ export class App {
         // (Re-checking searchModal here would spuriously throw if a concurrent
         // Cmd+K closed it between open and the check — #4403 review ADV-4.)
         await this.openSearch({ throwOnFailure: true });
+      },
+      getDashboardContext: async () => {
+        await this.waitForDashboardReady();
+        return getWebMcpDashboardContext(this.state, SITE_VARIANT);
+      },
+      applyDashboardAction: async (action) => {
+        return runDashboardActionBinding(this.state, action, {
+          waitForUiReady: () => this.waitForDashboardReady(false),
+          waitForMapReady: () => this.waitForDashboardReady(),
+          applierOptions: {
+            getPanelConfig: (panelId) => getEffectivePanelConfig(panelId, SITE_VARIANT),
+            isPanelAllowed: (panelId, config) => (
+              isPanelEntitled(panelId, config, hasPremiumAccess(getAuthState()))
+            ),
+            hasPremiumAccess: () => hasPremiumAccess(getAuthState()),
+            applyViewChange: (viewAction) => {
+              if (viewAction.view) trackMapViewChange(viewAction.view);
+            },
+            applyLayerChange: (layer, enabled, source) => (
+              this.eventHandlers.applyMapLayerChange(layer, enabled, source)
+            ),
+          },
+          syncUrlStateNow: () => this.eventHandlers.syncUrlStateNow(),
+        });
       },
     });
 
@@ -2703,6 +2739,7 @@ export class App {
 
   public destroy(): void {
     this.state.isDestroyed = true;
+    this.resolveAppDestroyed();
     this.tierPreferenceHandoff.clear();
     this.pendingPreferenceHandoffGeneration = undefined;
     this.viewportHydrationReady = false;
@@ -2869,17 +2906,27 @@ export class App {
   // the timeout guards against a genuinely broken init path hanging the
   // agent forever.
   private async waitForUiReady(timeoutMs = 10_000): Promise<void> {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(
-        () => reject(new Error(`UI did not initialise within ${timeoutMs}ms`)),
-        timeoutMs,
-      );
-    });
+    await waitForWebMcpUiReady(this.uiReady, this.appDestroyed, timeoutMs);
+  }
+
+  private async waitForDashboardReady(requireMapRenderer = true): Promise<void> {
     try {
-      await Promise.race([this.uiReady, timeout]);
-    } finally {
-      if (timer !== null) clearTimeout(timer);
+      await this.waitForUiReady();
+      if (!requireMapRenderer) return;
+      const map = this.state.map;
+      if (map) {
+        await waitForWebMcpUiReady(
+          map.whenRendererReady(),
+          this.appDestroyed,
+          15_000,
+          'Map renderer',
+        );
+      }
+    } catch (error) {
+      // A dashboard binding that loses the readiness/destroy race must reach
+      // the narrow context/applier seam so it can return its closed
+      // app_destroyed reason. Genuine readiness timeouts still reject.
+      if (!this.state.isDestroyed) throw error;
     }
   }
 
