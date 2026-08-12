@@ -149,6 +149,7 @@ export class CountryDeepDivePanel implements CountryBriefPanel {
   private resilienceWidget: import('@/components/ResilienceWidget').ResilienceWidget | null = null;
   private pendingResilienceEnergyMix: CountryEnergyProfileData | null = null;
   private resilienceWidgetRequestId = 0;
+  private foodStocksRequestId = 0;
   private energyBody: HTMLElement | null = null;
   private maritimeBody: HTMLElement | null = null;
   private tradeExposureBody: HTMLElement | null = null;
@@ -304,6 +305,7 @@ export class CountryDeepDivePanel implements CountryBriefPanel {
     if (origin === 'control' && this.historyRegistered) overlayHistory.close('deep-dive');
     this.historyRegistered = false;
     this.destroyResilienceWidget();
+    this.foodStocksRequestId += 1;
     this.tearDownFollowButton();
     if (this.isMaximizedState) {
       this.isMaximizedState = false;
@@ -2660,12 +2662,22 @@ export class CountryDeepDivePanel implements CountryBriefPanel {
   }
 
   private async renderFoodStocks(code: string, body: HTMLElement): Promise<void> {
+    const requestId = ++this.foodStocksRequestId;
+    const stillCurrent = (): boolean => requestId === this.foodStocksRequestId;
     try {
+      // The generated client pulls variant/runtime, which read `location` at
+      // import time. The country-brief harness is location-free, so skip the
+      // import there instead of letting a late catch paint a detached node.
+      if (typeof location === 'undefined') {
+        if (stillCurrent()) body.replaceChildren(this.makeEmpty(t('countryBrief.foodStocksUnavailable')));
+        return;
+      }
       const { getFoodStocks } = await import('@/services/resilience');
       const [country, world] = await Promise.all([
         getFoodStocks({ countryCode: code }),
         getFoodStocks({ countryCode: 'WORLD' }),
       ]);
+      if (!stillCurrent()) return;
       if (country.unavailable && world.unavailable) {
         body.replaceChildren(this.makeEmpty(t('countryBrief.foodStocksUnavailable')));
         return;
@@ -2704,10 +2716,10 @@ export class CountryDeepDivePanel implements CountryBriefPanel {
         tbody.append(tr);
       }
       table.append(head, tbody);
-      body.replaceChildren(table);
+      if (stillCurrent()) body.replaceChildren(table);
     } catch (error) {
       console.warn('[CountryDeepDivePanel] food stocks load failed', error);
-      body.replaceChildren(this.makeEmpty(t('countryBrief.foodStocksUnavailable')));
+      if (stillCurrent()) body.replaceChildren(this.makeEmpty(t('countryBrief.foodStocksUnavailable')));
     }
   }
 
