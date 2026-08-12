@@ -21,9 +21,13 @@ import {
 import {
   __resetUpstreamDeadlineForTests,
   __setUpstreamDeadlineForTests,
+  CALL_TIMEOUT_DEADLINE_GRACE_MS,
   MARKET_QUOTES_REQUEST_LIMIT,
   MARKET_QUOTES_UPSTREAM_LIMIT,
+  QUOTE_PROVIDER_CALL_BUDGET_MS,
+  classifyGapFetchFailure,
   filterMarketQuotes,
+  gapFetchCallTimeoutMs,
   listMarketQuotes,
   normalizeRequestedSymbols,
 } from '../server/worldmonitor/market/v1/list-market-quotes';
@@ -199,6 +203,155 @@ describe('filterMarketQuotes', () => {
   it('returns the whole snapshot when no symbols are requested', () => {
     const seed = seedPayload(['AAPL', 'MSFT']);
     assert.equal(filterMarketQuotes(seed, []), seed);
+  });
+});
+
+/**
+ * #6468: the gap fetch bounds a lookup twice — the wall-clock deadline (an
+ * AbortSignal on libuv's monotonic clock) and `cachedFetchJson`'s inflight
+ * backstop (a setTimeout). Sizing the backstop to exactly the remaining window
+ * made both expire on the same tick, and whichever Node ran first decided the
+ * reported reason. When the backstop won, our own cutoff shipped as
+ * PROVIDER_ERROR — wrong in production telemetry, and a ~5% flake in CI that
+ * blocked Railway deploys fleet-wide.
+ *
+ * These pin the two halves of the fix as pure functions, so neither depends on
+ * winning a timer race to be observable.
+ */
+describe('gapFetchCallTimeoutMs', () => {
+  // Every window a lane can see, not a sampled table. The first cut of this
+  // guard sampled [.., 5_000, 5_001, 6_000, ..] and stepped straight over
+  // 5_050 — the single window where the earlier `Math.min(BUDGET, r) + GRACE`
+  // spelling still tied, and one a lane reaches by starting a lookup 50ms into
+  // a request. A sampled table cannot prove "no window ties"; this can.
+  const SCAN_CEILING_MS = 20_000; // >> UPSTREAM_DEADLINE_MS, so raising it stays covered
+
+  it('never lets the backstop expire on the same tick as the deadline', () => {
+    for (let remainingMs = 1; remainingMs <= SCAN_CEILING_MS; remainingMs++) {
+      assert.notEqual(
+        gapFetchCallTimeoutMs(remainingMs),
+        remainingMs,
+        `a backstop equal to the ${remainingMs}ms window ties with the deadline`,
+      );
+    }
+  });
+
+  it('keeps the backstop strictly later than the deadline whenever the deadline binds', () => {
+    for (let remainingMs = 1; remainingMs <= QUOTE_PROVIDER_CALL_BUDGET_MS; remainingMs++) {
+      assert.ok(
+        gapFetchCallTimeoutMs(remainingMs) > remainingMs,
+        `a ${remainingMs}ms window must be cut off by the deadline, not the backstop`,
+      );
+    }
+  });
+
+  it('makes the backstop bind on its own once the window outgrows the call budget', () => {
+    // The other regime: the deadline is far away, so the call budget is the
+    // primary bound and fires strictly before it. A cutoff here is still
+    // reported as the provider's — see the classifier tests below.
+    for (let remainingMs = QUOTE_PROVIDER_CALL_BUDGET_MS + 1; remainingMs <= SCAN_CEILING_MS; remainingMs++) {
+      assert.ok(
+        gapFetchCallTimeoutMs(remainingMs) < remainingMs,
+        `a ${remainingMs}ms window must be cut off by the backstop, not the deadline`,
+      );
+    }
+    assert.equal(gapFetchCallTimeoutMs(6_000), QUOTE_PROVIDER_CALL_BUDGET_MS);
+  });
+
+  it('pins the exact boundary the two regimes meet', () => {
+    assert.equal(
+      gapFetchCallTimeoutMs(QUOTE_PROVIDER_CALL_BUDGET_MS),
+      QUOTE_PROVIDER_CALL_BUDGET_MS + CALL_TIMEOUT_DEADLINE_GRACE_MS,
+    );
+    assert.equal(gapFetchCallTimeoutMs(QUOTE_PROVIDER_CALL_BUDGET_MS + 1), QUOTE_PROVIDER_CALL_BUDGET_MS);
+  });
+
+  it('never returns a non-positive timeout, even off its callers guarded path', () => {
+    // The caller returns early at `remainingMs <= 0`, but the export is callable
+    // without that guard and a negative setTimeout would fire immediately.
+    for (const remainingMs of [0, -1, -100, -30_000]) {
+      assert.ok(gapFetchCallTimeoutMs(remainingMs) > 0, `${remainingMs} must not yield a dead timeout`);
+    }
+  });
+
+  it('still bounds one lookup far below the 30s cachedFetchJson default', () => {
+    assert.ok(gapFetchCallTimeoutMs(30_000) < 6_000);
+  });
+});
+
+describe('classifyGapFetchFailure', () => {
+  const DEADLINE = 1_000_000;
+  const BUDGET = 'MARKET_QUOTE_UNAVAILABLE_REASON_UPSTREAM_BUDGET_EXHAUSTED';
+  const PROVIDER_ERROR = 'MARKET_QUOTE_UNAVAILABLE_REASON_PROVIDER_ERROR';
+  const RATE_LIMITED = 'MARKET_QUOTE_UNAVAILABLE_REASON_PROVIDER_RATE_LIMITED';
+
+  it('charges a boundary cutoff to our budget when the backstop beat the abort signal', () => {
+    // The observed CI failure verbatim: the backstop rejected first, so the
+    // signal had not flipped and the provider had reported nothing.
+    assert.equal(
+      classifyGapFetchFailure({ deadlineAborted: false, now: DEADLINE, deadline: DEADLINE, recorded: undefined }),
+      BUDGET,
+    );
+    assert.equal(
+      classifyGapFetchFailure({ deadlineAborted: false, now: DEADLINE + 146, deadline: DEADLINE, recorded: undefined }),
+      BUDGET,
+    );
+  });
+
+  it('charges a boundary cutoff to our budget when the wall clock still reads in-window', () => {
+    // Also observed: the abort fired while Date.now() was 1ms short of the
+    // deadline. The two bounds do not read the same clock, so testing elapsed
+    // wall-clock alone would just move the flake rather than remove it.
+    assert.equal(
+      classifyGapFetchFailure({ deadlineAborted: true, now: DEADLINE - 1, deadline: DEADLINE, recorded: undefined }),
+      BUDGET,
+    );
+  });
+
+  it('never lets an abort-contaminated provider verdict outrank the deadline', () => {
+    // Aborting the fetch makes the provider adapter report `status: 'error'`.
+    // That entry describes our cutoff, so it must not be read back as theirs.
+    // The rate-limited case is the one that also drops the response-level
+    // `rateLimited` flag, so pin it explicitly rather than leaving it implied.
+    for (const recorded of [PROVIDER_ERROR, RATE_LIMITED] as const) {
+      assert.equal(
+        classifyGapFetchFailure({ deadlineAborted: true, now: DEADLINE, deadline: DEADLINE, recorded }),
+        BUDGET,
+      );
+      assert.equal(
+        classifyGapFetchFailure({ deadlineAborted: false, now: DEADLINE, deadline: DEADLINE, recorded }),
+        BUDGET,
+      );
+    }
+  });
+
+  it('keeps the provider verdict for a failure well inside the window', () => {
+    for (const recorded of [PROVIDER_ERROR, RATE_LIMITED, 'MARKET_QUOTE_UNAVAILABLE_REASON_NOT_FOUND'] as const) {
+      assert.equal(
+        classifyGapFetchFailure({ deadlineAborted: false, now: DEADLINE - 5_000, deadline: DEADLINE, recorded }),
+        recorded,
+      );
+    }
+  });
+
+  it('keeps the provider verdict one tick short of the deadline', () => {
+    // The `now >= deadline` clause narrows the window a real verdict survives;
+    // it must not start one millisecond early, or a 429 arriving just before
+    // the cutoff would stop raising the response-level rateLimited flag.
+    assert.equal(
+      classifyGapFetchFailure({ deadlineAborted: false, now: DEADLINE - 1, deadline: DEADLINE, recorded: RATE_LIMITED }),
+      RATE_LIMITED,
+    );
+  });
+
+  it('still blames the provider for an in-window failure it never explained', () => {
+    // Includes the call-budget regime: the backstop fires ~950ms before the
+    // deadline, so this stays the provider's — two providers each burning their
+    // own 3s timeout is a provider fault, not our budget.
+    assert.equal(
+      classifyGapFetchFailure({ deadlineAborted: false, now: DEADLINE - 950, deadline: DEADLINE, recorded: undefined }),
+      PROVIDER_ERROR,
+    );
   });
 });
 
