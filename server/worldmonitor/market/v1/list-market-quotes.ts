@@ -40,7 +40,7 @@ import {
   resolveMarketQuoteProvider,
   type ProviderQuote,
 } from './_quote-provider';
-import { cachedFetchJson, readCachedJson } from '../../../_shared/redis';
+import { CachedFetchTimeoutError, cachedFetchJson, readCachedJson } from '../../../_shared/redis';
 
 const BOOTSTRAP_KEY = 'market:stocks-bootstrap:v1';
 
@@ -330,11 +330,13 @@ async function resolveMissingSymbols(missing: string[]): Promise<GapFetchResult>
       });
       reasons.set(symbol, reason);
       if (reason === REASON.rateLimited) rateLimited = true;
-      // `marginMs` is how much of the window was left when this lookup died:
-      // <= 0 is the deadline, a large positive is the call-budget backstop
-      // firing on its own. `err` names which timer won — a TimeoutError is the
-      // deadline's AbortSignal, a plain Error is the backstop or the provider.
-      cutoffs.push({ reason, marginMs: deadline - now, err: err instanceof Error ? err.name : typeof err });
+      // `marginMs` is how much of the window was left when a cutoff fired:
+      // <= 0 is the deadline, a large positive is the cache-layer backstop.
+      // Ordinary provider failures, rate limits, and unavailable backoffs are
+      // outcomes, not cutoffs, and stay out of this operational signal.
+      if (reason === REASON.budget || err instanceof CachedFetchTimeoutError) {
+        cutoffs.push({ reason, marginMs: deadline - now, err: err instanceof Error ? err.name : typeof err });
+      }
     }
   });
 

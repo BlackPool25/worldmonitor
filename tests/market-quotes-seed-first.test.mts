@@ -417,6 +417,8 @@ describe('listMarketQuotes seed-first resolution', () => {
       seed: seedPayload(['AAPL']),
       provider: { LCID: okQuote(3, 0.5), FUBO: { status: 503 } },
     });
+    const lines: string[] = [];
+    console.warn = (...args: unknown[]) => void lines.push(args.join(' '));
 
     const resp = await listMarketQuotes(CTX, { symbols: ['AAPL', 'LCID', 'FUBO'] });
 
@@ -426,15 +428,19 @@ describe('listMarketQuotes seed-first resolution', () => {
       !h.redisSets.some((s) => s.key === 'market:custom-quote:v1:FUBO'),
       'a transient provider failure must not be cached — it would pin a real symbol as unavailable',
     );
+    assert.deepEqual(lines.filter((line) => line.includes('gap-fetch cutoffs')), []);
   });
 
   it('surfaces a provider rate limit on both the symbol and the response flag', async () => {
     installHarness({ seed: seedPayload(['AAPL']), provider: { AFRM: { status: 429 } } });
+    const lines: string[] = [];
+    console.warn = (...args: unknown[]) => void lines.push(args.join(' '));
 
     const resp = await listMarketQuotes(CTX, { symbols: ['AAPL', 'AFRM'] });
 
     assert.equal(reasonFor(resp, 'AFRM'), 'MARKET_QUOTE_UNAVAILABLE_REASON_PROVIDER_RATE_LIMITED');
     assert.equal(resp.rateLimited, true);
+    assert.deepEqual(lines.filter((line) => line.includes('gap-fetch cutoffs')), []);
   });
 
   it('reports a symbol the provider does not know as not-found and caches that verdict', async () => {
