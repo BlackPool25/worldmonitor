@@ -52,11 +52,12 @@ function flattenSnapshot(
       if (commodity && slug !== commodity) continue;
       const consumption = Number(rec.consumption) || 0;
       const exports = Number(rec.exports) || 0;
+      const ratio = Number(rec.stocksToUseRatio);
       rows.push({
         countryCode: iso2,
         commodity: slug,
         marketingYear: String(rec.marketingYear ?? ''),
-        stocksToUse: Number(rec.stocksToUseRatio) || 0,
+        stocksToUse: Number.isFinite(ratio) ? ratio : 0,
         endingStocksTmt: Number(rec.endingStocks) || 0,
         totalUseTmt: consumption + exports,
         productionTmt: Number(rec.production) || 0,

@@ -220,7 +220,10 @@ export function applyFaostatProductionFill(psdRecords, faostatRecords, opts) {
     base.push({
       countryCode,
       commodity,
-      marketingYear: formatMarketingYear(row?.marketingYear) || fallbackYear,
+      marketingYear:
+        formatMarketingYear(row?.marketingYear)
+        || formatMarketingYear(row?.calendarYear)
+        || fallbackYear,
       production,
       consumption: null,
       imports: null,

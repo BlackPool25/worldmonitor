@@ -2698,8 +2698,8 @@ export class CountryDeepDivePanel implements CountryBriefPanel {
         tr.append(
           this.el('td', '', this.foodStockCommodityLabel(rec.commodity)),
           this.el('td', '', rec.marketingYear || '—'),
-          this.el('td', '', this.formatStocksToUse(rec.stocksToUse)),
-          this.el('td', '', this.formatStocksToUse(worldRec?.stocksToUse)),
+          this.el('td', '', this.formatStocksToUse(rec.stocksToUse, rec)),
+          this.el('td', '', this.formatStocksToUse(worldRec?.stocksToUse, worldRec)),
         );
         tbody.append(tr);
       }
@@ -2711,8 +2711,13 @@ export class CountryDeepDivePanel implements CountryBriefPanel {
     }
   }
 
-  private formatStocksToUse(ratio: number | undefined): string {
-    if (ratio == null || !Number.isFinite(ratio) || ratio <= 0) return '—';
+  private formatStocksToUse(
+    ratio: number | undefined,
+    rec?: { source?: string; endingStocksTmt?: number; totalUseTmt?: number },
+  ): string {
+    if (rec?.source === 'faostat') return '—';
+    if (ratio == null || !Number.isFinite(ratio) || ratio < 0) return '—';
+    if (ratio === 0 && !(Number(rec?.totalUseTmt) > 0)) return '—';
     return `${(ratio * 100).toFixed(1)}%`;
   }
 

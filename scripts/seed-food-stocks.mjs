@@ -72,7 +72,10 @@ export async function fetchPsdCommodityYear(commodity, year, { fetchImpl = defau
   const countryUrl = `${PSD_BASE}/commodity/${code}/country/all/year/${year}`;
   const worldUrl = `${PSD_BASE}/commodity/${code}/world/year/${year}`;
   const [countryRows, worldRows] = await Promise.all([
-    fetchJson(fetchImpl, countryUrl, headers, `PSD ${commodity.slug} countries ${year}`),
+    fetchJson(fetchImpl, countryUrl, headers, `PSD ${commodity.slug} countries ${year}`).catch((err) => {
+      console.warn(`  PSD countries ${commodity.slug} ${year} failed: ${err.message}`);
+      return [];
+    }),
     fetchJson(fetchImpl, worldUrl, headers, `PSD ${commodity.slug} world ${year}`).catch((err) => {
       console.warn(`  PSD world ${commodity.slug} ${year} failed: ${err.message}`);
       return [];
@@ -85,9 +88,13 @@ export async function selectLatestPsdYear(commodity, { fetchImpl, apiKey, now = 
   const current = now.getUTCFullYear();
   const candidates = [current, current - 1, current - 2];
   for (const year of candidates) {
-    const rows = await fetchPsdCommodityYear(commodity, year, { fetchImpl, apiKey });
-    const parsed = parsePsdForecastRows(rows, { commodity: commodity.slug });
-    if (parsed.length > 0) return { year, rows, parsed };
+    try {
+      const rows = await fetchPsdCommodityYear(commodity, year, { fetchImpl, apiKey });
+      const parsed = parsePsdForecastRows(rows, { commodity: commodity.slug });
+      if (parsed.length > 0) return { year, rows, parsed };
+    } catch (err) {
+      console.warn(`  PSD ${commodity.slug} ${year} failed: ${err.message}`);
+    }
     if (gapMs) await sleep(gapMs);
   }
   return { year: null, rows: [], parsed: [] };
@@ -231,6 +238,10 @@ if (isMain) {
     maxStaleMin: FOOD_STOCKS_MAX_STALE_MIN,
     contentMeta: foodStocksContentMeta,
     maxContentAgeMin: FOOD_STOCKS_MAX_CONTENT_AGE_MIN,
+    // Six commodities × up to three year probes at 30s each, plus FAOSTAT.
+    // Stay under the bundle section timeout (600s).
+    lockTtlMs: 540_000,
+    fetchPhaseTimeoutMs: 540_000,
   }).catch((err) => {
     console.error(err);
     process.exit(1);

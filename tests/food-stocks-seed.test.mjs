@@ -85,6 +85,37 @@ describe('fetchFoodStocks stages', () => {
     assert.ok(Number.isFinite(snapshot._world.commodities.corn.stocksToUseRatio));
   });
 
+  test('a 404 on the current marketing year falls through to the previous year', async () => {
+    const fetchImpl = async (url) => {
+      const href = String(url);
+      if (href.includes('codes/area') || href.includes('faostat')) return jsonResponse([]);
+      const yearMatch = href.match(/\/year\/(\d{4})/);
+      const year = yearMatch ? Number(yearMatch[1]) : 0;
+      if (year === 2026) return jsonResponse({ error: 'not published' }, 404);
+      if (year !== 2025 || !href.includes('0440000')) return jsonResponse([]);
+      if (href.includes('/world/year/')) {
+        return jsonResponse([
+          { commodityCode: 440000, countryCode: 0, marketYear: 2025, calendarYear: 2026, month: 5, attributeId: 28, unitId: 8, value: 1_200_000 },
+          { commodityCode: 440000, countryCode: 0, marketYear: 2025, calendarYear: 2026, month: 5, attributeId: 125, unitId: 8, value: 1_000_000 },
+          { commodityCode: 440000, countryCode: 0, marketYear: 2025, calendarYear: 2026, month: 5, attributeId: 88, unitId: 8, value: 180_000 },
+          { commodityCode: 440000, countryCode: 0, marketYear: 2025, calendarYear: 2026, month: 5, attributeId: 176, unitId: 8, value: 80_000 },
+        ]);
+      }
+      return jsonResponse(brazilCorn.map((row) => ({ ...row, marketYear: 2025, calendarYear: 2026, month: 5 })));
+    };
+
+    const snapshot = await fetchFoodStocks({
+      fetchImpl,
+      apiKey: 'test-key',
+      now: new Date(Date.UTC(2026, 7, 12)),
+      gapMs: 0,
+    });
+
+    assert.ok(snapshot.BR, '2026 country 404 must not abort the seed');
+    assert.equal(snapshot.BR.commodities.corn.marketingYear, '2025/26');
+    assert.ok(snapshot._world.commodities.corn);
+  });
+
   test('validateFoodStocks requires a populated country set plus a world ratio', () => {
     assert.equal(validateFoodStocks({}), false);
     const countries = Object.fromEntries(

@@ -164,6 +164,30 @@ describe('FAOSTAT production fill', () => {
     assert.equal(tz.marketingYear, '2024/25');
   });
 
+  test('FAOSTAT calendar year becomes its own marketing year, not the latest PSD MY', () => {
+    const filled = applyFaostatProductionFill([
+      {
+        countryCode: 'US',
+        commodity: 'wheat',
+        marketingYear: '2025/26',
+        production: 50,
+        consumption: 30,
+        imports: 0,
+        exports: 20,
+        endingStocks: 10,
+        stocksToUseRatio: 0.2,
+        unit: '1000 MT',
+        source: 'psd',
+      },
+    ], [
+      { countryCode: 'TZ', commodity: 'wheat', production: 120, calendarYear: 2023 },
+    ], { commodity: 'wheat' });
+
+    const tz = filled.find((rec) => rec.countryCode === 'TZ');
+    assert.equal(tz.marketingYear, '2023/24');
+    assert.notEqual(tz.marketingYear, '2025/26');
+  });
+
   test('a failed FAOSTAT stage leaves the PSD rows untouched', () => {
     const psd = [
       {

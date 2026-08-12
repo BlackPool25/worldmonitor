@@ -26,6 +26,8 @@ describe('food stocks production registration (#6440)', () => {
     const bundle = railway.find((entry) => entry.service === 'seed-bundle-resilience');
     assert.ok(bundle?.watchPatterns.includes('scripts/seed-food-stocks.mjs'));
     assert.ok(bundle?.watchPatterns.includes('scripts/_food-stocks-helpers.mjs'));
+    assert.match(read('scripts/seed-food-stocks.mjs'), /lockTtlMs:\s*540_000/);
+    assert.match(read('scripts/seed-food-stocks.mjs'), /fetchPhaseTimeoutMs:\s*540_000/);
   });
 
   it('gates the RPC as premium + entitlement before generate', () => {
