@@ -9,7 +9,6 @@ import {
 import { getCountryCentroid, ME_STRIKE_BOUNDS } from '@/services/country-geometry';
 import type { CountryScore } from '@/services/country-instability';
 import { t } from '@/services/i18n';
-import { getFoodStocks } from '@/services/resilience';
 import { getCountryInfrastructure } from '@/services/related-assets';
 import type { PredictionMarket } from '@/services/prediction';
 import type { AssetType, NewsItem, RelatedAsset } from '@/types';
@@ -2662,6 +2661,7 @@ export class CountryDeepDivePanel implements CountryBriefPanel {
 
   private async renderFoodStocks(code: string, body: HTMLElement): Promise<void> {
     try {
+      const { getFoodStocks } = await import('@/services/resilience');
       const [country, world] = await Promise.all([
         getFoodStocks({ countryCode: code }),
         getFoodStocks({ countryCode: 'WORLD' }),
