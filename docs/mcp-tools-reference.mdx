@@ -515,6 +515,36 @@ curl -s https://worldmonitor.app/mcp \
 
 </CodeGroup>
 
+### `get_food_stocks`
+
+USDA PSD cereal stocks-to-use by marketing year. Ask for a country plus optional commodity (`wheat`, `corn`, `rice`, `soybeans`, `barley`, `palmOil`), or `country_code=WORLD` for the global balance. Marketing years are stored verbatim and must not be treated as calendar years.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|---------:|-------------|
+| `country_code` | string | no | ISO 3166-1 alpha-2, or `WORLD`. Empty returns the unfiltered snapshot. |
+| `commodity` | string | no | `wheat`, `corn`, `rice`, `soybeans`, `barley`, or `palmOil`. Empty = all. |
+
+- **API endpoints:** `GET /api/resilience/v1/get-food-stocks`
+- **Kind:** RPC proxy — the handler owns WORLD vs ISO-2 and commodity filtering.
+- **Freshness budget:** latest marketing year present (WASDE monthly cycle; 60-day fetch-age / 90-day content-age).
+
+<CodeGroup>
+
+```bash curl
+curl -s https://worldmonitor.app/mcp \
+  -H "X-WorldMonitor-Key: $WM_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "jsonrpc":"2.0","id":1,
+    "method":"tools/call",
+    "params":{"name":"get_food_stocks","arguments":{"country_code":"EG","commodity":"wheat"}}
+  }'
+```
+
+</CodeGroup>
+
 ### `get_commodity_geo`
 
 Global mining sites with coordinates, operator, mineral type, and production status. Covers 71 major mines spanning gold, silver, copper, lithium, uranium, coal, and other minerals worldwide.

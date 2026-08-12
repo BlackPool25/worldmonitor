@@ -789,6 +789,8 @@
       "scripts/package-lock.json",
       "scripts/package.json",
       "scripts/seed-bundle-resilience.mjs",
+      "scripts/_food-stocks-helpers.mjs",
+      "scripts/seed-food-stocks.mjs",
       "scripts/seed-resilience-scores.mjs",
       "scripts/seed-resilience-static.mjs",
       "scripts/shared/country-names.json",

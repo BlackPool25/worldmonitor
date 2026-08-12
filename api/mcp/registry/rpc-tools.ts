@@ -1121,6 +1121,72 @@ export const RPC_TOOLS: ToolDef[] = [
     ],
   },
   {
+    name: 'get_food_stocks',
+    _outputBudgetBytes: 131072,
+    description: 'USDA PSD cereal stocks-to-use by marketing year. Ask for a country (ISO-2) plus optional commodity (wheat, corn, rice, soybeans, barley, palmOil), or country_code=WORLD for the global balance. Returns ending stocks, production, use, and the stocks-to-use ratio. Marketing years are not calendar years and must not be compared across countries as if they were.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        country_code: {
+          type: 'string',
+          description: 'ISO 3166-1 alpha-2 country code (e.g. "EG") or "WORLD" for the global balance sheet.',
+        },
+        commodity: {
+          type: 'string',
+          description: 'Optional commodity slug: wheat, corn, rice, soybeans, barley, palmOil.',
+        },
+      },
+      required: [],
+    },
+    outputSchema: {
+      type: 'object',
+      properties: {
+        records: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              countryCode: { type: 'string' },
+              commodity: { type: 'string' },
+              marketingYear: { type: 'string' },
+              stocksToUse: { type: 'number' },
+              endingStocksTmt: { type: 'number' },
+              totalUseTmt: { type: 'number' },
+              productionTmt: { type: 'number' },
+              consumptionTmt: { type: 'number' },
+              importsTmt: { type: 'number' },
+              exportsTmt: { type: 'number' },
+              unit: { type: 'string' },
+              source: { type: 'string' },
+            },
+          },
+        },
+        fetchedAt: { type: 'string' },
+        unavailable: { type: 'boolean' },
+        calorieWeightedStocksToUse: { type: 'number' },
+      },
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    _coverageKeys: ['resilience:food-stocks:v1', 'seed-meta:resilience:food-stocks'],
+    _execute: async (params, base, context) => {
+      const q = new URLSearchParams();
+      if (params.country_code) q.set('countryCode', String(params.country_code).trim().toUpperCase());
+      if (params.commodity) q.set('commodity', String(params.commodity).trim());
+      const qs = q.toString();
+      const url = `${base}/api/resilience/v1/get-food-stocks${qs ? `?${qs}` : ''}`;
+      const auth = await buildAuthHeaders(context, 'GET', url, null);
+      const res = await fetch(url, {
+        headers: { ...auth, 'User-Agent': 'worldmonitor-mcp-edge/1.0' },
+        signal: AbortSignal.timeout(8_000),
+      });
+      assertToolFetchOk(res, 'get-food-stocks');
+      return res.json();
+    },
+    _apiPaths: [
+      'GET /api/resilience/v1/get-food-stocks',
+    ],
+  },
+  {
     name: 'get_consumer_prices',
     _outputBudgetBytes: 262144,
     description: "Per-country consumer-prices intelligence: 30-day overview, category-level inflation, retailer spread (essentials basket), top movers, and source freshness. Requires country_code (currently only 'ae' is seeded).",
