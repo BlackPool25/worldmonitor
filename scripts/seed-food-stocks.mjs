@@ -25,9 +25,11 @@ import {
 } from './_food-stocks-helpers.mjs';
 import { CHROME_UA, loadEnvFile, runSeed } from './_seed-utils.mjs';
 
-loadEnvFile(import.meta.url, { only: ['USDA_FAS_API_KEY'] });
+loadEnvFile(import.meta.url, { only: ['USDA_FAS_PSD_API_KEY', 'USDA_FAS_API_KEY'] });
 
-const PSD_BASE = 'https://apps.fas.usda.gov/OpenData/api/psd';
+// Official FAS Open Data host (swagger base api.fas.usda.gov). The legacy
+// apps.fas.usda.gov/OpenData path returns HTTP 500 for the same routes.
+const PSD_BASE = 'https://api.fas.usda.gov/api/psd';
 const FAOSTAT_DATA = 'https://fenixservices.fao.org/faostat/api/v1/en/data/QCL';
 const FAOSTAT_AREAS = 'https://fenixservices.fao.org/faostat/api/v1/en/codes/area/QCL';
 const RICE_PADDY_TO_MILLED = 0.67;
@@ -66,8 +68,10 @@ function asRowArray(payload) {
 }
 
 export async function fetchPsdCommodityYear(commodity, year, { fetchImpl = defaultFetch, apiKey } = {}) {
-  if (!apiKey) throw new Error('USDA_FAS_API_KEY is required for PSD ingestion');
-  const headers = { API_KEY: apiKey };
+  if (!apiKey) throw new Error('USDA_FAS_PSD_API_KEY is required for PSD ingestion');
+  // Swagger security scheme is X-Api-Key. Query api_key also works, but putting
+  // the secret on the URL lands it in access logs — do not add it here.
+  const headers = { 'X-Api-Key': apiKey };
   const code = commodity.code;
   const countryUrl = `${PSD_BASE}/commodity/${code}/country/all/year/${year}`;
   const worldUrl = `${PSD_BASE}/commodity/${code}/world/year/${year}`;
@@ -160,13 +164,18 @@ async function fetchFaostatProduction(commodity, year, { fetchImpl, areaMap }) {
  * Three-stage fetch used by runSeed. FAOSTAT failures are swallowed so PSD
  * data remains the published snapshot.
  */
+function resolvePsdApiKey(explicit) {
+  if (explicit) return explicit;
+  return process.env.USDA_FAS_PSD_API_KEY || process.env.USDA_FAS_API_KEY || '';
+}
+
 export async function fetchFoodStocks({
   fetchImpl = defaultFetch,
-  apiKey = process.env.USDA_FAS_API_KEY,
+  apiKey = resolvePsdApiKey(),
   now = new Date(),
   gapMs = FETCH_GAP_MS,
 } = {}) {
-  if (!apiKey) throw new Error('USDA_FAS_API_KEY is required');
+  if (!apiKey) throw new Error('USDA_FAS_PSD_API_KEY is required');
 
   const allRecords = [];
   const stageNotes = { psd: {}, faostat: {} };

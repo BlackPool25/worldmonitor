@@ -71,11 +71,11 @@ export function parseMarketingYearStart(label) {
 }
 
 export function normalizePsdCountryCode(code) {
-  if (code === 0 || code === '0') return FOOD_STOCKS_WORLD_KEY;
   const raw = String(code ?? '').trim();
   if (!raw) return null;
   const upper = raw.toUpperCase();
-  if (upper === 'WORLD' || upper === 'WLD') return FOOD_STOCKS_WORLD_KEY;
+  // Live api.fas.usda.gov world rows use "00"; older fixtures and mocks use 0 / "0".
+  if (upper === 'WORLD' || upper === 'WLD' || /^0+$/.test(raw)) return FOOD_STOCKS_WORLD_KEY;
   if (/^[A-Z]{2}$/.test(upper)) return upper;
   return null;
 }

@@ -58,10 +58,10 @@ describe('fetchFoodStocks stages', () => {
       if (year !== 2025 || !href.includes('0440000')) return jsonResponse([]);
       if (href.includes('/world/year/')) {
         return jsonResponse([
-          { commodityCode: 440000, countryCode: 0, marketYear: 2025, calendarYear: 2026, month: 5, attributeId: 28, unitId: 8, value: 1_200_000 },
-          { commodityCode: 440000, countryCode: 0, marketYear: 2025, calendarYear: 2026, month: 5, attributeId: 125, unitId: 8, value: 1_000_000 },
-          { commodityCode: 440000, countryCode: 0, marketYear: 2025, calendarYear: 2026, month: 5, attributeId: 88, unitId: 8, value: 180_000 },
-          { commodityCode: 440000, countryCode: 0, marketYear: 2025, calendarYear: 2026, month: 5, attributeId: 176, unitId: 8, value: 80_000 },
+          { commodityCode: '0440000', countryCode: '00', marketYear: '2025', calendarYear: '2026', month: 5, attributeId: 28, unitId: 8, value: 1_200_000 },
+          { commodityCode: '0440000', countryCode: '00', marketYear: '2025', calendarYear: '2026', month: 5, attributeId: 125, unitId: 8, value: 1_000_000 },
+          { commodityCode: '0440000', countryCode: '00', marketYear: '2025', calendarYear: '2026', month: 5, attributeId: 88, unitId: 8, value: 180_000 },
+          { commodityCode: '0440000', countryCode: '00', marketYear: '2025', calendarYear: '2026', month: 5, attributeId: 176, unitId: 8, value: 80_000 },
         ]);
       }
       if (href.includes('0440000') && href.includes('/country/all/')) {
@@ -95,10 +95,10 @@ describe('fetchFoodStocks stages', () => {
       if (year !== 2025 || !href.includes('0440000')) return jsonResponse([]);
       if (href.includes('/world/year/')) {
         return jsonResponse([
-          { commodityCode: 440000, countryCode: 0, marketYear: 2025, calendarYear: 2026, month: 5, attributeId: 28, unitId: 8, value: 1_200_000 },
-          { commodityCode: 440000, countryCode: 0, marketYear: 2025, calendarYear: 2026, month: 5, attributeId: 125, unitId: 8, value: 1_000_000 },
-          { commodityCode: 440000, countryCode: 0, marketYear: 2025, calendarYear: 2026, month: 5, attributeId: 88, unitId: 8, value: 180_000 },
-          { commodityCode: 440000, countryCode: 0, marketYear: 2025, calendarYear: 2026, month: 5, attributeId: 176, unitId: 8, value: 80_000 },
+          { commodityCode: '0440000', countryCode: '00', marketYear: '2025', calendarYear: '2026', month: 5, attributeId: 28, unitId: 8, value: 1_200_000 },
+          { commodityCode: '0440000', countryCode: '00', marketYear: '2025', calendarYear: '2026', month: 5, attributeId: 125, unitId: 8, value: 1_000_000 },
+          { commodityCode: '0440000', countryCode: '00', marketYear: '2025', calendarYear: '2026', month: 5, attributeId: 88, unitId: 8, value: 180_000 },
+          { commodityCode: '0440000', countryCode: '00', marketYear: '2025', calendarYear: '2026', month: 5, attributeId: 176, unitId: 8, value: 80_000 },
         ]);
       }
       return jsonResponse(brazilCorn.map((row) => ({ ...row, marketYear: 2025, calendarYear: 2026, month: 5 })));

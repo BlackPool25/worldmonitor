@@ -83,6 +83,12 @@ const PROVIDER_OVERRIDES = {
     attribution: 'USDA Foreign Agricultural Service, Production, Supply and Distribution (PSD).',
     status: 'reviewed',
   },
+  'api.fas.usda.gov': {
+    provider: 'USDA FAS PSD',
+    license: 'U.S. government public-domain PSD Open Data',
+    attribution: 'USDA Foreign Agricultural Service, Production, Supply and Distribution (PSD).',
+    status: 'reviewed',
+  },
   'fenixservices.fao.org': {
     provider: 'FAOSTAT',
     license: 'FAOSTAT CC-BY; attribution to FAO required',

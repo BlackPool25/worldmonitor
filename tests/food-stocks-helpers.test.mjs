@@ -248,9 +248,23 @@ describe('world + country code normalization', () => {
   test('maps PSD world sentinels onto _world and leaves ISO-2 alone', () => {
     assert.equal(normalizePsdCountryCode('0'), FOOD_STOCKS_WORLD_KEY);
     assert.equal(normalizePsdCountryCode(0), FOOD_STOCKS_WORLD_KEY);
+    assert.equal(normalizePsdCountryCode('00'), FOOD_STOCKS_WORLD_KEY);
     assert.equal(normalizePsdCountryCode('WORLD'), FOOD_STOCKS_WORLD_KEY);
     assert.equal(normalizePsdCountryCode('us'), 'US');
     assert.equal(normalizePsdCountryCode(''), null);
+  });
+
+  test('parses live api.fas.usda.gov world rows whose countryCode is 00', () => {
+    const parsed = parsePsdForecastRows([
+      { commodityCode: '0440000', countryCode: '00', marketYear: '2021', calendarYear: '2022', month: 6, attributeId: 28, unitId: 8, value: 1_200_000 },
+      { commodityCode: '0440000', countryCode: '00', marketYear: '2021', calendarYear: '2022', month: 6, attributeId: 125, unitId: 8, value: 1_000_000 },
+      { commodityCode: '0440000', countryCode: '00', marketYear: '2021', calendarYear: '2022', month: 6, attributeId: 88, unitId: 8, value: 180_000 },
+      { commodityCode: '0440000', countryCode: '00', marketYear: '2021', calendarYear: '2022', month: 6, attributeId: 176, unitId: 8, value: 80_000 },
+    ], { commodity: 'corn' });
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].countryCode, FOOD_STOCKS_WORLD_KEY);
+    assert.equal(parsed[0].production, 1_200_000);
+    assert.equal(parsed[0].stocksToUseRatio, computeStocksToUseRatio(80_000, 1_000_000, 180_000));
   });
 });
 

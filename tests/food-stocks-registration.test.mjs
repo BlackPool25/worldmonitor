@@ -28,6 +28,9 @@ describe('food stocks production registration (#6440)', () => {
     assert.ok(bundle?.watchPatterns.includes('scripts/_food-stocks-helpers.mjs'));
     assert.match(read('scripts/seed-food-stocks.mjs'), /lockTtlMs:\s*540_000/);
     assert.match(read('scripts/seed-food-stocks.mjs'), /fetchPhaseTimeoutMs:\s*540_000/);
+    assert.match(read('scripts/seed-food-stocks.mjs'), /USDA_FAS_PSD_API_KEY/);
+    assert.match(read('scripts/seed-food-stocks.mjs'), /https:\/\/api\.fas\.usda\.gov\/api\/psd/);
+    assert.match(read('scripts/seed-food-stocks.mjs'), /'X-Api-Key': apiKey/);
   });
 
   it('gates the RPC as premium + entitlement before generate', () => {

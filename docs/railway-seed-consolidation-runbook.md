@@ -777,7 +777,7 @@ continuous metric.
 | **Watch paths** | `scripts/**`, `shared/**` |
 | **Replaces** | 2 services |
 | **Net savings** | 1 slot |
-| **Members** | Resilience Scores (6h), Resilience Static (annual window Oct 1-3, skips most runs), Food Stocks (monthly USDA PSD + FAOSTAT fill; needs `USDA_FAS_API_KEY`) |
+| **Members** | Resilience Scores (6h), Resilience Static (annual window Oct 1-3, skips most runs), Food Stocks (monthly USDA PSD + FAOSTAT fill; needs `USDA_FAS_PSD_API_KEY`) |
 
 ### Bundle 5: seed-bundle-derived-signals
 

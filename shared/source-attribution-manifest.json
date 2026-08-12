@@ -578,6 +578,20 @@
       ]
     },
     {
+      "host": "api.fas.usda.gov",
+      "provider": "USDA FAS PSD",
+      "kind": "structured",
+      "observed": true,
+      "license": "U.S. government public-domain PSD Open Data",
+      "attribution": "USDA Foreign Agricultural Service, Production, Supply and Distribution (PSD).",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "scripts/seed-food-stocks.mjs"
+        }
+      ]
+    },
+    {
       "host": "api.firecrawl.dev",
       "provider": "Firecrawl",
       "kind": "structured",
@@ -1223,15 +1237,10 @@
       "host": "apps.fas.usda.gov",
       "provider": "USDA FAS PSD",
       "kind": "structured",
-      "observed": true,
+      "observed": false,
       "license": "U.S. government public-domain PSD Open Data",
       "attribution": "USDA Foreign Agricultural Service, Production, Supply and Distribution (PSD).",
-      "status": "reviewed",
-      "references": [
-        {
-          "path": "scripts/seed-food-stocks.mjs"
-        }
-      ]
+      "status": "excluded"
     },
     {
       "host": "archive-api.open-meteo.com",
