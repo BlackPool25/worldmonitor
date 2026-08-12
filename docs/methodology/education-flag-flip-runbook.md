@@ -76,7 +76,7 @@ All must be green before flipping:
    ```
    checks.educationAttainment = { "status": "OK", "records": 189,
                                   "seedAgeMin": 338, "maxStaleMin": 11520 }
-   summary = { "total": 260, ..., "crit": 0 }
+   summary = { "total": 261, ..., "crit": 0 }
    ```
 
    **Keep these three conditions as the standard for the next probe** — the deployed SHA
