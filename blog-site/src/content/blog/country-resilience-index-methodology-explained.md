@@ -1,6 +1,6 @@
 ---
 title: "Country Resilience Index Methodology"
-description: "A practical guide to the WorldMonitor Country Resilience Index: 196 countries, 6 domains, 20 active dimensions, 3 pillars, and a transparent 0-100 score."
+description: "A practical guide to the WorldMonitor Country Resilience Index: 72 indicators across 21 active dimensions and 6 domains, with transparent 0-100 scoring."
 metaTitle: "Country Resilience Index Methodology | WorldMonitor"
 keywords: "country resilience index, resilience score methodology, country risk methodology, national resilience indicators, shock absorption score"
 audience: "Risk analysts, policy teams, country researchers, resilience modelers"
@@ -31,7 +31,7 @@ The CRI measures national shock capacity at a point in time. It does not try to 
 - health, public service, food, and water resilience
 - recovery capacity, including fiscal space, debt coverage, reserves, and import concentration
 
-The live methodology uses 6 domains and 20 active dimensions. Two structurally retired dimensions remain in the registry for schema continuity but do not carry active signal.
+The live methodology uses 72 indicators across 21 active dimensions and 6 domains. Two structurally retired dimensions remain in the registry for schema continuity but do not carry active signal.
 
 Every country is scored on a 0-100 scale. Higher is better. The score is not a GDP ranking, and the methodology deliberately avoids pure affluence proxies where the only thing they measure is "this country is rich." Indicators need to answer a mechanism question: what direct shock channel does this measure?
 

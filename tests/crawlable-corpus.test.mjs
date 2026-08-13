@@ -501,6 +501,11 @@ describe('crawlable corpus generator', () => {
         sourcesPage.includes(`<strong>${activeAttributionEntries.length}</strong>`),
         'sources page must render the tracked active-host count',
       );
+      assert.match(
+        sourcesPage,
+        new RegExp(`${activeProviderNames.size} active providers across ${activeAttributionEntries.length} observed upstream hosts`),
+        'sources page must label provider and host counts as different inventory layers',
+      );
       assert.match(sourcesPage, /id="source-search"/);
       assert.match(sourcesPage, /data-source-catalog/);
       assert.match(sourcesPage, /data-source-filter="all"/);

@@ -79,7 +79,9 @@ function replaceMcpToolCounts(source, count) {
 function replaceSourceAttributionCounts(source, { hostCount, providerCount }) {
   return source
     .replace(/\b\d+\+(?=\s+(?:external data sources|sources|observed upstream hosts)\b)/gi, `${hostCount}+`)
+    .replace(/\b\d+(?=\s+observed upstream hosts\b)/gi, String(hostCount))
     .replace(/\b\d+\+(?=\s+(?:data providers|(?:other\s+)?live providers|providers)\b)/gi, `${providerCount}+`)
+    .replace(/\b\d+(?=\s+active providers\b)/gi, String(providerCount))
     // The prerendered Pro stat tile puts the label in a sibling element rather
     // than next to the number, so keep that generated surface in sync too.
     .replace(/\b\d+\+(?=<\/div><div[^>]*>Data providers\b)/gi, `${providerCount}+`);
@@ -191,6 +193,7 @@ const facts = {
     locales: stats.locales,
     variants: stats.variantCount,
     mapLayers: stats.layerDefinitions,
+    panelImplementations: stats.panelClasses,
     feedDefinitions: stats.feedDefinitions,
     freshnessTrackedSourceGroups: stats.freshnessSources,
     sourceAttributionHosts: stats.sourceAttributionHosts,

@@ -2,7 +2,7 @@
 
 > Real-time global intelligence dashboard — AI-powered news aggregation, geopolitical monitoring, and infrastructure tracking in a unified situational awareness interface.
 
-World Monitor is an open-source (AGPL-3.0) intelligence platform that aggregates 500+ curated news feeds, 56 map layer types, and multiple AI models into a single dashboard. It runs as a web app, installable PWA, and native desktop application (Tauri) for macOS, Windows, and Linux.
+World Monitor is an open-source (AGPL-3.0) intelligence platform that aggregates 500+ curated news feeds, 56 map layer types, 109 concrete panel implementations, and multiple AI models into a single dashboard. It runs as a web app, installable PWA, and native desktop application (Tauri) for macOS, Windows, and Linux.
 
 A single codebase produces six specialized variants — geopolitical, technology, finance, commodity, happy, and energy — each with distinct feeds, panels, map layers, and branding. The multi-variant architecture uses build-time selection via the VITE_VARIANT environment variable, with runtime switching available via the header bar. Each variant tree-shakes unused data files so audience-specific builds can omit unrelated panels, feeds, and map registries.
 
@@ -139,7 +139,7 @@ Unique layers: 29 stock exchanges, 19 financial centers, 14 central-bank and sup
 - **Hybrid Threat Classification**: Two-stage pipeline — instant keyword classifier (~120 threat keywords by severity tier) with async LLM override (Groq Llama 3.1 8B at temperature 0, 24h Redis cache). LLM overrides keyword result only when confidence is higher
 - **Focal Point Detection**: Correlates entities across news, military activity, protests, outages, and markets to identify convergence. Requires cross-source confirmation before escalating to critical
 - **Country Instability Index (CII v8)**: Server-authoritative 0-100 stress scores for 31 Tier-1 countries. The documented formula blends four event components into `eventScore = unrest * 0.25 + conflict * 0.30 + security * 0.20 + information * 0.25`, then combines `baselineRisk * 0.4 + eventScore * 0.6` with capped climate, cyber, fire, advisory, OREF, displacement, news-urgency, earthquake, sanctions, AIS, and UCDP/advisory floor terms. Each score emits `methodology_version`, component breakdown, advisory provenance, and signed 24-hour movement delta.
-- **Country Resilience Index (CRI)**: 0-100 resilience scores for the 196-country public rankable universe across 6 domains, 20 active dimensions, and 3 pillars. CRI uses official/authoritative sources, transparent goalposts, coverage tracking, and a four-class imputation taxonomy; the live runtime manifest reports the active formula tag and construct versions.
+- **Country Resilience Index (CRI)**: 0-100 resilience scores for the 196-country public rankable universe built from 72 indicators across 21 active dimensions, 6 domains, and 3 pillars. CRI uses official/authoritative sources, transparent goalposts, coverage tracking, and a four-class imputation taxonomy; the live runtime manifest reports the active formula tag and construct versions.
 - **Trending Keyword Spike Detection**: 2-hour rolling window vs 7-day baseline. Spikes require 5+ mentions, 3x baseline surge, 2+ unique sources, and 30-minute cooldown. Extracts CVE identifiers and APT/FIN designators. Auto-summarized via Groq (5 summaries/hour limit)
 - **Strategic Posture Assessment**: 9 operational theaters (Iran/Persian Gulf, Taiwan Strait, Baltic/Kaliningrad, Korean Peninsula, Eastern Mediterranean, Horn of Africa, South China Sea, Arctic, Black Sea) assessed continuously. Posture levels: NORMAL, ELEVATED, CRITICAL based on aircraft count, strike capability, naval presence, and country instability
 - **Geographic Convergence Detection**: Events binned into 1-degree geographic cells within 24-hour window. 3+ distinct event types in one cell triggers convergence alert
@@ -253,6 +253,7 @@ Build-time: Vite HTML plugin transforms meta tags, Open Graph data, PWA manifest
 ## Desktop Application
 
 Native desktop app built with Tauri (Rust + Node.js sidecar). The sidecar mirrors all 60+ cloud API handlers locally with gzip compression. Features:
+
 - OS keychain integration for configured upstream API keys (macOS Keychain, Windows Credential Manager)
 - Token-authenticated sidecar prevents unauthorized local access
 - Cloud fallback when local handlers fail

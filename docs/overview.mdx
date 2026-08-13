@@ -25,11 +25,11 @@ This section gives procurement, security, and engineering teams a concise view o
 
 ### Technical capabilities
 
-World Monitor combines an interactive 3D globe and flat map, configurable intelligence panels, source-attributed news and OSINT, market and economic data, country risk and resilience scoring, infrastructure and supply-chain analysis, scenario modelling, AI-generated briefs, and alerting workflows. The generated product inventory currently records 56 map-layer definitions, more than 100 panel implementations, and six product variants.
+World Monitor combines an interactive 3D globe and flat map, configurable intelligence panels, source-attributed news and OSINT, market and economic data, country risk and resilience scoring, infrastructure and supply-chain analysis, scenario modelling, AI-generated briefs, and alerting workflows. The generated product inventory currently records 56 map-layer definitions, 109 concrete panel implementations, and six product variants. The panel figure counts concrete classes that extend the shared `Panel` base in [`src/components`](https://github.com/koala73/worldmonitor/tree/main/src/components); the base class itself is excluded, and a class reused by multiple variants is counted once.
 
 | Capability | Current scope |
 | --- | --- |
-| Country risk and resilience | Country Instability Index (CII v8) scores with signed 24-hour movement for 31 Tier-1 countries. The Country Resilience Index ranks a 196-country public universe across 6 domains and 21 active dimensions on a 6-hour schedule. |
+| Country risk and resilience | Country Instability Index (CII v8) scores with signed 24-hour movement for 31 Tier-1 countries. The Country Resilience Index ranks a 196-country public universe using 72 indicators across 21 active dimensions and 6 domains on a 6-hour schedule. |
 | Signal and infrastructure analysis | Geographic convergence, temporal anomalies, and cross-source correlation combine related events. Infrastructure Cascade models dependencies across a 350-node infrastructure graph. |
 | Decision support | Source-linked AI briefs, probabilistic forecasts with machine-checkable resolution criteria and scorecard context, [Route Explorer](/route-explorer), and the [Scenario Engine](/scenario-engine). |
 | Company and procurement workflows | The MCP company-intelligence tool combines market context, SEC filing search, and material 8-K events. [Global Procurement Intelligence](/global-procurement-intelligence) uses seeded public opportunities from supported government and multilateral portals. Availability still depends on deployment credentials and source health. |

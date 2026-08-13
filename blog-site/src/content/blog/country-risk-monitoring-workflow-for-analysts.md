@@ -19,7 +19,7 @@ Country risk has two time horizons, and conflating them is the most common analy
 
 **The fast clock: Country Instability Index (CII).** A 0–100 score, recomputed continuously, that blends a country's structural baseline (40%) with live event pressure (60%): unrest, conflict, security activity, and information signals. A score of 35 is normal background noise; 70 means active crisis. The five bands (Low, Normal, Elevated, High, Critical) and a signed 24-hour delta tell you both where a country sits and which direction it is moving. The [full methodology is public](/blog/posts/country-instability-index-methodology-explained/), which matters: a score you cannot decompose is a score you cannot defend in front of a board.
 
-**The slow clock: Country Resilience Index.** Computed for 196 countries across 20 dimensions and refreshed every six hours, this measures structural capacity: energy, infrastructure, health systems, governance, economic buffers. It answers a different question: when a shock hits, does this country absorb it or shatter?
+**The slow clock: Country Resilience Index.** Computed for 196 countries across 72 indicators, 21 active dimensions, and 6 domains, and refreshed every six hours, this measures structural capacity: energy, infrastructure, health systems, governance, economic buffers. It answers a different question: when a shock hits, does this country absorb it or shatter?
 
 Read the two together and you get four meaningful quadrants:
 

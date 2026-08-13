@@ -116,6 +116,7 @@ World Monitor aggregates publicly available data from dozens of sources. No prop
 | News feeds monitored | 500+ |
 | Live video streams | 8 |
 | Data layers on map | 56 layer types |
+| Panel implementations | 109 concrete classes |
 | Countries monitored | 200+ |
 | Languages supported | 27 (including RTL) |
 | Military bases mapped | 220+ |
@@ -179,7 +180,7 @@ High (66-80), Critical (81-100). The full public methodology is
 ### Country Resilience Index (CRI)
 
 The Country Resilience Index scores the 196-country public rankable universe
-from 0 to 100 across 6 domains, 20 active dimensions, and 3 pillars. It uses
+from 0 to 100 across 72 indicators, 21 active dimensions, 6 domains, and 3 pillars. It uses
 official and authoritative sources, transparent goalposts, coverage tracking,
 and imputation taxonomy so analysts can see how much of each score is observed
 versus imputed. CRI complements CII: CII measures near-term stress; CRI measures
