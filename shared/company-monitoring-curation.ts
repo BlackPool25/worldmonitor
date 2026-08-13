@@ -59,6 +59,8 @@ export type CompanyMonitoringCurationCandidate = {
     legalName: string;
     stableIdentity: string;
     corporateFamilyIdentity: string;
+    officialDomains: string[];
+    verifiedXAccountIds: string[];
     geography: CompanyMonitoringGeography;
     privateStatus: 'private' | 'private_subsidiary';
     privateStatusEvidence: {
@@ -94,6 +96,7 @@ export type CompanyMonitoringCurationManifest = {
   protocolVersion: string;
   policyVersion: string;
   modelVersion: string;
+  classifierRuntimeSha256: string;
   queryVersion: string;
   curatorAccessVersion: string;
   candidates: CompanyMonitoringCurationCandidate[];
@@ -166,6 +169,7 @@ const MANIFEST_KEYS = new Set([
   'protocolVersion',
   'policyVersion',
   'modelVersion',
+  'classifierRuntimeSha256',
   'queryVersion',
   'curatorAccessVersion',
   'candidates',
@@ -191,6 +195,8 @@ const COMPANY_KEYS = new Set([
   'legalName',
   'stableIdentity',
   'corporateFamilyIdentity',
+  'officialDomains',
+  'verifiedXAccountIds',
   'geography',
   'privateStatus',
   'privateStatusEvidence',
@@ -440,6 +446,21 @@ function validateCandidate(
   requireText(value.company.legalName, 'company_legal_name_invalid');
   requireText(value.company.stableIdentity, 'company_identity_invalid');
   requireText(value.company.corporateFamilyIdentity, 'corporate_family_identity_invalid');
+  if (!Array.isArray(value.company.officialDomains)) fail('company_official_domains_invalid');
+  const officialDomains = value.company.officialDomains.map((domain) =>
+    normalizedOrigin(String(domain), 'company_official_domains_invalid')
+  );
+  if (new Set(officialDomains).size !== officialDomains.length) {
+    fail('company_official_domains_invalid');
+  }
+  if (!Array.isArray(value.company.verifiedXAccountIds)) fail('company_x_accounts_invalid');
+  const verifiedXAccountIds = value.company.verifiedXAccountIds.map((accountId) =>
+    requireText(accountId, 'company_x_accounts_invalid', 20)
+  );
+  if (
+    verifiedXAccountIds.some((accountId) => !/^\d{1,20}$/.test(accountId)) ||
+    new Set(verifiedXAccountIds).size !== verifiedXAccountIds.length
+  ) fail('company_x_accounts_invalid');
   if (!GEOGRAPHIES.has(value.company.geography as CompanyMonitoringGeography)) {
     fail('company_geography_invalid');
   }
@@ -507,6 +528,9 @@ function validateManifest(
     ['queryVersion', 'curation_query_version_invalid'],
     ['curatorAccessVersion', 'curation_access_version_invalid'],
   ] as const) requireVersion(value[field], code);
+  if (!SHA256.test(value.classifierRuntimeSha256 as string)) {
+    fail('curation_classifier_runtime_digest_invalid');
+  }
 
   requireExactKeys(value.custody, CUSTODY_KEYS, 'curation_custody_schema_invalid');
   requireText(value.custody.collectorTool, 'curation_collector_tool_invalid', 200);
@@ -592,6 +616,7 @@ export function compileCompanyMonitoringBlindCorpus(
     protocolVersion: manifest.protocolVersion,
     policyVersion: manifest.policyVersion,
     modelVersion: manifest.modelVersion,
+    classifierRuntimeSha256: manifest.classifierRuntimeSha256,
     queryVersion: manifest.queryVersion,
     curatorAccessVersion: manifest.curatorAccessVersion,
     lockedAt: null,

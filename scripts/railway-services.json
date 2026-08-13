@@ -170,6 +170,7 @@
       "scripts/shared/rss-allowed-domains.cjs",
       "scripts/shared/rss-allowed-domains.json",
       "scripts/shared/source-tiers.json",
+      "scripts/shared/stablecoin-classifier.cjs",
       "scripts/shared/stablecoins.json",
       "scripts/shared/stocks.json",
       "scripts/shared/ucdp-candidate.cjs",
@@ -183,6 +184,7 @@
       "shared/rss-allowed-domains.cjs",
       "shared/rss-allowed-domains.json",
       "shared/source-tiers.json",
+      "shared/stablecoin-classifier.cjs",
       "shared/stablecoins.json",
       "shared/stocks.json"
     ],
@@ -755,6 +757,7 @@
     ],
     "watchPatterns": [
       "scripts/_bundle-runner.mjs",
+      "scripts/_defense-industrial-source.mjs",
       "scripts/_defense-patents-source.mjs",
       "scripts/_proxy-utils.cjs",
       "scripts/_seed-contract.mjs",
@@ -767,9 +770,19 @@
       "scripts/seed-bundle-static-ref.mjs",
       "scripts/seed-chokepoint-baselines.mjs",
       "scripts/seed-defense-patents.mjs",
+      "scripts/seed-defense-industrial.mjs",
+      "scripts/seed-defense-industrial-suppliers.mjs",
+      "scripts/shared/country-name-to-iso2.cjs",
+      "scripts/shared/country-names.json",
+      "scripts/shared/iso3-to-iso2.json",
       "scripts/seed-military-bases.mjs",
-      "scripts/seed-submarine-cables.mjs"
+      "scripts/seed-mineral-production.mjs",
+      "scripts/seed-submarine-cables.mjs",
+      "scripts/shared/mineral-commodities.json",
+      "scripts/shared/mineral-country-aliases.json",
+      "scripts/shared/mineral-production-parse.mjs"
     ],
+    "cronSchedule": "0 3 * * *",
     "documentedAt": "docs/railway-seed-consolidation-runbook.md#bundle-3-seed-bundle-static-ref"
   },
   {
@@ -789,6 +802,8 @@
       "scripts/package-lock.json",
       "scripts/package.json",
       "scripts/seed-bundle-resilience.mjs",
+      "scripts/_food-stocks-helpers.mjs",
+      "scripts/seed-food-stocks.mjs",
       "scripts/seed-resilience-scores.mjs",
       "scripts/seed-resilience-static.mjs",
       "scripts/shared/country-names.json",
@@ -1137,6 +1152,7 @@
       "scripts/seed-gold-etf-flows.mjs",
       "scripts/seed-gulf-quotes.mjs",
       "scripts/seed-hyperliquid-flow.mjs",
+      "scripts/seed-market-correlation-series.mjs",
       "scripts/seed-sec-8k-stream.mjs",
       "scripts/seed-sec-cik-map.mjs",
       "scripts/seed-stablecoin-markets.mjs",
@@ -1148,6 +1164,7 @@
       "scripts/shared/etfs.json",
       "scripts/shared/gulf.json",
       "scripts/shared/other-tokens.json",
+      "scripts/shared/stablecoin-classifier.cjs",
       "scripts/shared/stablecoins.json",
       "shared/ai-tokens.json",
       "shared/crypto.json",
@@ -1192,7 +1209,6 @@
   {
     "entry": "scripts/company-monitoring-worker.mjs",
     "deployMode": "nixpacks-root-scripts",
-    "lifecycle": "planned",
     "service": "company-monitoring-worker",
     "startCommand": "node company-monitoring-worker.mjs",
     "requiredEnv": [
@@ -1200,7 +1216,12 @@
       "COMPANY_MONITORING_WORKER_SECRET",
       "UPSTASH_REDIS_REST_URL",
       "UPSTASH_REDIS_REST_TOKEN",
-      "X_BEARER_TOKEN"
+      "EXA_API_KEYS",
+      "X_BEARER_TOKEN",
+      "OPENROUTER_API_KEY",
+      "COMPANY_MONITORING_CLASSIFIER_MODEL",
+      "COMPANY_MONITORING_CLASSIFIER_PROVIDER_ROUTE",
+      "COMPANY_MONITORING_CLASSIFIER_RESOLVED_PROVIDER"
     ],
     "watchPatterns": [
       "scripts/_proxy-utils.cjs",
@@ -1208,6 +1229,8 @@
       "scripts/_seed-envelope-source.mjs",
       "scripts/_seed-utils.mjs",
       "scripts/company-monitoring-worker.mjs",
+      "scripts/lib/company-monitoring-classification.mjs",
+      "scripts/lib/company-monitoring-classifier-client.mjs",
       "scripts/lib/company-monitoring-exa.mjs",
       "scripts/lib/company-monitoring-x-provider.mjs",
       "scripts/lib/llm-telemetry.cjs",
@@ -1218,7 +1241,7 @@
       "scripts/package.json"
     ],
     "cronSchedule": null,
-    "documentedAt": "scripts/company-monitoring-worker.mjs (header docblock declares rootDirectory: scripts); lifecycle planned 2026-08-10 pending provisioning \u2014 see #6402"
+    "documentedAt": "scripts/company-monitoring-worker.mjs (header docblock declares rootDirectory: scripts); provisioned in Railway production 2026-08-12"
   },
   {
     "entry": "scripts/scenario-worker.mjs",

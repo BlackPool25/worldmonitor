@@ -35,6 +35,9 @@ import { isMainModule } from './lib/main-module.mjs';
 export const COMPANY_MONITORING_WORKER_HEALTH_KEY = 'company-monitoring:worker-health:v1';
 export const COMPANY_MONITORING_WORKER_META_KEY = 'seed-meta:company-monitoring:worker';
 export const COMPANY_MONITORING_WORKER_ACTIVATION_KEY = 'seed-activated:company-monitoring:worker';
+// The checked-in Stage 0 protocol remains STOP. Credentials can be provisioned
+// before rollout, but they must not make live model calls on their own.
+export const COMPANY_MONITORING_CLASSIFIER_RUNTIME_APPROVED = false;
 
 const HEALTH_TTL_SECONDS = 900;
 const META_TTL_SECONDS = 86_400;
@@ -258,26 +261,49 @@ export function createCompanyMonitoringExecutor(options = {}) {
  * @param {object} options
  * @param {string | undefined} options.apiKey
  * @param {string | undefined} options.model
+ * @param {string | undefined} options.providerRoute
+ * @param {string | undefined} options.expectedResolvedProvider
  * @param {string[]} [options.approvedResolvedModels]
  * @param {typeof fetch} [options.fetchImpl]
  */
 export function createCompanyMonitoringAdmissionClassifier(options) {
-  const { apiKey, model, approvedResolvedModels, fetchImpl } = options;
+  const {
+    apiKey,
+    model,
+    providerRoute,
+    expectedResolvedProvider,
+    approvedResolvedModels,
+    fetchImpl,
+  } = options;
   return async ({ candidate, evidence }) => {
     const classification = await requestCompanyMonitoringClassification({
       candidate,
       evidence,
       apiKey,
       model,
+      providerRoute,
+      expectedResolvedProvider,
       approvedResolvedModels,
       fetchImpl,
     });
     return {
-      requestedModelVersion: model,
-      modelVersion: classification.resolvedModel,
+      requestedModelVersion: `${model}@${providerRoute}#${expectedResolvedProvider}`,
+      modelVersion:
+        `${classification.route.resolvedModel}@${classification.route.configuredProviderRoute}` +
+        `#${classification.route.resolvedProvider}`,
       modelOutput: classification.content,
     };
   };
+}
+
+/**
+ * Keep provisioned credentials inert until the checked-in runtime gate is
+ * deliberately changed together with the frozen protocol decision.
+ */
+export function createApprovedCompanyMonitoringAdmissionClassifier(options) {
+  return COMPANY_MONITORING_CLASSIFIER_RUNTIME_APPROVED
+    ? createCompanyMonitoringAdmissionClassifier(options)
+    : undefined;
 }
 
 function finalizeResult(execution) {
@@ -639,6 +665,8 @@ async function main() {
       'EXA_API_KEYS',
       'OPENROUTER_API_KEY',
       'COMPANY_MONITORING_CLASSIFIER_MODEL',
+      'COMPANY_MONITORING_CLASSIFIER_PROVIDER_ROUTE',
+      'COMPANY_MONITORING_CLASSIFIER_RESOLVED_PROVIDER',
     ],
   });
   const convexUrl = process.env.CONVEX_URL;
@@ -661,10 +689,17 @@ async function main() {
   });
   const classifierApiKey = process.env.OPENROUTER_API_KEY;
   const classifierModel = process.env.COMPANY_MONITORING_CLASSIFIER_MODEL;
-  const executeAdmission = classifierApiKey && classifierModel
-    ? createCompanyMonitoringAdmissionClassifier({
+  const classifierProviderRoute = process.env.COMPANY_MONITORING_CLASSIFIER_PROVIDER_ROUTE;
+  const classifierResolvedProvider = process.env.COMPANY_MONITORING_CLASSIFIER_RESOLVED_PROVIDER;
+  const classifierVersion = classifierModel && classifierProviderRoute && classifierResolvedProvider
+    ? `${classifierModel}@${classifierProviderRoute}#${classifierResolvedProvider}`
+    : undefined;
+  const executeAdmission = classifierApiKey && classifierModel && classifierProviderRoute && classifierResolvedProvider
+    ? createApprovedCompanyMonitoringAdmissionClassifier({
       apiKey: classifierApiKey,
       model: classifierModel,
+      providerRoute: classifierProviderRoute,
+      expectedResolvedProvider: classifierResolvedProvider,
     })
     : undefined;
   const worker = createCompanyMonitoringWorker({
@@ -673,7 +708,7 @@ async function main() {
     workerId: `railway-${process.pid}-${randomUUID()}`,
     executeClaim,
     executeAdmission,
-    admissionModelVersion: classifierModel,
+    admissionModelVersion: classifierVersion,
     publishHealth: createRedisHealthPublisher(),
   });
   let shutdownSignal = 'SIGTERM';

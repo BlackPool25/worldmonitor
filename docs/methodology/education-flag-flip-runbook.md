@@ -76,7 +76,7 @@ All must be green before flipping:
    ```
    checks.educationAttainment = { "status": "OK", "records": 189,
                                   "seedAgeMin": 338, "maxStaleMin": 11520 }
-   summary = { "total": 260, ..., "crit": 0 }
+   summary = { "total": 261, ..., "crit": 0 }
    ```
 
    **Keep these three conditions as the standard for the next probe** — the deployed SHA
@@ -318,8 +318,8 @@ so baseline and proposed see byte-identical inputs).
 | Gate | Threshold | Measured (pillar-combined) |
 |---|---|---|
 | `gate-1-spearman` | >= 0.85 | 1.00 |
-| `gate-2-country-drift` | <= 15 | 3.45 (VU) |
-| `gate-6-cohort-median` | <= 10 | −1.08 (fragile-states) |
+| `gate-2-country-drift` | &lt;= 15 | 3.45 (VU) |
+| `gate-6-cohort-median` | &lt;= 10 | −1.08 (fragile-states) |
 | `gate-7-matched-pair` | all hold | 9/9 hold after audited `in-vs-za` rebaseline; gap 1.77, min 1 |
 | `gate-9-effective-influence` | >= 80% Core | 92.16% (47/51) |
 

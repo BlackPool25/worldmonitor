@@ -65,7 +65,8 @@ Sources: [X pricing](https://docs.x.com/x-api/getting-started/pricing),
 
 ## Model routing
 
-Status: blocked until the runtime proves the frozen privacy route.
+Status: the dedicated runtime contract is implemented; empirical use remains
+blocked by the frozen Stage 0 decision.
 
 The cost model uses OpenRouter's `deepseek/deepseek-v4-flash` price snapshot:
 $0.09 per million input tokens and $0.18 per million output tokens, plus the
@@ -87,10 +88,25 @@ enforcement remains blocked.
 
 OpenRouter states that its own prompts are not retained unless prompt logging is
 enabled, supports request-level zero-data-retention routing, and conservatively
-marks endpoints with unknown policy as retaining and training. The current shared
-WorldMonitor OpenRouter route does not enforce `provider.zdr: true`, so Company
-Monitoring may not reuse it for portfolio-derived content until that dark contract
-lands and passes its own tests.
+marks endpoints with unknown policy as retaining and training. The dedicated
+Company Monitoring client now sends `provider.only` with one configured route,
+`allow_fallbacks: false`, `require_parameters: true`, `data_collection: deny`,
+and `zdr: true`. It sends `temperature: 0`, disables reasoning, requests router
+metadata, and fails closed unless the response proves the requested model,
+direct single-attempt route, selected endpoint, expected resolved provider, no
+transformation pipeline, and request cost. Live admission requires both
+`COMPANY_MONITORING_CLASSIFIER_PROVIDER_ROUTE` and
+`COMPANY_MONITORING_CLASSIFIER_RESOLVED_PROVIDER`; a key and model alone no
+longer enable admission classification. Admission receipts include the
+requested route and the attested resolved provider in their model-version
+identity.
+
+These request controls do not override the checked-in protocol. While Stage 0 is
+`STOP`, the worker's checked-in classifier runtime gate remains `false`, and the
+offline prediction command exits before it loads credentials or sends a paid
+request. Provisioning the key, model, and route therefore cannot activate live
+classification. Account-level activity-logging state also remains an external
+attestation; no score can infer it from a successful model response.
 
 Sources: [OpenRouter zero data retention](https://openrouter.ai/docs/guides/features/zdr),
 [provider logging](https://openrouter.ai/docs/guides/privacy/provider-logging/),

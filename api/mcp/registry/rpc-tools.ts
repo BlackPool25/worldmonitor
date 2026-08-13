@@ -11,7 +11,11 @@ import { argStr } from '../filters';
 import { buildAuthHeaders } from '../auth';
 import { assertToolFetchOk, BillingDenialError, throwIfBillingDenial } from '../billing-denial';
 import { SUPPORTED_CONSUMER_PRICES_COUNTRIES } from '../constants';
-import { assertMcpToolFetchOk, BothSourcesFailedError } from '../downstream';
+import {
+  assertMcpToolFetchOk,
+  BothSourcesFailedError,
+  buildMcpDownstreamHeaders,
+} from '../downstream';
 import { evaluateFreshness } from '../freshness';
 import { McpSourceUnavailableError } from '../source-unavailable';
 import {
@@ -526,7 +530,78 @@ const INTEL_HISTORY_RECORD_SCHEMA = {
   },
 };
 
+const DEFENSE_INDUSTRIAL_METRIC_SCHEMA = {
+  type: 'object',
+  required: ['available', 'value', 'year', 'previousValue', 'previousYear', 'source'],
+  properties: {
+    available: { type: 'boolean' },
+    value: { type: 'number' },
+    year: { type: 'integer' },
+    previousValue: { type: 'number' },
+    previousYear: { type: 'integer' },
+    source: { type: 'string' },
+  },
+};
+
 export const RPC_TOOLS: ToolDef[] = [
+  {
+    name: 'get_defense_industrial_base',
+    _outputBudgetBytes: 16_384,
+    description: 'Return one country\'s latest World Bank military-capacity indicators and SIPRI-derived five-year arms-supplier shares and concentration. Use this to answer who supplies a country\'s major weapons and how concentrated that dependency is. TIV is a transfer-volume indicator, not money.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        country_code: { type: 'string', description: 'ISO 3166-1 alpha-2 country code, such as UA, DE, or IN.' },
+      },
+      required: ['country_code'],
+    },
+    outputSchema: {
+      type: 'object',
+      required: ['countryCode', 'available', 'expenditurePctGdp', 'expenditureUsd', 'personnel', 'armsExportsTiv', 'armsImportsTiv', 'suppliers', 'supplierHhi', 'windowStartYear', 'windowEndYear', 'supplierSource', 'fetchedAt', 'industrialFetchedAt', 'supplierFetchedAt', 'supplierRetained', 'supplierMappingCoverage'],
+      properties: {
+        countryCode: { type: 'string' },
+        available: { type: 'boolean' },
+        expenditurePctGdp: DEFENSE_INDUSTRIAL_METRIC_SCHEMA,
+        expenditureUsd: DEFENSE_INDUSTRIAL_METRIC_SCHEMA,
+        personnel: DEFENSE_INDUSTRIAL_METRIC_SCHEMA,
+        armsExportsTiv: DEFENSE_INDUSTRIAL_METRIC_SCHEMA,
+        armsImportsTiv: DEFENSE_INDUSTRIAL_METRIC_SCHEMA,
+        suppliers: { type: 'array', items: { type: 'object', required: ['supplierIso2', 'tivShare'], properties: { supplierIso2: { type: 'string', pattern: '^[A-Z]{2}$' }, tivShare: { type: 'number', minimum: 0, maximum: 1 } } } },
+        supplierHhi: { type: 'number', minimum: 0, maximum: 1, description: 'Herfindahl-Hirschman concentration from 0 to 1; higher means fewer dominant suppliers.' },
+        windowStartYear: { type: 'integer' },
+        windowEndYear: { type: 'integer' },
+        supplierSource: { type: 'string' },
+        fetchedAt: { type: 'string', description: 'Oldest source timestamp among values served.' },
+        industrialFetchedAt: { type: 'string', description: 'World Bank snapshot timestamp for the country metrics served.' },
+        supplierFetchedAt: { type: 'string', description: 'SIPRI timestamp for this importer row, including its original timestamp when retained.' },
+        supplierRetained: { type: 'boolean', description: 'True when the importer row was retained after its current SIPRI request failed.' },
+        supplierMappingCoverage: { type: 'number', minimum: 0, maximum: 1, description: 'Share of positive supplier TIV mapped to ISO2 suppliers; HHI uses the full denominator.' },
+      },
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    _execute: async (params, base, context, execution) => {
+      const countryCode = argStr(params.country_code).trim().toUpperCase();
+      // The MCP gate has already authenticated and metered this call. Fetch the
+      // caller-invariant country snapshot through its bounded public CDN shape
+      // so MCP traffic does not parse both global Redis snapshots per request.
+      const url = `${base}/api/military/v1/get-defense-industrial-base?country_code=${encodeURIComponent(countryCode)}&public=1`;
+      const response = await fetch(url, {
+        headers: buildMcpDownstreamHeaders(base, execution, {
+          'User-Agent': 'worldmonitor-mcp-edge/1.0',
+        }),
+        signal: AbortSignal.timeout(8_000),
+      });
+      await assertMcpToolFetchOk(response, {
+        operation: 'get-defense-industrial-base',
+        tool: 'get_defense_industrial_base',
+        auth: context,
+        execution,
+      });
+      return response.json();
+    },
+    _coverageKeys: ['military:industrial-base:v1', 'military:arms-suppliers:v1'],
+    _apiPaths: ['GET /api/military/v1/get-defense-industrial-base'],
+  },
   {
     name: 'get_china_decision_signals',
     _outputBudgetBytes: CHINA_DECISION_SIGNAL_MAX_SERIALIZED_BYTES,
@@ -1118,6 +1193,89 @@ export const RPC_TOOLS: ToolDef[] = [
     },
     _apiPaths: [
       "GET /api/intelligence/v1/get-country-risk",
+    ],
+  },
+  {
+    name: 'get_food_stocks',
+    _outputBudgetBytes: 131072,
+    description: 'USDA PSD cereal stocks-to-use by marketing year. Ask for a country (ISO-2) plus optional commodity (wheat, corn, rice, soybeans, barley, palmOil), or country_code=WORLD for the global balance. Returns ending stocks, production, use, and the stocks-to-use ratio. Marketing years are not calendar years and must not be compared across countries as if they were.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        country_code: {
+          type: 'string',
+          description: 'ISO 3166-1 alpha-2 country code (e.g. "EG") or "WORLD" for the global balance sheet.',
+        },
+        commodity: {
+          type: 'string',
+          description: 'Optional commodity slug: wheat, corn, rice, soybeans, barley, palmOil. Note palmOil is camelCase; the rest are lowercase. Omit for all six.',
+        },
+      },
+      // country_code is REQUIRED: omitting it returned every country x six
+      // commodities, which routinely exceeds _outputBudgetBytes and spent a Pro
+      // quota unit to fail. Use country_code=WORLD for the global balance.
+      required: ['country_code'],
+    },
+    outputSchema: {
+      type: 'object',
+      properties: {
+        records: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              countryCode: { type: 'string', description: 'ISO-2, or "WORLD" for the global aggregate.' },
+              commodity: { type: 'string' },
+              marketingYear: { type: 'string', description: 'e.g. "2024/25". A marketing year, NOT a calendar year — never compare across countries as if it were one.' },
+              stocksToUse: {
+                type: 'number',
+                description: 'Ending stocks / total use (0.18 = 18%). Read hasStocksToUse FIRST — when it is false this 0 is a placeholder, not a measurement. USDA estimates stocks for selected countries only, so a real producer can report production and consumption with no stocks series.',
+              },
+              hasStocksToUse: {
+                type: 'boolean',
+                description: 'False when stocksToUse is a placeholder. Never report a 0% stocks-to-use without checking this.',
+              },
+              endingStocksTmt: { type: 'number', description: 'Ending stocks in 1000 MT. Read hasEndingStocks first; 0 is a placeholder when that flag is false.' },
+              hasEndingStocks: { type: 'boolean', description: 'False when endingStocksTmt is a placeholder rather than a measurement.' },
+              totalUseTmt: {
+                type: 'number',
+                description: 'Denominator of stocksToUse. For a country this is consumption + exports; for WORLD it is consumption only, because world exports are internal transfers already counted in the importer\'s consumption.',
+              },
+              productionTmt: { type: 'number' },
+              consumptionTmt: { type: 'number' },
+              importsTmt: { type: 'number' },
+              exportsTmt: { type: 'number' },
+              unit: { type: 'string', description: 'Always "1000 MT" (thousand metric tons).' },
+              source: {
+                type: 'string',
+                description: '"psd" = USDA full balance sheet (stocks are real). "faostat" = production-only gap fill; every stocks field on that row is a 0 placeholder, not a measurement.',
+              },
+            },
+          },
+        },
+        fetchedAt: { type: 'string' },
+        unavailable: { type: 'boolean' },
+        calorieWeightedStocksToUse: { type: 'number' },
+      },
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    _coverageKeys: ['resilience:food-stocks:v1', 'seed-meta:resilience:food-stocks'],
+    _execute: async (params, base, context) => {
+      const q = new URLSearchParams();
+      if (params.country_code) q.set('countryCode', String(params.country_code).trim().toUpperCase());
+      if (params.commodity) q.set('commodity', String(params.commodity).trim());
+      const qs = q.toString();
+      const url = `${base}/api/resilience/v1/get-food-stocks${qs ? `?${qs}` : ''}`;
+      const auth = await buildAuthHeaders(context, 'GET', url, null);
+      const res = await fetch(url, {
+        headers: { ...auth, 'User-Agent': 'worldmonitor-mcp-edge/1.0' },
+        signal: AbortSignal.timeout(8_000),
+      });
+      assertToolFetchOk(res, 'get-food-stocks');
+      return res.json();
+    },
+    _apiPaths: [
+      'GET /api/resilience/v1/get-food-stocks',
     ],
   },
   {
@@ -1774,6 +1932,51 @@ export const RPC_TOOLS: ToolDef[] = [
       return { sites, total: sites.length };
     },
     _apiPaths: [],
+  },
+  {
+    name: 'get_mineral_production',
+    _outputBudgetBytes: 131072,
+    description: 'Who mines and who refines a commodity, with country shares and HHI. Answers "who refines cobalt" or "what does Chile produce". USGS Mineral Commodity Summaries plus BGS fill. Complements get_commodity_geo (deposit locations).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        commodity: { type: 'string', description: 'Commodity id or label, e.g. "cobalt", "lithium", "ree"' },
+        iso2: { type: 'string', description: 'ISO 3166-1 alpha-2 producer filter, e.g. "CL"' },
+        stage: { type: 'string', enum: ['mine', 'refinery'], description: 'Mine or refinery/smelter stage. Omit for both.' },
+      },
+      required: [],
+    },
+    outputSchema: {
+      type: 'object',
+      properties: {
+        commodities: { type: 'array' },
+        countries: { type: 'array' },
+        fetchedAt: { type: 'string' },
+        upstreamUnavailable: { type: 'boolean' },
+        dataYear: { type: 'number' },
+      },
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    _execute: async (params, base, context) => {
+      const qs = new URLSearchParams();
+      if (params.commodity) qs.set('commodity', String(params.commodity));
+      if (params.iso2) qs.set('iso2', String(params.iso2).toUpperCase());
+      if (params.stage) qs.set('stage', String(params.stage));
+      const url = `${base}/api/supply-chain/v1/get-mineral-production${qs.size ? `?${qs}` : ''}`;
+      const auth = await buildAuthHeaders(context, 'GET', url, null);
+      const res = await fetch(url, {
+        headers: { ...auth, 'User-Agent': 'worldmonitor-mcp-edge/1.0' },
+        signal: AbortSignal.timeout(15_000),
+      });
+      assertToolFetchOk(res, 'get-mineral-production');
+      return res.json();
+    },
+    _coverageKeys: [
+      'supply-chain:mineral-production:v1',
+    ],
+    _apiPaths: [
+      'GET /api/supply-chain/v1/get-mineral-production',
+    ],
   },
   ...ANALYSIS_TOOLS,
   {

@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  COMPANY_MONITORING_CLASSIFIER_RUNTIME_APPROVED,
   COMPANY_MONITORING_CONVEX_TIMEOUT_MS,
   COMPANY_MONITORING_FINALIZE_TRANSPORT_BUFFER_MS,
   COMPANY_MONITORING_WORKER_ACTIVATION_KEY,
   COMPANY_MONITORING_WORKER_HEALTH_KEY,
   COMPANY_MONITORING_WORKER_META_KEY,
+  createApprovedCompanyMonitoringAdmissionClassifier,
   createCompanyMonitoringAdmissionClassifier,
   createCompanyMonitoringExecutor,
   createCompanyMonitoringWorker,
@@ -46,6 +48,18 @@ const COMPLETE_RESULT = {
   checkpoint: 'checkpoint-1',
   costUsdMicros: 12,
 };
+
+describe('company-monitoring classifier rollout gate', () => {
+  it('keeps complete provisioned classifier configuration inert while Stage 0 is stopped', () => {
+    assert.equal(COMPANY_MONITORING_CLASSIFIER_RUNTIME_APPROVED, false);
+    assert.equal(createApprovedCompanyMonitoringAdmissionClassifier({
+      apiKey: 'provisioned-key',
+      model: 'provider/classifier-v1',
+      providerRoute: 'pinned-route',
+      expectedResolvedProvider: 'Pinned Provider',
+    }), undefined);
+  });
+});
 
 const ADMISSION_CLAIM = {
   status: 'claimed',
@@ -290,10 +304,34 @@ describe('company monitoring Railway worker', () => {
     const executeAdmission = createCompanyMonitoringAdmissionClassifier({
       apiKey: 'openrouter-test-key',
       model: 'provider/classifier-v1',
+      providerRoute: 'pinned-route',
+      expectedResolvedProvider: 'Pinned Provider',
       fetchImpl: async (_url, init) => {
         capturedBody = JSON.parse(init.body);
         return new Response(JSON.stringify({
+          id: 'gen-company-monitoring-worker-1',
           model: 'provider/classifier-v1',
+          provider: 'Pinned Provider',
+          usage: { cost: 0.001 },
+          openrouter_metadata: {
+            requested: 'provider/classifier-v1',
+            strategy: 'direct',
+            attempt: 1,
+            endpoints: {
+              total: 1,
+              available: [{
+                provider: 'Pinned Provider',
+                model: 'provider/classifier-v1',
+                selected: true,
+              }],
+            },
+            attempts: [{
+              provider: 'Pinned Provider',
+              model: 'provider/classifier-v1',
+              status: 200,
+            }],
+            pipeline: [],
+          },
           choices: [{
             finish_reason: 'stop',
             message: { role: 'assistant', content: 'not-json' },
@@ -306,11 +344,12 @@ describe('company monitoring Railway worker', () => {
       candidate: ADMISSION_CLAIM.candidate,
       evidence: ADMISSION_CLAIM.evidence,
     }), {
-      requestedModelVersion: 'provider/classifier-v1',
-      modelVersion: 'provider/classifier-v1',
+      requestedModelVersion: 'provider/classifier-v1@pinned-route#Pinned Provider',
+      modelVersion: 'provider/classifier-v1@pinned-route#Pinned Provider',
       modelOutput: 'not-json',
     });
     assert.equal(capturedBody.model, 'provider/classifier-v1');
+    assert.deepEqual(capturedBody.provider.only, ['pinned-route']);
     assert.equal('tools' in capturedBody, false);
   });
 

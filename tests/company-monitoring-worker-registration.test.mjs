@@ -46,10 +46,17 @@ describe('company monitoring worker deployment registration', () => {
       'COMPANY_MONITORING_WORKER_SECRET',
       'UPSTASH_REDIS_REST_URL',
       'UPSTASH_REDIS_REST_TOKEN',
+      'EXA_API_KEYS',
       'X_BEARER_TOKEN',
+      'OPENROUTER_API_KEY',
+      'COMPANY_MONITORING_CLASSIFIER_MODEL',
+      'COMPANY_MONITORING_CLASSIFIER_PROVIDER_ROUTE',
+      'COMPANY_MONITORING_CLASSIFIER_RESOLVED_PROVIDER',
     ]);
     for (const dependency of [
       'scripts/company-monitoring-worker.mjs',
+      'scripts/lib/company-monitoring-classification.mjs',
+      'scripts/lib/company-monitoring-classifier-client.mjs',
       'scripts/lib/company-monitoring-exa.mjs',
       'scripts/lib/company-monitoring-x-provider.mjs',
       'scripts/_proxy-utils.cjs',

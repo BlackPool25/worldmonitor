@@ -77,6 +77,19 @@
       "activeStrikes": "{{count}} frappes actives détectées"
     },
     "militaryActivity": "Activité militaire",
+    "defenseIndustrial": {
+      "title": "Defense Industrial Base",
+      "expenditure": "Military spend",
+      "personnel": "Personnel",
+      "armsImports": "Arms imports",
+      "concentration": "Supplier HHI",
+      "suppliers": "Arms suppliers ({{start}}–{{end}})",
+      "source": "Sources: World Bank and SIPRI Arms Transfers Database. TIV measures transfer volume, not financial value.",
+      "sourceWorldBank": "Source: World Bank.",
+      "unavailable": "Not available",
+      "coverage": "Mapped coverage",
+      "supplierRetained": "Supplier data retained from the last successful importer refresh."
+    },
     "economicIndicators": "Indicateurs économiques",
     "ownFlights": "Vols nationaux",
     "foreignFlights": "Vols étrangers",
@@ -179,6 +192,23 @@
       "corridorConditions": "Conditions des corridors",
       "activityNowcast": "Prévision d'activité",
       "decisionSignalsUnavailable": "L'instantané des signaux de décision de la Chine est actuellement indisponible."
+    },
+    "foodStocks": "Food stocks",
+    "foodStocksHelp": "USDA PSD commodity stocks-to-use by marketing year, with the world ratio alongside for context. FAOSTAT fills production only where PSD has no country coverage.",
+    "loadingFoodStocks": "Loading food stocks…",
+    "foodStocksUnavailable": "Food stocks unavailable.",
+    "foodStocksProLocked": "Upgrade to PRO for commodity stocks-to-use",
+    "foodStocksCommodity": "Commodity",
+    "foodStocksMarketingYear": "Marketing year",
+    "foodStocksRatio": "Stocks-to-use",
+    "foodStocksWorld": "World",
+    "commodities": {
+      "wheat": "Wheat",
+      "corn": "Corn",
+      "rice": "Rice",
+      "soybeans": "Soybeans",
+      "barley": "Barley",
+      "palmOil": "Palm oil"
     }
   },
   "header": {
@@ -1841,7 +1871,12 @@
       "loadingHistory": "Chargement de l'historique des transits…",
       "historyUnavailable": "Historique des transits indisponible",
       "transitDataUnavailable": "Données de transit indisponibles (partiel en amont)",
-      "infoTooltip": "<strong>Moniteur de la chaîne d'approvisionnement</strong> Suivi mondial de la logistique et des ressources :<ul><li><strong>Points critiques</strong> : statut des transits maritimes, scores de perturbation et nombre de navires</li><li><strong>Transport maritime</strong> : indice Baltic Dry et tendances des tarifs de fret</li><li><strong>Minéraux</strong> : risque de concentration des minéraux critiques (HHI) et principaux producteurs</li></ul>Cliquez sur une carte de point critique pour développer le graphique d'historique des transits."
+      "infoTooltip": "<strong>Moniteur de la chaîne d'approvisionnement</strong> Suivi mondial de la logistique et des ressources :<ul><li><strong>Points critiques</strong> : statut des transits maritimes, scores de perturbation et nombre de navires</li><li><strong>Transport maritime</strong> : indice Baltic Dry et tendances des tarifs de fret</li><li><strong>Minéraux</strong> : risque de concentration des minéraux critiques (HHI) et principaux producteurs</li></ul>Cliquez sur une carte de point critique pour développer le graphique d'historique des transits.",
+      "mineStage": "Mine",
+      "refineryStage": "Refine",
+      "stageUnavailable": "No published figures for this stage",
+      "withheldNote": "W withheld",
+      "productionCaption": "Country shares of actual production. The map deposits layer shows where resources sit; this table shows who mines or refines them."
     },
     "positiveNewsFeed": {
       "noStories": "Aucune histoire dans cette catégorie pour le moment"

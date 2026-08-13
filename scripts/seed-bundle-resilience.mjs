@@ -11,4 +11,11 @@ import { runBundle, HOUR, DAY } from './_bundle-runner.mjs';
 await runBundle('resilience', [
   { label: 'Resilience-Scores', script: 'seed-resilience-scores.mjs', seedMetaKey: 'resilience:scores', intervalMs: 2 * HOUR, timeoutMs: 600_000 },
   { label: 'Resilience-Static', script: 'seed-resilience-static.mjs', seedMetaKey: 'resilience:static', intervalMs: 90 * DAY, timeoutMs: 900_000 },
-]);
+  { label: 'Food-Stocks', script: 'seed-food-stocks.mjs', seedMetaKey: 'resilience:food-stocks', intervalMs: 30 * DAY, timeoutMs: 600_000 },
+], {
+  // Railway kills the container at 10 minutes. The runner admits a section only
+  // when `timeoutMs + KILL_GRACE_MS` still fits the remaining budget, so without
+  // this a 600s section plus grace could start with no room to finish and be
+  // SIGKILLed mid-publish instead of skipped cleanly.
+  maxBundleMs: 570_000,
+});

@@ -332,6 +332,36 @@ export function companyEvidenceCanBlockObservation(row: NormalizedCompanyEvidenc
     row.sourceAuthority === COMPANY_MONITORING_EVIDENCE_POLICY.minimumBlockingAuthority;
 }
 
+export function projectCompanyMonitoringCandidate(
+  rows: NormalizedCompanyEvidence[],
+  occurrenceDedupeKey = rows[0]?.occurrenceDedupeKey,
+): NormalizedCompanyCandidate {
+  if (rows.length === 0 || occurrenceDedupeKey === undefined) {
+    throw new Error("Company Monitoring candidate projection requires evidence");
+  }
+  const ranked = [...rows].sort(compareCompanyEvidence);
+  const first = [...rows].sort((left, right) =>
+    left.observedAt - right.observedAt ||
+    left.evidenceFingerprint.localeCompare(right.evidenceFingerprint)
+  )[0]!;
+  const selected = ranked.slice(0, COMPANY_MONITORING_EVIDENCE_POLICY.maxReferences);
+  return {
+    ownerAccountId: first.ownerAccountId,
+    companyId: first.companyId,
+    occurrenceDedupeKey,
+    state: "pending_classification",
+    firstDiscoveredAt: first.observedAt,
+    firstDiscoveredPath: `${first.provider}:${first.providerLocatorHash}`,
+    attemptCount: 0,
+    expiresAt: first.observedAt + COMPANY_MONITORING_EVIDENCE_POLICY.candidateTtlMs,
+    observationBlocking: rows.some(companyEvidenceCanBlockObservation),
+    referenceEvidenceFingerprints: selected.map((row) => row.evidenceFingerprint),
+    referenceCount: ranked.length,
+    referencesTruncated: ranked.length > selected.length,
+    selectionPolicyVersion: COMPANY_MONITORING_EVIDENCE_POLICY.version,
+  };
+}
+
 export async function normalizeCompanyEvidence(input: {
   ownerAccountId: string;
   subjects: EvidenceSubject[];
@@ -438,26 +468,7 @@ export async function normalizeCompanyEvidence(input: {
   );
   const candidates: NormalizedCompanyCandidate[] = [];
   for (const [occurrenceDedupeKey, rows] of [...occurrenceGroups.entries()].sort()) {
-    const ranked = [...rows].sort(compareCompanyEvidence);
-    const first = [...rows].sort((left, right) =>
-      left.observedAt - right.observedAt || left.evidenceFingerprint.localeCompare(right.evidenceFingerprint)
-    )[0]!;
-    const selected = ranked.slice(0, COMPANY_MONITORING_EVIDENCE_POLICY.maxReferences);
-    candidates.push({
-      ownerAccountId: first.ownerAccountId,
-      companyId: first.companyId,
-      occurrenceDedupeKey,
-      state: "pending_classification",
-      firstDiscoveredAt: first.observedAt,
-      firstDiscoveredPath: `${first.provider}:${first.providerLocatorHash}`,
-      attemptCount: 0,
-      expiresAt: first.observedAt + COMPANY_MONITORING_EVIDENCE_POLICY.candidateTtlMs,
-      observationBlocking: rows.some(companyEvidenceCanBlockObservation),
-      referenceEvidenceFingerprints: selected.map((row) => row.evidenceFingerprint),
-      referenceCount: ranked.length,
-      referencesTruncated: ranked.length > selected.length,
-      selectionPolicyVersion: COMPANY_MONITORING_EVIDENCE_POLICY.version,
-    });
+    candidates.push(projectCompanyMonitoringCandidate(rows, occurrenceDedupeKey));
   }
   candidates.sort((left, right) =>
     left.companyId.localeCompare(right.companyId) ||

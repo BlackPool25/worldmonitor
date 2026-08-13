@@ -17,6 +17,7 @@ import {
   loadCorpusData,
 } from '../scripts/build-crawlable-corpus.mjs';
 import { buildSitemapEntries } from '../scripts/build-sitemap.mjs';
+import { buildSourceCatalog, sourceProviderDisplayName } from '../scripts/crawlable-sources-page.mjs';
 
 const repoRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 
@@ -43,6 +44,58 @@ const SOURCE_DOMAIN_IDS = new Set([
   'china',
   'technology',
 ]);
+
+describe('sources catalog domain assignment', () => {
+  it('assigns mineral production hosts to energy instead of failing the corpus build', () => {
+    const catalog = buildSourceCatalog([
+      {
+        provider: 'British Geological Survey World Mineral Statistics',
+        host: 'ogcapi.bgs.ac.uk',
+        kind: 'structured',
+        references: [{ path: 'scripts/seed-mineral-production.mjs' }],
+      },
+      {
+        provider: 'USGS ScienceBase (Mineral Commodity Summaries)',
+        host: 'www.sciencebase.gov',
+        kind: 'structured',
+        references: [{ path: 'scripts/seed-mineral-production.mjs' }],
+      },
+    ]);
+    assert.deepEqual(
+      Object.fromEntries(catalog.map((row) => [row.provider, row.domainId])),
+      {
+        'British Geological Survey World Mineral Statistics': 'energy',
+        'USGS ScienceBase (Mineral Commodity Summaries)': 'energy',
+      },
+    );
+  });
+
+  it('still fails closed when a structured provider has no catalog domain', () => {
+    assert.throws(
+      () => buildSourceCatalog([{
+        provider: 'Unclassified Structured Provider',
+        host: 'example.invalid',
+        kind: 'structured',
+        references: [{ path: 'scripts/seed-example.mjs' }],
+      }]),
+      /Source provider needs a catalog domain: Unclassified Structured Provider/,
+    );
+  });
+});
+
+describe('sources catalog provider names', () => {
+  it('uses public source names while retaining hostnames as separate metadata', () => {
+    assert.equal(sourceProviderDisplayName('acleddata.com', ['acleddata.com']), 'ACLED');
+    assert.equal(sourceProviderDisplayName('en.wikipedia.org', ['en.wikipedia.org']), 'Wikipedia');
+    assert.equal(
+      sourceProviderDisplayName('it.usembassy.gov', ['it.usembassy.gov']),
+      'U.S. Embassy & Consulates in Italy',
+    );
+    assert.equal(sourceProviderDisplayName('airlinegeeks.com', ['airlinegeeks.com']), 'AirlineGeeks');
+    assert.equal(sourceProviderDisplayName('feeds.arstechnica.com', ['feeds.arstechnica.com']), 'Ars Technica');
+    assert.equal(sourceProviderDisplayName('api.gdeltproject.org', ['api.gdeltproject.org']), 'GDELT');
+  });
+});
 
 function isJsonLdType(value, expectedType) {
   const type = value?.['@type'];
@@ -291,6 +344,7 @@ describe('crawlable corpus generator', () => {
           .filter((entry) => entry.family === 'content-corpus')
           .map((entry) => new URL(entry.loc).pathname),
       );
+      assert.ok(corpusLocations.has('/sources/'), 'root sitemap must publish the sources catalog');
       const manifestLocations = new Set([
         manifest.sections.countries.index,
         ...manifest.sections.countries.routes,
@@ -484,6 +538,18 @@ describe('crawlable corpus generator', () => {
       window.document.write(sourcesPage);
       window.HTMLElement.prototype.scrollIntoView = () => {};
       window.eval(filterScript);
+      const providerTitle = (provider) => (
+        window.document.querySelector(`.provider-card[data-provider="${provider}"] h3`)?.textContent
+      );
+      assert.equal(providerTitle('acleddata.com'), 'ACLED');
+      assert.equal(providerTitle('en.wikipedia.org'), 'Wikipedia');
+      assert.equal(providerTitle('it.usembassy.gov'), 'U.S. Embassy & Consulates in Italy');
+      assert.equal(providerTitle('airlinegeeks.com'), 'AirlineGeeks');
+      assert.equal(
+        window.document.querySelector('.provider-card[data-provider="acleddata.com"] .provider-hosts a')?.textContent,
+        'acleddata.com',
+        'the exact hostname must remain available as the traceability link',
+      );
       const visibleProviderCount = () => (
         [...window.document.querySelectorAll('.provider-card')].filter((card) => !card.hidden).length
       );
