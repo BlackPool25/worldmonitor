@@ -229,7 +229,7 @@ test('pagination stops at max pages (20)', async () => {
       },
     });
   };
-  const result = await fetchEvents('https://api.open511.gov.bc.ca', { fetchFn, limit: 1, maxPages: 20 });
+  const result = await fetchEvents('https://api.open511.gov.bc.ca', { fetchFn, limit: 1, maxPages: 20, acquireSlot: async () => {} });
   assert.equal(result.pages, 20);
   assert.equal(calls, 20);
   assert.equal(result.records.length, 20);
