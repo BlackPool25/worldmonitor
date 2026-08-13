@@ -764,6 +764,20 @@
       ]
     },
     {
+      "host": "api.open511.gov.bc.ca",
+      "provider": "BC Open511",
+      "kind": "structured",
+      "observed": true,
+      "license": "Open Government Licence - British Columbia (OGL-BC). Confirmed on https://api.open511.gov.bc.ca/help. API Terms of Use for OGL-BC information also apply.",
+      "attribution": "DriveBC Open511 (Province of British Columbia). Licensed under OGL-BC. https://api.open511.gov.bc.ca/help",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "scripts/lib/open511.mjs"
+        }
+      ]
+    },
+    {
       "host": "api.openaq.org",
       "provider": "OpenAQ",
       "kind": "structured",
