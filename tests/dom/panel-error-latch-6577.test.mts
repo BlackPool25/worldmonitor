@@ -21,10 +21,34 @@
  * `setErrorState`) is only visible if every site is exercised separately.
  * See docs/solutions/conventions/mutate-each-call-site-a-global-mutant-hides-per-site-holes.md
  *
- * The LOADING branches are deliberately not covered here: they must keep using
- * the raw write / `showLoading()`, which clears the chip and countdown but
- * leaves `retryAttempt` alone. Resetting the backoff on a loading render would
- * re-arm every retry at 15s forever and defeat the exponential backoff.
+ * The LOADING branches must NOT move to `clearErrorState()`, and the final
+ * describe block pins that. Resetting `retryAttempt` on a loading render would
+ * re-arm every retry at 15s forever and defeat the exponential backoff — so the
+ * invariant there is the inverse of the one above: the rung must SURVIVE.
+ *
+ * The two loading shapes are not equivalent, and the distinction matters when
+ * reading those cases:
+ *   - `showLoading()` (Panel.ts) clears the chip AND the countdown, but
+ *     deliberately leaves `retryAttempt` alone.
+ *   - the raw `replaceChildren(this.content, …)` loading branches in
+ *     ServiceStatus/TechEvents/DefensePatents clear NEITHER — the chip stays red
+ *     and the interval keeps ticking for the whole retry fetch.
+ * Both preserve the rung, which is the only property asserted below.
+ *
+ * REACHABILITY — three of these five panels are latent, not live. Only
+ * TechEventsPanel and DefensePatentsPanel call an RPC that can actually reject:
+ *   - ServiceStatusPanel: `fetchServiceStatuses` runs inside a CircuitBreaker
+ *     whose `execute()` never rejects, and both of its returns hardcode
+ *     `success: true` — so `if (!data.success) throw` is dead code and
+ *     `showError` at :83 is unreachable.
+ *   - GdeltIntelPanel: `fetchGdeltArticles` returns [] on `resp.error` and
+ *     `fetchTopicTimeline` has a bare `catch { return null }`, so
+ *     `loadActiveTopic`'s catch never runs and `showError` at :93 is unreachable.
+ *   - GivingPanel: no caller ever passes an `onRetry` (see its case below).
+ * Their cases reach the error state by injecting the private field or forcing a
+ * mock rejection — states production cannot currently produce. They pin the
+ * contract for the day those paths are made reachable; they are not evidence a
+ * live user-facing bug was fixed on those three.
  */
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -66,6 +90,8 @@ interface PanelInternals {
   header: HTMLElement;
   content: HTMLElement;
   retryCallback: (() => void) | null;
+  retryAttempt: number;
+  retryCountdownTimer: ReturnType<typeof setInterval> | null;
 }
 
 /** Per-panel fields the render() call sites branch on. */
@@ -123,7 +149,14 @@ async function expectRecoveryClearsRetryState(
 
   expect(hasErrorChip(panel)).toBe(false);
 
-  // 1. The pending auto-retry must not outlive the recovery.
+  // 1a. The interval HANDLE itself must be gone. The callback assertion below
+  // cannot see this: an implementation that nulled `retryCallback` instead of
+  // calling `clearRetryCountdown()` would leave a live 1s interval writing to a
+  // detached node and still pass, because the interval finds the callback null
+  // when it expires. Observe `clearRetryCountdown()` directly.
+  expect(internals(panel).retryCountdownTimer).toBeNull();
+
+  // 1b. The pending auto-retry must not outlive the recovery.
   await vi.advanceTimersByTimeAsync(30_000);
   expect(orphanedRetry).not.toHaveBeenCalled();
 
@@ -283,6 +316,88 @@ describe('GivingPanel', () => {
         } as unknown as Parameters<GivingPanel['setData']>[0]);
       },
     );
+
+    panel.destroy();
+  });
+});
+
+/**
+ * The inverse half of #6577, and the reason none of the five edits above may be
+ * copied onto a loading branch. A SUCCESS render must reset `retryAttempt`; a
+ * LOADING render must NOT — otherwise every retry re-arms at the 15s floor and
+ * the ladder never climbs toward the 180s cap.
+ *
+ * Without these two cases the rule lives only in the prose above, so a
+ * contributor "fixing" the red chip that lingers during a retry fetch could swap
+ * a loading branch onto `clearErrorState()` and defeat exponential backoff with
+ * a fully green suite.
+ *
+ * Both loading shapes are covered because they differ in what else they touch:
+ * the raw `replaceChildren` branch clears neither chip nor countdown, while
+ * `showLoading()` clears both. Only the rung is asserted, since that is the one
+ * property both must share.
+ *
+ * TechEventsPanel is the vehicle for both because it is one of only two panels
+ * in this file whose error path is genuinely reachable in production, so the
+ * rung it reports is a real one. Note the asymmetry, though: the first case
+ * drives TechEvents' OWN loading branch (the raw `replaceChildren` at
+ * TechEventsPanel.ts:71 — the only loading shape it has), while the second calls
+ * the inherited `showLoading()` directly. TechEvents never calls `showLoading()`
+ * itself; the panels that take that shape are GdeltIntelPanel (:76) and
+ * GivingPanel (:28, constructor only). The second case is therefore a
+ * base-class contract test riding on a convenient subclass, not a per-call-site
+ * test of TechEvents — it pins `Panel.showLoading()` for every panel that uses it.
+ */
+describe('loading renders preserve the backoff rung', () => {
+  function newPanel(): TechEventsPanel {
+    vi.spyOn(
+      TechEventsPanel.prototype as unknown as { fetchEvents(): Promise<void> },
+      'fetchEvents',
+    ).mockResolvedValue(undefined);
+    const panel = new TechEventsPanel('tech-events');
+    mount(panel);
+    return panel;
+  }
+
+  /** Drive the real error site once: rung 0 is consumed, `retryAttempt` becomes 1. */
+  function driveFirstFailure(panel: TechEventsPanel): void {
+    flags(panel).loading = false;
+    flags(panel).error = 'boom';
+    (panel as unknown as { render(): void }).render();
+    // Non-vacuity: prove we really are at rung 1 before the loading render, so a
+    // later "(30s)" cannot be an accident of the panel never having failed.
+    expect(countdownText(panel)).toMatch(/\(15s\)/);
+    expect(internals(panel).retryAttempt).toBe(1);
+  }
+
+  /** Drive the real error site again; the countdown reports the rung it re-entered at. */
+  function driveSecondFailure(panel: TechEventsPanel): string | null {
+    flags(panel).loading = false;
+    flags(panel).error = 'boom';
+    (panel as unknown as { render(): void }).render();
+    return countdownText(panel);
+  }
+
+  it('keeps the rung across the raw replaceChildren loading branch', () => {
+    const panel = newPanel();
+    driveFirstFailure(panel);
+
+    flags(panel).loading = true;
+    (panel as unknown as { render(): void }).render();
+
+    // 30s, not 15s: the loading render must not have reset the backoff.
+    expect(driveSecondFailure(panel)).toMatch(/\(30s\)/);
+
+    panel.destroy();
+  });
+
+  it('keeps the rung across showLoading()', () => {
+    const panel = newPanel();
+    driveFirstFailure(panel);
+
+    panel.showLoading();
+
+    expect(driveSecondFailure(panel)).toMatch(/\(30s\)/);
 
     panel.destroy();
   });
