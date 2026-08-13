@@ -26,7 +26,7 @@
     "rows count only shared/geography.js REGIONS[].keyCountries. Consumed by",
     "scripts/geo-coverage-health.mjs (audit + report) and",
     "tests/geo-coverage-health.test.mts. Keep names byte-identical to the",
-    "catalog `name` field — the test fails on drift or missing classification."
+    "catalog `name` field \u2014 the test fails on drift or missing classification."
   ],
   "Reuters US": ["US"],
   "NPR News": ["US"],
@@ -42,7 +42,20 @@
   "CBC News": ["CA"],
   "Globe and Mail": ["CA"],
   "Global News": ["CA"],
-
+  "National Post": ["CA"],
+  "Toronto Star": ["CA"],
+  "Financial Post": ["CA"],
+  "iPolitics": ["CA"],
+  "The Narwhal": ["CA"],
+  "The Tyee": ["CA"],
+  "Radio-Canada": ["CA"],
+  "La Presse": ["CA"],
+  "Le Devoir": ["CA"],
+  "Vancouver Sun": ["CA"],
+  "Calgary Herald": ["CA"],
+  "Winnipeg Free Press": ["CA"],
+  "Ottawa Citizen": ["CA"],
+  "Edmonton Journal": ["CA"],
   "DW News": ["DE"],
   "Tagesschau": ["DE"],
   "Bild": ["DE"],
@@ -99,7 +112,6 @@
   "Zerkalo": ["BY"],
   "NewsMaker": ["MD"],
   "Ziarul de Gardă": ["MD"],
-
   "BBC Middle East": [],
   "Al Jazeera": [],
   "Al Arabiya": [],
@@ -118,7 +130,6 @@
   "The National": ["AE"],
   "Oman Observer": ["OM"],
   "Rudaw": ["IQ"],
-
   "Reuters Asia": [],
   "The Diplomat": [],
   "South China Morning Post": ["CN"],
@@ -154,7 +165,6 @@
   "Rappler": ["PH"],
   "The Star (Malaysia)": ["MY"],
   "Irrawaddy": ["MM"],
-
   "Africa News": [],
   "Sahel Crisis": [],
   "BBC Africa": [],
@@ -176,15 +186,20 @@
   "Citi Newsroom": ["GH"],
   "Le Quotidien": ["SN"],
   "RFI Afrique": [],
-
   "O Globo": ["BR"],
   "Folha de S.Paulo": ["BR"],
   "Brasil Paralelo": ["BR"],
-  "Clarín": ["AR"],
+  "Clar\u00edn": ["AR"],
   "Infobae Americas": ["AR"],
   "El Tiempo": ["CO"],
-  "La Silla Vacía": ["CO"],
+  "La Silla Vac\u00eda": ["CO"],
   "Mexico News Daily": ["MX"],
-
-  "ISW": []
+  "ISW": [],
+  "TVA Nouvelles": ["CA"],
+  "Maclean's": ["CA"],
+  "The Province": ["CA"],
+  "CTV News": ["CA"],
+  "CP24": ["CA"],
+  "Chronicle Herald": ["CA"],
+  "Montreal Gazette": ["CA"]
 }
