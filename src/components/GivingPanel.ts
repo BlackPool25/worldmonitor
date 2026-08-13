@@ -36,7 +36,7 @@ export class GivingPanel extends Panel {
     }
 
     this.data = data;
-    this.setErrorState(false);
+    this.clearErrorState();
     this.setCount(data.platforms.length);
     this.renderContent();
   }

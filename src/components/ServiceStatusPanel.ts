@@ -84,7 +84,7 @@ export class ServiceStatusPanel extends Panel {
       return;
     }
 
-    this.setErrorState(false);
+    this.clearErrorState();
     const filtered = this.getFilteredServices();
     const issues = filtered.filter(s => s.status !== 'operational');
 

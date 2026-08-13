@@ -82,7 +82,7 @@ export class TechEventsPanel extends Panel {
       return;
     }
 
-    this.setErrorState(false);
+    this.clearErrorState();
     const filteredEvents = this.getFilteredEvents();
     const upcomingConferences = this.events.filter(e => e.type === 'conference' && new Date(e.startDate) >= new Date());
     const mappableCount = upcomingConferences.filter(e => e.coords && !e.coords.virtual).length;

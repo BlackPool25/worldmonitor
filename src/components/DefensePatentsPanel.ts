@@ -95,7 +95,7 @@ export class DefensePatentsPanel extends Panel {
       return;
     }
 
-    this.setErrorState(false);
+    this.clearErrorState();
 
     const tabs: [ViewMode, string][] = [
       ['all', t('components.defensePatents.tabs.all')],

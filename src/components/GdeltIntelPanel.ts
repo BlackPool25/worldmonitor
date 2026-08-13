@@ -124,7 +124,7 @@ export class GdeltIntelPanel extends Panel {
   }
 
   private renderArticles(articles: GdeltArticle[]): void {
-    this.setErrorState(false);
+    this.clearErrorState();
     if (articles.length === 0) {
       replaceChildren(this.content, h('div', { className: 'empty-state' }, t('components.gdelt.empty')));
       return;

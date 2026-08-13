@@ -58,6 +58,10 @@ async function loadGivingPanel(): Promise<GivingPanelConstructor> {
           this.content.innerHTML = 'unavailable';
         }
         setErrorState(value) { this.testState.error = value; }
+        // Mirrors Panel.clearErrorState (#6577): the success render drops the
+        // chip AND the pending auto-retry countdown AND the backoff rung. This
+        // stub has no timers, so clearing the chip is the whole observable.
+        clearErrorState() { this.testState.error = false; }
         setCount(value) { this.testState.count = value; }
         destroy() { this.testState.destroyed = true; }
       }
