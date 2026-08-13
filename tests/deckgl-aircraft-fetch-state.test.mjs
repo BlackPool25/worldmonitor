@@ -8,6 +8,36 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const source = readFileSync(resolve(root, 'src/components/DeckGLMap.ts'), 'utf8');
 
 describe('DeckGL aircraft fetch state', () => {
+  it('invalidates in-flight responses when the layer or map becomes ineligible', () => {
+    const timerMethod = source.match(
+      /private manageAircraftTimer\(enabled: boolean\): void \{[\s\S]+?\n {2}\}(?=\n\n {2}private hasAircraftViewportChanged)/,
+    )?.[0];
+    assert.ok(timerMethod, 'manageAircraftTimer must remain discoverable');
+    assert.match(
+      timerMethod,
+      /else \{\s*\/\/ Invalidate[\s\S]+?this\.aircraftFetchSeq \+= 1;/,
+      'disabling flights must invalidate its pending viewport request',
+    );
+
+    const viewportMethod = source.match(
+      /private fetchViewportAircraft\(\): void \{[\s\S]+?\n {2}\}(?=\n\n {2}public setNaturalEvents)/,
+    )?.[0];
+    assert.ok(viewportMethod);
+    assert.match(
+      viewportMethod,
+      /if \(zoom < 2\) \{\s*\/\/ Zooming out[\s\S]+?this\.aircraftFetchSeq \+= 1;/,
+      'zooming out must invalidate its pending viewport request',
+    );
+
+    const destroyMethod = source.match(/public destroy\(\): void \{[\s\S]+?\n {2}\}/)?.[0];
+    assert.ok(destroyMethod);
+    assert.match(
+      destroyMethod,
+      /this\.destroyed = true;\s*this\.aircraftFetchSeq \+= 1;/,
+      'destroy must invalidate its pending viewport request',
+    );
+  });
+
   it('clears readiness with aircraft data only for the current failed request', () => {
     const fetchMethod = source.match(
       /private fetchViewportAircraft\(\): void \{[\s\S]+?\n {2}\}(?=\n\n {2}public setNaturalEvents)/,

@@ -51,6 +51,24 @@ export interface SearchIndexQueryResult {
   flightCallsign: string | null;
 }
 
+/**
+ * Compare the fields that define a searchable target, not its live display
+ * metadata. Source registration always replaces the payload, so subtitle-only
+ * changes must not invalidate an issued capability.
+ */
+export function searchSourceItemsEqual(
+  left: SearchableSource['items'],
+  right: SearchableSource['items'],
+): boolean {
+  return left.length === right.length && left.every((item, index) => {
+    const next = right[index];
+    return next !== undefined
+      && item.id === next.id
+      && item.title === next.title
+      && item.searchText === next.searchText;
+  });
+}
+
 function matchCommands(
   query: string,
   options: SearchIndexQueryOptions,

@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { querySearchIndex, type SearchIndexQueryOptions } from '../src/components/search-engine.ts';
+import {
+  querySearchIndex,
+  searchSourceItemsEqual,
+  type SearchIndexQueryOptions,
+} from '../src/components/search-engine.ts';
 import type { SearchScope } from '../src/components/search-scope.ts';
 import type { SearchResultType, SearchableSource } from '../src/components/search-types.ts';
 import type { Command } from '../src/config/commands.ts';
@@ -66,6 +70,20 @@ function entityTypes(result: ReturnType<typeof search>): SearchResultType[] {
 }
 
 describe('querySearchIndex', () => {
+  it('treats subtitle-only source refreshes as the same logical index', () => {
+    const previous = source('market', [{ id: 'SPX', title: 'S&P 500', subtitle: '$5,000.00' }]);
+    const refreshed = source('market', [{ id: 'SPX', title: 'S&P 500', subtitle: '$5,010.00' }]);
+
+    assert.equal(searchSourceItemsEqual(previous.items, refreshed.items), true);
+    assert.equal(
+      searchSourceItemsEqual(
+        previous.items,
+        source('market', [{ id: 'SPX', title: 'S&P 500 revised', subtitle: '$5,010.00' }]).items,
+      ),
+      false,
+    );
+  });
+
   it('normalizes input, ranks commands, and places commands before entities', () => {
     const result = search({
       rawInput: '  ALPHA  ',

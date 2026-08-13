@@ -1595,10 +1595,9 @@ export class App {
           }),
         });
         manager.init();
-        await manager.whenSearchIndexReady();
         if (this.state.isDestroyed) {
           manager.destroy();
-          throw new Error('App destroyed while search index loaded');
+          throw new Error('App destroyed while search manager loaded');
         }
         manager.updateFlightSource(
           this.latestSearchAdsb,

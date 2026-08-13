@@ -53,7 +53,7 @@ export interface WebMcpAppBindings {
   openSearchResult(resultKey: string): DashboardSearchOpenResult | Promise<DashboardSearchOpenResult>;
 }
 
-export type DashboardSearchScope = 'all' | 'map' | 'panels' | 'actions';
+export type DashboardSearchScope = 'all' | 'signals' | 'map' | 'panels' | 'actions';
 
 export interface DashboardSearchDescriptor {
   key: string;
@@ -158,7 +158,7 @@ interface WebMcpRegistrationRuntime {
 const ISO2 = /^[A-Z]{2}$/;
 const SEARCH_RESULT_KEY = /^sr_[a-f0-9]{32}$/;
 const DASHBOARD_SEARCH_SCOPES = new Set<DashboardSearchScope>([
-  'all', 'map', 'panels', 'actions',
+  'all', 'signals', 'map', 'panels', 'actions',
 ]);
 const DASHBOARD_SEARCH_OPEN_REASONS = new Set<DashboardSearchOpenReason>([
   'invalid_or_expired_key',
@@ -632,7 +632,7 @@ export function buildWebMcpTools(
 
         const scope = args.scope === undefined ? 'all' : args.scope;
         if (typeof scope !== 'string' || !DASHBOARD_SEARCH_SCOPES.has(scope as DashboardSearchScope)) {
-          throw new SafeWebMcpError('scope must be one of: all, map, panels, actions.');
+          throw new SafeWebMcpError('scope must be one of: all, signals, map, panels, actions.');
         }
         const limit = args.limit === undefined ? DEFAULT_SEARCH_RESULTS : args.limit;
         if (!Number.isInteger(limit) || Number(limit) < 1 || Number(limit) > MAX_SEARCH_RESULTS) {

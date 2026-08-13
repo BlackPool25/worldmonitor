@@ -60,6 +60,7 @@ interface Runtime {
   entitlementListeners: Set<() => void>;
   runtimeConfigListeners: Set<() => void>;
   widgetAccessListeners: Set<() => void>;
+  liveFlightQueries: string[];
 }
 
 interface ModalDouble {
@@ -68,9 +69,14 @@ interface ModalDouble {
   openCalls: number;
   closeCalls: number;
   clearedSources: string[];
-  search(query: string, scope: string): { orderedMatches: SearchMatch[] };
+  flightCallsign: string | null;
+  search(query: string, scope: string): {
+    orderedMatches: SearchMatch[];
+    flightCallsign: string | null;
+  };
   getSearchIndexRevision(): number;
   registerSource(type: string, items: unknown[]): void;
+  refreshSearch(): void;
   open(): void;
   closeForProgrammaticSelection(): void;
 }
@@ -145,6 +151,7 @@ function createHarness(variant: Variant, runtime: Runtime): new (ctx: any, callb
     't',
     'setTimeout',
     'clearTimeout',
+    'fetchAircraftPositions',
   ];
   const dependencyValues = [
     OpaqueResultCache,
@@ -219,6 +226,19 @@ function createHarness(variant: Variant, runtime: Runtime): new (ctx: any, callb
       return 0;
     },
     () => {},
+    (request: { callsign?: string }) => {
+      runtime.liveFlightQueries.push(request.callsign ?? '');
+      return Promise.resolve([{
+        icao24: 'abc123',
+        callsign: request.callsign ?? 'AB123',
+        lat: 1,
+        lon: 2,
+        altitudeFt: 30_000,
+        groundSpeedKts: 450,
+        observedAt: Date.now(),
+        onGround: false,
+      }]);
+    },
   ];
 
   // eslint-disable-next-line no-new-func
@@ -273,6 +293,7 @@ function makeScenario(
     entitlementListeners: new Set(),
     runtimeConfigListeners: new Set(),
     widgetAccessListeners: new Set(),
+    liveFlightQueries: [],
   };
   const calls: Scenario['calls'] = {
     views: [],
@@ -297,11 +318,24 @@ function makeScenario(
     openCalls: 0,
     closeCalls: 0,
     clearedSources: [],
-    search: () => ({ orderedMatches: [...modal.matches] }),
+    flightCallsign: null,
+    search: () => ({
+      orderedMatches: [...modal.matches],
+      flightCallsign: modal.flightCallsign,
+    }),
     getSearchIndexRevision: () => modal.revision,
     registerSource: (type, items) => {
       if (items.length === 0) modal.clearedSources.push(type);
+      if (type === 'flight' && items.length > 0) {
+        modal.matches = (items as Array<{
+          id: string;
+          title: string;
+          subtitle?: string;
+          data: unknown;
+        }>).map((item) => resultMatch('flight', item.id, item.title, item.data, item.subtitle));
+      }
     },
+    refreshSearch: () => {},
     open: () => { modal.openCalls += 1; },
     closeForProgrammaticSelection: () => { modal.closeCalls += 1; },
   };
@@ -430,6 +464,44 @@ describe('SearchManager programmatic dashboard search (#6212)', () => {
       [],
       'agent selection must suppress detailed country analytics',
     );
+  });
+
+  it('keeps the latest aircraft snapshot and republishes it on premium restoration', () => {
+    const scenario = makeScenario([]);
+    scenario.manager.observeSecurityContext();
+
+    scenario.runtime.premium = false;
+    scenario.runtime.pro = false;
+    for (const listener of scenario.runtime.entitlementListeners) listener();
+
+    scenario.manager.updateFlightSource([{
+      icao24: 'abc123',
+      callsign: 'AB123',
+      lat: 1,
+      lon: 2,
+      altitudeFt: 30_000,
+      groundSpeedKts: 450,
+      observedAt: Date.now(),
+      onGround: false,
+    }], [], Date.now());
+
+    scenario.runtime.premium = true;
+    scenario.runtime.pro = true;
+    for (const listener of scenario.runtime.entitlementListeners) listener();
+
+    assert.equal(scenario.modal.matches[0]?.result.type, 'flight');
+    assert.equal(scenario.modal.matches[0]?.result.id, 'abc123');
+  });
+
+  it('uses the live callsign fallback for programmatic search', async () => {
+    const scenario = makeScenario([]);
+    scenario.modal.flightCallsign = 'AB123';
+
+    const response = await scenario.manager.searchDashboard('flight ab123', 'signals', 10);
+
+    assert.deepEqual(scenario.runtime.liveFlightQueries, ['AB123']);
+    assert.equal(response.results[0]?.type, 'flight');
+    assert.equal(response.results[0]?.title, 'AB123');
   });
 
   it('keeps analytics origin local while an agent country selection is awaiting presentation', async () => {

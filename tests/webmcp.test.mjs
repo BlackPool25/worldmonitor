@@ -217,6 +217,7 @@ describe('webmcp.ts: current API contract', () => {
     assert.equal(search.inputSchema.properties.query.maxLength, 160);
     assert.deepEqual(search.inputSchema.properties.scope.enum, [
       'all',
+      'signals',
       'map',
       'panels',
       'actions',
@@ -466,12 +467,15 @@ describe('webmcp.ts: native tool execution and telemetry', () => {
     await search.execute({ query: '  iran  ' });
     assert.deepEqual(searchCalls, [['iran', 'all', 8]]);
 
+    await search.execute({ query: 'iran', scope: 'signals', limit: 1 });
+    assert.deepEqual(searchCalls[1], ['iran', 'signals', 1]);
+
     await assert.rejects(
       search.execute({ query: 'iran', url: 'https://attacker.invalid/' }),
       (error) => error.name === 'WebMcpToolError'
         && error.message === 'search_dashboard accepts only query, scope, and limit.',
     );
-    assert.equal(searchCalls.length, 1);
+    assert.equal(searchCalls.length, 2);
 
     const key = `sr_${'a'.repeat(32)}`;
     const denied = await open.execute({

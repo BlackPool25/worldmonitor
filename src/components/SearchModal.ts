@@ -22,6 +22,7 @@ import {
 } from '@/utils/overlay-history';
 import {
   querySearchIndex,
+  searchSourceItemsEqual,
   type SearchIndexQueryResult,
 } from '@/components/search-engine';
 import type {
@@ -294,14 +295,7 @@ export class SearchModal {
     left: SearchableSource['items'],
     right: SearchableSource['items'],
   ): boolean {
-    return left.length === right.length && left.every((item, index) => {
-      const next = right[index];
-      return next !== undefined
-        && item.id === next.id
-        && item.title === next.title
-        && item.subtitle === next.subtitle
-        && item.searchText === next.searchText;
-    });
+    return searchSourceItemsEqual(left, right);
   }
 
   private stringSetsEqual(left: Set<string>, right: Set<string>): boolean {

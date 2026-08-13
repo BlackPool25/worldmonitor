@@ -46,6 +46,7 @@ import { STOCK_EXCHANGES, FINANCIAL_CENTERS, CENTRAL_BANKS, COMMODITY_HUBS } fro
 import { trackSearchResultSelected, trackCountrySelected } from '@/services/analytics';
 import { t } from '@/services/i18n';
 import { saveToStorage, setTheme } from '@/utils';
+import { withTimeout } from '@/utils/with-timeout';
 import { CountryIntelManager } from '@/app/country-intel';
 import type { PositionSample } from '@/services/aviation';
 import { fetchAircraftPositions } from '@/services/aviation';
@@ -118,6 +119,8 @@ export interface SearchManagerCallbacks {
 }
 
 export class SearchManager implements AppModule {
+  private static readonly SEARCH_INDEX_READY_TIMEOUT_MS = 2_000;
+
   private static flightObservationTime(
     value: unknown,
     fallback: number,
@@ -217,6 +220,10 @@ export class SearchManager implements AppModule {
   private destroyed = false;
   private flightSourceExpiresAt = 0;
   private flightSearchItems: FlightSearchItem[] = [];
+  private latestAdsb: PositionSample[] = [];
+  private latestMilitary: MilitaryFlight[] = [];
+  private latestAdsbUpdatedAt = 0;
+  private lastPremiumAccess = false;
   private searchIndexReady: Promise<void> = Promise.resolve();
   private readonly resultCache = new OpaqueResultCache<IssuedSearchResult>({
     maxEntries: SEARCH_RESULT_CACHE_MAX_ENTRIES,
@@ -250,6 +257,9 @@ export class SearchManager implements AppModule {
     this.widgetAccessUnsubscribe = null;
     this.flightSearchItems = [];
     this.flightSourceExpiresAt = 0;
+    this.latestAdsb = [];
+    this.latestMilitary = [];
+    this.latestAdsbUpdatedAt = 0;
     this.resultCache.clear();
   }
 
@@ -439,31 +449,39 @@ export class SearchManager implements AppModule {
     // so mid-session sign-ins get the feature without a page reload.
     this.ctx.searchModal.setOnFlightSearch((callsign) => {
       if (!hasPremiumAccess(getAuthState())) return;
-      fetchAircraftPositions({ callsign }).then((positions) => {
-        if (!this.ctx.searchModal) return;
-        // Deduplicate by callsign: keep the most recently observed entry per callsign.
-        const seen = new Map<string, PositionSample>();
-        for (const p of positions) {
-          const key = (p.callsign || p.icao24).trim().toUpperCase();
-          const existing = seen.get(key);
-          if (!existing || p.observedAt > existing.observedAt) {
-            seen.set(key, p);
-          }
-        }
-        this.updateFlightSource([...seen.values()], [], Date.now());
-        this.ctx.searchModal.refreshSearch();
-      }).catch(() => {
-        this.flightSearchItems = [];
-        this.flightSourceExpiresAt = 0;
-        this.ctx.searchModal?.registerSource('flight', []);
-        this.ctx.searchModal?.refreshSearch();
-      });
+      void this.fetchAndPublishLiveFlight(callsign)
+        .then(() => {
+          if (!this.destroyed) this.ctx.searchModal?.refreshSearch();
+        })
+        .catch(() => {
+          if (this.destroyed) return;
+          this.flightSearchItems = [];
+          this.flightSourceExpiresAt = 0;
+          this.ctx.searchModal?.registerSource('flight', []);
+          this.ctx.searchModal?.refreshSearch();
+        });
     });
 
   }
 
+  private async fetchAndPublishLiveFlight(callsign: string): Promise<void> {
+    const positions = await fetchAircraftPositions({ callsign });
+    if (this.destroyed) return;
+    // Deduplicate by callsign: keep the most recently observed entry per callsign.
+    const seen = new Map<string, PositionSample>();
+    for (const p of positions) {
+      const key = (p.callsign || p.icao24).trim().toUpperCase();
+      const existing = seen.get(key);
+      if (!existing || p.observedAt > existing.observedAt) {
+        seen.set(key, p);
+      }
+    }
+    this.updateFlightSource([...seen.values()], [], Date.now());
+  }
+
   private async registerBaseSearchSource(): Promise<void> {
     const register = (bases: MilitaryBase[]) => {
+      if (this.destroyed) return;
       this.ctx.searchModal?.registerSource('base', bases.map(b => ({
         id: b.id,
         title: b.name,
@@ -477,11 +495,34 @@ export class SearchManager implements AppModule {
       register(cached);
       return;
     }
+    const hydration = Promise.resolve()
+      .then(() => preloadMilitaryBases())
+      .then(register);
+    await SearchManager.waitWithTimeout(
+      hydration,
+      SearchManager.SEARCH_INDEX_READY_TIMEOUT_MS,
+      'military-base-search-hydration',
+    );
+  }
+
+  private static async waitWithTimeout(
+    promise: Promise<unknown>,
+    timeoutMs: number,
+    label: string,
+  ): Promise<void> {
     try {
-      register(await preloadMilitaryBases());
+      await withTimeout(promise, timeoutMs, label);
     } catch {
-      // Static search enrichment is optional; continue with the other sources.
+      // Optional search enrichment must not block the dashboard search path.
     }
+  }
+
+  private async waitForSearchIndexReady(): Promise<void> {
+    await SearchManager.waitWithTimeout(
+      this.searchIndexReady,
+      SearchManager.SEARCH_INDEX_READY_TIMEOUT_MS,
+      'search-index-ready',
+    );
   }
 
   public async searchDashboard(
@@ -489,13 +530,32 @@ export class SearchManager implements AppModule {
     scope: DashboardSearchScope,
     limit: number,
   ): Promise<DashboardSearchResponse> {
-    await this.searchIndexReady;
+    await this.waitForSearchIndexReady();
     if (this.destroyed) throw new Error('Search manager destroyed');
     this.updateSearchIndex({ updateVisibleMetrics: false });
     const modal = this.ctx.searchModal;
     if (!modal) throw new Error('Search index is not initialised');
 
-    const matches = modal.search(query, scope as SearchScope).orderedMatches;
+    let searchResult = modal.search(query, scope as SearchScope);
+    if (
+      searchResult.flightCallsign
+      && searchResult.orderedMatches.length === 0
+      && hasPremiumAccess(getAuthState())
+    ) {
+      // CMD+K offers a bounded live callsign fallback when the viewport index
+      // has no match. Keep the agent path on the same read-only behavior.
+      try {
+        await this.fetchAndPublishLiveFlight(searchResult.flightCallsign);
+        if (this.destroyed) throw new Error('Search manager destroyed');
+        this.updateSearchIndex({ updateVisibleMetrics: false });
+        searchResult = modal.search(query, scope as SearchScope);
+      } catch (error) {
+        if (this.destroyed) throw error;
+        // A live lookup failure is a normal empty-search outcome, not a tool
+        // failure or a reason to expose a synthetic result.
+      }
+    }
+    const matches = searchResult.orderedMatches;
     const candidates = matches.slice(0, limit).map((match) => ({
       match,
       descriptor: {
@@ -671,13 +731,24 @@ export class SearchManager implements AppModule {
       || this.runtimeConfigUnsubscribe
       || this.widgetAccessUnsubscribe
     ) return;
+    this.lastPremiumAccess = hasPremiumAccess(getAuthState());
     const invalidate = (): void => {
       this.securityEpoch += 1;
       this.resultCache.clear();
-      if (!hasPremiumAccess(getAuthState())) {
+      const premium = hasPremiumAccess(getAuthState());
+      const premiumRestored = !this.lastPremiumAccess && premium;
+      this.lastPremiumAccess = premium;
+      if (!premium) {
         this.flightSearchItems = [];
         this.flightSourceExpiresAt = 0;
         this.ctx.searchModal?.registerSource('flight', []);
+      } else if (premiumRestored) {
+        this.updateFlightSource(
+          this.latestAdsb,
+          this.latestMilitary,
+          this.latestAdsbUpdatedAt,
+        );
+        this.ctx.searchModal?.refreshSearch();
       }
     };
     let subscribingAuth = true;
@@ -1361,6 +1432,9 @@ export class SearchManager implements AppModule {
     military: MilitaryFlight[],
     adsbUpdatedAt = Date.now(),
   ): void {
+    this.latestAdsb = [...adsb];
+    this.latestMilitary = [...military];
+    this.latestAdsbUpdatedAt = adsbUpdatedAt;
     if (!this.ctx.searchModal) return;
     if (!hasPremiumAccess(getAuthState())) {
       this.flightSearchItems = [];
