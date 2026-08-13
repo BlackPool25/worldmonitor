@@ -28,10 +28,10 @@ const EXPECTED_VARIANT_PANEL_SNAPSHOTS: Record<DashboardVariant, {
   enabledCount: number;
   enabledSha256: string;
 }> = {
-  full: { enabledCount: 84, enabledSha256: '6bacbd30ce42656585a444609e1024da0a57a949a7c8a7c2566e3374e095017a' },
+  full: { enabledCount: 86, enabledSha256: '8dfdf10adeab4fe49316b04558477a8bed08042563e190b304610dd1284b2348' },
   tech: { enabledCount: 38, enabledSha256: 'de9f78179aa2c75301883511ad0bab48fc67cba5cd4eb4445906abf17458a290' },
-  finance: { enabledCount: 59, enabledSha256: 'f927a6e3eff32c6c933fae5456b4db9a5c8d0063d0023234ac2b17223fcdada7' },
-  commodity: { enabledCount: 32, enabledSha256: 'a7d17d1d22afa41644b72591d38240b1a0c408ff73a9b82ada11333d60dea426' },
+  finance: { enabledCount: 60, enabledSha256: 'e9cbe30455e107add242019de29d44335abf9da2a8a44c9c204076ed279bcfe8' },
+  commodity: { enabledCount: 33, enabledSha256: 'b534510a2e814392e3966beb211e300e75a2b33f05c283613dd4f6cee50ddfe0' },
   happy: { enabledCount: 10, enabledSha256: 'f62bbf19c2f7ca75fefeb12a7ba32da991a72f494f91e6d310910d5b7a0468ad' },
   energy: { enabledCount: 26, enabledSha256: '4566c4b42ec77521cddce83cccabe91069ffb211ade9441ef0cf115f11a3cd67' },
 };
@@ -41,10 +41,10 @@ const EXPECTED_VARIANT_DEFAULT_SNAPSHOTS: Record<DashboardVariant, {
   enabled: number;
   sha256: string;
 }> = {
-  full: { total: 106, enabled: 84, sha256: '2cf187a60a570b22a805377b4701e5cbd6ee042504651e380440f03e98e54e3d' },
+  full: { total: 107, enabled: 86, sha256: '4cd24491205d160561c4483cb60df5d5f7bfeb5f75e4754cd7dc8e9f7f5dab4f' },
   tech: { total: 41, enabled: 38, sha256: '43d7c788ff599baae171f7f46532653370e03ca4d322a8e6614f9f0a1cee5045' },
-  finance: { total: 64, enabled: 59, sha256: '7dfae5f03c4363a0b8fb1ddf8543633d259bc9c3cb7a912e8cd380678c8f4cc2' },
-  commodity: { total: 35, enabled: 32, sha256: '7d3dd7c834a9d7a6a5dfe1a7f2f734bd524857d474e5b46ad31883f8baa11e02' },
+  finance: { total: 65, enabled: 60, sha256: 'cfcd641367902fe1966986633577763df178f5a1ea9d22038aa350276b55abbb' },
+  commodity: { total: 36, enabled: 33, sha256: 'cc9e0b178dec33dff354a1eea95b5b215302fc7ce685b3d92b82a356df6d6bee' },
   happy: { total: 10, enabled: 10, sha256: '197a73a578d8734d49e844e0a83b89204d5a6fc6b973b1ed698272d846a2c308' },
   energy: { total: 28, enabled: 26, sha256: 'c29563083968049da7c1c7c0b6a856143c3797c010b9c21d2424bbbbb3febbc1' },
 };
