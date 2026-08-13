@@ -242,6 +242,29 @@ describe('CSP violation filter (shouldSuppressCspViolation)', () => {
       assert.ok(!suppress('enforce', 'font-src', 'https://fonts.gstatic.com/x/a/b.woff2', '', false));
     });
 
+    it('suppresses the Google Fonts /l/font subsetting endpoint (TR round 7)', () => {
+      // Verbatim from the 2026-08-13T14:00Z regression event: Google-injected
+      // stylesheets (Translate-class) request SUBSETTED faces from the
+      // extensionless /l/font?kit=... endpoint, which the /s/-prefixed,
+      // extension-tested rule above cannot match.
+      assert.ok(suppress('enforce', 'font-src',
+        'https://fonts.gstatic.com/l/font?kit=1PtFg83HX_SGhgqO0yLcmjzUAuWexRNRo6uH6mSinjBIwc7EJTFEoAQw3Q&skey=9f5b077cc22e75c7&v=v18', '', false));
+    });
+
+    it('does NOT suppress the /l/font path on a lookalike host', () => {
+      assert.ok(!suppress('enforce', 'font-src', 'https://fonts.gstatic.com.evil.com/l/font?kit=abc', '', false));
+    });
+
+    it('does NOT suppress other /l/* paths on fonts.gstatic.com', () => {
+      // Pins the exact-path conjunct: the rule is the /l/font endpoint, not a
+      // /l/ prefix.
+      assert.ok(!suppress('enforce', 'font-src', 'https://fonts.gstatic.com/l/other?kit=abc', '', false));
+    });
+
+    it('does NOT suppress http: on the /l/font endpoint', () => {
+      assert.ok(!suppress('enforce', 'font-src', 'http://fonts.gstatic.com/l/font?kit=abc', '', false));
+    });
+
     it('does NOT suppress http: font-src on the injected-webfont hosts', () => {
       // Pins the `url.protocol === 'https:'` conjunct the new rules share; the
       // other new negatives only cover lookalike host and non-font path.

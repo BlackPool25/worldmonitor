@@ -288,6 +288,13 @@ function shouldSuppressCspViolation(
     try {
       const url = new URL(blockedURI);
       if (url.protocol === 'https:' && url.hostname === 'fonts.gstatic.com' && /^\/s\/.+/.test(url.pathname) && fontFile.test(url.pathname)) return true;
+      // ---- Round 7. The /l/font?kit=... SUBSETTING endpoint — Google-injected
+      // stylesheets (Translate-class) request text-subsetted faces from it.
+      // Extensionless and outside /s/, so the rule above cannot match it; it
+      // regressed the issue with a single event on 2026-08-13T14:00Z after
+      // round 6 had drained every other host to zero. Exact path (not a /l/
+      // prefix) on the same pinned host; https: only, like every rule here.
+      if (url.protocol === 'https:' && url.hostname === 'fonts.gstatic.com' && url.pathname === '/l/font') return true;
       // Perplexity's Comet browser / extension injects its own UI webfont
       // (frontend-cdn.perplexity.ai/_agi_assets/fonts/*.woff2) into every page.
       // We never load it; the block is the overlay's font failing regardless of
