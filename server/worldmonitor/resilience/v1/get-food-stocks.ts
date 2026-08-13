@@ -11,6 +11,7 @@ import { markNoStoreFallbackResponse } from '../../../_shared/response-headers';
 import {
   FOOD_STOCKS_CANONICAL_KEY,
   FOOD_STOCKS_WORLD_KEY,
+  flattenSnapshot,
   normalizeFoodStocksCommodity,
   normalizeFoodStocksCountry,
 } from './_food-stocks-query';
@@ -24,53 +25,6 @@ const EMPTY: GetFoodStocksResponse = {
 
 export { normalizeFoodStocksCommodity, normalizeFoodStocksCountry };
 
-function flattenSnapshot(
-  snapshot: Record<string, unknown>,
-  countryCode?: string,
-  commodity?: string,
-): Array<{
-  countryCode: string;
-  commodity: string;
-  marketingYear: string;
-  stocksToUse: number;
-  endingStocksTmt: number;
-  totalUseTmt: number;
-  productionTmt: number;
-  consumptionTmt: number;
-  importsTmt: number;
-  exportsTmt: number;
-  unit: string;
-  source: string;
-}> {
-  const rows = [];
-  for (const [iso2, entry] of Object.entries(snapshot)) {
-    if (iso2 === 'fetchedAt' || iso2 === 'stageNotes') continue;
-    if (countryCode && iso2 !== countryCode) continue;
-    const commodities = (entry as { commodities?: Record<string, Record<string, unknown>> })?.commodities;
-    if (!commodities || typeof commodities !== 'object') continue;
-    for (const [slug, rec] of Object.entries(commodities)) {
-      if (commodity && slug !== commodity) continue;
-      const consumption = Number(rec.consumption) || 0;
-      const exports = Number(rec.exports) || 0;
-      const ratio = Number(rec.stocksToUseRatio);
-      rows.push({
-        countryCode: iso2,
-        commodity: slug,
-        marketingYear: String(rec.marketingYear ?? ''),
-        stocksToUse: Number.isFinite(ratio) ? ratio : 0,
-        endingStocksTmt: Number(rec.endingStocks) || 0,
-        totalUseTmt: consumption + exports,
-        productionTmt: Number(rec.production) || 0,
-        consumptionTmt: consumption,
-        importsTmt: Number(rec.imports) || 0,
-        exportsTmt: exports,
-        unit: String(rec.unit ?? '1000 MT'),
-        source: String(rec.source ?? ''),
-      });
-    }
-  }
-  return rows;
-}
 
 export const getFoodStocks: ResilienceServiceHandler['getFoodStocks'] = async (
   ctx: ServerContext,
@@ -116,16 +70,18 @@ export const getFoodStocks: ResilienceServiceHandler['getFoodStocks'] = async (
       source: row.source,
     }));
 
-    if (records.length === 0 && (countryCode || commodity)) {
+    // `unavailable` means "the seed is missing or unreadable", per the proto.
+    // The snapshot loaded, so an empty result is a confirmed zero regardless of
+    // whether a filter was applied — returning unavailable:true for the
+    // unfiltered case contradicted the field's documented meaning and made a
+    // healthy-but-empty snapshot look like an outage.
+    if (records.length === 0) {
       return {
         records: [],
         fetchedAt: typeof snapshot.fetchedAt === 'string' ? snapshot.fetchedAt : '',
         unavailable: false,
         calorieWeightedStocksToUse: 0,
       };
-    }
-    if (records.length === 0) {
-      return markNoStoreFallbackResponse(ctx.request, EMPTY);
     }
 
     const countryEntry = countryCode

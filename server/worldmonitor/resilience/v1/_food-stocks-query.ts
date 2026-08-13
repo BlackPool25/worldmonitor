@@ -33,3 +33,62 @@ export function normalizeFoodStocksCountry(raw: string): string | null {
   if (/^[A-Z]{2}$/.test(upper)) return upper;
   return null;
 }
+
+/**
+ * Flatten the Redis snapshot into wire rows. Lives here, not in the handler,
+ * so it is directly unit-testable without mocking Redis — the handler-private
+ * copy it replaces had no test at all.
+ */
+export function flattenSnapshot(
+  snapshot: Record<string, unknown>,
+  countryCode?: string,
+  commodity?: string,
+): Array<{
+  countryCode: string;
+  commodity: string;
+  marketingYear: string;
+  stocksToUse: number;
+  endingStocksTmt: number;
+  totalUseTmt: number;
+  productionTmt: number;
+  consumptionTmt: number;
+  importsTmt: number;
+  exportsTmt: number;
+  unit: string;
+  source: string;
+}> {
+  const rows = [];
+  for (const [iso2, entry] of Object.entries(snapshot)) {
+    if (iso2 === 'fetchedAt' || iso2 === 'stageNotes') continue;
+    if (countryCode && iso2 !== countryCode) continue;
+    const commodities = (entry as { commodities?: Record<string, Record<string, unknown>> })?.commodities;
+    if (!commodities || typeof commodities !== 'object') continue;
+    for (const [slug, rec] of Object.entries(commodities)) {
+      if (commodity && slug !== commodity) continue;
+      const consumption = Number(rec.consumption) || 0;
+      const exports = Number(rec.exports) || 0;
+      const ratio = Number(rec.stocksToUseRatio);
+      // Prefer the persisted denominator. `_world` excludes exports (they are
+      // internal transfers), so recomputing `consumption + exports` here would
+      // publish a totalUseTmt that disagrees with stocksToUse on every world row.
+      const persistedTotalUse = Number(rec.totalUse);
+      rows.push({
+        countryCode: iso2,
+        commodity: slug,
+        marketingYear: String(rec.marketingYear ?? ''),
+        stocksToUse: Number.isFinite(ratio) ? ratio : 0,
+        endingStocksTmt: Number(rec.endingStocks) || 0,
+        totalUseTmt: Number.isFinite(persistedTotalUse)
+          ? persistedTotalUse
+          : (iso2 === FOOD_STOCKS_WORLD_KEY ? consumption : consumption + exports),
+        productionTmt: Number(rec.production) || 0,
+        consumptionTmt: consumption,
+        importsTmt: Number(rec.imports) || 0,
+        exportsTmt: exports,
+        unit: String(rec.unit ?? '1000 MT'),
+        source: String(rec.source ?? ''),
+      });
+    }
+  }
+  return rows;
+}

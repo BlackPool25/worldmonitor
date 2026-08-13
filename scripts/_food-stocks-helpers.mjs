@@ -9,10 +9,13 @@ export const FOOD_STOCKS_CANONICAL_KEY = 'resilience:food-stocks:v1';
 export const FOOD_STOCKS_WORLD_KEY = '_world';
 export const FOOD_STOCKS_SOURCE_VERSION = 'food-stocks-v1';
 
-// Monthly WASDE cycle. Health fetch-age uses 2× (60d); content-age uses 3× so a
-// still-current marketing year is not paged while the next MY is not yet posted.
+// Monthly WASDE cycle. Health fetch-age uses 2x the 30-day bundle-section
+// interval (60d). Content-age is 4 WASDE cycles (120d), not 3: the clock now
+// tracks the OLDEST world commodity rather than the newest, so the budget has to
+// absorb a genuinely late marketing-year roll on the laggiest commodity without
+// paging. A 90d budget left ~1 day of margin in that case.
 export const FOOD_STOCKS_MAX_STALE_MIN = 60 * 24 * 60;
-export const FOOD_STOCKS_MAX_CONTENT_AGE_MIN = 90 * 24 * 60;
+export const FOOD_STOCKS_MAX_CONTENT_AGE_MIN = 120 * 24 * 60;
 export const FOOD_STOCKS_TTL_SECONDS = 90 * 24 * 3600;
 
 export const PSD_COMMODITIES = {
@@ -80,13 +83,32 @@ export function normalizePsdCountryCode(code) {
   return null;
 }
 
-export function computeStocksToUseRatio(endingStocks, consumption, exports) {
+/**
+ * Stocks-to-use = ending stocks / total use.
+ *
+ * For a COUNTRY, total use is domestic consumption + exports: grain shipped out
+ * has genuinely left that country's balance sheet.
+ *
+ * For the WORLD aggregate, `excludeExports` must be set. World exports are
+ * internal transfers between countries — they net against world imports and are
+ * already counted inside the importer's domestic consumption, so adding them
+ * double-counts and understates the ratio. USDA/WASDE publish world
+ * stocks-to-use as ending stocks / total domestic consumption for this reason.
+ */
+export function computeStocksToUseRatio(endingStocks, consumption, exports, { excludeExports = false } = {}) {
   if (!Number.isFinite(endingStocks)) return null;
   if (consumption != null && !Number.isFinite(consumption)) return null;
   if (exports != null && !Number.isFinite(exports)) return null;
-  const use = (Number.isFinite(consumption) ? consumption : 0) + (Number.isFinite(exports) ? exports : 0);
+  const countedExports = excludeExports ? 0 : (Number.isFinite(exports) ? exports : 0);
+  const use = (Number.isFinite(consumption) ? consumption : 0) + countedExports;
   if (use <= 0) return null;
   return endingStocks / use;
+}
+
+/** Total use matching computeStocksToUseRatio's denominator, for wire payloads. */
+export function computeTotalUse(consumption, exports, { excludeExports = false } = {}) {
+  const countedExports = excludeExports ? 0 : (Number.isFinite(Number(exports)) ? Number(exports) : 0);
+  return (Number.isFinite(Number(consumption)) ? Number(consumption) : 0) + countedExports;
 }
 
 export function bucketKey(record) {
@@ -125,29 +147,45 @@ export function parsePsdForecastRows(rows, opts = {}) {
 
     const key = `${countryCode}:${commodity}:${marketingYear}`;
     const rank = vintageRank(row?.calendarYear, row?.month);
-    const existing = groups.get(key);
-    if (!existing || rank > vintageRank(existing.forecastYear, existing.forecastMonth)) {
-      groups.set(key, {
+    let group = groups.get(key);
+    if (!group) {
+      group = {
         countryCode,
         commodity,
         marketingYear,
         marketYear: Number.parseInt(String(row.marketYear), 10),
         forecastYear: Number(row?.calendarYear) || 0,
         forecastMonth: Number(row?.month) || 0,
+        vintage: rank,
         values: {},
+        // Vintage of the row that supplied each attribute. Tracked per attribute
+        // rather than per group so a WASDE revision that restates only SOME
+        // attributes updates exactly those and leaves the rest of the balance
+        // sheet intact. The previous per-group reset cleared `values` on any
+        // vintage bump, so a production-only revision nulled consumption,
+        // exports and ending stocks and dropped stocksToUseRatio to null.
+        attrVintage: {},
         unitId: Number.isFinite(Number(row?.unitId)) ? Number(row.unitId) : null,
-      });
+      };
+      groups.set(key, group);
+    } else if (rank > group.vintage) {
+      group.vintage = rank;
+      group.forecastYear = Number(row?.calendarYear) || 0;
+      group.forecastMonth = Number(row?.month) || 0;
     }
-    const group = groups.get(key);
-    if (vintageRank(row?.calendarYear, row?.month) < vintageRank(group.forecastYear, group.forecastMonth)) {
-      continue;
-    }
+
     const attr = Number(row?.attributeId);
     const value = Number(row?.value);
     if (Number.isInteger(attr) && Number.isFinite(value)) {
-      group.values[attr] = value;
-      if (attr === PSD_ATTRIBUTES.PRODUCTION || attr === PSD_ATTRIBUTES.ENDING_STOCKS) {
-        group.unitId = Number.isFinite(Number(row?.unitId)) ? Number(row.unitId) : group.unitId;
+      // Per-attribute newest-wins. `>=` keeps last-write-wins within one vintage,
+      // matching the previous behavior for same-vintage duplicate rows.
+      const seen = group.attrVintage[attr];
+      if (seen === undefined || rank >= seen) {
+        group.values[attr] = value;
+        group.attrVintage[attr] = rank;
+        if (attr === PSD_ATTRIBUTES.PRODUCTION || attr === PSD_ATTRIBUTES.ENDING_STOCKS) {
+          group.unitId = Number.isFinite(Number(row?.unitId)) ? Number(row.unitId) : group.unitId;
+        }
       }
     }
   }
@@ -160,6 +198,8 @@ export function parsePsdForecastRows(rows, opts = {}) {
     const exports = finiteOrNull(group.values[PSD_ATTRIBUTES.EXPORTS]);
     const endingStocks = finiteOrNull(group.values[PSD_ATTRIBUTES.ENDING_STOCKS]);
     if (production == null && consumption == null && endingStocks == null) continue;
+    // World exports are internal transfers; see computeStocksToUseRatio.
+    const isWorld = group.countryCode === FOOD_STOCKS_WORLD_KEY;
     records.push({
       countryCode: group.countryCode,
       commodity: group.commodity,
@@ -172,7 +212,8 @@ export function parsePsdForecastRows(rows, opts = {}) {
       imports,
       exports,
       endingStocks,
-      stocksToUseRatio: computeStocksToUseRatio(endingStocks, consumption, exports),
+      stocksToUseRatio: computeStocksToUseRatio(endingStocks, consumption, exports, { excludeExports: isWorld }),
+      totalUse: computeTotalUse(consumption, exports, { excludeExports: isWorld }),
       unit: PSD_COMMODITIES[group.commodity]?.unit ?? '1000 MT',
       source: 'psd',
     });
@@ -230,6 +271,7 @@ export function applyFaostatProductionFill(psdRecords, faostatRecords, opts) {
       exports: null,
       endingStocks: null,
       stocksToUseRatio: null,
+      totalUse: 0,
       unit: PSD_COMMODITIES[commodity]?.unit ?? '1000 MT',
       source: 'faostat',
     });
@@ -264,6 +306,14 @@ export function toCommodityPayload(record) {
     exports: record.exports,
     endingStocks: record.endingStocks,
     stocksToUseRatio: record.stocksToUseRatio,
+    // Denominator actually used for stocksToUseRatio. Persisted so the RPC does
+    // not have to re-derive it — the world row excludes exports, so a consumer
+    // recomputing `consumption + exports` would disagree with the ratio.
+    totalUse: record.totalUse ?? computeTotalUse(
+      record.consumption,
+      record.exports,
+      { excludeExports: record.countryCode === FOOD_STOCKS_WORLD_KEY },
+    ),
     unit: record.unit,
     source: record.source,
   };
@@ -306,74 +356,87 @@ export function assembleFoodStocksSnapshot(records) {
   return snapshot;
 }
 
-export function latestMarketingYearPresent(snapshot) {
-  let latest = null;
-  const visit = (commodities) => {
-    if (!commodities || typeof commodities !== 'object') return;
-    for (const rec of Object.values(commodities)) {
-      const label = rec?.marketingYear;
-      if (typeof label === 'string' && (!latest || label > latest)) latest = label;
-    }
-  };
-  if (!snapshot || typeof snapshot !== 'object') return null;
-  if (snapshot.commodities) visit(snapshot.commodities);
-  for (const value of Object.values(snapshot)) {
-    if (value && typeof value === 'object' && value.commodities) visit(value.commodities);
-  }
-  return latest;
-}
+// Marketing-year end per commodity as [monthIndex, day] of the ENDING year.
+// A single hardcoded 31 Aug (the previous behavior) is right for corn/soybeans
+// but ~30 days early for palm oil's Oct-Sep year, which under a min() reduction
+// eats a third of the content-age budget and fires on a merely-late MY roll.
+// Unknown slugs default to the latest end in the table so the clock never fires
+// early on a commodity added without a matching entry.
+const MARKETING_YEAR_END = {
+  wheat: [4, 31], // Jun-May
+  corn: [7, 31], // Sep-Aug
+  rice: [6, 31], // Aug-Jul
+  soybeans: [7, 31], // Sep-Aug
+  barley: [4, 31], // Jun-May
+  palmOil: [8, 30], // Oct-Sep
+};
+const DEFAULT_MARKETING_YEAR_END = [8, 30];
 
-export function marketingYearEndMs(label) {
+export function marketingYearEndMs(label, commoditySlug) {
   const start = parseMarketingYearStart(label);
   if (start == null) return null;
-  // Conservative end: 31 Aug of the ending year (covers US corn MY).
-  return Date.UTC(start + 1, 7, 31, 23, 59, 59, 999);
+  const [month, day] = MARKETING_YEAR_END[commoditySlug] ?? DEFAULT_MARKETING_YEAR_END;
+  return Date.UTC(start + 1, month, day, 23, 59, 59, 999);
 }
 
 /**
- * Content-age signal for runSeed. Clock is the latest marketing year present,
- * not the seeder's fetchedAt. A still-running MY reports age 0; an abandoned
- * MY ends on 31 Aug of its closing year.
+ * Oldest marketing-year end across the `_world` commodities.
+ *
+ * `_world` specifically, and reduced with min:
+ *  - min, because six PSD commodity feeds freeze INDEPENDENTLY. A max() lets one
+ *    still-updating commodity mask five dead ones — the exact failure
+ *    docs/solutions/design-patterns/multi-source-freshness-clock-must-reduce-with-min.md
+ *    describes ("which single upstream can stop publishing without changing
+ *    newestItemAt?").
+ *  - `_world` only, because it is provably PSD-sourced: applyFaostatProductionFill
+ *    skips already-covered countries and resolveIso2 has no WORLD mapping, so no
+ *    FAOSTAT row can normalize into it. FAOSTAT rows carry a marketing year
+ *    derived from a CALENDAR year 1-3 years back, so reducing over the whole
+ *    snapshot would report ~2 years of content age on perfectly healthy data.
+ */
+export function worldContentClock(snapshot, nowMs = Date.now()) {
+  const world = snapshot?.[FOOD_STOCKS_WORLD_KEY]?.commodities
+    ?? (snapshot?.commodities && !snapshot?.[FOOD_STOCKS_WORLD_KEY] ? snapshot.commodities : null);
+  if (!world || typeof world !== 'object') return null;
+  const nowYear = new Date(nowMs).getUTCFullYear();
+  let oldestEnd = null;
+  let counted = 0;
+  for (const [slug, rec] of Object.entries(world)) {
+    const start = parseMarketingYearStart(rec?.marketingYear);
+    if (start == null) continue;
+    // Plausibility guard on the START, not the end: a marketing year that is
+    // currently RUNNING legitimately ends in the future, so rejecting any
+    // future end would discard every healthy snapshot. Only a label starting
+    // more than a year ahead of now is not a real PSD marketing year — drop it
+    // rather than let it pin the clock.
+    if (start > nowYear + 1) continue;
+    const end = marketingYearEndMs(rec.marketingYear, slug);
+    if (end == null) continue;
+    counted += 1;
+    if (oldestEnd == null || end < oldestEnd) oldestEnd = end;
+  }
+  return counted > 0 ? { oldestEnd, counted } : null;
+}
+
+/**
+ * Content-age signal for runSeed. The clock is marketing-year presence, not the
+ * seeder's fetchedAt, and it tracks the OLDEST world commodity so a single fresh
+ * feed cannot mask a frozen one.
+ *
+ * Returning null fails CLOSED: runSeed still writes maxContentAgeMin with
+ * newestItemAt null and health reads that as STALE_CONTENT.
  *
  * @param {Record<string, unknown>} data
  * @param {number} [nowMs]
  */
 export function foodStocksContentMeta(data, nowMs = Date.now()) {
-  const latest = latestMarketingYearPresent(data);
-  const end = marketingYearEndMs(latest);
-  if (end == null) return null;
-  const newestItemAt = Math.min(end, nowMs);
-  if (newestItemAt > nowMs + 60 * 60 * 1000) return null;
+  // Implausible future labels are dropped inside worldContentClock; if that
+  // leaves nothing datable we return null, which fails CLOSED (health reads a
+  // null newestItemAt as STALE_CONTENT).
+  const clock = worldContentClock(data, nowMs);
+  if (!clock) return null;
+  // A running marketing year clamps to now and reports age 0; an abandoned one
+  // ages from its own end date.
+  const newestItemAt = Math.min(clock.oldestEnd, nowMs);
   return { newestItemAt, oldestItemAt: newestItemAt };
-}
-
-export function flattenSnapshotRecords(snapshot, { countryCode, commodity } = {}) {
-  if (!snapshot || typeof snapshot !== 'object') return [];
-  const wantedCountry = countryCode ? normalizePsdCountryCode(countryCode) || String(countryCode).toUpperCase() : null;
-  const wantedCommodity = commodity ? String(commodity) : null;
-  const rows = [];
-  for (const [iso2, entry] of Object.entries(snapshot)) {
-    if (iso2 === 'fetchedAt') continue;
-    if (wantedCountry && iso2 !== wantedCountry) continue;
-    const commodities = entry?.commodities;
-    if (!commodities || typeof commodities !== 'object') continue;
-    for (const [slug, rec] of Object.entries(commodities)) {
-      if (wantedCommodity && slug !== wantedCommodity) continue;
-      rows.push({
-        countryCode: iso2,
-        commodity: slug,
-        marketingYear: rec.marketingYear ?? '',
-        stocksToUse: rec.stocksToUseRatio ?? 0,
-        endingStocksTmt: rec.endingStocks ?? 0,
-        totalUseTmt: (Number(rec.consumption) || 0) + (Number(rec.exports) || 0),
-        productionTmt: rec.production ?? 0,
-        consumptionTmt: rec.consumption ?? 0,
-        importsTmt: rec.imports ?? 0,
-        exportsTmt: rec.exports ?? 0,
-        unit: rec.unit ?? '1000 MT',
-        source: rec.source ?? '',
-      });
-    }
-  }
-  return rows;
 }

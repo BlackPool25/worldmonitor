@@ -10,6 +10,7 @@ import {
   FOOD_STOCKS_WORLD_KEY,
   PSD_ATTRIBUTES,
   PSD_COMMODITIES,
+  COMMODITY_KCAL_PER_KG,
   applyFaostatProductionFill,
   bucketKey,
   buildCountryRecord,
@@ -17,7 +18,6 @@ import {
   computeStocksToUseRatio,
   foodStocksContentMeta,
   formatMarketingYear,
-  latestMarketingYearPresent,
   normalizePsdCountryCode,
   parsePsdForecastRows,
 } from '../scripts/_food-stocks-helpers.mjs';
@@ -242,6 +242,41 @@ describe('country record + calorie-weighted aggregate', () => {
     assert.equal(record.aggregate.calorieWeightedStocksToUse, 18 / 90);
     assert.equal(computeCalorieWeightedStocksToUse({ rice: commodities.rice }), null);
   });
+
+  test('the kcal table actually changes the aggregate', () => {
+    // TWO contributing commodities is the minimum for weighting to be
+    // observable: with one, weighted/weight collapses to (ratio*w)/w = ratio and
+    // the result is scale-invariant, so gutting COMMODITY_KCAL_PER_KG (or even
+    // inverting it) cannot fail the assertion above.
+    const commodities = {
+      // palmOil 8840 kcal/kg vs soybeans 1470 — a ~6x weight difference.
+      palmOil: { consumption: 100, stocksToUseRatio: 0.5, source: 'psd' },
+      soybeans: { consumption: 100, stocksToUseRatio: 0.1, source: 'psd' },
+    };
+    const actual = computeCalorieWeightedStocksToUse(commodities);
+    const expected = (0.5 * 100 * COMMODITY_KCAL_PER_KG.palmOil + 0.1 * 100 * COMMODITY_KCAL_PER_KG.soybeans)
+      / (100 * COMMODITY_KCAL_PER_KG.palmOil + 100 * COMMODITY_KCAL_PER_KG.soybeans);
+    assert.ok(Math.abs(actual - expected) < 1e-12);
+
+    // Pin the direction: calorie weighting must pull the aggregate toward the
+    // energy-dense commodity, i.e. above the unweighted mean of 0.3.
+    assert.ok(actual > 0.3, `expected calorie weighting to favour palm oil, got ${actual}`);
+    // ...and it must not simply equal either input ratio, which is what the
+    // single-contributor fixture above degenerates to.
+    assert.notEqual(actual, 0.5);
+    assert.notEqual(actual, 0.1);
+  });
+
+  test('consumption weighting is not ignored', () => {
+    const equalRatios = {
+      palmOil: { consumption: 1, stocksToUseRatio: 0.9, source: 'psd' },
+      soybeans: { consumption: 1000, stocksToUseRatio: 0.1, source: 'psd' },
+    };
+    const actual = computeCalorieWeightedStocksToUse(equalRatios);
+    // soybeans dominates on volume (1000 vs 1) despite lower kcal/kg, so the
+    // aggregate must sit near 0.1, not near the midpoint.
+    assert.ok(actual < 0.25, `volume weighting must dominate here, got ${actual}`);
+  });
 });
 
 describe('world + country code normalization', () => {
@@ -264,48 +299,176 @@ describe('world + country code normalization', () => {
     assert.equal(parsed.length, 1);
     assert.equal(parsed[0].countryCode, FOOD_STOCKS_WORLD_KEY);
     assert.equal(parsed[0].production, 1_200_000);
-    assert.equal(parsed[0].stocksToUseRatio, computeStocksToUseRatio(80_000, 1_000_000, 180_000));
+    // World stocks-to-use EXCLUDES exports: world exports are internal transfers
+    // that net against world imports and are already inside the importer's
+    // domestic consumption. Hardcoded, NOT computeStocksToUseRatio(...) — the
+    // previous assertion compared the function against itself and so could not
+    // observe the denominator being wrong.
+    assert.equal(parsed[0].stocksToUseRatio, 80_000 / 1_000_000);
+    assert.equal(parsed[0].totalUse, 1_000_000);
+  });
+
+  test('a country row still counts exports in total use, unlike _world', () => {
+    const rows = (countryCode) => ([
+      { commodityCode: '0440000', countryCode, marketYear: '2021', calendarYear: '2022', month: 6, attributeId: 125, unitId: 8, value: 1_000_000 },
+      { commodityCode: '0440000', countryCode, marketYear: '2021', calendarYear: '2022', month: 6, attributeId: 88, unitId: 8, value: 180_000 },
+      { commodityCode: '0440000', countryCode, marketYear: '2021', calendarYear: '2022', month: 6, attributeId: 176, unitId: 8, value: 80_000 },
+    ]);
+    const [country] = parsePsdForecastRows(rows('BR'), { commodity: 'corn' });
+    const [world] = parsePsdForecastRows(rows('00'), { commodity: 'corn' });
+    assert.equal(country.stocksToUseRatio, 80_000 / 1_180_000);
+    assert.equal(world.stocksToUseRatio, 80_000 / 1_000_000);
+    assert.ok(world.stocksToUseRatio > country.stocksToUseRatio);
+  });
+});
+
+describe('WASDE vintage handling', () => {
+  const row = (attributeId, value, month) => ({
+    commodityCode: '0440000', countryCode: 'AR', marketYear: 2024,
+    calendarYear: 2025, month, attributeId, unitId: 8, value,
+  });
+
+  test('a partial revision updates only the restated attributes and keeps the balance sheet', () => {
+    // May carries the full balance; June restates production only.
+    const parsed = parsePsdForecastRows([
+      row(PSD_ATTRIBUTES.PRODUCTION, 50_000, 5),
+      row(PSD_ATTRIBUTES.DOMESTIC_CONSUMPTION, 15_000, 5),
+      row(PSD_ATTRIBUTES.EXPORTS, 33_000, 5),
+      row(PSD_ATTRIBUTES.ENDING_STOCKS, 2_000, 5),
+      row(PSD_ATTRIBUTES.PRODUCTION, 51_000, 6),
+    ], { commodity: 'corn' });
+    assert.equal(parsed.length, 1);
+    assert.equal(parsed[0].production, 51_000, 'newer vintage wins for the restated attribute');
+    assert.equal(parsed[0].consumption, 15_000, 'older vintage survives for attributes not restated');
+    assert.equal(parsed[0].exports, 33_000);
+    assert.equal(parsed[0].endingStocks, 2_000);
+    assert.equal(parsed[0].stocksToUseRatio, 2_000 / 48_000);
+  });
+
+  test('vintage merge is order-independent', () => {
+    const older = [
+      row(PSD_ATTRIBUTES.PRODUCTION, 50_000, 5),
+      row(PSD_ATTRIBUTES.DOMESTIC_CONSUMPTION, 15_000, 5),
+      row(PSD_ATTRIBUTES.ENDING_STOCKS, 2_000, 5),
+    ];
+    const newer = [row(PSD_ATTRIBUTES.PRODUCTION, 51_000, 6)];
+    const forward = parsePsdForecastRows([...older, ...newer], { commodity: 'corn' })[0];
+    const reverse = parsePsdForecastRows([...newer, ...older], { commodity: 'corn' })[0];
+    for (const key of ['production', 'consumption', 'endingStocks', 'stocksToUseRatio']) {
+      assert.equal(forward[key], reverse[key], `${key} must not depend on row order`);
+    }
+    assert.equal(forward.production, 51_000);
+    assert.equal(forward.consumption, 15_000);
+  });
+
+  test('rows with no calendarYear are still parsed, not silently dropped', () => {
+    // vintageRank returns -1 for a missing calendarYear. Comparing that against a
+    // re-derived group rank of 0+month dropped every row of such a response.
+    const parsed = parsePsdForecastRows([
+      { commodityCode: '0440000', countryCode: 'BR', marketYear: 2021, month: 6, attributeId: PSD_ATTRIBUTES.PRODUCTION, unitId: 8, value: 116_000 },
+      { commodityCode: '0440000', countryCode: 'BR', marketYear: 2021, month: 6, attributeId: PSD_ATTRIBUTES.DOMESTIC_CONSUMPTION, unitId: 8, value: 73_000 },
+      { commodityCode: '0440000', countryCode: 'BR', marketYear: 2021, month: 6, attributeId: PSD_ATTRIBUTES.ENDING_STOCKS, unitId: 8, value: 4_653 },
+    ], { commodity: 'corn' });
+    assert.equal(parsed.length, 1, 'a response without calendarYear must not yield zero records');
+    assert.equal(parsed[0].production, 116_000);
+    assert.equal(parsed[0].endingStocks, 4_653);
   });
 });
 
 describe('content clock is marketing-year presence, not fetch time', () => {
-  test('latestMarketingYearPresent reads the MY label, not fetchedAt', () => {
-    const snapshot = {
-      fetchedAt: Date.parse('2026-08-01T00:00:00Z'),
-      US: {
-        commodities: {
-          wheat: { marketingYear: '2025/26', stocksToUseRatio: 0.2 },
-          corn: { marketingYear: '2024/25', stocksToUseRatio: 0.1 },
-        },
-      },
-    };
-    assert.equal(latestMarketingYearPresent(snapshot), '2025/26');
-  });
 
-  test('contentMeta uses the latest marketing year, so a fresh fetch of an old MY is still stale', () => {
-    const snapshot = {
-      US: { commodities: { wheat: { marketingYear: '2022/23', stocksToUseRatio: 0.3 } } },
-    };
-    const now = Date.UTC(2026, 7, 12);
-    const meta = foodStocksContentMeta(snapshot, now);
+  const worldSnapshot = (commodities) => ({
+    [FOOD_STOCKS_WORLD_KEY]: {
+      commodities: Object.fromEntries(
+        Object.entries(commodities).map(([slug, my]) => [slug, { marketingYear: my, stocksToUseRatio: 0.2 }]),
+      ),
+    },
+  });
+  const ageDays = (meta, now) => (now - meta.newestItemAt) / 86_400_000;
+  const NOW = Date.UTC(2026, 7, 12);
+
+  test('contentMeta is stale when the world marketing year is old', () => {
+    const meta = foodStocksContentMeta(worldSnapshot({ wheat: '2022/23' }), NOW);
     assert.ok(meta);
-    const ageMin = (now - meta.newestItemAt) / 60000;
+    const ageMin = (NOW - meta.newestItemAt) / 60000;
     assert.ok(
       ageMin > FOOD_STOCKS_MAX_CONTENT_AGE_MIN,
-      `stale MY 2022/23 in Aug 2026 must exceed the ${FOOD_STOCKS_MAX_CONTENT_AGE_MIN / (24 * 60)}d content window (age ${Math.round(ageMin / (24 * 60))}d)`,
+      `stale MY 2022/23 in Aug 2026 must exceed the ${FOOD_STOCKS_MAX_CONTENT_AGE_MIN / (24 * 60)}d window (age ${Math.round(ageMin / (24 * 60))}d)`,
     );
   });
 
-  test('a current marketing year stays inside the two-cycle window', () => {
-    const snapshot = {
-      US: { commodities: { wheat: { marketingYear: '2025/26', stocksToUseRatio: 0.2 } } },
-    };
-    const now = Date.UTC(2026, 7, 12);
-    const meta = foodStocksContentMeta(snapshot, now);
-    const ageMin = (now - meta.newestItemAt) / 60000;
+  test('a current marketing year stays inside the window', () => {
+    const meta = foodStocksContentMeta(worldSnapshot({ wheat: '2025/26' }), NOW);
+    const ageMin = (NOW - meta.newestItemAt) / 60000;
+    assert.ok(ageMin < FOOD_STOCKS_MAX_CONTENT_AGE_MIN);
+  });
+
+  test('ONE fresh commodity cannot mask five frozen ones', () => {
+    // The regression this clock exists to catch: under a max() reduction this
+    // snapshot reported age 0 and STALE_CONTENT never fired.
+    const meta = foodStocksContentMeta(worldSnapshot({
+      corn: '2026/27',
+      wheat: '2022/23',
+      rice: '2022/23',
+      soybeans: '2022/23',
+      barley: '2022/23',
+      palmOil: '2022/23',
+    }), NOW);
+    assert.ok(meta);
+    const ageMin = (NOW - meta.newestItemAt) / 60000;
+    assert.ok(
+      ageMin > FOOD_STOCKS_MAX_CONTENT_AGE_MIN,
+      `five frozen commodities must age the clock even with corn current (age ${Math.round(ageMin / (24 * 60))}d)`,
+    );
+  });
+
+  test('a fresh country row cannot mask a frozen world row', () => {
+    const snapshot = worldSnapshot({ wheat: '2022/23' });
+    snapshot.US = { commodities: { corn: { marketingYear: '2026/27', stocksToUseRatio: 0.1 } } };
+    const meta = foodStocksContentMeta(snapshot, NOW);
+    const ageMin = (NOW - meta.newestItemAt) / 60000;
+    assert.ok(ageMin > FOOD_STOCKS_MAX_CONTENT_AGE_MIN, 'clock must read _world, not any country');
+  });
+
+  test('all-current world commodities are quiet', () => {
+    const meta = foodStocksContentMeta(worldSnapshot({
+      corn: '2026/27', wheat: '2026/27', rice: '2026/27',
+      soybeans: '2026/27', barley: '2026/27', palmOil: '2026/27',
+    }), NOW);
+    assert.equal(ageDays(meta, NOW), 0);
+  });
+
+  test('FAOSTAT-lagged country rows do not false-alarm a healthy snapshot', () => {
+    // FAOSTAT fill marketing years trail PSD by 1-3 years by construction, so a
+    // min() over the WHOLE snapshot would page on perfectly healthy data.
+    const snapshot = worldSnapshot({
+      corn: '2026/27', wheat: '2026/27', rice: '2026/27',
+      soybeans: '2026/27', barley: '2026/27', palmOil: '2026/27',
+    });
+    snapshot.NG = { commodities: { corn: { marketingYear: '2023/24', source: 'faostat' } } };
+    const meta = foodStocksContentMeta(snapshot, NOW);
+    assert.equal(ageDays(meta, NOW), 0, 'FAOSTAT lag must not age the clock');
+  });
+
+  test('a late palm-oil marketing-year roll stays inside the budget', () => {
+    // palmOil runs Oct-Sep. A single hardcoded 31 Aug end would age this ~30 days
+    // early and fire on a merely-late roll.
+    const meta = foodStocksContentMeta(worldSnapshot({
+      corn: '2026/27', wheat: '2026/27', rice: '2026/27',
+      soybeans: '2026/27', barley: '2026/27', palmOil: '2025/26',
+    }), Date.UTC(2026, 11, 1));
+    const ageMin = (Date.UTC(2026, 11, 1) - meta.newestItemAt) / 60000;
     assert.ok(
       ageMin < FOOD_STOCKS_MAX_CONTENT_AGE_MIN,
-      `MY 2025/26 in Aug 2026 must stay inside the content window (age ${Math.round(ageMin / (24 * 60))}d)`,
+      `late palmOil roll must stay inside the ${FOOD_STOCKS_MAX_CONTENT_AGE_MIN / (24 * 60)}d budget (age ${Math.round(ageMin / (24 * 60))}d)`,
     );
+  });
+
+  test('a bogus future marketing year is rejected, not treated as fresh', () => {
+    assert.equal(foodStocksContentMeta(worldSnapshot({ corn: '2090/91' }), NOW), null);
+  });
+
+  test('a missing _world fails closed', () => {
+    assert.equal(foodStocksContentMeta({ US: { commodities: { corn: { marketingYear: '2026/27' } } } }, NOW), null);
   });
 });

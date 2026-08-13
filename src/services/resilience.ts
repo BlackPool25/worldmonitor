@@ -39,9 +39,16 @@ export async function getResilienceRanking(): Promise<ResilienceRankingResponse>
   return getClient().getResilienceRanking({});
 }
 
-export async function getFoodStocks(opts: { countryCode?: string; commodity?: string } = {}): Promise<FoodStocksResponse> {
-  return getClient().getFoodStocks({
-    countryCode: opts.countryCode ? normalizeCountryCode(opts.countryCode) || opts.countryCode.trim().toUpperCase() : '',
-    commodity: opts.commodity ?? '',
-  });
+export async function getFoodStocks(
+  opts: { countryCode?: string; commodity?: string; signal?: AbortSignal } = {},
+): Promise<FoodStocksResponse> {
+  return getClient().getFoodStocks(
+    {
+      countryCode: opts.countryCode ? normalizeCountryCode(opts.countryCode) || opts.countryCode.trim().toUpperCase() : '',
+      commodity: opts.commodity ?? '',
+    },
+    // Forwarded so a panel close or country switch actually cancels the request
+    // rather than only discarding its result.
+    opts.signal ? { signal: opts.signal } : undefined,
+  );
 }

@@ -523,12 +523,19 @@ USDA PSD cereal stocks-to-use by marketing year. Ask for a country plus optional
 
 | Name | Type | Required | Description |
 |------|------|---------:|-------------|
-| `country_code` | string | no | ISO 3166-1 alpha-2, or `WORLD`. Empty returns the unfiltered snapshot. |
-| `commodity` | string | no | `wheat`, `corn`, `rice`, `soybeans`, `barley`, or `palmOil`. Empty = all. |
+| `country_code` | string | yes | ISO 3166-1 alpha-2, or `WORLD` for the global balance. |
+| `commodity` | string | no | `wheat`, `corn`, `rice`, `soybeans`, `barley`, or `palmOil` (note the camelCase). Empty = all six. |
 
 - **API endpoints:** `GET /api/resilience/v1/get-food-stocks`
 - **Kind:** RPC proxy — the handler owns WORLD vs ISO-2 and commodity filtering.
-- **Freshness budget:** latest marketing year present (WASDE monthly cycle; 60-day fetch-age / 90-day content-age).
+- **Freshness budget:** oldest world marketing year present (WASDE monthly cycle; 60-day fetch-age / 120-day content-age).
+
+**Reading a zero.** `stocksToUse: 0` is ambiguous on the wire. It means *unknown*
+when `source` is `faostat` (a production-only gap-fill row, where every stocks
+field is a placeholder) or when `totalUseTmt` is `0`; it is a genuine 0% only when
+`source` is `psd` **and** `totalUseTmt > 0`. `totalUseTmt` is consumption + exports
+for a country, but consumption only for `WORLD`, because world exports are
+internal transfers already counted in the importing country's consumption.
 
 <CodeGroup>
 

@@ -42,8 +42,17 @@ The food-stocks seeder targeted the legacy Open Data host and the wrong env name
 ## What Didn't Work
 
 - Header `API_KEY` against `apps.fas.usda.gov/OpenData` — the documented older swagger host now 500s
-- Query `api_key=` — works (api.data.gov style) but puts the secret in the URL and in access logs. A probe in this investigation leaked the key that way; rotate it
+- Query `api_key=` — works (api.data.gov style) but puts the secret in the URL and in access logs. A probe in this investigation leaked the key that way
 - Never `source .env.local` under zsh — zsh executes `KEY=value` lines and prints the secret to stderr
+
+> **ACTION REQUIRED before the Railway variable is set.** The key used during this
+> investigation was placed on a query string and therefore recorded in USDA access
+> logs. Register a NEW key and set that one as `USDA_FAS_PSD_API_KEY` — do not
+> deploy the exposed key. It is a free, read-only, public-data credential with no
+> PII scope, so this is a hygiene step rather than an incident, but the exposed
+> value must not become the production secret. This ordering is deliberate: the
+> post-deploy checklist otherwise reads "set the key" with no indication that the
+> obvious key to hand is the compromised one.
 
 ## Solution
 

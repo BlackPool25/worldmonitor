@@ -2575,8 +2575,17 @@ export class CountryDeepDivePanel implements CountryBriefPanel {
       t('countryBrief.foodStocks'),
       t('countryBrief.foodStocksHelp'),
     );
-    foodStocksBody.append(this.makeLoading(t('countryBrief.loadingFoodStocks')));
-    void this.renderFoodStocks(code, foodStocksBody);
+    // Pro-gated like every other premium card in this panel. Firing the two
+    // premium RPCs for a free user cost two guaranteed 401s per deep-dive open
+    // and painted a dead "unavailable" card where the sibling cards show the
+    // upgrade prompt.
+    const foodStocksIsPro = hasPremiumAccess(getAuthState());
+    if (foodStocksIsPro) {
+      foodStocksBody.append(this.makeLoading(t('countryBrief.loadingFoodStocks')));
+      void this.renderFoodStocks(code, foodStocksBody);
+    } else {
+      foodStocksBody.append(this.makeProLocked(t('countryBrief.foodStocksProLocked')));
+    }
 
     const [maritimeCard, maritimeBody] = this.sectionCard('Maritime Activity', 'Port-level tanker call volume and import/export cargo weight over 30 days. ⚠ badge = port running below 50% of its 30-day baseline. Source: IMF PortWatch.');
     this.maritimeBody = maritimeBody;
@@ -2673,19 +2682,33 @@ export class CountryDeepDivePanel implements CountryBriefPanel {
         return;
       }
       const { getFoodStocks } = await import('@/services/resilience');
-      const [country, world] = await Promise.all([
-        getFoodStocks({ countryCode: code }),
-        getFoodStocks({ countryCode: 'WORLD' }),
+      // allSettled, not all: the WORLD lookup is a shared comparison column, and
+      // a gateway-level rejection on it alone (billing verification, rate limit,
+      // Clerk token race) must not discard country data that arrived fine.
+      const [countryResult, worldResult] = await Promise.allSettled([
+        getFoodStocks({ countryCode: code, signal: this.signal }),
+        getFoodStocks({ countryCode: 'WORLD', signal: this.signal }),
       ]);
       if (!stillCurrent()) return;
-      if (country.unavailable && world.unavailable) {
+      type FoodStocks = Awaited<ReturnType<typeof getFoodStocks>>;
+      const settledValue = (r: PromiseSettledResult<FoodStocks>): FoodStocks | null => (
+        r.status === 'fulfilled' ? r.value : null
+      );
+      // Both sides down is a genuine failure: rethrow so the catch reports it to
+      // Sentry rather than silently painting an empty card.
+      if (countryResult.status === 'rejected' && worldResult.status === 'rejected') {
+        throw countryResult.reason;
+      }
+      const country = settledValue(countryResult);
+      const world = settledValue(worldResult);
+      if ((country?.unavailable ?? true) && (world?.unavailable ?? true)) {
         body.replaceChildren(this.makeEmpty(t('countryBrief.foodStocksUnavailable')));
         return;
       }
       const worldByCommodity = new Map(
-        (world.records ?? []).map((row) => [row.commodity, row]),
+        (world?.records ?? []).map((row) => [row.commodity, row]),
       );
-      const rows = country.records ?? [];
+      const rows = country?.records ?? [];
       if (rows.length === 0) {
         body.replaceChildren(this.makeEmpty(t('countryBrief.foodStocksUnavailable')));
         return;
@@ -2719,8 +2742,30 @@ export class CountryDeepDivePanel implements CountryBriefPanel {
       if (stillCurrent()) body.replaceChildren(table);
     } catch (error) {
       console.warn('[CountryDeepDivePanel] food stocks load failed', error);
+      // An aborted request is an expected panel-close/country-switch, not a fault.
+      const aborted = (error as { name?: string })?.name === 'AbortError' || this.signal.aborted;
+      if (!aborted) this.captureFoodStocksLoadFailure(error, code);
       if (stillCurrent()) body.replaceChildren(this.makeEmpty(t('countryBrief.foodStocksUnavailable')));
     }
+  }
+
+  private captureFoodStocksLoadFailure(error: unknown, countryCode: string): void {
+    // Mirrors captureResilienceWidgetLoadFailure. Without this a chunk-load
+    // failure and a real RPC error are both a silent console.warn — the same
+    // blind spot that hid a billing_verification_503 on a sibling resilience RPC
+    // (see the comment in src/services/resilience.ts).
+    enqueueSentryCall((Sentry) => {
+      Sentry.addBreadcrumb?.({
+        category: 'country-deep-dive',
+        level: 'warning',
+        message: 'Food stocks load failed',
+        data: { countryCode },
+      });
+      Sentry.captureException?.(error instanceof Error ? error : new Error(String(error)), {
+        tags: { surface: 'country-deep-dive', widget: 'food-stocks' },
+        extra: { countryCode },
+      });
+    });
   }
 
   private formatStocksToUse(

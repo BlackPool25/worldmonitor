@@ -1133,10 +1133,13 @@ export const RPC_TOOLS: ToolDef[] = [
         },
         commodity: {
           type: 'string',
-          description: 'Optional commodity slug: wheat, corn, rice, soybeans, barley, palmOil.',
+          description: 'Optional commodity slug: wheat, corn, rice, soybeans, barley, palmOil. Note palmOil is camelCase; the rest are lowercase. Omit for all six.',
         },
       },
-      required: [],
+      // country_code is REQUIRED: omitting it returned every country x six
+      // commodities, which routinely exceeds _outputBudgetBytes and spent a Pro
+      // quota unit to fail. Use country_code=WORLD for the global balance.
+      required: ['country_code'],
     },
     outputSchema: {
       type: 'object',
@@ -1146,18 +1149,27 @@ export const RPC_TOOLS: ToolDef[] = [
           items: {
             type: 'object',
             properties: {
-              countryCode: { type: 'string' },
+              countryCode: { type: 'string', description: 'ISO-2, or "WORLD" for the global aggregate.' },
               commodity: { type: 'string' },
-              marketingYear: { type: 'string' },
-              stocksToUse: { type: 'number' },
-              endingStocksTmt: { type: 'number' },
-              totalUseTmt: { type: 'number' },
+              marketingYear: { type: 'string', description: 'e.g. "2024/25". A marketing year, NOT a calendar year — never compare across countries as if it were one.' },
+              stocksToUse: {
+                type: 'number',
+                description: 'Ending stocks / total use. 0 is ambiguous: it means UNKNOWN when source="faostat" or totalUseTmt=0, and a genuine 0% only when source="psd" and totalUseTmt>0. Check both before reporting a zero.',
+              },
+              endingStocksTmt: { type: 'number', description: '0 when unknown (see stocksToUse); always 0 for source="faostat" rows.' },
+              totalUseTmt: {
+                type: 'number',
+                description: 'Denominator of stocksToUse. For a country this is consumption + exports; for WORLD it is consumption only, because world exports are internal transfers already counted in the importer\'s consumption.',
+              },
               productionTmt: { type: 'number' },
               consumptionTmt: { type: 'number' },
               importsTmt: { type: 'number' },
               exportsTmt: { type: 'number' },
-              unit: { type: 'string' },
-              source: { type: 'string' },
+              unit: { type: 'string', description: 'Always "1000 MT" (thousand metric tons).' },
+              source: {
+                type: 'string',
+                description: '"psd" = USDA full balance sheet (stocks are real). "faostat" = production-only gap fill; every stocks field on that row is a 0 placeholder, not a measurement.',
+              },
             },
           },
         },
