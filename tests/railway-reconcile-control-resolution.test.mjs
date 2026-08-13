@@ -198,6 +198,10 @@ describe('protected Railway reconciliation request validation', () => {
     ]) {
       assert.equal(validateRecoveryRequest(request(decision), { now: () => NOW }).decision, decision);
     }
+    assert.doesNotThrow(() => validateRecoveryRequest(request(
+      'authorize_current_main_retry',
+      { approver: 'operator-user' },
+    ), { now: () => NOW }));
 
     const invalid = [
       request('authorize_current_main_retry', { decision: 'clear_barrier' }),
@@ -205,7 +209,6 @@ describe('protected Railway reconciliation request validation', () => {
       request('authorize_current_main_retry', { reason: 'too short' }),
       request('authorize_current_main_retry', { reason: 'unsafe\nreason text' }),
       request('authorize_current_main_retry', { actor: 'bad actor' }),
-      request('authorize_current_main_retry', { approver: 'operator-user' }),
       request('authorize_current_main_retry', { reason: 'Reviewed at https://unsafe.example now.' }),
       request('authorize_current_main_retry', { reason: 'Reviewed secret: leaked-value now.' }),
       request('authorize_current_main_retry', { operatorRunId: 'run-1' }),

@@ -178,7 +178,8 @@ keeps its `main`-only branch policy and isolated secrets, but has no required
 reviewer. Requiring that same operator to review their own dispatch adds no
 independent authorization and sends one approval email for every recovery
 attempt. The `approver` workflow input records the delegated operator identity
-in the immutable controller audit; it is not a verified second party. Real
+in the immutable controller audit and can equal the dispatch actor; it is not a
+verified second party. Real
 two-person control requires a second named operator and `prevent_self_review`.
 
 The protected resolver deliberately repeats the GitHub, convergence, and
@@ -277,11 +278,12 @@ the protected resolution also records the separately revalidated current head.
 This separation keeps the convergence-acceptance route reachable after main
 moves, including when it must reset a full 64-run mutation lineage.
 
-The protected retry is the only path that can replace a same-head Railway
-deployment in `FAILED`. Ordinary runs continue to report that failure without
-retrying it. A recovery still adopts any same-head deployment that is active or
-that reached a running state, so the one-use controller hold cannot duplicate
-work that Railway already accepted.
+The protected retry hold carries an immutable capability that is the only path
+that can replace a same-head Railway deployment in `FAILED`. Ordinary runs and
+watchdog-created recovery holds continue to report that failure without
+retrying it. A recovery still adopts any active same-head deployment, or a
+running same-head replacement newer than the failure, so the one-use controller
+hold cannot duplicate work that Railway already accepted.
 
 `retryEvidence` has exactly one of these forms. Its `evidenceId` must differ
 from the outer evidence ID:

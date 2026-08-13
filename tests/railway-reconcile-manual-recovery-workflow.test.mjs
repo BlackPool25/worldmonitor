@@ -47,7 +47,7 @@ describe('Railway reconciliation protected manual recovery workflow', () => {
     assert.equal(workflow.jobs.resolve.environment.deployment, false);
     assert.equal(
       inputs.approver.description,
-      'Delegated operator identity recorded in the immutable recovery audit trail',
+      'Operator audit identity; may equal the GitHub actor',
     );
     assert.match(source, /main-only secret boundary/);
     assert.match(source, /no required reviewer/);

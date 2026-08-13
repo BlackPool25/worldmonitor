@@ -21,7 +21,7 @@ on:
         required: true
         type: string
       approver:
-        description: Delegated operator identity recorded in the immutable recovery audit trail
+        description: Operator audit identity; may equal the GitHub actor
         required: true
         type: string
       reason:
@@ -104,7 +104,8 @@ jobs:
     # This environment is a main-only secret boundary with no required reviewer.
     # For a single operator, self-review adds no independent authorization and
     # sends an approval email for every recovery attempt. The approver input
-    # records delegated operator identity in the immutable controller audit.
+    # records delegated operator identity in the immutable controller audit and
+    # can equal the GitHub actor.
     # Safety remains fail-closed through exact-main and repeated provider-inactivity proof,
     # role-specific HMACs, controller CAS/generation checks, exact run binding,
     # and terminal deployment verification.

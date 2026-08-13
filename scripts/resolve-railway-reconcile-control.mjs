@@ -227,7 +227,6 @@ export function validateRecoveryRequest(value, { now = Date.now } = {}) {
   if (!sanitizeReason(value.reason)) fail('REASON_INVALID', 'reason must be a sanitized single line of 10-240 characters');
   requireActor(value.actor, 'actor');
   requireApprover(value.approver);
-  if (value.actor === value.approver) fail('ACTOR_APPROVER_MUST_DIFFER', 'actor and approver must be distinct');
   requireActor(value.triggeringActor, 'triggeringActor');
   requireRunId(value.operatorRunId, 'operatorRunId');
   requireAttempt(value.operatorRunAttempt, 'operatorRunAttempt');
