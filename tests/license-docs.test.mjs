@@ -42,6 +42,17 @@ function assertNoMatch(relativePath, text, pattern, label) {
 }
 
 describe('project license docs', () => {
+  it('keeps the project header below the complete AGPL text for license scanners', () => {
+    const license = readFileSync(join(root, 'LICENSE'), 'utf8');
+    const agplEnd = license.indexOf('END OF TERMS AND CONDITIONS');
+    const projectHeader = license.indexOf('World Monitor — Real-time global intelligence dashboard');
+    const projectCopyright = license.indexOf('Copyright (C) 2024-2026 Elie Habib');
+
+    assert.ok(agplEnd >= 0, 'root LICENSE must contain the complete AGPL text');
+    assert.ok(projectHeader > agplEnd, 'project header must follow the complete AGPL text');
+    assert.ok(projectCopyright > agplEnd, 'project copyright must follow the complete AGPL text');
+  });
+
   it('do not claim AGPL prohibits commercial use', () => {
     for (const { relativePath, text } of readProjectLicenseDocs()) {
       assertNoMatch(relativePath, text, /AGPL[\s\S]{0,160}non-?commercial/i, 'AGPL non-commercial framing');
