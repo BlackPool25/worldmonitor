@@ -481,7 +481,7 @@
         "climate": "Přepnout klimatické anomálie",
         "outages": "Přepnout výpadky internetu",
         "tradeRoutes": "Přepnout obchodní trasy",
-        "canadaRoads": "Toggle Ontario 511 roads overlay"
+        "canadaRoads": "Toggle Ontario and Alberta 511 roads overlay"
       },
       "view": {
         "dark": "Přepnout na tmavý režim",
@@ -1182,7 +1182,7 @@
         "renewableInstallations": "Čistá energie",
         "radiationSpike": "Skokový nárůst radiace",
         "radiationElevated": "Zvýšená radiace",
-        "canadaRoads": "Ontario Roads (511)"
+        "canadaRoads": "Ontario and Alberta Roads (511)"
       },
       "tooltip": {
         "earthquake": "Zemětřesení",
@@ -1289,7 +1289,7 @@
           "dayNight": "Sluneční terminátor v reálném čase ukazující denní a noční zóny",
           "geoBoundaries": "Demilitarizované zóny, linie příměří a sporné hranice",
           "ciiChoropleth": "Tepelná mapa Country Instability Index — zbarvuje země podle skóre CII (zelená=stabilní, červená=kritická)",
-          "canadaRoads": "Highway incidents, alerts, and road conditions in Ontario (511)"
+          "canadaRoads": "Highway incidents, alerts, and road conditions in Ontario and Alberta (511)"
         },
         "notes": {
           "timeAffects": "Ovlivňuje: Zemětřesení, Počasí, Protesty, Výpadky"

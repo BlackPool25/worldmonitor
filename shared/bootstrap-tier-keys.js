@@ -70,6 +70,7 @@ export const BOOTSTRAP_CACHE_KEYS = Object.freeze({
   temporalAnomalies: 'temporal:anomalies:v1',
   weatherAlerts: 'weather:alerts:v1',
   canadaRoads: 'infra:ontario-511:v1',
+  albertaRoads: 'infra:alberta-511:v1',
   spending: 'economic:spending:v1',
   techEvents: 'research:tech-events-bootstrap:v1',
   gdeltIntel: 'intelligence:gdelt-intel:v1',
@@ -173,7 +174,7 @@ const SLOW_KEY_NAMES = new Set([
 const FAST_KEY_NAMES = new Set([
   'earthquakes', 'outages', 'serviceStatuses', 'ddosAttacks', 'trafficAnomalies', 'macroSignals', 'chokepoints',
   'marketQuotes', 'commodityQuotes', 'positiveGeoEvents', 'riskScores', 'flightDelays', 'insights', 'predictions',
-  'iranEvents', 'temporalAnomalies', 'weatherAlerts', 'canadaRoads', 'spending', 'theaterPosture', 'gdeltIntel',
+  'iranEvents', 'temporalAnomalies', 'weatherAlerts', 'canadaRoads', 'albertaRoads', 'spending', 'theaterPosture', 'gdeltIntel',
   'correlationCards', 'forecasts', 'shippingRates', 'shippingStress', 'socialVelocity', 'wsbTickers',
 ]);
 

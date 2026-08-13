@@ -67,6 +67,20 @@
       ]
     },
     {
+      "host": "511.alberta.ca",
+      "provider": "Alberta 511",
+      "kind": "structured",
+      "observed": true,
+      "license": "Alberta 511 terms (https://511.alberta.ca/about/about): non-commercial/educational reproduction allowed; commercial reproduction needs written permission from Alberta Transportation and Economic Corridors. https://511.alberta.ca/help/terms returned 404.",
+      "attribution": "Alberta 511 (Alberta Transportation and Economic Corridors). https://511.alberta.ca/",
+      "status": "terms-review",
+      "references": [
+        {
+          "path": "scripts/lib/provincial-511.mjs"
+        }
+      ]
+    },
+    {
       "host": "511on.ca",
       "provider": "Ontario 511",
       "kind": "structured",

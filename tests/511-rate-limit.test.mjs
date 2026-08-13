@@ -11,6 +11,7 @@ import {
 const SEEDER_SOURCE = readFileSync(new URL('../scripts/seed-provincial-511.mjs', import.meta.url), 'utf8');
 const ADAPTER_SOURCE = readFileSync(new URL('../scripts/lib/provincial-511.mjs', import.meta.url), 'utf8');
 const RELAY_SOURCE = readFileSync(new URL('../scripts/ais-relay.cjs', import.meta.url), 'utf8');
+const CANADA_ROADS_SOURCE = readFileSync(new URL('../src/services/canada-roads.ts', import.meta.url), 'utf8');
 
 describe('per-host 511 limiter (#6618 v1)', () => {
   it('does not import the seeder from tests', () => {
@@ -60,16 +61,41 @@ describe('per-host 511 limiter (#6618 v1)', () => {
   it('adapter acquires the Ontario host slot before each fetch', () => {
     assert.match(ADAPTER_SOURCE, /acquire511Slot\(hostname\)/);
     assert.match(ADAPTER_SOURCE, /511on\.ca/);
+    assert.match(ADAPTER_SOURCE, /511\.alberta\.ca/);
     assert.doesNotMatch(ADAPTER_SOURCE, /open511\.gov\.bc/);
     assert.doesNotMatch(ADAPTER_SOURCE, /from ['"]\.\.\/\.\.\/shared\//);
+    assert.doesNotMatch(ADAPTER_SOURCE, /fetch\.bind/);
   });
 
   it('seeder is a standalone nixpacks job and does not loop ais-relay', () => {
     assert.match(SEEDER_SOURCE, /fetchVendor511\(ONTARIO_511/);
+    assert.match(SEEDER_SOURCE, /fetchVendor511\(ALBERTA_511/);
     assert.match(SEEDER_SOURCE, /zeroIsValid:\s*true/);
     assert.match(SEEDER_SOURCE, /infra:ontario-511:v1/);
+    assert.match(SEEDER_SOURCE, /infra:alberta-511:v1/);
+    assert.match(SEEDER_SOURCE, /seed-meta:infra:alberta-511/);
     assert.doesNotMatch(RELAY_SOURCE, /511on\.ca/);
+    assert.doesNotMatch(RELAY_SOURCE, /511\.alberta\.ca/);
     assert.doesNotMatch(RELAY_SOURCE, /ontario-511/);
+    assert.doesNotMatch(RELAY_SOURCE, /alberta-511/);
     assert.doesNotMatch(RELAY_SOURCE, /canadaRoads/);
+    assert.match(CANADA_ROADS_SOURCE, /infra:alberta-511:v1/);
+    assert.match(CANADA_ROADS_SOURCE, /albertaRoads/);
+    assert.match(CANADA_ROADS_SOURCE, /alberta-511/);
+  });
+
+  it('511.alberta.ca is a separate limiter bucket from 511on.ca', async () => {
+    const limiter = create511RateLimiter({
+      now: () => 1_000,
+      sleep: async () => {
+        throw new Error('Alberta must not wait on Ontario tokens');
+      },
+    });
+    for (let i = 0; i < 10; i++) {
+      await limiter.acquire511Slot('511on.ca');
+    }
+    await limiter.acquire511Slot('511.alberta.ca');
+    assert.equal(limiter.pendingCount('511on.ca'), 10);
+    assert.equal(limiter.pendingCount('511.alberta.ca'), 1);
   });
 });

@@ -175,6 +175,7 @@ describe('layer explanation metadata', () => {
     assertDuration(renderedFreshnessText('weather'), /([0-9]+)-\s*(minute)\s+freshness budget/i, healthMaxStale('weatherAlerts'), 'weather health freshness budget');
 
     assertDuration(renderedFreshnessText('canadaRoads'), /every\s+([0-9]+)\s+(minute)s?/i, 15, 'ontario 511 seed cadence');
+    assert.equal(healthMaxStale('albertaRoads'), healthMaxStale('canadaRoads'), 'Alberta 511 shares the 45-minute 3x cron budget');
     assertDuration(renderedFreshnessText('canadaRoads'), /([0-9]+)-\s*(minute)\s+freshness budget/i, healthMaxStale('canadaRoads'), 'ontario 511 health freshness budget');
 
     const aviationCadenceMin = maxStaleMin('scripts/seed-aviation.mjs', 'intl') / 3;
@@ -232,6 +233,23 @@ describe('layer explanation metadata', () => {
 
     assert.match(cyberThreats.source, /ransomware\.live RSS\/news feed/i);
     assert.match(cyberThreats.source, /IP geolocation enrichment/i);
+  });
+
+  test('canadaRoads explanation discloses Ontario and Alberta 511 coverage on one layer', () => {
+    const roads = getLayerExplanation('canadaRoads');
+    assert.match(LAYER_REGISTRY.canadaRoads.fallbackLabel, /Ontario/i);
+    assert.match(LAYER_REGISTRY.canadaRoads.fallbackLabel, /Alberta/i);
+    assert.match(LAYER_REGISTRY.canadaRoads.fallbackLabel, /511/);
+    assert.match(roads.source, /Ontario 511/i);
+    assert.match(roads.source, /Alberta 511/i);
+    assert.match(roads.source, /511\.alberta\.ca/);
+    assert.ok(
+      roads.limitations.some(limitation => /Manitoba/i.test(limitation)),
+      'canadaRoads limitations must still name Manitoba as not ingested',
+    );
+    for (const path of ['scripts/seed-provincial-511.mjs', 'api/health.js', 'src/services/canada-roads.ts']) {
+      assert.ok(roads.evidence.includes(path), `canadaRoads evidence must cite ${path}`);
+    }
   });
 
   test('weather explanation discloses NWS-only United States coverage', () => {

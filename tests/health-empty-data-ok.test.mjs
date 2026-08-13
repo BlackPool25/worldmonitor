@@ -35,8 +35,10 @@ const AUDITED_PRESENT_PAYLOAD_KEYS = [
   // publishes an explicit {records: []} envelope on every successful tick
   // (zeroIsValid -> OK_ZERO -> canonical written). So fresh metadata plus a
   // vanished payload is a real publish failure, not a quiet period — the same
-  // reasoning api/health.js already applies to `outages`.
+  // reasoning api/health.js already applies to `outages`. albertaRoads rides the
+  // same seeder and the same publish path.
   'canadaRoads',
+  'albertaRoads',
 ];
 
 function classifyMissing(name, meta) {

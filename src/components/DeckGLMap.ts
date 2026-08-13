@@ -2007,7 +2007,7 @@ export class DeckGLMap {
       layers.push(this.createWeatherLayer(filteredWeatherAlerts));
     }
 
-    // Ontario 511 / canadaRoads layer (Scatterplot + PathLayer for polylines)
+    // canadaRoads layer (Ontario 511 + Alberta 511; Scatterplot + PathLayer)
     if (mapLayers.canadaRoads && canadaRoadItems.length > 0) {
       layers.push(...this.createCanadaRoadsLayers(canadaRoadItems));
     } else {
@@ -4944,8 +4944,9 @@ export class DeckGLMap {
       case 'canada-roads-layer':
       case 'canada-roads-paths-layer': {
         const title = obj.headline || obj.roadwayName || t('components.deckgl.layers.canadaRoads');
+        const origin = obj.source === 'alberta-511' ? 'AB' : (obj.jurisdiction || 'ON');
         const extra = obj.lanesAffected ? `<br/>${text(obj.lanesAffected)}` : '';
-        return { html: `<div class="deckgl-tooltip"><strong>${text(title)}</strong><br/>${text(obj.severity || obj.eventType || '')}${extra}</div>` };
+        return { html: `<div class="deckgl-tooltip"><strong>${text(title)}</strong><br/>${text(origin)} · ${text(obj.severity || obj.eventType || '')}${extra}</div>` };
       }
       case 'outages-layer':
         return { html: `<div class="deckgl-tooltip"><strong>${text(obj.title || t('components.deckgl.tooltip.internetOutage'))}</strong><br/>${text(obj.country)}</div>` };

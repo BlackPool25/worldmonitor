@@ -477,7 +477,7 @@
         "climate": "Превключи климатични аномалии",
         "outages": "Превключи интернет прекъсвания",
         "tradeRoutes": "Превключи търговски маршрути",
-        "canadaRoads": "Toggle Ontario 511 roads overlay"
+        "canadaRoads": "Toggle Ontario and Alberta 511 roads overlay"
       },
       "view": {
         "dark": "Превключи на тъмна тема",
@@ -1190,7 +1190,7 @@
         "renewableInstallations": "Чиста енергия",
         "radiationSpike": "Пик на радиация",
         "radiationElevated": "Повишена радиация",
-        "canadaRoads": "Ontario Roads (511)"
+        "canadaRoads": "Ontario and Alberta Roads (511)"
       },
       "tooltip": {
         "earthquake": "Земетресение",
@@ -1297,7 +1297,7 @@
           "dayNight": "Слънчев терминатор в реално време — ден и нощ",
           "geoBoundaries": "Демилитаризирани зони, линии на примирие и спорни граници",
           "ciiChoropleth": "Топлинна карта на индекса на нестабилност — цветове на държави по CII (зелено=стабилно, червено=критично)",
-          "canadaRoads": "Highway incidents, alerts, and road conditions in Ontario (511)"
+          "canadaRoads": "Highway incidents, alerts, and road conditions in Ontario and Alberta (511)"
         },
         "notes": {
           "timeAffects": "Засяга: Земетресения, Метеорология, Протести, Прекъсвания"

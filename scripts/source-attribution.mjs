@@ -94,6 +94,12 @@ const PROVIDER_OVERRIDES = {
     attribution: 'Ontario 511 (Ministry of Transportation). https://511on.ca/',
     status: 'terms-review',
   },
+  '511.alberta.ca': {
+    provider: 'Alberta 511',
+    license: 'Alberta 511 terms (https://511.alberta.ca/about/about): non-commercial/educational reproduction allowed; commercial reproduction needs written permission from Alberta Transportation and Economic Corridors. https://511.alberta.ca/help/terms returned 404.',
+    attribution: 'Alberta 511 (Alberta Transportation and Economic Corridors). https://511.alberta.ca/',
+    status: 'terms-review',
+  },
   'api.elections.kalshi.com': {
     provider: 'Kalshi',
     license: 'Kalshi API terms; commercial-use and redistribution terms require review',

@@ -485,7 +485,7 @@
         "climate": "تبديل الشذوذ المناخي",
         "outages": "تبديل انقطاعات الإنترنت",
         "tradeRoutes": "تبديل طرق التجارة",
-        "canadaRoads": "Toggle Ontario 511 roads overlay"
+        "canadaRoads": "Toggle Ontario and Alberta 511 roads overlay"
       },
       "view": {
         "dark": "التبديل إلى الوضع الداكن",
@@ -1150,7 +1150,7 @@
         "renewableInstallations": "طاقة نظيفة",
         "radiationSpike": "ارتفاع حاد في الإشعاع",
         "radiationElevated": "إشعاع مرتفع",
-        "canadaRoads": "Ontario Roads (511)"
+        "canadaRoads": "Ontario and Alberta Roads (511)"
       },
       "tooltip": {
         "earthquake": "زلزال",
@@ -1257,7 +1257,7 @@
           "techFires": "حرائق غابات نشطة بالقرب من البنية التحتية التقنية",
           "geoBoundaries": "مناطق منزوعة السلاح وخطوط الهدنة والحدود المتنازع عليها",
           "ciiChoropleth": "خريطة حرارية لمؤشر عدم الاستقرار — تلوّن الدول حسب درجة CII (أخضر=مستقر، أحمر=حرج)",
-          "canadaRoads": "Highway incidents, alerts, and road conditions in Ontario (511)"
+          "canadaRoads": "Highway incidents, alerts, and road conditions in Ontario and Alberta (511)"
         },
         "notes": {
           "timeAffects": "يؤثر على: الزلازل، الطقس، الاحتجاجات، الانقطاعات"

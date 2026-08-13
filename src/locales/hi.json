@@ -546,7 +546,7 @@
         "climate": "जलवायु असामान्यताएं चालू/बंद करें",
         "outages": "इंटरनेट बंद दिखाएं/छुपाएं",
         "tradeRoutes": "व्यापार मार्ग चालू/बंद करें",
-        "canadaRoads": "Toggle Ontario 511 roads overlay"
+        "canadaRoads": "Toggle Ontario and Alberta 511 roads overlay"
       },
       "view": {
         "dark": "डार्क मोड पर जाएं",
@@ -1331,7 +1331,7 @@
         "happiness": "विश्व खुशी",
         "speciesRecovery": "प्रजाति पुनर्प्राप्ति",
         "renewableInstallations": "स्वच्छ ऊर्जा",
-        "canadaRoads": "Ontario Roads (511)"
+        "canadaRoads": "Ontario and Alberta Roads (511)"
       },
       "tooltip": {
         "earthquake": "भूकंप",
@@ -1438,7 +1438,7 @@
           "dayNight": "वास्तविक समय सूरज की रोशनी और अंधेरा क्षेत्र",
           "geoBoundaries": "विसैन्यीकृत क्षेत्र, युद्धविराम रेखाएं और विवादित सीमाएं",
           "ciiChoropleth": "देश अस्थिरता सूचकांक हीटमैप — CII स्कोर के अनुसार देशों को रंगों में दर्शाता है (हरा=स्थिर, लाल=गंभीर)",
-          "canadaRoads": "Highway incidents, alerts, and road conditions in Ontario (511)"
+          "canadaRoads": "Highway incidents, alerts, and road conditions in Ontario and Alberta (511)"
         },
         "notes": {
           "timeAffects": "प्रभाव: भूकंप, मौसम, प्रदर्शन, व्यवधान"

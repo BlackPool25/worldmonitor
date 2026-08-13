@@ -1,9 +1,11 @@
 /**
- * Vendor `/api/v2/get` (and v3 roadconditions) adapter for Ontario 511,
- * structured so Alberta and Manitoba can share the same client later.
+ * Vendor `/api/v2/get` (and v3 roadconditions) adapter for Ontario 511
+ * and Alberta 511. Manitoba (#6622) is the next config row and needs key=;
+ * do not fetch it from this adapter until that key is configured.
  *
  * BC Open511 is a different API — do not pass an Open511 baseUrl here.
  * Host allowlist is derived from the configured baseUrl hostname.
+ * acquire511Slot(hostname) is per-host (511on.ca vs 511.alberta.ca).
  */
 
 import { acquire511Slot } from '../_511-rate-limit.mjs';
@@ -17,6 +19,7 @@ const MAX_PATH_POINTS = 32;
 /** Hosts that speak the vendor `/api/v2/get/:resource` contract. */
 const VENDOR_511_HOST_META = Object.freeze({
   '511on.ca': Object.freeze({ jurisdiction: 'ON' }),
+  '511.alberta.ca': Object.freeze({ jurisdiction: 'AB' }),
 });
 /** Dict of host -> { jurisdiction }. Not a Set -- do not use as a membership test. */
 export const VENDOR_511_HOSTS = VENDOR_511_HOST_META;
@@ -31,6 +34,19 @@ export const ONTARIO_511 = Object.freeze({
     Object.freeze({ resource: 'roadconditions', kind: 'condition' }),
   ]),
 });
+
+export const ALBERTA_511_BASE_URL = 'https://511.alberta.ca';
+
+export const ALBERTA_511 = Object.freeze({
+  baseUrl: ALBERTA_511_BASE_URL,
+  jurisdiction: 'AB',
+  resources: Object.freeze([
+    Object.freeze({ resource: 'alerts', kind: 'alert' }),
+  ]),
+});
+
+// #6622 Manitoba 511 — same vendor /api/v2/get adapter, requires key=.
+// Do not add a Manitoba host or fetch it until that key is configured.
 
 export function isVendor511Host(host) {
   return VENDOR_511_HOST_SET.has(String(host || '').toLowerCase());

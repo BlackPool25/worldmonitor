@@ -481,7 +481,7 @@
         "climate": "Переключить климатические аномалии",
         "outages": "Переключить интернет-отключения",
         "tradeRoutes": "Переключить торговые маршруты",
-        "canadaRoads": "Toggle Ontario 511 roads overlay"
+        "canadaRoads": "Toggle Ontario and Alberta 511 roads overlay"
       },
       "view": {
         "dark": "Переключить на тёмную тему",
@@ -1194,7 +1194,7 @@
         "renewableInstallations": "Чистая энергия",
         "radiationSpike": "Всплеск радиации",
         "radiationElevated": "Повышенный уровень радиации",
-        "canadaRoads": "Ontario Roads (511)"
+        "canadaRoads": "Ontario and Alberta Roads (511)"
       },
       "tooltip": {
         "earthquake": "Землетрясение",
@@ -1301,7 +1301,7 @@
           "dayNight": "Солнечный терминатор в реальном времени, показывающий зоны дня и ночи",
           "geoBoundaries": "Демилитаризованные зоны, линии прекращения огня и спорные границы",
           "ciiChoropleth": "Тепловая карта индекса нестабильности стран — цвета по CII (зелёный=стабильно, красный=критично)",
-          "canadaRoads": "Highway incidents, alerts, and road conditions in Ontario (511)"
+          "canadaRoads": "Highway incidents, alerts, and road conditions in Ontario and Alberta (511)"
         },
         "notes": {
           "timeAffects": "Влияет на: Землетрясения, Погода, Протесты, Сбои"

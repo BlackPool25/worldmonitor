@@ -72,6 +72,8 @@ const EXCLUDED_FROM_MCP = new Map([
 
   ['infra:ontario-511:v1',
     'dashboard-internal: Ontario 511 records feed the canadaRoads map layer (#6608); not a queryable MCP slice.'],
+  ['infra:alberta-511:v1',
+    'dashboard-internal: Alberta 511 alerts union onto the canadaRoads map layer (#6612); not a queryable MCP slice.'],
 
   // ===========================================================================
   // Intermediate / pipeline keys (data surfaces through a sibling tool)

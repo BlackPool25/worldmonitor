@@ -546,7 +546,7 @@
         "climate": "Klímabeli anomáliák be/ki",
         "outages": "Internetkiesések be/ki",
         "tradeRoutes": "Kereskedelmi útvonalak be/ki",
-        "canadaRoads": "Toggle Ontario 511 roads overlay"
+        "canadaRoads": "Toggle Ontario and Alberta 511 roads overlay"
       },
       "view": {
         "dark": "Váltás sötét módra",
@@ -1331,7 +1331,7 @@
         "happiness": "Világboldogság",
         "speciesRecovery": "Fajmegmentés",
         "renewableInstallations": "Tiszta energia",
-        "canadaRoads": "Ontario Roads (511)"
+        "canadaRoads": "Ontario and Alberta Roads (511)"
       },
       "tooltip": {
         "earthquake": "Földrengés",
@@ -1438,7 +1438,7 @@
           "dayNight": "Valós idejű napenergia terminátor nap és éj zónákat mutatja",
           "geoBoundaries": "Demilitarizált zónák, tűzszünet vonalak és vitatott határok",
           "ciiChoropleth": "Országinstabilitási Index hőtérkép — országokat CII pontszám szerint színezi (zöld=stabil, piros=kritikus)",
-          "canadaRoads": "Highway incidents, alerts, and road conditions in Ontario (511)"
+          "canadaRoads": "Highway incidents, alerts, and road conditions in Ontario and Alberta (511)"
         },
         "notes": {
           "timeAffects": "Érintett: Földrengések, Időjárás, Tüntetések, Leállások"

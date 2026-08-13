@@ -5,6 +5,8 @@ import test from 'node:test';
 import { __testing__ as limiterTesting } from '../scripts/_511-rate-limit.mjs';
 import { __testing__ as healthTesting } from '../api/health.js';
 import {
+  ALBERTA_511,
+  CHROME_UA,
   MAX_RECORDS,
   ONTARIO_511,
   VENDOR_511_HOSTS,
@@ -47,6 +49,15 @@ test('Ontario is the first vendor config; BC Open511 is not on the allowlist', (
   assert.equal(isVendor511Host('open511.gov.bc.ca'), false);
   assert.equal(isVendor511Host('has'), false);
   assert.equal(Object.hasOwn(VENDOR_511_HOSTS, 'has'), false);
+});
+
+test('Alberta 511 is on the vendor allowlist; Manitoba is not fetched', () => {
+  assert.equal(ALBERTA_511.jurisdiction, 'AB');
+  assert.equal(ALBERTA_511.baseUrl, 'https://511.alberta.ca');
+  assert.deepEqual(ALBERTA_511.resources.map((r) => r.resource), ['alerts']);
+  assert.equal(VENDOR_511_HOSTS['511.alberta.ca'].jurisdiction, 'AB');
+  assert.equal(isVendor511Host('511.alberta.ca'), true);
+  assert.equal(isVendor511Host('511.gov.mb.ca'), false);
 });
 
 test('empty event/alert/condition lists are valid', () => {
@@ -438,9 +449,53 @@ test('responses larger than 5MB are rejected', async () => {
   );
 });
 
+const ALBERTA_ALERTS_FIXTURE = JSON.parse(
+  readFileSync(new URL('./fixtures/alberta-511-alerts.json', import.meta.url), 'utf8'),
+);
+const ADAPTER_SOURCE = readFileSync(new URL('../scripts/lib/provincial-511.mjs', import.meta.url), 'utf8');
+
+test('get() fetches Alberta alerts over /api/v2/get/alerts?format=json from the captured fixture', async () => {
+  const urls = [];
+  const fetchFn = async (url, init) => {
+    urls.push({ url: String(url), init });
+    return jsonResponse(ALBERTA_ALERTS_FIXTURE);
+  };
+  const result = await get('https://511.alberta.ca', 'alerts', { fetchFn });
+  assert.equal(result.records.length, 2);
+  assert.equal(result.records[0].id, '1676');
+  assert.equal(result.records[0].kind, 'alert');
+  assert.equal(result.records[0].jurisdiction, 'AB');
+  assert.equal(result.records[0].headline.includes('Rainfall warning'), true);
+  assert.equal(result.records[1].severity, 'Severe');
+  assert.equal(result.records[1].centroid, null);
+  assert.match(urls[0].url, /^https:\/\/511\.alberta\.ca\/api\/v2\/get\/alerts\?format=json$/);
+  assert.equal(urls[0].init.redirect, 'error');
+  assert.equal(urls[0].init.headers['User-Agent'], CHROME_UA);
+  assert.equal(typeof urls[0].init.fetch, 'undefined');
+  assert.equal(limiterTesting.pendingTokens('511.alberta.ca'), 1);
+  assert.equal(limiterTesting.pendingTokens('511on.ca'), 0);
+});
+
+test('Alberta alerts consume 1 token of the 511.alberta.ca bucket, not Ontario\'s', async () => {
+  const fetchFn = async () => jsonResponse([]);
+  await fetchVendor511(ALBERTA_511, { fetchFn, staggerMs: 0 });
+  assert.equal(limiterTesting.pendingTokens('511.alberta.ca'), 1);
+  assert.equal(limiterTesting.pendingTokens('511on.ca'), 0);
+});
+
+test('adapter uses CHROME_UA, no fetch.bind, and allowlists 511.alberta.ca', () => {
+  assert.match(ADAPTER_SOURCE, /CHROME_UA/);
+  assert.match(ADAPTER_SOURCE, /511\.alberta\.ca/);
+  assert.match(ADAPTER_SOURCE, /acquire511Slot\(hostname\)/);
+  assert.doesNotMatch(ADAPTER_SOURCE, /fetch\.bind/);
+  assert.doesNotMatch(ADAPTER_SOURCE, /open511\.gov\.bc/);
+});
+
 test('seeder module is not imported by this test file', () => {
   const src = import.meta.url;
   assert.match(src, /provincial-511\.test\.mjs$/);
+  const self = readFileSync(new URL(import.meta.url), 'utf8');
+  assert.equal(/from ['"][^'"]*seed-provincial-511/.test(self), false);
 });
 
 test('roadconditions without an ID get a synthesized stable id', () => {
