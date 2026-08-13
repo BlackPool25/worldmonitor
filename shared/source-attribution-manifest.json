@@ -5788,6 +5788,20 @@
       ]
     },
     {
+      "host": "secure.toronto.ca",
+      "provider": "City of Toronto Open Data",
+      "kind": "structured",
+      "observed": true,
+      "license": "Open Government Licence – Toronto (https://open.toronto.ca/open-data-licence/); dataset page https://open.toronto.ca/dataset/road-restrictions/ states Open Government Licence - Toronto",
+      "attribution": "City of Toronto, Road Restrictions. https://open.toronto.ca/dataset/road-restrictions/ (Open Government Licence – Toronto).",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "scripts/lib/toronto-road-restrictions.mjs"
+        }
+      ]
+    },
+    {
       "host": "sedeaplicaciones.minetur.gob.es",
       "provider": "sedeaplicaciones.minetur.gob.es",
       "kind": "structured",
