@@ -22,8 +22,8 @@ import type { MapLayers } from '../src/types/index.ts';
 const searchManagerSrc = readFileSync(new URL('../src/app/search-manager.ts', import.meta.url), 'utf8');
 const commandTier = { premium: false };
 
-function extractHandleCommand(): new () => { ctx: any; handleCommand(command: { id: string }): void } {
-  const signature = 'private handleCommand(cmd: Command): void {';
+function extractHandleCommand(): new () => { ctx: any; handleCommand(command: { id: string }): boolean | Promise<boolean> } {
+  const signature = 'private handleCommand(cmd: Command): boolean | Promise<boolean> {';
   const start = searchManagerSrc.indexOf(signature);
   assert.ok(start >= 0, 'SearchManager.handleCommand must remain in the source');
   const braceStart = searchManagerSrc.indexOf('{', start);
@@ -68,7 +68,7 @@ function extractHandleCommand(): new () => { ctx: any; handleCommand(command: { 
     () => ({}),
     () => {},
     () => {},
-  ) as new () => { ctx: any; handleCommand(command: { id: string }): void };
+  ) as new () => { ctx: any; handleCommand(command: { id: string }): boolean | Promise<boolean> };
 }
 
 const SearchManagerHarness = extractHandleCommand();

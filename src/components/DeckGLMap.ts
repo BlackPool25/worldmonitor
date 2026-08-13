@@ -6973,6 +6973,7 @@ export class DeckGLMap {
         this.aircraftFetchTimer = null;
       }
       this.aircraftPositions = [];
+      this.onAircraftPositionsUpdate?.([]);
     }
   }
 
@@ -6995,6 +6996,7 @@ export class DeckGLMap {
     if (zoom < 2) {
       if (this.aircraftPositions.length > 0) {
         this.aircraftPositions = [];
+        this.onAircraftPositionsUpdate?.([]);
         this.render();
       }
       return;
@@ -7021,6 +7023,11 @@ export class DeckGLMap {
       this.render();
     }).catch((err) => {
       console.error('[aircraft] fetch error', err);
+      if (seq === this.aircraftFetchSeq) {
+        this.aircraftPositions = [];
+        this.onAircraftPositionsUpdate?.([]);
+        this.render();
+      }
       this.setLayerLoading('flights', false);
     });
   }
