@@ -497,6 +497,20 @@ describe('map renderer deferral boundary', () => {
       'DeckGLMap.setCenter should expose its target center and zoom before publishing state',
     );
 
+    for (const method of ['setView', 'setCenter']) {
+      assert.match(
+        methodBodyText(deck, method),
+        /const viewportMovementGeneration\s*=\s*this\.markViewportMoving[\s\S]*this\.maplibreMap\.flyTo\([\s\S]*VIEWPORT_MOVEMENT_EVENT_KEY\]: viewportMovementGeneration/s,
+        `DeckGLMap.${method} should tag MapLibre moveend events with its viewport generation`,
+      );
+    }
+
+    assert.match(
+      methodBodyText(deck, 'initDeck'),
+      /const eventGeneration\s*=\s*\(event as unknown as ViewportMovementEventData\)\[VIEWPORT_MOVEMENT_EVENT_KEY\][\s\S]*if \(eventGeneration !== undefined && eventGeneration !== viewportMovementGeneration\) return;[\s\S]*this\.pendingCenter = null/s,
+      'DeckGLMap should ignore a stale moveend before clearing the active pending center',
+    );
+
     assert.match(
       methodBodyText(globe, 'settleViewportMovement'),
       /this\.onStateChangeCb\?\.\(this\.getState\(\)\)[\s\S]*resolve\?\.\(completed\)/,

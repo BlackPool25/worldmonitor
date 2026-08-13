@@ -242,6 +242,12 @@ const VIEW_PRESETS: Record<DeckMapView, { longitude: number; latitude: number; z
   oceania: { longitude: 135, latitude: -25, zoom: 3.5 },
 };
 
+const VIEWPORT_MOVEMENT_EVENT_KEY = 'worldMonitorViewportGeneration';
+
+type ViewportMovementEventData = {
+  worldMonitorViewportGeneration?: unknown;
+};
+
 const MAP_INTERACTION_MODE: MapInteractionMode =
   import.meta.env.VITE_MAP_INTERACTION_MODE === 'flat' ? 'flat' : '3d';
 
@@ -1230,12 +1236,14 @@ export class DeckGLMap {
       }
     });
 
-    this.maplibreMap.on('moveend', () => {
+    this.maplibreMap.on('moveend', (event) => {
       // Snapshot before publishing state: a synchronous subscriber can start a
       // newer movement, and this old event must never settle that generation.
       const viewportMovementGeneration = this.viewportTarget
         ? this.viewportMovementGeneration
         : null;
+      const eventGeneration = (event as unknown as ViewportMovementEventData)[VIEWPORT_MOVEMENT_EVENT_KEY];
+      if (eventGeneration !== undefined && eventGeneration !== viewportMovementGeneration) return;
       this.pendingCenter = null;
       this.lastSCZoom = -1;
       this.rafUpdateLayers();
@@ -6022,7 +6030,7 @@ export class DeckGLMap {
     }
   }
 
-  private markViewportMoving(target: { lat: number; lon: number; zoom: number }, fallbackMs: number): void {
+  private markViewportMoving(target: { lat: number; lon: number; zoom: number }, fallbackMs: number): number {
     // Every concrete renderer command owns a distinct settlement generation.
     // This also catches renderer-local controls that bypass MapContainer's
     // facade token: superseding them must never make the older caller succeed.
@@ -6041,6 +6049,7 @@ export class DeckGLMap {
       () => this.trySettleViewportMovement(false, generation),
       fallbackMs,
     );
+    return generation;
   }
 
   private trySettleViewportMovement(
@@ -6113,7 +6122,7 @@ export class DeckGLMap {
     this.pendingCenter = { lat: preset.latitude, lon: preset.longitude };
 
     if (this.maplibreMap) {
-      this.markViewportMoving({
+      const viewportMovementGeneration = this.markViewportMoving({
         lat: preset.latitude,
         lon: preset.longitude,
         zoom: this.state.zoom,
@@ -6122,7 +6131,7 @@ export class DeckGLMap {
         center: [preset.longitude, preset.latitude],
         zoom: this.state.zoom,
         duration: 1000,
-      });
+      }, { [VIEWPORT_MOVEMENT_EVENT_KEY]: viewportMovementGeneration });
     }
 
     const viewSelect = this.container.querySelector('.view-select') as HTMLSelectElement;
@@ -6145,7 +6154,7 @@ export class DeckGLMap {
     this.pendingCenter = { lat, lon };
     if (zoom != null) this.state.zoom = zoom;
     if (this.maplibreMap) {
-      this.markViewportMoving({
+      const viewportMovementGeneration = this.markViewportMoving({
         lat,
         lon,
         zoom: zoom ?? this.maplibreMap.getZoom(),
@@ -6154,7 +6163,7 @@ export class DeckGLMap {
         center: [lon, lat],
         ...(zoom != null && { zoom }),
         duration: 500,
-      });
+      }, { [VIEWPORT_MOVEMENT_EVENT_KEY]: viewportMovementGeneration });
     }
     this.onStateChange?.(this.getState());
   }
