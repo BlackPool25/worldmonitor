@@ -1030,6 +1030,10 @@ describe('feed catalog drift', () => {
     'Edmonton Journal',
     'Ottawa Citizen',
     'The Province',
+    'CTV News',
+    'CP24',
+    'Chronicle Herald',
+    'Montreal Gazette',
   ] as const;
   const CANADA_CATALOG = [...CANADA_CATALOG_5960, ...CANADA_DEPTH_CATALOG] as const;
   const CANADA_FR_SOURCES = ['Radio-Canada', 'La Presse', 'Le Devoir', 'TVA Nouvelles'] as const;
@@ -1067,23 +1071,23 @@ describe('feed catalog drift', () => {
     'DR Nyheder': 'https://www.dr.dk/nyheder/service/feeds/allenyheder',
   };
 
-  it('catalogs Canadian sources and default-enables CBC + Toronto Star (#5960/#6604)', () => {
+  it('catalogs Canadian sources and default-enables CBC + CTV + Toronto Star (#5960/#6604)', () => {
 
     const us = feeds.FEEDS.us ?? [];
     const byName = new Map(us.map((f) => [f.name, f]));
     for (const name of CANADA_CATALOG) {
       assert.ok(byName.has(name), `${name} must be in FEEDS.us catalog`);
     }
-    assert.equal(CANADA_CATALOG.length, 20, 'frozen 20-source Canada roster');
-    assert.deepEqual([...feeds.CANADA_EN_DEFAULT_SOURCES], ['CBC News', 'Toronto Star']);
-    assert.equal(byName.has('CTV News'), false, 'CTV News must not be in the Canada feed pack');
-    assert.equal(byName.has('CP24'), false, 'CP24 must not be in the Canada feed pack');
+    assert.equal(CANADA_CATALOG.length, 24, 'frozen 24-source Canada roster (20 native + 4 GNews-only)');
+    assert.deepEqual([...feeds.CANADA_EN_DEFAULT_SOURCES], ['CBC News', 'CTV News', 'Toronto Star']);
+    assert.ok(byName.has('CTV News'), 'CTV News must be catalogued via GNews site: fallback');
+    assert.ok(byName.has('CP24'), 'CP24 must be catalogued via GNews site: fallback');
 
     const usDefaults = feeds.DEFAULT_ENABLED_SOURCES.us ?? [];
     for (const name of feeds.CANADA_EN_DEFAULT_SOURCES) {
       assert.ok(usDefaults.includes(name), `${name} must be DEFAULT_ENABLED us`);
     }
-    assert.equal(usDefaults.includes('CTV News'), false, 'CTV News must not be DEFAULT_ENABLED us');
+    assert.ok(usDefaults.includes('CTV News'), 'CTV News must be DEFAULT_ENABLED us');
     assert.equal(usDefaults.includes('National Post'), false, 'National Post must not be DEFAULT_ENABLED us');
     const enabled = feeds.getAllDefaultEnabledSources();
     const disabledEn = new Set(feeds.computeDefaultDisabledSources('en'));
@@ -1142,9 +1146,17 @@ describe('feed catalog drift', () => {
     const serverUs = new Map((serverFeeds.VARIANT_FEEDS.full?.us ?? []).map((f) => [f.name, f]));
     const serverEu = new Map((serverFeeds.VARIANT_FEEDS.full?.europe ?? []).map((f) => [f.name, f]));
 
+    const CANADA_GNEWS_ONLY = new Set(['CTV News', 'CP24', 'Chronicle Herald', 'Montreal Gazette']);
     for (const name of CANADA_CATALOG) {
       assert.ok(serverUs.has(name), `server us catalog must include ${name}`);
       const clientUrl = typeof clientUs.get(name)?.url === 'string' ? clientUs.get(name)!.url as string : '';
+      if (CANADA_GNEWS_ONLY.has(name)) {
+        assert.match(clientUrl, /news\.google\.com\/rss\/search/, `${name} client URL must use Google News`);
+        assert.match(serverUs.get(name)!.url, /news\.google\.com\/rss\/search/, `${name} server URL must use Google News`);
+        assert.match(clientUrl, /[?&]hl=en-CA/, `${name} must use CA locale`);
+        assert.match(serverUs.get(name)!.url, /[?&]hl=en-CA/, `${name} server must use CA locale`);
+        continue;
+      }
       assert.equal(serverUs.get(name)?.url, clientUrl, `${name} client/server URL must match`);
       assert.equal(clientUrl.includes('news.google.com'), false, `${name} must not use a GNews URL`);
       if ((CANADA_FR_SOURCES as readonly string[]).includes(name)) {
@@ -1216,7 +1228,7 @@ describe('feed catalog drift', () => {
   it('treats Canada depth companions as opt-in and does not append them onto the arctic list (#6604/#6605)', () => {
     assert.deepEqual(
       [...feeds.CANADA_DEPTH_OPT_IN_SOURCES].sort(),
-      [...CANADA_DEPTH_CATALOG].filter((n) => n !== 'Toronto Star').sort(),
+      [...CANADA_DEPTH_CATALOG].filter((n) => n !== 'Toronto Star' && n !== 'CTV News').sort(),
     );
     for (const name of feeds.CANADA_DEPTH_OPT_IN_SOURCES) {
       assert.equal(

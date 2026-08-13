@@ -65,6 +65,10 @@ const EXPECTED_REQUIRED_SOURCE_GEOGRAPHY = new Map<string, readonly string[]>([
   ['Citi Newsroom', ['GH']],
   ['Civil.ge', ['GE']],
   ['CNA', ['SG']],
+  ['Chronicle Herald', ['CA']],
+  ['CP24', ['CA']],
+  ['CTV News', ['CA']],
+  ['Montreal Gazette', ['CA']],
   ["Maclean's", ['CA']],
   ['The Province', ['CA']],
   ['Dabanga Sudan', ['SD']],
@@ -332,10 +336,14 @@ describe('geographic coverage health (#5957)', () => {
       'Toronto Star',
       'Vancouver Sun',
       'Winnipeg Free Press',
+      'CTV News',
+      'CP24',
+      'Chronicle Herald',
+      'Montreal Gazette',
     ]));
-    assert.deepEqual(canada.defaultOnSources, ['CBC News', 'Toronto Star']);
-    assert.equal(canada.floor, 2, 'floors.CA must be 2');
-    assert.equal(inputs.policy.floors.CA, 2, 'policy.floors.CA must be 2');
+    assert.deepEqual(canada.defaultOnSources, ['CBC News', 'CTV News', 'Toronto Star']);
+    assert.equal(canada.floor, 3, 'floors.CA must be 3');
+    assert.equal(inputs.policy.floors.CA, 3, 'policy.floors.CA must be 3');
     assert.equal(canada.allowlistReason, null, 'Canada must no longer be allowlisted as uncovered');
 
     const { violations } = evaluateGeoCoverage(rows);

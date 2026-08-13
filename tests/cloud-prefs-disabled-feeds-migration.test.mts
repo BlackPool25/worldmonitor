@@ -483,11 +483,11 @@ describe('cloud-prefs schema-7 migration: Canada depth opt-in boundary', () => {
     }
   });
 
-  it('does not insert default-on CBC/Toronto Star into a pre-pack denylist', () => {
+  it('does not insert default-on CBC/CTV/Toronto Star into a pre-pack denylist', () => {
     const blob = { 'worldmonitor-disabled-feeds': JSON.stringify(['user-choice']) };
     const result = migrateCanadaDepthOptInsV7(blob, CANADA_DEPTH_OPT_INS);
     const disabled = JSON.parse(result['worldmonitor-disabled-feeds'] as string) as string[];
-    for (const name of ['CBC News', 'Toronto Star']) {
+    for (const name of ['CBC News', 'CTV News', 'Toronto Star']) {
       assert.equal(disabled.includes(name), false, `${name} must stay absent from disabled`);
     }
     for (const name of CANADA_DEPTH_OPT_INS) {
@@ -505,7 +505,7 @@ describe('cloud-prefs schema-7 migration: Canada depth opt-in boundary', () => {
     const disabled = JSON.parse(result['worldmonitor-disabled-feeds'] as string) as string[];
     assert.ok(disabled.includes('Globe and Mail'));
     assert.ok(disabled.includes('Global News'));
-    for (const name of ['CBC News', 'Toronto Star']) {
+    for (const name of ['CBC News', 'CTV News', 'Toronto Star']) {
       assert.equal(disabled.includes(name), false, `${name} must stay absent from disabled`);
     }
     for (const name of CANADA_DEPTH_OPT_INS) {

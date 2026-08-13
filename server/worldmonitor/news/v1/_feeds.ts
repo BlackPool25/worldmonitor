@@ -89,6 +89,10 @@ export const VARIANT_FEEDS: Record<string, Record<string, ServerFeed[]>> = {
       { name: 'Edmonton Journal', url: 'https://edmontonjournal.com/feed/' },
       { name: "Maclean's", url: 'https://macleans.ca/feed/' },
       { name: 'The Province', url: 'https://theprovince.com/feed/' },
+      { name: 'CTV News', url: gnLocale('site:ctvnews.ca when:2d', 'en-CA', 'CA', 'CA:en') },
+      { name: 'CP24', url: gnLocale('site:cp24.com when:2d', 'en-CA', 'CA', 'CA:en') },
+      { name: 'Chronicle Herald', url: gnLocale('site:thechronicleherald.ca when:14d', 'en-CA', 'CA', 'CA:en') },
+      { name: 'Montreal Gazette', url: gnLocale('site:montrealgazette.com when:2d', 'en-CA', 'CA', 'CA:en') },
     ],
 
     europe: [

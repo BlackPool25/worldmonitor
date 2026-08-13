@@ -103,6 +103,11 @@ export const FULL_FEEDS: Record<string, Feed[]> = {
     { name: 'Edmonton Journal', url: rss('https://edmontonjournal.com/feed/') },
     { name: "Maclean's", url: rss('https://macleans.ca/feed/') },
     { name: 'The Province', url: rss('https://theprovince.com/feed/') },
+    // GNews-only (#6604): no parseable native RSS. CA locale. Do not allowlist publisher hosts.
+    { name: 'CTV News', url: rss('https://news.google.com/rss/search?q=site:ctvnews.ca+when:2d&hl=en-CA&gl=CA&ceid=CA:en') },
+    { name: 'CP24', url: rss('https://news.google.com/rss/search?q=site:cp24.com+when:2d&hl=en-CA&gl=CA&ceid=CA:en') },
+    { name: 'Chronicle Herald', url: rss('https://news.google.com/rss/search?q=site:thechronicleherald.ca+when:14d&hl=en-CA&gl=CA&ceid=CA:en') },
+    { name: 'Montreal Gazette', url: rss('https://news.google.com/rss/search?q=site:montrealgazette.com+when:2d&hl=en-CA&gl=CA&ceid=CA:en') },
   ],
 
   europe: [
@@ -1230,10 +1235,11 @@ export const REGIONAL_FEED_ROLLOUT_OPT_IN_SOURCES = [
   'Ethiopia Insight', 'Dabanga Sudan', 'Citi Newsroom',
 ] as const;
 
-/** Canada pack (#5960) — EN default-on for North America keyCountry CA.
- * Depth pack (#6604/#6605) adds Toronto Star only (floors.CA = 2). National Post stays opt-in. */
+/** Canada pack (#5960/#6604/#6605) — EN default-on for North America keyCountry CA.
+ * CTV News GNews probe returned items, so floors.CA = 3: CBC + CTV + Toronto Star. */
 export const CANADA_EN_DEFAULT_SOURCES = [
   'CBC News',
+  'CTV News',
   'Toronto Star',
 ] as const;
 
@@ -1277,6 +1283,9 @@ export const CANADA_DEPTH_OPT_IN_SOURCES = [
   'Edmonton Journal',
   "Maclean's",
   'The Province',
+  'CP24',
+  'Chronicle Herald',
+  'Montreal Gazette',
 ] as const;
 
 /** Chronological feed introductions used to reconstruct untouched cap states. */
@@ -1404,11 +1413,11 @@ export function getStrategicDefaultSources(): Set<string> {
  */
 export const DEFAULT_ENABLED_SOURCES: Record<string, string[]> = {
   politics: ['BBC World', 'Guardian World', 'AP News', 'Reuters World', 'CNN World'],
-  // Canada pack (#5960/#6604/#6605): CBC News + Toronto Star
-  // default-on for North America keyCountry CA (floors.CA = 2). Globe and Mail
+  // Canada pack (#5960/#6604/#6605): CBC News + CTV News + Toronto Star
+  // default-on for North America keyCountry CA (floors.CA = 3). Globe and Mail
   // + Global News remain catalog opt-in (arctic pack). Remaining depth names
-  // are catalog opt-in. FR sources are locale-boosted only.
-  us: ['Reuters US', 'NPR News', 'PBS NewsHour', 'ABC News', 'CBS News', 'NBC News', 'Wall Street Journal', 'Politico', 'The Hill', 'CBC News', 'Toronto Star'],
+  // are catalog opt-in. FR sources are locale-boosted only. CTV is GNews-only.
+  us: ['Reuters US', 'NPR News', 'PBS NewsHour', 'ABC News', 'CBS News', 'NBC News', 'Wall Street Journal', 'Politico', 'The Hill', 'CBC News', 'CTV News', 'Toronto Star'],
   // Europe defaults — Ukraine war frontline (#5949) + UA/RU balance rule (#5950):
   // ≥1 dedicated UA primary (Kyiv Independent) + ≥1 independent RU (Meduza, Moscow Times).
   // PL frontline: TVN24 + Rzeczpospolita (not all three PL; noise control).
