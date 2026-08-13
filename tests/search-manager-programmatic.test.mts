@@ -432,6 +432,62 @@ describe('SearchManager programmatic dashboard search (#6212)', () => {
     );
   });
 
+  it('keeps analytics origin local while an agent country selection is awaiting presentation', async () => {
+    const agentMatch = resultMatch(
+      'country',
+      'US',
+      'United States',
+      { code: 'US', name: 'United States' },
+    );
+    const humanMatch = resultMatch(
+      'country',
+      'CA',
+      'Canada',
+      { code: 'CA', name: 'Canada' },
+    );
+    const scenario = makeScenario([agentMatch]);
+    let resolveAgentSelection!: (opened: boolean) => void;
+    let selectionCount = 0;
+    scenario.manager.callbacks.openCountryBriefByCode = (
+      code: string,
+      name: string,
+      options?: { trackDetailedAnalytics?: boolean },
+    ) => {
+      scenario.calls.countryBriefs.push([code, name, options]);
+      selectionCount += 1;
+      if (selectionCount === 1) {
+        return new Promise<boolean>((resolve) => {
+          resolveAgentSelection = resolve;
+        });
+      }
+      return true;
+    };
+
+    const response = await scenario.manager.searchDashboard('needle', 'all', 10);
+    const key = response.results[0]?.key;
+    assert.ok(key);
+    const pendingAgentOpen = scenario.manager.openSearchResult(key);
+    assert.equal(scenario.calls.countryBriefs.length, 1, 'agent selection should be awaiting presentation');
+
+    assert.equal(scenario.manager.handleSearchResult(humanMatch.result), true);
+    assert.deepEqual(scenario.runtime.detailedCountryAnalytics, [[
+      'CA',
+      'Canada',
+      'search',
+    ]]);
+    assert.deepEqual(scenario.calls.countryBriefs, [
+      ['US', 'United States', { trackDetailedAnalytics: false }],
+      ['CA', 'Canada', { trackDetailedAnalytics: true }],
+    ]);
+
+    resolveAgentSelection(true);
+    assert.deepEqual(await pendingAgentOpen, {
+      ok: true,
+      status: 'opened',
+      type: 'country',
+    });
+  });
+
   it('fails closed when the semantic search index revision changes', async () => {
     const match = resultMatch(
       'country',
@@ -598,6 +654,51 @@ describe('SearchManager programmatic dashboard search (#6212)', () => {
     assert.equal(readinessCalls, 0, 'a denied key must not wake the deferred renderer');
     assert.deepEqual(scenario.calls.layers, []);
     assert.deepEqual(scenario.calls.pipelineIds, []);
+  });
+
+  it('denies cached civilian aircraft after a globe switch while retaining military aircraft', async () => {
+    const civilian = resultMatch(
+      'flight',
+      'civilian-1',
+      'NEEDLE1',
+      { kind: 'adsb', lat: 1, lon: 2, layer: 'flights' },
+    );
+    const military = resultMatch(
+      'flight',
+      'military-1',
+      'NEEDLE2',
+      { kind: 'military', lat: 3, lon: 4, layer: 'military' },
+    );
+    const scenario = makeScenario([civilian, military]);
+    const response = await scenario.manager.searchDashboard('needle', 'all', 10);
+    assert.deepEqual(response.results.map((result: { executable: boolean }) => result.executable), [
+      true,
+      true,
+    ]);
+
+    scenario.state.globe = true;
+    let readinessCalls = 0;
+    assert.deepEqual(await scenario.manager.openSearchResult(
+      response.results[0].key,
+      async () => { readinessCalls += 1; },
+    ), {
+      ok: false,
+      status: 'denied',
+      reason: 'result_no_longer_executable',
+    });
+    assert.equal(readinessCalls, 0, 'an invisible civilian target must not wake the renderer');
+
+    assert.deepEqual(await scenario.manager.openSearchResult(
+      response.results[1].key,
+      async () => { readinessCalls += 1; },
+    ), {
+      ok: true,
+      status: 'opened',
+      type: 'flight',
+    });
+    assert.equal(readinessCalls, 1);
+    assert.deepEqual(scenario.calls.layers, ['military']);
+    assert.deepEqual(scenario.calls.centers, [[3, 4, 9]]);
   });
 
   it('denies globe time commands that only mutate hidden renderer state', async () => {

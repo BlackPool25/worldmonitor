@@ -75,6 +75,20 @@ import {
 const SEARCH_RESULT_CACHE_MAX_ENTRIES = 64;
 const SEARCH_RESULT_CACHE_TTL_MS = 2 * 60 * 1000;
 const FLIGHT_SEARCH_SOURCE_TTL_MS = 2 * 60 * 1000;
+
+interface FlightSearchItem {
+  id: string;
+  title: string;
+  subtitle: string;
+  data: {
+    kind: 'adsb' | 'military';
+    lat: number;
+    lon: number;
+    layer: 'flights' | 'military';
+  };
+  expiresAt: number;
+}
+
 const LAYER_PRESET_PRIMARY_LAYERS: Record<string, (keyof MapLayers)[]> = {
   military: ['bases', 'flights', 'military'],
   finance: ['stockExchanges', 'financialCenters', 'centralBanks', 'commodityHubs', 'economic'],
@@ -104,10 +118,97 @@ export interface SearchManagerCallbacks {
 }
 
 export class SearchManager implements AppModule {
+  private static flightObservationTime(
+    value: unknown,
+    fallback: number,
+    now: number,
+  ): number {
+    const parsed = value instanceof Date
+      ? value.getTime()
+      : typeof value === 'number'
+        ? value
+        : typeof value === 'string'
+          ? Date.parse(value)
+          : Number.NaN;
+    const timestamp = Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+    // A bad upstream clock must not turn a live-position result into a
+    // capability with an arbitrarily long lifetime.
+    return Math.min(timestamp, now);
+  }
+
+  private static buildFlightSearchItems(
+    adsb: PositionSample[],
+    military: MilitaryFlight[],
+    adsbUpdatedAt: number,
+    now: number,
+  ): FlightSearchItem[] {
+    const safeAdsbUpdatedAt = SearchManager.flightObservationTime(adsbUpdatedAt, now, now);
+    return [
+      ...adsb.map((position) => {
+        const fl = Number.isFinite(position.altitudeFt)
+          ? Math.round(position.altitudeFt / 100)
+          : null;
+        const kts = Number.isFinite(position.groundSpeedKts)
+          ? Math.round(position.groundSpeedKts)
+          : null;
+        const observedAt = SearchManager.flightObservationTime(
+          position.observedAt,
+          safeAdsbUpdatedAt,
+          now,
+        );
+        return {
+          id: position.icao24,
+          title: (position.callsign || position.icao24).trim().toUpperCase(),
+          subtitle: position.onGround
+            ? t('modals.search.flightOnGround')
+            : fl !== null && kts !== null
+              ? t('modals.search.flightAirborne', { fl: String(fl), kts: String(kts) })
+              : fl !== null
+                ? `FL${fl}`
+                : t('modals.search.flightOnGround'),
+          data: {
+            kind: 'adsb' as const,
+            lat: position.lat,
+            lon: position.lon,
+            layer: 'flights' as const,
+          },
+          expiresAt: observedAt + FLIGHT_SEARCH_SOURCE_TTL_MS,
+        };
+      }),
+      ...military.map((flight) => {
+        const fl = Number.isFinite(flight.altitude)
+          ? Math.round(flight.altitude / 100)
+          : null;
+        // Military data is read from intelligenceCache when an independent
+        // ADS-B viewport callback fires. Never use that callback's timestamp as
+        // military freshness: doing so renewed a stalled military feed forever.
+        const observedAt = SearchManager.flightObservationTime(flight.lastSeen, 0, now);
+        return {
+          id: flight.hexCode,
+          title: (flight.callsign || flight.hexCode).trim().toUpperCase(),
+          subtitle: flight.onGround
+            ? t('modals.search.flightMilitaryOnGround', { type: flight.aircraftType })
+            : fl !== null
+              ? t('modals.search.flightMilitary', {
+                  type: flight.aircraftType,
+                  fl: String(fl),
+                })
+              : t('modals.search.flightMilitaryOnGround', { type: flight.aircraftType }),
+          data: {
+            kind: 'military' as const,
+            lat: flight.lat,
+            lon: flight.lon,
+            layer: 'military' as const,
+          },
+          expiresAt: observedAt + FLIGHT_SEARCH_SOURCE_TTL_MS,
+        };
+      }),
+    ].filter((item) => item.expiresAt > now);
+  }
+
   private ctx: AppContext;
   private callbacks: SearchManagerCallbacks;
   private highlightTimers = new WeakMap<Element, ReturnType<typeof setTimeout>>();
-  private suppressDetailedSelectionAnalytics = false;
   private securityEpoch = 0;
   private authUnsubscribe: (() => void) | null = null;
   private entitlementUnsubscribe: (() => void) | null = null;
@@ -115,6 +216,7 @@ export class SearchManager implements AppModule {
   private widgetAccessUnsubscribe: (() => void) | null = null;
   private destroyed = false;
   private flightSourceExpiresAt = 0;
+  private flightSearchItems: FlightSearchItem[] = [];
   private searchIndexReady: Promise<void> = Promise.resolve();
   private readonly resultCache = new OpaqueResultCache<IssuedSearchResult>({
     maxEntries: SEARCH_RESULT_CACHE_MAX_ENTRIES,
@@ -146,6 +248,8 @@ export class SearchManager implements AppModule {
     this.runtimeConfigUnsubscribe = null;
     this.widgetAccessUnsubscribe?.();
     this.widgetAccessUnsubscribe = null;
+    this.flightSearchItems = [];
+    this.flightSourceExpiresAt = 0;
     this.resultCache.clear();
   }
 
@@ -346,26 +450,10 @@ export class SearchManager implements AppModule {
             seen.set(key, p);
           }
         }
-        const items = [...seen.values()].map(p => {
-          const fl = Number.isFinite(p.altitudeFt) ? Math.round(p.altitudeFt / 100) : null;
-          const kts = Number.isFinite(p.groundSpeedKts) ? Math.round(p.groundSpeedKts) : null;
-          return {
-            id: p.icao24,
-            title: (p.callsign || p.icao24).trim().toUpperCase(),
-            subtitle: p.onGround
-              ? t('modals.search.flightOnGround')
-              : fl !== null && kts !== null
-                ? t('modals.search.flightAirborne', { fl: String(fl), kts: String(kts) })
-                : fl !== null ? `FL${fl}` : t('modals.search.flightOnGround'),
-            data: { kind: 'adsb' as const, lat: p.lat, lon: p.lon, layer: 'flights' as const },
-          };
-        });
-        this.flightSourceExpiresAt = items.length > 0
-          ? Date.now() + FLIGHT_SEARCH_SOURCE_TTL_MS
-          : 0;
-        this.ctx.searchModal.registerSource('flight', items);
+        this.updateFlightSource([...seen.values()], [], Date.now());
         this.ctx.searchModal.refreshSearch();
       }).catch(() => {
+        this.flightSearchItems = [];
         this.flightSourceExpiresAt = 0;
         this.ctx.searchModal?.registerSource('flight', []);
         this.ctx.searchModal?.refreshSearch();
@@ -538,17 +626,13 @@ export class SearchManager implements AppModule {
   }
 
   private async selectSearchMatch(match: SearchMatch): Promise<boolean> {
-    this.suppressDetailedSelectionAnalytics = true;
-    try {
-      return await runWithAgentAnalyticsSuppressed(() => {
-        if (match.kind === 'command') {
-          return this.handleCommand(match.command);
-        }
-        return this.handleSearchResult(match.result);
-      });
-    } finally {
-      this.suppressDetailedSelectionAnalytics = false;
-    }
+    return await runWithAgentAnalyticsSuppressed(() => {
+      const options = { trackDetailedAnalytics: false };
+      if (match.kind === 'command') {
+        return this.handleCommand(match.command, options);
+      }
+      return this.handleSearchResult(match.result, options);
+    });
   }
 
   private searchMatchType(match: SearchMatch): string {
@@ -591,6 +675,8 @@ export class SearchManager implements AppModule {
       this.securityEpoch += 1;
       this.resultCache.clear();
       if (!hasPremiumAccess(getAuthState())) {
+        this.flightSearchItems = [];
+        this.flightSourceExpiresAt = 0;
         this.ctx.searchModal?.registerSource('flight', []);
       }
     };
@@ -747,12 +833,15 @@ export class SearchManager implements AppModule {
     if (requiredLayer && !this.isEntityLayerExecutable(requiredLayer)) return false;
     if (
       this.ctx.map?.isGlobeMode?.()
-      && [
-        'hotspot', 'conflict', 'base', 'pipeline', 'cable', 'datacenter', 'nuclear', 'irradiator',
-        'techcompany', 'ailab', 'startup', 'techhq', 'accelerator',
-        'exchange', 'financialcenter', 'centralbank', 'commodityhub',
-      ]
-        .includes(result.type)
+      && (
+        requiredLayer === 'flights'
+        || [
+          'hotspot', 'conflict', 'base', 'pipeline', 'cable', 'datacenter', 'nuclear', 'irradiator',
+          'techcompany', 'ailab', 'startup', 'techhq', 'accelerator',
+          'exchange', 'financialcenter', 'centralbank', 'commodityhub',
+        ]
+          .includes(result.type)
+      )
     ) return false;
     switch (result.type) {
       case 'news':
@@ -817,9 +906,13 @@ export class SearchManager implements AppModule {
     }
   }
 
-  private handleSearchResult(result: SearchResult): boolean | Promise<boolean> {
+  private handleSearchResult(
+    result: SearchResult,
+    options: { trackDetailedAnalytics?: boolean } = {},
+  ): boolean | Promise<boolean> {
+    const trackDetailedAnalytics = options.trackDetailedAnalytics !== false;
     trackSearchResultSelected(result.type, {
-      includeAttribution: !this.suppressDetailedSelectionAnalytics,
+      includeAttribution: trackDetailedAnalytics,
     });
     switch (result.type) {
       case 'news': {
@@ -827,7 +920,7 @@ export class SearchManager implements AppModule {
         const target = this.resolveExecutableNewsPanel(item.link);
         if (!target) return false;
         const [targetPanelId, targetPanel] = target;
-        this.scrollToPanel(targetPanelId);
+        this.scrollToPanel(targetPanelId, trackDetailedAnalytics);
         setTimeout(() => targetPanel.scrollToNewsItem(item.link), 300);
         break;
       }
@@ -844,11 +937,11 @@ export class SearchManager implements AppModule {
         break;
       }
       case 'market': {
-        this.scrollToPanel('markets');
+        this.scrollToPanel('markets', trackDetailedAnalytics);
         break;
       }
       case 'prediction': {
-        this.scrollToPanel('polymarket');
+        this.scrollToPanel('polymarket', trackDetailedAnalytics);
         break;
       }
       case 'base': {
@@ -981,9 +1074,9 @@ export class SearchManager implements AppModule {
       }
       case 'country': {
         const { code, name } = result.data as { code: string; name: string };
-        if (!this.suppressDetailedSelectionAnalytics) trackCountrySelected(code, name, 'search');
+        if (trackDetailedAnalytics) trackCountrySelected(code, name, 'search');
         return this.callbacks.openCountryBriefByCode(code, name, {
-          trackDetailedAnalytics: !this.suppressDetailedSelectionAnalytics,
+          trackDetailedAnalytics,
         });
       }
       case 'flight': {
@@ -997,7 +1090,11 @@ export class SearchManager implements AppModule {
     return true;
   }
 
-  private handleCommand(cmd: Command): boolean | Promise<boolean> {
+  private handleCommand(
+    cmd: Command,
+    options: { trackDetailedAnalytics?: boolean } = {},
+  ): boolean | Promise<boolean> {
+    const trackDetailedAnalytics = options.trackDetailedAnalytics !== false;
     const colonIdx = cmd.id.indexOf(':');
     if (colonIdx === -1) return false;
     const category = cmd.id.slice(0, colonIdx);
@@ -1097,15 +1194,15 @@ export class SearchManager implements AppModule {
         const cfg = this.ctx.panelSettings[panelId];
         if (cfg && !cfg.enabled) {
           if (this.callbacks.enablePanel(panelId, {
-            trackDetailedAnalytics: !this.suppressDetailedSelectionAnalytics,
+            trackDetailedAnalytics,
           })) {
-            this.scrollToPanelWhenReady(panelId);
+            this.scrollToPanelWhenReady(panelId, 12, trackDetailedAnalytics);
             if (subTab) this.dispatchPanelTab(panelId, subTab);
             break;
           }
           return false;
         }
-        this.scrollToPanel(panelId);
+        this.scrollToPanel(panelId, trackDetailedAnalytics);
         if (subTab) this.dispatchPanelTab(panelId, subTab);
         break;
       }
@@ -1171,9 +1268,9 @@ export class SearchManager implements AppModule {
           || CURATED_COUNTRIES[action]?.name
           || new Intl.DisplayNames(['en'], { type: 'region' }).of(action)
           || action;
-        if (!this.suppressDetailedSelectionAnalytics) trackCountrySelected(action, name, 'command');
+        if (trackDetailedAnalytics) trackCountrySelected(action, name, 'command');
         return this.callbacks.openCountryBriefByCode(action, name, {
-          trackDetailedAnalytics: !this.suppressDetailedSelectionAnalytics,
+          trackDetailedAnalytics,
         });
       }
 
@@ -1200,14 +1297,21 @@ export class SearchManager implements AppModule {
    * the DOM on the next tick, so retry over ~1s before giving up. The panel is
    * already enabled regardless — only the scroll is best-effort.
    */
-  private scrollToPanelWhenReady(panelId: string, attemptsLeft = 12): void {
-    if (this.suppressDetailedSelectionAnalytics) suppressNextAgentPanelView(panelId);
+  private scrollToPanelWhenReady(
+    panelId: string,
+    attemptsLeft = 12,
+    trackDetailedAnalytics = true,
+  ): void {
+    if (!trackDetailedAnalytics) suppressNextAgentPanelView(panelId);
     if (document.querySelector(`[data-panel="${panelId}"]`)) {
-      this.scrollToPanel(panelId);
+      this.scrollToPanel(panelId, trackDetailedAnalytics);
       return;
     }
     if (attemptsLeft <= 0) return;
-    setTimeout(() => this.scrollToPanelWhenReady(panelId, attemptsLeft - 1), 80);
+    setTimeout(
+      () => this.scrollToPanelWhenReady(panelId, attemptsLeft - 1, trackDetailedAnalytics),
+      80,
+    );
   }
 
   /**
@@ -1231,8 +1335,8 @@ export class SearchManager implements AppModule {
     setTimeout(() => this.dispatchPanelTab(panelId, tab, attemptsLeft - 1), 80);
   }
 
-  private scrollToPanel(panelId: string): void {
-    if (this.suppressDetailedSelectionAnalytics) suppressNextAgentPanelView(panelId);
+  private scrollToPanel(panelId: string, trackDetailedAnalytics = true): void {
+    if (!trackDetailedAnalytics) suppressNextAgentPanelView(panelId);
     const panel = document.querySelector(`[data-panel="${panelId}"]`);
     if (panel) {
       panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1255,51 +1359,39 @@ export class SearchManager implements AppModule {
   updateFlightSource(
     adsb: PositionSample[],
     military: MilitaryFlight[],
-    updatedAt = Date.now(),
+    adsbUpdatedAt = Date.now(),
   ): void {
     if (!this.ctx.searchModal) return;
     if (!hasPremiumAccess(getAuthState())) {
+      this.flightSearchItems = [];
       this.flightSourceExpiresAt = 0;
       this.ctx.searchModal.registerSource('flight', []);
       return;
     }
-    const items = [
-      ...adsb.map(p => {
-        const fl = Number.isFinite(p.altitudeFt) ? Math.round(p.altitudeFt / 100) : null;
-        const kts = Number.isFinite(p.groundSpeedKts) ? Math.round(p.groundSpeedKts) : null;
-        return {
-          id: p.icao24,
-          title: (p.callsign || p.icao24).trim().toUpperCase(),
-          subtitle: p.onGround
-            ? t('modals.search.flightOnGround')
-            : fl !== null && kts !== null
-              ? t('modals.search.flightAirborne', { fl: String(fl), kts: String(kts) })
-              : fl !== null
-                ? `FL${fl}`
-                : t('modals.search.flightOnGround'),
-          data: { kind: 'adsb' as const, lat: p.lat, lon: p.lon, layer: 'flights' as const },
-        };
-      }),
-      ...military.map(f => {
-        const fl = Number.isFinite(f.altitude) ? Math.round(f.altitude / 100) : null;
-        return {
-          id: f.hexCode,
-          title: (f.callsign || f.hexCode).trim().toUpperCase(),
-          subtitle: f.onGround
-            ? t('modals.search.flightMilitaryOnGround', { type: f.aircraftType })
-            : fl !== null
-              ? t('modals.search.flightMilitary', { type: f.aircraftType, fl: String(fl) })
-              : t('modals.search.flightMilitaryOnGround', { type: f.aircraftType }),
-          data: { kind: 'military' as const, lat: f.lat, lon: f.lon, layer: 'military' as const },
-        };
-      }),
-    ];
-    this.flightSourceExpiresAt = items.length > 0
-      ? updatedAt + FLIGHT_SEARCH_SOURCE_TTL_MS
+    const now = Date.now();
+    this.flightSearchItems = SearchManager.buildFlightSearchItems(
+      adsb,
+      military,
+      adsbUpdatedAt,
+      now,
+    );
+    this.publishCurrentFlightSearchItems(now);
+  }
+
+  private publishCurrentFlightSearchItems(
+    now: number,
+    options?: { updateVisibleMetrics?: boolean },
+  ): void {
+    this.flightSearchItems = this.flightSearchItems.filter((item) => item.expiresAt > now);
+    this.flightSourceExpiresAt = this.flightSearchItems.length > 0
+      ? Math.min(...this.flightSearchItems.map((item) => item.expiresAt))
       : 0;
-    const currentItems = this.flightSourceExpiresAt > Date.now() ? items : [];
-    if (currentItems.length === 0) this.flightSourceExpiresAt = 0;
-    this.ctx.searchModal.registerSource('flight', currentItems);
+    this.ctx.searchModal?.registerSource('flight', this.flightSearchItems.map((item) => ({
+      id: item.id,
+      title: item.title,
+      subtitle: item.subtitle,
+      data: item.data,
+    })), options);
   }
 
   updateSearchIndex(options?: { updateVisibleMetrics?: boolean }): void {
@@ -1307,8 +1399,7 @@ export class SearchManager implements AppModule {
 
     const sourceOptions = { updateVisibleMetrics: options?.updateVisibleMetrics !== false };
     if (this.flightSourceExpiresAt > 0 && Date.now() >= this.flightSourceExpiresAt) {
-      this.flightSourceExpiresAt = 0;
-      this.ctx.searchModal.registerSource('flight', [], sourceOptions);
+      this.publishCurrentFlightSearchItems(Date.now(), sourceOptions);
     }
     this.syncPanelSearchIndex(sourceOptions);
     this.ctx.searchModal.registerSource('country', this.buildCountrySearchItems(), sourceOptions);

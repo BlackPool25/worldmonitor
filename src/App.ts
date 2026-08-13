@@ -283,7 +283,7 @@ export class App {
   private searchToggleDesiredOpen = false;
   private latestSearchAdsb: Parameters<SearchManager['updateFlightSource']>[0] = [];
   private latestSearchMilitary: Parameters<SearchManager['updateFlightSource']>[1] = [];
-  private latestSearchFlightUpdatedAt = 0;
+  private latestSearchAdsbUpdatedAt = 0;
   private countryIntel: CountryIntelManager;
   private refreshScheduler: RefreshScheduler;
   private desktopUpdater: DesktopUpdater;
@@ -1603,7 +1603,7 @@ export class App {
         manager.updateFlightSource(
           this.latestSearchAdsb,
           this.latestSearchMilitary,
-          this.latestSearchFlightUpdatedAt,
+          this.latestSearchAdsbUpdatedAt,
         );
         this.searchManager = manager;
         this.modules.push(manager);
@@ -1626,8 +1626,11 @@ export class App {
   ): void {
     this.latestSearchAdsb = adsb;
     this.latestSearchMilitary = military;
-    this.latestSearchFlightUpdatedAt = Date.now();
-    this.searchManager?.updateFlightSource(adsb, military, this.latestSearchFlightUpdatedAt);
+    // This callback is driven by the DeckGL ADS-B viewport feed. Military
+    // tracks are copied from their independent cache and retain freshness via
+    // each track's lastSeen; never stamp them with this ADS-B observation time.
+    this.latestSearchAdsbUpdatedAt = Date.now();
+    this.searchManager?.updateFlightSource(adsb, military, this.latestSearchAdsbUpdatedAt);
   }
 
   private async openSearch(options: { toggle?: boolean; throwOnFailure?: boolean; replaceOverlayId?: OverlayId; historyPending?: boolean } = {}): Promise<void> {
@@ -2880,7 +2883,7 @@ export class App {
     this.state.isDestroyed = true;
     this.latestSearchAdsb = [];
     this.latestSearchMilitary = [];
-    this.latestSearchFlightUpdatedAt = 0;
+    this.latestSearchAdsbUpdatedAt = 0;
     this.resolveAppDestroyed();
     this.tierPreferenceHandoff.clear();
     this.pendingPreferenceHandoffGeneration = undefined;

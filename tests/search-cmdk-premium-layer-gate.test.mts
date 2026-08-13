@@ -23,21 +23,23 @@ const searchManagerSrc = readFileSync(new URL('../src/app/search-manager.ts', im
 const commandTier = { premium: false };
 
 function extractHandleCommand(): new () => { ctx: any; handleCommand(command: { id: string }): boolean | Promise<boolean> } {
-  const signature = 'private handleCommand(cmd: Command): boolean | Promise<boolean> {';
-  const start = searchManagerSrc.indexOf(signature);
-  assert.ok(start >= 0, 'SearchManager.handleCommand must remain in the source');
-  const braceStart = searchManagerSrc.indexOf('{', start);
-  let depth = 0;
-  let end = -1;
-  for (let i = braceStart; i < searchManagerSrc.length; i++) {
-    if (searchManagerSrc[i] === '{') depth++;
-    else if (searchManagerSrc[i] === '}' && --depth === 0) {
-      end = i + 1;
-      break;
-    }
-  }
-  assert.ok(end > braceStart, 'SearchManager.handleCommand must have balanced braces');
-  const method = searchManagerSrc.slice(start, end).replace(/^private\s+/, '');
+  const sourceFile = ts.createSourceFile(
+    'search-manager.ts',
+    searchManagerSrc,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const manager = sourceFile.statements.find((statement): statement is ts.ClassDeclaration => (
+    ts.isClassDeclaration(statement) && statement.name?.text === 'SearchManager'
+  ));
+  const handleCommand = manager?.members.find((member): member is ts.MethodDeclaration => (
+    ts.isMethodDeclaration(member)
+    && ts.isIdentifier(member.name)
+    && member.name.text === 'handleCommand'
+  ));
+  assert.ok(handleCommand, 'SearchManager.handleCommand must remain in the source');
+  const method = handleCommand.getText(sourceFile).replace(/^private\s+/, '');
   const js = ts.transpileModule(`class SearchManagerHarness { ${method} }`, {
     compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None },
   }).outputText;
