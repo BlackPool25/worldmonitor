@@ -67,6 +67,20 @@
       ]
     },
     {
+      "host": "511on.ca",
+      "provider": "Ontario 511",
+      "kind": "structured",
+      "observed": true,
+      "license": "Ontario 511 API terms; Government of Ontario data; attribution required",
+      "attribution": "Ontario 511 (Ministry of Transportation). https://511on.ca/",
+      "status": "terms-review",
+      "references": [
+        {
+          "path": "scripts/lib/provincial-511.mjs"
+        }
+      ]
+    },
+    {
       "host": "abacus.worldmonitor.app",
       "provider": "abacus.worldmonitor.app",
       "kind": "structured",

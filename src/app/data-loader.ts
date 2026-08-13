@@ -50,6 +50,7 @@ import {
   fetchPredictions,
   fetchEarthquakes,
   fetchWeatherAlerts,
+  fetchCanadaRoads,
   fetchInternetOutages,
   fetchTrafficAnomalies,
   fetchDdosAttacks,
@@ -985,6 +986,7 @@ export class DataLoaderManager implements AppModule {
     if (hasPremiumAccess() && shouldLoad('wsb-ticker-scanner')) tasks.push({ name: 'wsbTickers', task: () => runGuarded('wsbTickers', () => this.loadWsbTickers()) });
     if (shouldLoad('economic')) tasks.push({ name: 'economicStress', task: () => runGuarded('economicStress', () => this.loadEconomicStress()) });
     if (SITE_VARIANT !== 'happy' && this.ctx.mapLayers.weather) tasks.push({ name: 'weather', task: () => runGuarded('weather', () => this.loadWeatherAlerts()) });
+    if (SITE_VARIANT !== 'happy' && this.ctx.mapLayers.canadaRoads) tasks.push({ name: 'canadaRoads', task: () => runGuarded('canadaRoads', () => this.loadCanadaRoads()) });
     if (SITE_VARIANT !== 'happy' && !isDesktopRuntime() && this.ctx.mapLayers.ais) tasks.push({ name: 'ais', task: () => runGuarded('ais', () => this.loadAisSignals()) });
     if (SITE_VARIANT !== 'happy' && this.ctx.mapLayers.cables) tasks.push({ name: 'cables', task: () => runGuarded('cables', () => this.loadCableActivity()) });
     if (SITE_VARIANT !== 'happy' && this.ctx.mapLayers.cables) tasks.push({ name: 'cableHealth', task: () => runGuarded('cableHealth', () => this.loadCableHealth()) });
@@ -1063,6 +1065,9 @@ export class DataLoaderManager implements AppModule {
           break;
         case 'weather':
           await this.loadWeatherAlerts();
+          break;
+        case 'canadaRoads':
+          await this.loadCanadaRoads();
           break;
         case 'outages':
           await this.loadOutages();
@@ -2821,6 +2826,18 @@ export class DataLoaderManager implements AppModule {
       this.ctx.map?.setTechEvents([]);
       this.ctx.map?.setLayerReady('techEvents', false);
       this.ctx.statusPanel?.updateFeed('Tech Events', { status: 'error', errorMessage: String(error) });
+    }
+  }
+
+  async loadCanadaRoads(): Promise<void> {
+    try {
+      const records = await fetchCanadaRoads();
+      this.ctx.map?.setCanadaRoads(records);
+      this.ctx.map?.setLayerReady('canadaRoads', records.length > 0);
+      this.ctx.statusPanel?.updateFeed('Ontario 511', { status: 'ok', itemCount: records.length });
+    } catch (error) {
+      this.ctx.map?.setLayerReady('canadaRoads', false);
+      this.ctx.statusPanel?.updateFeed('Ontario 511', { status: 'error' });
     }
   }
 

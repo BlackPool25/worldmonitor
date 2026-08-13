@@ -478,7 +478,8 @@
         "displacement": "Comutați fluxurile de deplasare",
         "climate": "Comutați anomaliile climatice",
         "outages": "Comutați întreruperile de internet",
-        "tradeRoutes": "Comutați rutele comerciale"
+        "tradeRoutes": "Comutați rutele comerciale",
+        "canadaRoads": "Toggle Ontario 511 roads overlay"
       },
       "view": {
         "dark": "Comutați în mod întunecat",
@@ -1190,7 +1191,8 @@
         "speciesRecovery": "Recuperarea speciilor",
         "renewableInstallations": "Energie curată",
         "radiationSpike": "Vârf de radiații",
-        "radiationElevated": "Radiații ridicate"
+        "radiationElevated": "Radiații ridicate",
+        "canadaRoads": "Ontario Roads (511)"
       },
       "tooltip": {
         "earthquake": "Cutremur",
@@ -1296,7 +1298,8 @@
           "tradeRoutes": "Principalele linii maritime globale care conectează porturile prin puncte strategice de blocare",
           "dayNight": "Terminator solar în timp real care arată zonele de zi și de noapte",
           "geoBoundaries": "Zone demilitarizate, linii de încetare a focului și granițe disputate",
-          "ciiChoropleth": "Harta termică a instabilității — colorează țările după scorul CII (verde=stabil, roșu=critic)"
+          "ciiChoropleth": "Harta termică a instabilității — colorează țările după scorul CII (verde=stabil, roșu=critic)",
+          "canadaRoads": "Highway incidents, alerts, and road conditions in Ontario (511)"
         },
         "notes": {
           "timeAffects": "Afectează: cutremure, vreme, proteste, întreruperi"

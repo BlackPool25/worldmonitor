@@ -77,6 +77,7 @@ export const LAYER_REGISTRY: Record<keyof MapLayers, LayerDefinition> = {
   displacement:             def('displacement',             '&#128101;', 'displacementFlows',        'Displacement Flows'),
   climate:                  def('climate',                  '&#127787;', 'climateAnomalies',         'Climate Anomalies'),
   weather:                  def('weather',                  '&#9928;',   'weatherAlerts',            'US Weather Alerts (NWS)'),
+  canadaRoads:              def('canadaRoads',              '&#128679;', 'canadaRoads',              'Ontario Roads (511)', ['flat'], undefined, true),
   outages:                  def('outages',                  '&#128225;', 'internetOutages',          'Internet Disruptions'),
   cyberThreats:             def('cyberThreats',             '&#128737;', 'cyberThreats',             'Cyber Threats'),
   natural:                  def('natural',                  '&#127755;', 'naturalEvents',            'Natural Events'),
@@ -311,7 +312,7 @@ const VARIANT_LAYER_ORDER: Record<MapVariant, Array<keyof MapLayers>> = {
     'bases', 'nuclear', 'irradiators', 'radiationWatch', 'spaceports',
     'cables', 'pipelines', 'storageFacilities', 'fuelShortages', 'datacenters', 'military',
     'ais', 'tradeRoutes', 'flights', 'protests',
-    'ucdpEvents', 'displacement', 'climate', 'weather',
+    'ucdpEvents', 'displacement', 'climate', 'weather', 'canadaRoads',
     'outages', 'cyberThreats', 'natural', 'fires',
     'waterways', 'economic', 'minerals', 'gpsJamming',
     'satellites', 'ciiChoropleth', 'resilienceScore', 'sanctions', 'dayNight', 'webcams',
@@ -325,7 +326,7 @@ const VARIANT_LAYER_ORDER: Record<MapVariant, Array<keyof MapLayers>> = {
   finance: [
     'stockExchanges', 'financialCenters', 'centralBanks', 'commodityHubs',
     'gulfInvestments', 'tradeRoutes', 'cables', 'pipelines',
-    'outages', 'weather', 'economic', 'waterways',
+    'outages', 'weather', 'canadaRoads', 'economic', 'waterways',
     'resilienceScore', 'natural', 'cyberThreats', 'sanctions', 'dayNight',
   ],
   happy: [
@@ -336,14 +337,14 @@ const VARIANT_LAYER_ORDER: Record<MapVariant, Array<keyof MapLayers>> = {
     'miningSites', 'processingPlants', 'commodityPorts', 'commodityHubs',
     'minerals', 'pipelines', 'waterways', 'tradeRoutes',
     'ais', 'economic', 'fires', 'climate',
-    'resilienceScore', 'natural', 'weather', 'outages', 'sanctions', 'dayNight',
+    'resilienceScore', 'natural', 'weather', 'canadaRoads', 'outages', 'sanctions', 'dayNight',
   ],
   energy: [
     // Core energy infrastructure — mirror of ENERGY_MAP_LAYERS in panels.ts
     'pipelines', 'storageFacilities', 'fuelShortages', 'waterways', 'commodityPorts', 'commodityHubs',
     'ais', 'liveTankers', 'tradeRoutes', 'minerals',
     // Energy-adjacent context
-    'sanctions', 'fires', 'climate', 'weather', 'outages', 'natural',
+    'sanctions', 'fires', 'climate', 'weather', 'canadaRoads', 'outages', 'natural',
     'resilienceScore', 'dayNight',
   ],
 };
@@ -592,6 +593,11 @@ export const LAYER_SYNONYMS: Record<string, Array<keyof MapLayers>> = {
   cyclone: ['weather', 'natural'],
   flood: ['weather', 'natural'],
   wildfire: ['fires'],
+  road: ['canadaRoads'],
+  roads: ['canadaRoads'],
+  traffic: ['canadaRoads'],
+  ontario: ['canadaRoads'],
+  highway: ['canadaRoads'],
   forest: ['fires'],
   refugee: ['displacement'],
   migration: ['displacement'],

@@ -88,6 +88,12 @@ const PROVIDER_OVERRIDES = {
     attribution: 'Office of the U.S. Trade Representative; link to the original release.',
     status: 'reviewed',
   },
+  '511on.ca': {
+    provider: 'Ontario 511',
+    license: 'Ontario 511 API terms; Government of Ontario data; attribution required',
+    attribution: 'Ontario 511 (Ministry of Transportation). https://511on.ca/',
+    status: 'terms-review',
+  },
   'api.elections.kalshi.com': {
     provider: 'Kalshi',
     license: 'Kalshi API terms; commercial-use and redistribution terms require review',

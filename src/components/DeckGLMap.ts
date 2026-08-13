@@ -56,6 +56,7 @@ import type { ClimateAnomaly } from '@/services/climate';
 import type { RadiationObservation } from '@/services/radiation';
 import { ArcLayer } from '@deck.gl/layers';
 import type { WeatherAlert } from '@/services/weather';
+import type { CanadaRoadRecord } from '@/services/canada-roads';
 import { escapeHtml } from '@/utils/sanitize';
 import {
   derivePipelinePublicBadge,
@@ -304,6 +305,8 @@ function getOverlayColors() {
     trafficAnomaly: [255, 160, 0, 200] as [number, number, number, number],
     ddosHit: [180, 0, 255, 200] as [number, number, number, number],
     weather: [100, 150, 255, 180] as [number, number, number, number],
+    canadaRoads: [255, 140, 0, 190] as [number, number, number, number],
+    canadaRoadsClosure: [220, 40, 40, 210] as [number, number, number, number],
     startupHub: isLight
       ? [22, 163, 74, 220] as [number, number, number, number]
       : [0, 255, 150, 200] as [number, number, number, number],
@@ -568,6 +571,7 @@ export class DeckGLMap {
   private hotspots: HotspotWithBreaking[];
   private earthquakes: Earthquake[] = [];
   private weatherAlerts: WeatherAlert[] = [];
+  private canadaRoads: CanadaRoadRecord[] = [];
   private outages: InternetOutage[] = [];
   private trafficAnomalies: ProtoTrafficAnomaly[] = [];
   private ddosLocations: DdosLocationHit[] = [];
@@ -1828,6 +1832,7 @@ export class DeckGLMap {
     const filteredKindnessPoints = mapLayers.kindness ? this.filterByTimeCached(this.kindnessPoints, (p) => p.timestamp) : [];
     const filteredImageryScenes = mapLayers.satellites ? this.filterByTimeCached(this.imageryScenes, (s) => s.datetime) : [];
     const filteredWeatherAlerts = mapLayers.weather ? this.filterByTimeCached(this.weatherAlerts, (alert) => alert.onset) : [];
+    const canadaRoadItems = mapLayers.canadaRoads ? this.canadaRoads : [];
     const filteredOutages = mapLayers.outages ? this.filterByTimeCached(this.outages, (outage) => outage.pubDate) : [];
     const filteredCableAdvisories = mapLayers.cables ? this.filterByTimeCached(this.cableAdvisories, (advisory) => advisory.reported) : [];
     const filteredFlightDelays = mapLayers.flights ? this.filterByTimeCached(this.flightDelays, (delay) => delay.updatedAt) : [];
@@ -2000,6 +2005,14 @@ export class DeckGLMap {
     // Weather alerts layer
     if (mapLayers.weather && filteredWeatherAlerts.length > 0) {
       layers.push(this.createWeatherLayer(filteredWeatherAlerts));
+    }
+
+    // Ontario 511 / canadaRoads layer (Scatterplot + PathLayer for polylines)
+    if (mapLayers.canadaRoads && canadaRoadItems.length > 0) {
+      layers.push(...this.createCanadaRoadsLayers(canadaRoadItems));
+    } else {
+      this.layerCache.delete('canada-roads-layer');
+      this.layerCache.delete('canada-roads-paths-layer');
     }
 
     // Internet outages layer
@@ -3305,6 +3318,41 @@ export class DeckGLMap {
       radiusMaxPixels: 16,
       pickable: true,
     });
+  }
+
+  private createCanadaRoadsLayers(items: CanadaRoadRecord[]): Layer[] {
+    const withCentroid = items.filter((d) => Array.isArray(d.centroid) && d.centroid.length === 2);
+    const withPath = items.filter((d) => Array.isArray(d.path) && d.path.length >= 2);
+    const fill = (d: CanadaRoadRecord): [number, number, number, number] => {
+      if (d.isFullClosure || d.severity === 'Extreme') return COLORS.canadaRoadsClosure;
+      if (d.severity === 'Severe') return [255, 100, 0, 200];
+      if (d.severity === 'Moderate') return [255, 170, 0, 170];
+      return COLORS.canadaRoads;
+    };
+    const layers: Layer[] = [];
+    layers.push(new ScatterplotLayer<CanadaRoadRecord>({
+      id: 'canada-roads-layer',
+      data: withCentroid,
+      getPosition: (d) => d.centroid as [number, number],
+      getRadius: (d) => (d.isFullClosure || d.kind === 'event' ? 18000 : 12000),
+      getFillColor: fill,
+      radiusMinPixels: 6,
+      radiusMaxPixels: 18,
+      pickable: true,
+    }));
+    if (withPath.length > 0) {
+      layers.push(new PathLayer<CanadaRoadRecord>({
+        id: 'canada-roads-paths-layer',
+        data: withPath,
+        getPath: (d) => d.path as [number, number][],
+        getColor: fill,
+        getWidth: 2,
+        widthMinPixels: 1,
+        widthMaxPixels: 4,
+        pickable: true,
+      }));
+    }
+    return layers;
   }
 
   private createWeatherLayer(alerts: WeatherAlert[]): ScatterplotLayer {
@@ -4893,6 +4941,12 @@ export class DeckGLMap {
         const area = areaDesc ? `<br/><small>${text(areaDesc.slice(0, 50))}${areaDesc.length > 50 ? '...' : ''}</small>` : '';
         return { html: `<div class="deckgl-tooltip"><strong>${text(obj.event || t('components.deckgl.layers.weatherAlerts'))}</strong><br/>${text(obj.severity)}${area}</div>` };
       }
+      case 'canada-roads-layer':
+      case 'canada-roads-paths-layer': {
+        const title = obj.headline || obj.roadwayName || t('components.deckgl.layers.canadaRoads');
+        const extra = obj.lanesAffected ? `<br/>${text(obj.lanesAffected)}` : '';
+        return { html: `<div class="deckgl-tooltip"><strong>${text(title)}</strong><br/>${text(obj.severity || obj.eventType || '')}${extra}</div>` };
+      }
       case 'outages-layer':
         return { html: `<div class="deckgl-tooltip"><strong>${text(obj.title || t('components.deckgl.tooltip.internetOutage'))}</strong><br/>${text(obj.country)}</div>` };
       case 'traffic-anomalies-layer':
@@ -5745,6 +5799,7 @@ export class DeckGLMap {
       helpItem(label('economicCenters'), 'economicCenters'),
       helpItem(label('strategicWaterways'), 'macroWaterways'),
       helpItem(label('weatherAlerts'), 'weatherAlertsMarket'),
+      helpItem(label('canadaRoads'), 'canadaRoads'),
       helpItem(label('naturalEvents'), 'naturalEventsMacro'),
       helpItem(label('dayNight'), 'dayNight'),
     ])}
@@ -5790,6 +5845,7 @@ export class DeckGLMap {
       helpItem(label('naturalEvents'), 'naturalEventsFull'),
       helpItem(label('fires'), 'firesFull'),
       helpItem(label('weatherAlerts'), 'weatherAlerts'),
+      helpItem(label('canadaRoads'), 'canadaRoads'),
       helpItem(label('climateAnomalies'), 'climateAnomalies'),
       helpItem(label('economicCenters'), 'economicCenters'),
       helpItem(label('criticalMinerals'), 'mineralsFull'),
@@ -6711,6 +6767,11 @@ export class DeckGLMap {
 
   public setWeatherAlerts(alerts: WeatherAlert[]): void {
     this.weatherAlerts = alerts;
+    this.render();
+  }
+
+  public setCanadaRoads(records: CanadaRoadRecord[]): void {
+    this.canadaRoads = records;
     this.render();
   }
 

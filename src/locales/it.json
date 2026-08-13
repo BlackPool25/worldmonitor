@@ -478,7 +478,8 @@
         "displacement": "Attiva/disattiva flussi di sfollamento",
         "climate": "Attiva/disattiva anomalie climatiche",
         "outages": "Attiva/disattiva interruzioni internet",
-        "tradeRoutes": "Attiva/disattiva rotte commerciali"
+        "tradeRoutes": "Attiva/disattiva rotte commerciali",
+        "canadaRoads": "Toggle Ontario 511 roads overlay"
       },
       "view": {
         "dark": "Passa alla modalità scura",
@@ -1037,7 +1038,8 @@
         "speciesRecovery": "Recupero delle specie",
         "renewableInstallations": "Energia pulita",
         "radiationSpike": "Picco di radiazione",
-        "radiationElevated": "Radiazione elevata"
+        "radiationElevated": "Radiazione elevata",
+        "canadaRoads": "Ontario Roads (511)"
       },
       "layersTitle": "Livelli",
       "layerSearch": "Cerca livelli...",
@@ -1150,7 +1152,8 @@
           "techFires": "Incendi attivi vicino a infrastrutture tecnologiche",
           "financeGulfInvestments": "Investimenti dei fondi sovrani del CCG e investimenti diretti esteri",
           "geoBoundaries": "Zone demilitarizzate, linee di cessate il fuoco e confini contestati",
-          "ciiChoropleth": "Mappa termica dell'indice di instabilità — colora i paesi in base al punteggio CII (verde=stabile, rosso=critico)"
+          "ciiChoropleth": "Mappa termica dell'indice di instabilità — colora i paesi in base al punteggio CII (verde=stabile, rosso=critico)",
+          "canadaRoads": "Highway incidents, alerts, and road conditions in Ontario (511)"
         },
         "notes": {
           "timeAffects": "Effetti: terremoti, condizioni meteorologiche, proteste, interruzioni"

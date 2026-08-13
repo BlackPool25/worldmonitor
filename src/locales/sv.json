@@ -186,7 +186,8 @@
         "displacement": "Växla förflyttningsflöden",
         "climate": "Växla klimatanomalier",
         "outages": "Växla internetavbrott",
-        "tradeRoutes": "Växla handelsrutter"
+        "tradeRoutes": "Växla handelsrutter",
+        "canadaRoads": "Toggle Ontario 511 roads overlay"
       },
       "view": {
         "dark": "Byt till mörkt läge",
@@ -590,7 +591,8 @@
         "speciesRecovery": "Artåterhämtning",
         "renewableInstallations": "Ren energi",
         "radiationSpike": "Strålningsökning",
-        "radiationElevated": "Förhöjd strålning"
+        "radiationElevated": "Förhöjd strålning",
+        "canadaRoads": "Ontario Roads (511)"
       },
       "layersTitle": "Lager",
       "layerSearch": "Sök lager...",
@@ -703,7 +705,8 @@
           "techEvents": "Stora teknikkonferenser och evenemang",
           "techFires": "Aktiva skogsbränder nära teknikinfrastruktur",
           "geoBoundaries": "Demilitariserade zoner, eldupphörslinjer och omtvistade gränser",
-          "ciiChoropleth": "Country Instability Index värmekarta — färgar länder efter CII-poäng (grön=stabil, röd=kritisk)"
+          "ciiChoropleth": "Country Instability Index värmekarta — färgar länder efter CII-poäng (grön=stabil, röd=kritisk)",
+          "canadaRoads": "Highway incidents, alerts, and road conditions in Ontario (511)"
         },
         "notes": {
           "timeAffects": "Påverkar: Jordbävningar, väder, protester, avbrott"
