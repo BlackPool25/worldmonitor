@@ -31,9 +31,10 @@
 // measurement above is what they look like working — and clearing them rebuilds
 // all 77 services on every merge for no gain in the tail that matters.
 //
-// It does not re-trigger a build that Railway already ran and FAILED. That is a
-// real failure that scripts/check-railway-deploy-drift.mjs reports; retrying it
-// here would bury the alarm under a retry loop.
+// Ordinary runs do not re-trigger a build that Railway already ran and FAILED.
+// That is a real failure that scripts/check-railway-deploy-drift.mjs reports;
+// retrying it automatically would bury the alarm under a retry loop. A
+// controller-authorized manual recovery may retry that exact failed head once.
 //
 // Usage:
 //   node scripts/trigger-railway-deploys.mjs
@@ -58,6 +59,7 @@ import {
   runRailway,
 } from './railway-cli.mjs';
 import {
+  FAILED_STATUSES,
   REJECTED_STATUS,
   createFleetAccumulator,
   isKnownStatus,
@@ -167,6 +169,7 @@ export function planServiceDeploy({
   headSha,
   changedPathsSince,
   readError = null,
+  retryFailedHead = false,
   // Tri-state: 'yes' | 'no' | 'unknown'. Used to refuse deploying a service
   // BACKWARDS. Defaults to 'unknown', which REFUSES rather than deploys — the
   // one place in this script where uncertainty must not resolve toward
@@ -202,7 +205,9 @@ export function planServiceDeploy({
   // A record for head in a status we RECOGNISE as non-refusal means Railway has
   // taken this commit — queued it, built it, or built it and failed. This also
   // subsumes "the service is already running head". SKIPPED is excluded on
-  // purpose: that record IS the refusal this script exists to compensate.
+  // purpose: that record IS the refusal this script exists to compensate. An
+  // exact controller-authorized recovery also excludes FAILED so that the one
+  // requested retry can create a replacement deployment.
   //
   // "Recognise" is load-bearing. `status !== 'SKIPPED'` treats every UNKNOWN
   // status as handled, and Railway's enum already carries two this file does
@@ -212,9 +217,11 @@ export function planServiceDeploy({
   // trigger never retries — the unmatched case silently meaning HEALTHY, which
   // is the failure this whole change exists to remove.
   const forHead = ordered.filter((deployment) => deployment?.meta?.commitHash === headSha);
-  const taken = forHead.find(
-    (deployment) => deployment.status !== REJECTED_STATUS && isKnownStatus(deployment.status),
-  );
+  const taken = forHead.find((deployment) => (
+    deployment.status !== REJECTED_STATUS
+    && isKnownStatus(deployment.status)
+    && !(retryFailedHead && FAILED_STATUSES.includes(deployment.status))
+  ));
   if (taken) {
     return {
       ...base,
@@ -904,7 +911,13 @@ function printReport(plans, summary, headSha, { dryRun, elapsedMs }) {
   }
 }
 
-async function buildDeployPlanningContext({ environment, window, concurrency, headSha }) {
+async function buildDeployPlanningContext({
+  environment,
+  window,
+  concurrency,
+  headSha,
+  recoveryAttemptId = null,
+}) {
   const projectId = process.env.RAILWAY_PROJECT_ID;
   if (typeof projectId !== 'string' || projectId.length === 0) {
     throw new Error('RAILWAY_PROJECT_ID is required');
@@ -966,6 +979,7 @@ async function buildDeployPlanningContext({ environment, window, concurrency, he
     changedPathsSince,
     readError,
     ancestry,
+    retryFailedHead: recoveryAttemptId !== null,
   });
   const plans = (await mapWithConcurrency(repositoryServices, concurrency, async (service) => {
     const { deployments, error: readError } = histories.get(service.id)
@@ -1071,7 +1085,15 @@ async function main() {
         // A runner-less job or a contender rejected by durable admission must
         // perform neither production setup nor Railway reads.
         installPinnedRailwayCli();
-        planningContext = await buildDeployPlanningContext({ environment, window, concurrency, headSha });
+        planningContext = await buildDeployPlanningContext({
+          environment,
+          window,
+          concurrency,
+          headSha,
+          // The controller admits this callback only after validating this
+          // exact bound recovery hold. Ordinary runs pass null.
+          recoveryAttemptId,
+        });
         return planningContext;
       },
       refreshService: (plan) => planningContext.refreshService(plan),

@@ -277,6 +277,12 @@ the protected resolution also records the separately revalidated current head.
 This separation keeps the convergence-acceptance route reachable after main
 moves, including when it must reset a full 64-run mutation lineage.
 
+The protected retry is the only path that can replace a same-head Railway
+deployment in `FAILED`. Ordinary runs continue to report that failure without
+retrying it. A recovery still adopts any same-head deployment that is active or
+that reached a running state, so the one-use controller hold cannot duplicate
+work that Railway already accepted.
+
 `retryEvidence` has exactly one of these forms. Its `evidenceId` must differ
 from the outer evidence ID:
 

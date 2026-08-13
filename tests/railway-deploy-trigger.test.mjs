@@ -110,6 +110,34 @@ describe('deploy planning', () => {
     assert.equal(result.reason, HANDLED_BY_RAILWAY);
   });
 
+  it('retries a failed head only when protected recovery explicitly authorizes it', () => {
+    const failed = deployment('FAILED', HEAD, {
+      id: 'dep-failed',
+      createdAt: '2026-08-04T12:00:00.000Z',
+    });
+    const result = plan({
+      deployments: [failed, deployment('SUCCESS', RUNNING)],
+      retryFailedHead: true,
+    });
+    assert.equal(result.action, 'deploy');
+    assert.equal(result.reason, 'CLOSURE_CHANGED');
+    assert.equal(result.observedDeploymentId, null);
+  });
+
+  it('does not duplicate active head work during protected recovery', () => {
+    const result = plan({
+      deployments: [
+        deployment('FAILED', HEAD, { id: 'dep-failed', createdAt: '2026-08-04T12:00:00.000Z' }),
+        deployment('BUILDING', HEAD, { id: 'dep-building', createdAt: '2026-08-04T11:59:00.000Z' }),
+        deployment('SUCCESS', RUNNING),
+      ],
+      retryFailedHead: true,
+    });
+    assert.equal(result.action, 'skip');
+    assert.equal(result.reason, HANDLED_BY_RAILWAY);
+    assert.equal(result.observedDeploymentId, 'dep-building');
+  });
+
   it('still deploys when the only record for head is Railway refusing it', () => {
     // This is the whole point: a SKIPPED record means Railway declined, so it
     // must never count as "already taken".
