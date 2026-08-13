@@ -1001,7 +1001,8 @@ function claims(s) {
     { file: 'CONTRIBUTING.md', re: /expand our (\d+)\+\s+feed collection/, value: s.feedDefinitions, min: true },
     { file: 'SECURITY.md', re: /All (\d+)\s+domain APIs are served through Sebuf/, value: s.serverDomains },
     { file: 'index.html', re: /"(\d+)\s+language support with RTL"/, value: s.locales },
-    { file: 'index.html', re: /(\d+)\+\s+observed upstream hosts/, value: s.sourceAttributionHosts },
+    { file: 'index.html', re: /(\d+)(?:\+)?\s+observed upstream hosts/, value: s.sourceAttributionHosts },
+    { file: 'index.html', re: /(\d+)\s+active providers/, value: s.sourceAttribution.providerCount },
 
     { file: 'docs/architecture.mdx', re: /(\d+)\s+service domains, and (?:\d+)\s+map layers/, value: s.protoServices },
     { file: 'docs/architecture.mdx', re: /(\d+)\s+map layers\./, value: s.layerDefinitions },
@@ -1084,7 +1085,10 @@ function claims(s) {
     { file: 'public/mcp-server.md', re: /server ships \*\*(\d+)\s+tools\*\*/, value: s.mcpToolCount },
 
     { file: 'docs/data-sources.mdx', re: /monitors (\d+)\s+data sources/, value: s.freshnessSources },
+    { file: 'docs/data-sources.mdx', re: /fuses \*\*(\d+) active providers/, value: s.sourceAttribution.providerCount },
+    { file: 'docs/data-sources.mdx', re: /active providers across (\d+) upstream hosts/, value: s.sourceAttributionHosts },
     { file: 'docs/source-attribution.mdx', re: /\*\*(\d+) active upstream hosts\*\*/, value: s.sourceAttributionHosts },
+    { file: 'docs/source-attribution.mdx', re: /representing \*\*(\d+) active providers\*\*/, value: s.sourceAttribution.providerCount },
     { file: 'docs/data-sources.mdx', re: /across (\d+)\s+monitored airports/, value: s.airportCount },
     { file: 'docs/data-sources.mdx', re: /^(\d+)\s+airports across 5 regions/m, value: s.airportCount },
     { file: 'docs/data-sources.mdx', re: /(\d+)\s+global stock exchanges/, value: s.stockExchangeCount },

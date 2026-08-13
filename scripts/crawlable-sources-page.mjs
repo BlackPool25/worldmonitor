@@ -570,7 +570,7 @@ export function buildSourceCatalog(entries) {
 export function renderSourcesIndex({ sourceStats, sourceCatalog, baseUrl, lastmod, helpers }) {
   const { absoluteUrl, breadcrumbLd, escapeHtml, pageDocument, withUtmSource } = helpers;
   const path = '/sources/';
-  const description = `Explore ${sourceStats.providerCount} active providers behind World Monitor across conflict, military, finance, energy, cyber, aviation, climate, news and official data sources globally.`;
+  const description = `Explore ${sourceStats.providerCount} active providers and ${sourceStats.activeHosts} upstream hosts across World Monitor's global intelligence, markets, energy, cyber, aviation, climate and news coverage.`;
   // Query precedes the fragment — withUtmSource() would append after the
   // anchor and push the query into the fragment, so build these by hand.
   const docsHref = (anchor) => `/docs/data-sources?utm_source=seo-sources${anchor ? `#${anchor}` : ''}`;
@@ -630,7 +630,7 @@ export function renderSourcesIndex({ sourceStats, sourceCatalog, baseUrl, lastmo
         <div class="hero-copy">
           <p class="eyebrow"><span></span> Live provider inventory</p>
           <h1>See every source behind World Monitor.</h1>
-          <p class="lede">The map is only as useful as the signals behind it. World Monitor combines ${sourceStats.providerCount} active providers across news, conflict, markets, military, climate, aviation, infrastructure and technology — with every provider listed below.</p>
+          <p class="lede">The map is only as useful as the signals behind it. World Monitor combines ${sourceStats.providerCount} active providers across ${sourceStats.activeHosts} observed upstream hosts spanning news, conflict, markets, military, climate, aviation, infrastructure and technology — with every provider listed below.</p>
           <div class="hero-actions">
             <a class="cta" href="#catalog">Browse all ${sourceStats.providerCount} providers <span aria-hidden="true">↓</span></a>
             <a class="secondary-cta" href="${withUtmSource('/dashboard', 'sources-hero')}">Open the live dashboard <span aria-hidden="true">→</span></a>

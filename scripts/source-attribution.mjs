@@ -962,7 +962,7 @@ export function renderAttributionSection(inventory, manifest) {
   return [
     '## Observed Upstream Inventory',
     BEGIN_MARKER,
-    `This generated inventory covers **${stats.activeHosts} active upstream hosts** (**${stats.structuredHosts} structured/API**, **${stats.feedHosts} feed**, and **${stats.operationalStatusHosts} operational-status** hosts). It is derived from URL literals in \`scripts/\`, \`server/\`, \`api/\`, and \`src/\`; the manifest records a license posture and the credit required for every observed host. ${stats.reviewNeeded} entries remain marked \`terms-review\` and should be confirmed before a redistribution or commercial-use claim.`,
+    `This generated inventory covers **${stats.activeHosts} active upstream hosts** representing **${stats.providerCount} active providers** (**${stats.structuredHosts} structured/API**, **${stats.feedHosts} feed**, and **${stats.operationalStatusHosts} operational-status** hosts). It is derived from URL literals in \`scripts/\`, \`server/\`, \`api/\`, and \`src/\`; the manifest records a license posture and the credit required for every observed host. ${stats.reviewNeeded} entries remain marked \`terms-review\` and should be confirmed before a redistribution or commercial-use claim.`,
     '',
     '| Provider | Observed surface | License posture | Required attribution or exclusion reason | Status |',
     '| --- | --- | --- | --- | --- |',
@@ -1006,7 +1006,7 @@ export function buildSourceAttributionStats({ rootDir = ROOT } = {}) {
 }
 
 function printStats(stats, log = console.log) {
-  log(`source-attribution: ${stats.activeHosts} active hosts (${stats.structuredHosts} structured/API, ${stats.feedHosts} feed, ${stats.operationalStatusHosts} operational-status; ${stats.reviewNeeded} terms-review)`);
+  log(`source-attribution: ${stats.activeHosts} active hosts across ${stats.providerCount} providers (${stats.structuredHosts} structured/API, ${stats.feedHosts} feed, ${stats.operationalStatusHosts} operational-status; ${stats.reviewNeeded} terms-review)`);
 }
 
 function serializeManifest(manifest) {
