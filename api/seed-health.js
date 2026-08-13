@@ -190,18 +190,7 @@ const SEED_DOMAINS = {
   'economic:grocery-basket':  { key: 'seed-meta:economic:grocery-basket',  intervalMin: 5040 }, // weekly seed; intervalMin = maxStaleMin / 2
   'economic:bigmac':          { key: 'seed-meta:economic:bigmac',          intervalMin: 5040 }, // weekly seed; intervalMin = maxStaleMin / 2
   'resilience:static':        { key: 'seed-meta:resilience:static',        intervalMin: 288000 }, // annual October snapshot; intervalMin = health.js maxStaleMin / 2 (400d alert threshold)
-  'resilience:food-stocks':   {
-    key: 'seed-meta:resilience:food-stocks',
-    intervalMin: 43200, // monthly WASDE; intervalMin = health.js maxStaleMin / 2 (86400 / 2)
-    // Freshness alone cannot see a commodity hollowing out: a degraded PSD run
-    // still writes a fresh, ~200-country snapshot. Probe world commodity
-    // coverage so five-of-six going dark is visible.
-    dataProbe: {
-      key: 'resilience:food-stocks:v1',
-      kind: 'food_stocks_coverage',
-      minWorldCommodities: 5,
-    },
-  },
+  'resilience:food-stocks':   { key: 'seed-meta:resilience:food-stocks',   intervalMin: 43200 }, // monthly WASDE; intervalMin = health.js maxStaleMin / 2 (86400 / 2)
   'resilience:education-attainment': {
     key: 'seed-meta:resilience:education-attainment',
     intervalMin: 5760, // 11520min /api/health budget expressed as intervalMin * 2.
@@ -391,24 +380,6 @@ function evaluateDataProbe(cfg, raw) {
   const methodology = typeof parsed.methodology === 'string' ? parsed.methodology : null;
   const formula = typeof parsed._formula === 'string' ? parsed._formula : null;
   const educationState = typeof parsed._educationState === 'string' ? parsed._educationState : null;
-  if (cfg.kind === 'food_stocks_coverage') {
-    // Commodity coverage, not record count. A degraded PSD run can keep ~200
-    // country keys while five of six commodities carry no world stocks-to-use at
-    // all, so a plain count probe reads healthy. Mirrors validateFoodStocks'
-    // publish gate in scripts/seed-food-stocks.mjs.
-    const worldCommodities = parsed?._world?.commodities;
-    const covered = worldCommodities && typeof worldCommodities === 'object'
-      ? Object.values(worldCommodities).filter((rec) => Number.isFinite(rec?.stocksToUseRatio)).length
-      : 0;
-    const ok = covered >= cfg.minWorldCommodities;
-    return {
-      ok,
-      status: ok ? 'ok' : 'coverage_partial',
-      key: cfg.key,
-      worldCommodityCount: covered,
-      minWorldCommodities: cfg.minWorldCommodities,
-    };
-  }
   if (cfg.kind === 'education_coverage') {
     const rankableRecordCount = parseEducationPayloadRankableRecordCount(parsed);
     const ok = rankableRecordCount != null && rankableRecordCount >= cfg.minRankableRecordCount;

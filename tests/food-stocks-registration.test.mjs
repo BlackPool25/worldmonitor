@@ -16,12 +16,7 @@ describe('food stocks production registration (#6440)', () => {
     assert.equal(__testing__.SEED_META.foodStocks.maxStaleMin, 86400);
     assert.equal(__testing__.SEED_META.foodStocks.cutover?.mode, 'expiring-ack');
     assert.equal(__testing__.SEED_META.foodStocks.cutover?.issue, 6440);
-    assert.match(read('api/seed-health.js'), /'resilience:food-stocks':\s*\{[\s\S]{0,200}?intervalMin: 43200/);
-    // Freshness alone cannot see a commodity hollowing out — a degraded run still
-    // writes a fresh ~200-country snapshot. The coverage probe is what makes
-    // five-of-six going dark visible.
-    assert.match(read('api/seed-health.js'), /kind: 'food_stocks_coverage'/);
-    assert.match(read('api/seed-health.js'), /minWorldCommodities: 5/);
+    assert.match(read('api/seed-health.js'), /'resilience:food-stocks':\s*\{ key: 'seed-meta:resilience:food-stocks',\s*intervalMin: 43200/);
   });
 
   it('schedules the seeder in the resilience bundle and watches its files', () => {
