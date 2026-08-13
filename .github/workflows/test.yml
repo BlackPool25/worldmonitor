@@ -47,6 +47,11 @@ jobs:
             # without this rule the guard skips on exactly the PR that commits
             # an artifact and can only ever fire on unrelated changes.
             /^docs\/snapshots\/resilience-.*-acceptance-.*\.json$/ { count++; next }
+            # Per-service OpenAPI specs are generated machine artifacts consumed
+            # by tests/openapi-filter-param-schemas.test.mjs, which enumerates
+            # every JSON spec. Keep the JSON/YAML siblings on the same `unit`
+            # job when a PR changes only docs/api output (#6650).
+            /^docs\/api\/[^\/]+Service\.openapi\.(json|yaml)$/ { count++; next }
             # The generated OpenAPI bundle sits under docs/ but is the INPUT to
             # the served public/openapi.json. Its <= 950,000-byte scanner guard
             # (tests/openapi-json-dedup.test.mjs) and the capacity report that
