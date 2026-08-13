@@ -3229,6 +3229,20 @@
       ]
     },
     {
+      "host": "geoserver.cwfif.nrcan.gc.ca",
+      "provider": "CWFIS / CWFIF (NRCan)",
+      "kind": "structured",
+      "observed": true,
+      "license": "Open Government Licence - Canada; redistribution granted (copy, modify, publish, distribute, including commercial use) with attribution",
+      "attribution": "Canadian Forest Service. Canadian Wildland Fire Information System (CWFIS), Natural Resources Canada, Canadian Forest Service, Northern Forestry Centre, Edmonton, Alberta. https://cwfis.cfs.nrcan.gc.ca. Contains information licensed under the Open Government Licence – Canada (https://open.canada.ca/en/open-government-licence-canada). Evidence: https://cwfis.cfs.nrcan.gc.ca/downloads/licence.txt",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "scripts/wildfire/cwfis-wfs.mjs"
+        }
+      ]
+    },
+    {
       "host": "geospatial-usace.opendata.arcgis.com",
       "provider": "geospatial-usace.opendata.arcgis.com",
       "kind": "structured",

@@ -1,7 +1,15 @@
 #!/usr/bin/env node
 
+// Railway service config (set up manually via Railway dashboard or `railway service`):
+//   - Service name: seed-fire-detections
+//   - Builder: NIXPACKS (root Dockerfile not used for this seed)
+//   - rootDirectory: scripts
+//   - startCommand: node seed-fire-detections.mjs
+//   - Cron schedule: "*/10 * * * *" (every 10min UTC)
+
 import { loadEnvFile, runSeed, CHROME_UA, sleep } from './_seed-utils.mjs';
 import { compactWildfireDashboardPayload, WILDFIRE_CANONICAL_DETECTION_LIMIT } from './_wildfire-dashboard.mjs';
+import { fetchCwfisFires, mergeWildfireSources } from './wildfire/cwfis-wfs.mjs';
 
 loadEnvFile(import.meta.url);
 
@@ -104,6 +112,9 @@ async function fetchAllRegions(apiKey) {
             region: regionName,
             dayNight: row.daynight || '',
             possibleExplosion: frp > 80 && brightness > 380,
+            source: 'firms',
+            kind: 'active',
+            emergency: true,
           });
         }
       } catch (err) {
@@ -143,16 +154,22 @@ function capCanonicalPayload(data) {
   return capped;
 }
 
-async function main() {
+async function fetchMergedWildfires() {
   const apiKey = process.env.NASA_FIRMS_API_KEY || process.env.FIRMS_API_KEY || '';
-  if (!apiKey) {
-    console.error('[seed-fire-detections] NASA_FIRMS_API_KEY (or FIRMS_API_KEY) is required but not set. Refusing to run.');
-    process.exit(1);
-  }
+  const cache = new Map();
+  if (apiKey) console.log('  FIRMS key configured');
+  else console.warn('  FIRMS key missing — continuing with CWFIS only');
+  return mergeWildfireSources({
+    fetchFirms: async () => {
+      if (!apiKey) throw new Error('NASA_FIRMS_API_KEY (or FIRMS_API_KEY) is not set');
+      return fetchAllRegions(apiKey);
+    },
+    fetchCwfis: () => fetchCwfisFires({ fetchFn: globalThis.fetch, cache }),
+  });
+}
 
-  console.log('  FIRMS key configured');
-
-  await runSeed('wildfire', 'fires', CANONICAL_KEY, () => fetchAllRegions(apiKey), {
+async function main() {
+  await runSeed('wildfire', 'fires', CANONICAL_KEY, fetchMergedWildfires, {
     validateFn: (data) => Array.isArray(data?.fireDetections) && data.fireDetections.length > 0,
     // 2h — deliberately BELOW the 6h health gate (maxStaleMin 360). Do NOT "fix" this
     // by raising it to satisfy tests/seed-ttl-outlives-staleness-fleet: doing so DOWNGRADES
@@ -171,7 +188,7 @@ async function main() {
     // the dashboard renders. Capping inside fetchAllRegions would not have that property.
     publishTransform: capCanonicalPayload,
     lockTtlMs: 2_400_000, // 40 min — 27 slots × ~72s worst case (30s timeout + 6s backoff + 30s retry + 6s pace) ≈ 32.4 min; pad headroom. Next cron tick sees lock held and safely skips.
-    sourceVersion: FIRMS_SOURCES.join('+'),
+    sourceVersion: `${FIRMS_SOURCES.join('+')}+cwfis-wfs-v1`,
     extraKeys: [{
       key: BOOTSTRAP_KEY,
       transform: compactWildfireDashboardPayload,

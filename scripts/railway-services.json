@@ -1366,5 +1366,30 @@
     ],
     "cronSchedule": "0 * * * *",
     "documentedAt": "docs/market-data-cadence-audit.md"
+  },
+  {
+    "entry": "scripts/seed-fire-detections.mjs",
+    "deployMode": "nixpacks-root-scripts",
+    "service": "seed-fire-detections",
+    "requiredEnv": [
+      ["NASA_FIRMS_API_KEY", "FIRMS_API_KEY"],
+      "UPSTASH_REDIS_REST_URL",
+      "UPSTASH_REDIS_REST_TOKEN"
+    ],
+    "watchPatterns": [
+      "scripts/_proxy-utils.cjs",
+      "scripts/_seed-contract.mjs",
+      "scripts/_seed-envelope-source.mjs",
+      "scripts/_seed-utils.mjs",
+      "scripts/_wildfire-dashboard.mjs",
+      "scripts/lib/llm-telemetry.cjs",
+      "scripts/nixpacks.toml",
+      "scripts/package-lock.json",
+      "scripts/package.json",
+      "scripts/seed-fire-detections.mjs",
+      "scripts/wildfire/cwfis-wfs.mjs"
+    ],
+    "cronSchedule": "*/10 * * * *",
+    "documentedAt": "docs/railway-seed-consolidation-runbook.md#standalone-seed-crons-43-not-bundled"
   }
 ]

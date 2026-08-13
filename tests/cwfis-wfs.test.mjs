@@ -1,0 +1,354 @@
+import { strict as assert } from 'node:assert';
+import { readFileSync } from 'node:fs';
+import { describe, it } from 'node:test';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { CHROME_UA } from '../scripts/_seed-utils.mjs';
+import {
+  CWFIS_ACTIVE_LAYER,
+  CWFIS_FETCH_TIMEOUT_MS,
+  CWFIS_MAX_PAGES,
+  CWFIS_PAGE_SIZE,
+  CWFIS_ALLOWED_LAYERS,
+  CWFIS_PRESCRIBED_LAYER,
+  CWFIS_WFS_BASE,
+  CWFIS_WFS_HOST,
+  MAX_CWFIS_RESPONSE_BYTES,
+  buildCwfisGetFeatureUrl,
+  cwfisWfsCacheKey,
+  fetchApprovedWfs,
+  fetchCwfisLayer,
+  fetchCwfisFires,
+  isEmergencyPagingCandidate,
+  mergeWildfireSources,
+  parseCwfisGeoJson,
+  parseCwfisGml,
+  stableCwfisFireId,
+} from '../scripts/wildfire/cwfis-wfs.mjs';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const activeJson = readFileSync(resolve(here, 'fixtures/wildfire/cwfis-national-activefires.json'), 'utf8');
+const prescribedJson = readFileSync(resolve(here, 'fixtures/wildfire/cwfis-national-prescribedfires.json'), 'utf8');
+const activeGml = readFileSync(resolve(here, 'fixtures/wildfire/cwfis-national-activefires.gml'), 'utf8');
+const parseModuleSrc = readFileSync(resolve(here, '../scripts/wildfire/cwfis-wfs.mjs'), 'utf8');
+const testSrc = readFileSync(fileURLToPath(import.meta.url), 'utf8');
+const seederSrc = readFileSync(resolve(here, '../scripts/seed-fire-detections.mjs'), 'utf8');
+const thermalSrc = readFileSync(resolve(here, '../scripts/lib/thermal-escalation.mjs'), 'utf8');
+const aisRelaySrc = readFileSync(resolve(here, '../scripts/ais-relay.cjs'), 'utf8');
+
+function firmsDetection(overrides = {}) {
+  return {
+    id: '49.000-30.000-2026-08-13-1130',
+    location: { latitude: 49, longitude: 30 },
+    brightness: 340,
+    frp: 12,
+    confidence: 'FIRE_CONFIDENCE_NOMINAL',
+    satellite: 'VIIRS_SNPP_NRT',
+    detectedAt: Date.parse('2026-08-13T11:30:00Z'),
+    region: 'Ukraine',
+    dayNight: 'D',
+    possibleExplosion: false,
+    source: 'firms',
+    kind: 'active',
+    emergency: true,
+    ...overrides,
+  };
+}
+
+describe('cwfis live fixture coordinates and ids', () => {
+  it('parses WGS84 lat/lon from live GetFeature JSON, not EPSG:3978 geometry', () => {
+    const parsed = parseCwfisGeoJson(activeJson, 'active');
+    assert.equal(parsed.fireDetections.length, 2);
+
+    const lytton = parsed.fireDetections.find((f) => f.nationalFireId === '2026_BC_2026-V10742');
+    assert.ok(lytton);
+    assert.equal(lytton.source, 'cwfis');
+    assert.equal(lytton.kind, 'active');
+    assert.equal(lytton.emergency, true);
+    assert.equal(lytton.location.latitude, 49.89345);
+    assert.equal(lytton.location.longitude, -121.45475);
+    assert.notEqual(lytton.location.latitude, -1840333.9025);
+    assert.equal(lytton.id, 'cwfis:2026_BC_2026-V10742');
+    assert.ok(lytton.id.length <= 100);
+    assert.equal(lytton.region, 'British Columbia');
+    assert.equal(lytton.possibleExplosion, false);
+    assert.equal(isEmergencyPagingCandidate(lytton), true);
+
+    const cariboo = parsed.fireDetections.find((f) => f.nationalFireId === '2026_BC_2026-C41588');
+    assert.equal(cariboo.location.latitude, 51.51885);
+    assert.equal(cariboo.location.longitude, -121.87068);
+  });
+
+  it('labels prescribed burns as not-emergency from the live prescribed layer', () => {
+    const parsed = parseCwfisGeoJson(prescribedJson, 'prescribed');
+    assert.equal(parsed.fireDetections.length, 2);
+    for (const fire of parsed.fireDetections) {
+      assert.equal(fire.kind, 'prescribed');
+      assert.equal(fire.emergency, false);
+      assert.equal(fire.source, 'cwfis');
+      assert.equal(fire.possibleExplosion, false);
+      assert.equal(isEmergencyPagingCandidate(fire), false);
+      assert.match(fire.id, /^cwfis:prescribed:/);
+    }
+    const jasper = parsed.fireDetections.find((f) => f.nationalFireId === '2026_PC_2026JA2');
+    assert.equal(jasper.location.latitude, 52.8813);
+    assert.equal(jasper.location.longitude, -118.1002);
+    assert.equal(jasper.region, 'Parks Canada');
+  });
+
+  it('parses the same live coordinates from GML fallback', () => {
+    const parsed = parseCwfisGml(activeGml, 'active');
+    assert.equal(parsed.fireDetections.length, 1);
+    const fire = parsed.fireDetections[0];
+    assert.equal(fire.nationalFireId, '2026_BC_2026-V10742');
+    assert.equal(fire.location.latitude, 49.89345);
+    assert.equal(fire.location.longitude, -121.45475);
+    assert.equal(fire.id, 'cwfis:2026_BC_2026-V10742');
+  });
+
+  it('falls back to a lat-lon-time bucket when native ids are missing', () => {
+    const statusDate = '2026-08-13T11:30:00Z';
+    const id = stableCwfisFireId({
+      latitude: 49.89345,
+      longitude: -121.45475,
+      status_date: statusDate,
+    });
+    const timeBucket = Math.round(Date.parse(statusDate) / 60_000);
+    assert.equal(id, `cwfis:${(49.89345).toFixed(4)},${(-121.45475).toFixed(4)},${timeBucket}`);
+    assert.equal(id, 'cwfis:49.8935,-121.4548,29777010');
+    assert.ok(id.length <= 100);
+  });
+});
+
+describe('pagination and cache key', () => {
+  it('includes typeName and startIndex in the cache key, and optional bbox', () => {
+    const key = cwfisWfsCacheKey({
+      typeName: CWFIS_ACTIVE_LAYER,
+      bbox: '-141,41,-52,84',
+      startIndex: 1000,
+    });
+    assert.match(key, /public:cwfif_national_activefires/);
+    assert.match(key, /startIndex=1000/);
+    assert.match(key, /bbox=-141,41,-52,84/);
+    assert.notEqual(
+      cwfisWfsCacheKey({ typeName: CWFIS_ACTIVE_LAYER, startIndex: 0 }),
+      cwfisWfsCacheKey({ typeName: CWFIS_PRESCRIBED_LAYER, startIndex: 0 }),
+    );
+    assert.notEqual(
+      cwfisWfsCacheKey({ typeName: CWFIS_ACTIVE_LAYER, startIndex: 0 }),
+      cwfisWfsCacheKey({ typeName: CWFIS_ACTIVE_LAYER, startIndex: 1000 }),
+    );
+  });
+
+  it('paginates with WFS 2.0 startIndex/count, follows next, and bounds max pages', async () => {
+    const requests = [];
+    const page0 = {
+      type: 'FeatureCollection',
+      features: JSON.parse(activeJson).features.slice(0, 1),
+      numberMatched: 3,
+      numberReturned: 1,
+      links: [{
+        rel: 'next',
+        href: 'https://geoserver.cwfif.nrcan.gc.ca/geoserver/ows?service=WFS&version=2.0.0&request=GetFeature&typeNames=public:cwfif_national_activefires&count=1&startIndex=1&sortBy=id&outputFormat=application/json',
+      }],
+    };
+    const page1 = {
+      type: 'FeatureCollection',
+      features: JSON.parse(activeJson).features.slice(1, 2),
+      numberMatched: 3,
+      numberReturned: 1,
+      links: [],
+    };
+
+    const result = await fetchCwfisLayer(CWFIS_ACTIVE_LAYER, {
+      kind: 'active',
+      pageSize: 1,
+      maxPages: 2,
+      cqlFilter: '',
+      fetchFn: async (url) => {
+        requests.push(url);
+        const parsed = new URL(url);
+        const start = Number(parsed.searchParams.get('startIndex') || 0);
+        const body = start === 0 ? page0 : page1;
+        return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
+      },
+    });
+
+    assert.equal(result.fireDetections.length, 2);
+    assert.ok(requests.length >= 2);
+    assert.match(requests[0], /startIndex=0/);
+    assert.match(requests[0], /count=1/);
+    assert.match(requests[0], /sortBy=id/);
+    assert.ok(CWFIS_MAX_PAGES >= 2);
+    assert.ok(CWFIS_PAGE_SIZE >= 1);
+    assert.ok(requests.length <= CWFIS_MAX_PAGES);
+  });
+
+  it('falls back to GML when JSON returns 400', async () => {
+    let jsonAttempted = false;
+    const result = await fetchCwfisLayer(CWFIS_ACTIVE_LAYER, {
+      kind: 'active',
+      cqlFilter: '',
+      pageSize: 1,
+      maxPages: 1,
+      fetchFn: async (url, init) => {
+        const parsed = new URL(url);
+        if (parsed.searchParams.get('outputFormat') === 'application/json') {
+          jsonAttempted = true;
+          return new Response('<ows:ExceptionReport/>', { status: 400, headers: { 'content-type': 'application/xml' } });
+        }
+        assert.equal(init.redirect, 'error');
+        assert.equal(init.headers['User-Agent'], CHROME_UA);
+        return new Response(activeGml, { headers: { 'content-type': 'application/gml+xml; version=3.2' } });
+      },
+    });
+    assert.equal(jsonAttempted, true);
+    assert.equal(result.fireDetections[0].location.latitude, 49.89345);
+  });
+});
+
+describe('host allowlist and transport', () => {
+  it('rejects the old CWFIS host and public:activefires_current', async () => {
+    await assert.rejects(
+      fetchApprovedWfs('https://cwfis.cfs.nrcan.gc.ca/geoserver/ows?service=WFS&typeNames=public:cwfif_national_activefires'),
+      /UNTRUSTED_SOURCE_HOST/,
+    );
+    assert.throws(
+      () => buildCwfisGetFeatureUrl({ typeName: 'public:activefires_current' }),
+      /not allowed/,
+    );
+    assert.throws(
+      () => cwfisWfsCacheKey({ typeName: 'public:activefires_current', startIndex: 0 }),
+      /not allowed/,
+    );
+    assert.equal(CWFIS_WFS_HOST, 'geoserver.cwfif.nrcan.gc.ca');
+    assert.match(CWFIS_WFS_BASE, /geoserver\.cwfif\.nrcan\.gc\.ca/);
+    assert.doesNotMatch(CWFIS_WFS_BASE, /cwfis\.cfs\.nrcan\.gc\.ca/);
+    assert.equal(CWFIS_ALLOWED_LAYERS.includes('public:activefires_current'), false);
+    assert.deepEqual([...CWFIS_ALLOWED_LAYERS], [
+      'public:cwfif_national_activefires',
+      'public:cwfif_national_prescribedfires',
+      'public:cwfif_national_reportedfires',
+    ]);
+  });
+
+  it('pins geoserver.cwfif.nrcan.gc.ca, rejects redirects, caps bytes, sends CHROME_UA', async () => {
+    assert.equal(CWFIS_WFS_HOST, 'geoserver.cwfif.nrcan.gc.ca');
+    assert.ok(MAX_CWFIS_RESPONSE_BYTES >= 7_377_447);
+    assert.ok(CWFIS_FETCH_TIMEOUT_MS >= 15_000);
+
+    let init;
+    const cache = new Map();
+    const url = buildCwfisGetFeatureUrl({ typeName: CWFIS_ACTIVE_LAYER, startIndex: 0, count: 1, cqlFilter: '' });
+    const page = await fetchApprovedWfs(url, {
+      fetchFn: async (_url, options) => {
+        init = options;
+        return new Response(activeJson, { headers: { 'content-type': 'application/json' } });
+      },
+      cache,
+    });
+    assert.equal(init.redirect, 'error');
+    assert.equal(init.headers['User-Agent'], CHROME_UA);
+    assert.match(init.headers.Accept, /json/i);
+    assert.equal(page.text, activeJson);
+    assert.ok(cache.has(cwfisWfsCacheKey({ typeName: CWFIS_ACTIVE_LAYER, startIndex: 0 })));
+
+    await assert.rejects(
+      fetchApprovedWfs(url, {
+        maxBytes: 10,
+        fetchFn: async () => new Response(activeJson),
+      }),
+      /RESPONSE_TOO_LARGE/,
+    );
+  });
+
+  it('does not bind fetch or import ais-relay', () => {
+    assert.doesNotMatch(parseModuleSrc, /fetch\.bind/);
+    assert.doesNotMatch(parseModuleSrc, /fetch\.bind\(globalThis\)/);
+    assert.doesNotMatch(parseModuleSrc, /ais-relay/);
+    assert.doesNotMatch(seederSrc, /fetch\.bind/);
+    assert.doesNotMatch(seederSrc, /ais-relay/);
+    assert.doesNotMatch(aisRelaySrc, /cwfif_national_activefires/);
+    assert.doesNotMatch(aisRelaySrc, /geoserver\.cwfif\.nrcan\.gc\.ca/);
+  });
+});
+
+describe('independent FIRMS + CWFIS merge', () => {
+  it('publishes CWFIS when FIRMS fails, and FIRMS when CWFIS fails', async () => {
+    const cwfisOnly = await mergeWildfireSources({
+      fetchFirms: async () => { throw new Error('FIRMS down'); },
+      fetchCwfis: async () => parseCwfisGeoJson(activeJson, 'active'),
+    });
+    assert.ok(cwfisOnly.fireDetections.length >= 1);
+    assert.equal(cwfisOnly.fireDetections[0].source, 'cwfis');
+    assert.equal(cwfisOnly._firmsCount, 0);
+
+    const firmsOnly = await mergeWildfireSources({
+      fetchFirms: async () => ({ fireDetections: [firmsDetection()] }),
+      fetchCwfis: async () => { throw new Error('CWFIS down'); },
+    });
+    assert.equal(firmsOnly.fireDetections.length, 1);
+    assert.equal(firmsOnly.fireDetections[0].source, 'firms');
+    assert.equal(firmsOnly._cwfisCount, 0);
+  });
+
+  it('throws when every upstream fails', async () => {
+    await assert.rejects(
+      mergeWildfireSources({
+        fetchFirms: async () => { throw new Error('FIRMS down'); },
+        fetchCwfis: async () => { throw new Error('CWFIS down'); },
+      }),
+      /All wildfire upstreams failed/,
+    );
+  });
+
+  it('keeps both sources when both succeed', async () => {
+    const merged = await mergeWildfireSources({
+      fetchFirms: async () => ({ fireDetections: [firmsDetection()] }),
+      fetchCwfis: async () => parseCwfisGeoJson(activeJson, 'active'),
+    });
+    assert.equal(merged.fireDetections.filter((f) => f.source === 'firms').length, 1);
+    assert.ok(merged.fireDetections.filter((f) => f.source === 'cwfis').length >= 1);
+  });
+
+  it('fetches active even if prescribed fails', async () => {
+    let activeCalled = false;
+    const result = await fetchCwfisFires({
+      cqlFilter: '',
+      pageSize: 2,
+      maxPages: 1,
+      fetchFn: async (url) => {
+        const parsed = new URL(url);
+        const typeName = parsed.searchParams.get('typeNames');
+        if (typeName === CWFIS_PRESCRIBED_LAYER) {
+          return new Response('nope', { status: 500 });
+        }
+        activeCalled = true;
+        return new Response(activeJson, { headers: { 'content-type': 'application/json' } });
+      },
+    });
+    assert.equal(activeCalled, true);
+    assert.ok(result.fireDetections.length >= 1);
+    assert.equal(result.fireDetections[0].kind, 'active');
+  });
+});
+
+describe('module import contract', () => {
+  it('tests import the WFS module, not the seeder', () => {
+    assert.doesNotMatch(testSrc, /from ['"][^'"]*seed-fire-detections/);
+    assert.doesNotMatch(parseModuleSrc, /from ['"][^'"]*seed-fire-detections/);
+  });
+
+  it('seeder merges FIRMS and CWFIS into the canonical wildfire key', () => {
+    assert.match(seederSrc, /mergeWildfireSources/);
+    assert.match(seederSrc, /fetchCwfisFires/);
+    assert.match(seederSrc, /wildfire:fires:v1/);
+    assert.doesNotMatch(seederSrc, /wildfire:canada/);
+    assert.doesNotMatch(seederSrc, /fetch\.bind/);
+  });
+
+  it('thermal escalation skips prescribed burns', () => {
+    assert.match(thermalSrc, /kind !== 'prescribed'|kind === 'prescribed'/);
+  });
+});

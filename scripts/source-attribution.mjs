@@ -107,6 +107,12 @@ const PROVIDER_OVERRIDES = {
     attribution: 'U.S. Geological Survey Mineral Commodity Summaries; link to the ScienceBase data release (https://doi.org/10.5066/P1WKQ63T).',
     status: 'reviewed',
   },
+  'geoserver.cwfif.nrcan.gc.ca': {
+    provider: 'CWFIS / CWFIF (NRCan)',
+    license: 'Open Government Licence - Canada; redistribution granted (copy, modify, publish, distribute, including commercial use) with attribution',
+    attribution: 'Canadian Forest Service. Canadian Wildland Fire Information System (CWFIS), Natural Resources Canada, Canadian Forest Service, Northern Forestry Centre, Edmonton, Alberta. https://cwfis.cfs.nrcan.gc.ca. Contains information licensed under the Open Government Licence – Canada (https://open.canada.ca/en/open-government-licence-canada). Evidence: https://cwfis.cfs.nrcan.gc.ca/downloads/licence.txt',
+    status: 'reviewed',
+  },
   'ogcapi.bgs.ac.uk': {
     provider: 'British Geological Survey World Mineral Statistics',
     license: 'BGS mineral statistics terms; attribution required; redistribution restricted',
