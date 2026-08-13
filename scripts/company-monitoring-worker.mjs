@@ -262,11 +262,19 @@ export function createCompanyMonitoringExecutor(options = {}) {
  * @param {string | undefined} options.apiKey
  * @param {string | undefined} options.model
  * @param {string | undefined} options.providerRoute
+ * @param {string | undefined} options.expectedResolvedProvider
  * @param {string[]} [options.approvedResolvedModels]
  * @param {typeof fetch} [options.fetchImpl]
  */
 export function createCompanyMonitoringAdmissionClassifier(options) {
-  const { apiKey, model, providerRoute, approvedResolvedModels, fetchImpl } = options;
+  const {
+    apiKey,
+    model,
+    providerRoute,
+    expectedResolvedProvider,
+    approvedResolvedModels,
+    fetchImpl,
+  } = options;
   return async ({ candidate, evidence }) => {
     const classification = await requestCompanyMonitoringClassification({
       candidate,
@@ -274,13 +282,15 @@ export function createCompanyMonitoringAdmissionClassifier(options) {
       apiKey,
       model,
       providerRoute,
+      expectedResolvedProvider,
       approvedResolvedModels,
       fetchImpl,
     });
     return {
-      requestedModelVersion: `${model}@${providerRoute}`,
+      requestedModelVersion: `${model}@${providerRoute}#${expectedResolvedProvider}`,
       modelVersion:
-        `${classification.route.resolvedModel}@${classification.route.configuredProviderRoute}`,
+        `${classification.route.resolvedModel}@${classification.route.configuredProviderRoute}` +
+        `#${classification.route.resolvedProvider}`,
       modelOutput: classification.content,
     };
   };
@@ -656,6 +666,7 @@ async function main() {
       'OPENROUTER_API_KEY',
       'COMPANY_MONITORING_CLASSIFIER_MODEL',
       'COMPANY_MONITORING_CLASSIFIER_PROVIDER_ROUTE',
+      'COMPANY_MONITORING_CLASSIFIER_RESOLVED_PROVIDER',
     ],
   });
   const convexUrl = process.env.CONVEX_URL;
@@ -679,14 +690,16 @@ async function main() {
   const classifierApiKey = process.env.OPENROUTER_API_KEY;
   const classifierModel = process.env.COMPANY_MONITORING_CLASSIFIER_MODEL;
   const classifierProviderRoute = process.env.COMPANY_MONITORING_CLASSIFIER_PROVIDER_ROUTE;
-  const classifierVersion = classifierModel && classifierProviderRoute
-    ? `${classifierModel}@${classifierProviderRoute}`
+  const classifierResolvedProvider = process.env.COMPANY_MONITORING_CLASSIFIER_RESOLVED_PROVIDER;
+  const classifierVersion = classifierModel && classifierProviderRoute && classifierResolvedProvider
+    ? `${classifierModel}@${classifierProviderRoute}#${classifierResolvedProvider}`
     : undefined;
-  const executeAdmission = classifierApiKey && classifierModel && classifierProviderRoute
+  const executeAdmission = classifierApiKey && classifierModel && classifierProviderRoute && classifierResolvedProvider
     ? createApprovedCompanyMonitoringAdmissionClassifier({
       apiKey: classifierApiKey,
       model: classifierModel,
       providerRoute: classifierProviderRoute,
+      expectedResolvedProvider: classifierResolvedProvider,
     })
     : undefined;
   const worker = createCompanyMonitoringWorker({

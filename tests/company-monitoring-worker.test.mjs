@@ -56,6 +56,7 @@ describe('company-monitoring classifier rollout gate', () => {
       apiKey: 'provisioned-key',
       model: 'provider/classifier-v1',
       providerRoute: 'pinned-route',
+      expectedResolvedProvider: 'Pinned Provider',
     }), undefined);
   });
 });
@@ -304,9 +305,11 @@ describe('company monitoring Railway worker', () => {
       apiKey: 'openrouter-test-key',
       model: 'provider/classifier-v1',
       providerRoute: 'pinned-route',
+      expectedResolvedProvider: 'Pinned Provider',
       fetchImpl: async (_url, init) => {
         capturedBody = JSON.parse(init.body);
         return new Response(JSON.stringify({
+          id: 'gen-company-monitoring-worker-1',
           model: 'provider/classifier-v1',
           provider: 'Pinned Provider',
           usage: { cost: 0.001 },
@@ -341,8 +344,8 @@ describe('company monitoring Railway worker', () => {
       candidate: ADMISSION_CLAIM.candidate,
       evidence: ADMISSION_CLAIM.evidence,
     }), {
-      requestedModelVersion: 'provider/classifier-v1@pinned-route',
-      modelVersion: 'provider/classifier-v1@pinned-route',
+      requestedModelVersion: 'provider/classifier-v1@pinned-route#Pinned Provider',
+      modelVersion: 'provider/classifier-v1@pinned-route#Pinned Provider',
       modelOutput: 'not-json',
     });
     assert.equal(capturedBody.model, 'provider/classifier-v1');

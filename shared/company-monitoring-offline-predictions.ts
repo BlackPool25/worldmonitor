@@ -1,28 +1,12 @@
-// Sealed Company Monitoring prediction runner.
-//
-// Discovery capture stays outside Git. This module accepts only provider-owned
-// observations that a curator already reconciled to opaque examples. It never
-// sends curator reference URLs, excerpts, occurrence identities, or gold labels
-// to the classifier.
-import {
-  createHash,
-  createHmac,
-  createPrivateKey,
-  createPublicKey,
-  sign,
-  timingSafeEqual,
-  verify,
-} from 'node:crypto';
+import { createHash, createPrivateKey, createPublicKey, randomUUID, sign, verify } from 'node:crypto';
 import {
   COMPANY_MONITORING_ADMISSION_POLICY_VERSION,
   evaluateCompanyMonitoringClassification,
 } from '../scripts/lib/company-monitoring-classification.mjs';
 import {
-  normalizeCompanyEvidence,
   projectCompanyMonitoringCandidate,
   type NormalizedCompanyCandidate,
   type NormalizedCompanyEvidence,
-  type ProviderEvidence,
 } from './company-monitoring-evidence.ts';
 import {
   computeBlindCorpusDigest,
@@ -51,143 +35,36 @@ import {
   validateProtocolFixture,
   type JsonObject,
 } from './company-monitoring-evaluation.ts';
+import {
+  CompanyMonitoringOfflinePredictionError,
+  type OfflineClassifierConfiguration,
+  type OfflineClassifierResult,
+  type OfflineContinuationAuthorization,
+  type OfflinePredictionBundle,
+  type OfflinePredictionCheckpoint,
+  type OfflinePredictionReconciliation,
+  type OfflinePredictionRunReceipt,
+  type OfflineProviderObservation,
+  type OfflineProviderObservationManifest,
+  type OfflineProviderCoverage,
+} from './company-monitoring-offline-prediction-contracts.ts';
+import {
+  authenticateOfflineArtifact,
+  computeOfflineClassifierRuntimeDigest,
+  decodeOfflineCheckpointAuthenticationKey,
+  verifyOfflineArtifactAuthentication,
+} from './company-monitoring-offline-checkpoints.ts';
+import {
+  normalizeOfflineEvaluationEvidence,
+  validateOfflineFirstPartyIdentityBindings,
+} from './company-monitoring-offline-evidence.ts';
 
-export type OfflineProviderCoverage = 'complete' | 'not_applicable' | 'incomplete';
-
-export type OfflineProviderObservation = {
-  provider: 'exa' | 'x';
-  providerLocator: string;
-  providerReceiptSha256: string;
-  queryVersion: string;
-  url: string;
-  title: string | null;
-  text: string | null;
-  author: string | null;
-  authorAccountId: string | null;
-  officialCompanyDomain: string | null;
-  publisherOrigin: string;
-  syndication: {
-    relationship: 'independent' | 'syndicated' | 'unknown';
-    upstreamUrl: string | null;
-    groupIdentity: string;
-  };
-  publishedAt: number;
-  observedAt: number;
-  expiresAt: number | null;
-  sourceAuthority: 'verified_first_party' | 'independent_source' | 'low_authority';
-  verifiedCompany: boolean;
-};
-
-export type OfflineProviderObservationManifest = {
-  schemaVersion: 'cm_offline_provider_observations_v1';
-  captureVersion: string;
-  corpusVersion: string;
-  corpusSha256: string;
-  curationSha256: string;
-  protocolVersion: string;
-  policyVersion: string;
-  modelVersion: string;
-  queryVersion: string;
-  capturedAt: string;
-  providerQueryVersions: { exa: string; x: string };
-  runtime: OfflineClassifierRuntimePin;
-  custody: {
-    storageClass: 'sealed_external';
-    labelsVisibleToRuntime: false;
-    referenceEvidenceVisibleToProviders: false;
-  };
-  rows: Array<{
-    opaqueExampleId: string;
-    coverage: { exa: OfflineProviderCoverage; x: OfflineProviderCoverage };
-    providerReceipts: { exa: string | null; x: string | null };
-    latencyMs: number;
-    costUsd: number;
-    evidence: OfflineProviderObservation[];
-  }>;
-};
-
-export type OfflineClassifierRuntimePin = {
-  requestedModel: string;
-  providerRoute: string;
-  resolvedProvider: string;
-};
-
-export type OfflineClassifierConfiguration = Omit<OfflineClassifierRuntimePin, 'resolvedProvider'>;
-
-export type OfflineClassifierResult = {
-  content: string;
-  route: {
-    resolvedModel: string;
-    resolvedProvider: string;
-    configuredProviderRoute: string;
-  };
-  costUsd: number;
-};
-
-export type OfflinePredictionRunReceipt = {
-  schemaVersion: 'cm_offline_prediction_run_receipt_v1';
-  protocolSha256: string;
-  approvedThresholdDigest: string;
-  corpusSha256: string;
-  curationSha256: string;
-  providerObservationsSha256: string;
-  predictionSetSha256: string;
-  protocolVersion: string;
-  policyVersion: string;
-  modelVersion: string;
-  queryVersion: string;
-  captureVersion: string;
-  capturedAt: string;
-  runtime: OfflineClassifierRuntimePin;
-  custody: { storageClass: 'sealed_external'; labelsVisibleToRuntime: false };
-};
-
-export type OfflinePredictionBundle = {
-  schemaVersion: 'cm_offline_prediction_bundle_v1';
-  predictions: PredictionSet;
-  receipt: OfflinePredictionRunReceipt;
-  authentication: {
-    algorithm: 'ed25519';
-    signatureBase64: string;
-  };
-};
-
-export type OfflinePredictionCheckpoint = {
-  schemaVersion: 'cm_offline_prediction_checkpoint_v1';
-  protocolSha256: string;
-  approvedThresholdDigest: string;
-  corpusSha256: string;
-  curationSha256: string;
-  providerObservationsSha256: string;
-  runtime: OfflineClassifierRuntimePin;
-  state: 'started' | 'completed';
-  opaqueExampleId: string;
-  prediction: Prediction | null;
-  authenticationSha256: string;
-};
-
-export type OfflineContinuationAuthorization = {
-  schemaVersion: 'cm_offline_continuation_authorization_v1';
-  outcome: 'incomplete';
-  approvedThresholdDigest: string;
-  parentCorpusSha256: string;
-  parentPredictionSetSha256: string;
-  parentGoldLabelSetSha256: string;
-  parentReportSha256: string;
-  childCorpusSha256: string;
-  expansionManifestSha256: string;
-  signatureBase64: string;
-};
-
-export class CompanyMonitoringOfflinePredictionError extends Error {
-  readonly code: string;
-
-  constructor(code: string) {
-    super(code);
-    this.name = 'CompanyMonitoringOfflinePredictionError';
-    this.code = code;
-  }
-}
+export * from './company-monitoring-offline-prediction-contracts.ts';
+export {
+  computeOfflineClassifierRuntimeDigest,
+  createOfflinePredictionReconciliation,
+  validateOfflineRetainedProviderResponse,
+} from './company-monitoring-offline-checkpoints.ts';
 
 const ROOT_KEYS = new Set([
   'schemaVersion', 'captureVersion', 'corpusVersion', 'corpusSha256',
@@ -219,8 +96,12 @@ const MAX_CLASSIFIER_CONCURRENCY = 4;
 const CHECKPOINT_KEYS = new Set([
   'schemaVersion', 'protocolSha256', 'approvedThresholdDigest', 'corpusSha256',
   'curationSha256', 'providerObservationsSha256', 'runtime', 'state',
-  'opaqueExampleId', 'prediction',
+  'opaqueExampleId', 'attemptId', 'prediction',
   'authenticationSha256',
+]);
+const RECONCILIATION_KEYS = new Set([
+  'schemaVersion', 'opaqueExampleId', 'attemptId', 'providerResponseSha256',
+  'providerLatencyMs', 'classification', 'authenticationSha256',
 ]);
 const BUNDLE_KEYS = new Set(['schemaVersion', 'predictions', 'receipt', 'authentication']);
 const BUNDLE_AUTHENTICATION_KEYS = new Set(['algorithm', 'signatureBase64']);
@@ -233,12 +114,11 @@ const RECEIPT_KEYS = new Set([
 const CONTINUATION_AUTHORIZATION_KEYS = new Set([
   'schemaVersion', 'outcome', 'approvedThresholdDigest', 'parentCorpusSha256',
   'parentPredictionSetSha256', 'parentGoldLabelSetSha256', 'parentReportSha256',
-  'childCorpusSha256', 'expansionManifestSha256', 'signatureBase64',
+  'classifierRuntimeSha256', 'childCorpusSha256', 'expansionManifestSha256', 'signatureBase64',
 ]);
+const ATTEMPT_ID = /^cm_attempt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-function fail(code: string): never {
-  throw new CompanyMonitoringOfflinePredictionError(code);
-}
+function fail(code: string): never { throw new CompanyMonitoringOfflinePredictionError(code); }
 
 function exact(value: unknown, keys: Set<string>, code: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail(code);
@@ -254,19 +134,9 @@ function text(value: unknown, code: string, maximum = 2_048): string {
   return value;
 }
 
-function nullableText(value: unknown, code: string, maximum = 32_768): string | null {
-  return value === null ? null : text(value, code, maximum);
-}
-
-function finiteNonNegative(value: unknown, code: string): number {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) fail(code);
-  return value;
-}
-
-function safeInteger(value: unknown, code: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) fail(code);
-  return value as number;
-}
+function nullableText(value: unknown, code: string, maximum = 32_768): string | null { return value === null ? null : text(value, code, maximum); }
+function finiteNonNegative(value: unknown, code: string): number { if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) fail(code); return value; }
+function safeInteger(value: unknown, code: string): number { if (!Number.isSafeInteger(value) || (value as number) < 0) fail(code); return value as number; }
 
 function version(value: unknown, code: string): string {
   const result = text(value, code, 200);
@@ -342,6 +212,9 @@ function validateObservation(value: unknown): OfflineProviderObservation {
   }
   if (!AUTHORITY.has(String(row.sourceAuthority))) fail('offline_observation_authority_invalid');
   if (typeof row.verifiedCompany !== 'boolean') fail('offline_observation_verification_invalid');
+  if ((row.sourceAuthority === 'verified_first_party') !== row.verifiedCompany) {
+    fail('offline_observation_verification_invalid');
+  }
   if (row.verifiedCompany) {
     if (row.sourceAuthority !== 'verified_first_party') fail('offline_observation_verification_invalid');
     if (row.provider === 'x' && (row.authorAccountId === null || companyDomain !== null)) {
@@ -354,7 +227,7 @@ function validateObservation(value: unknown): OfflineProviderObservation {
         (hostname !== companyDomain && !hostname.endsWith(`.${companyDomain}`))
       ) fail('offline_observation_verification_invalid');
     }
-  } else if (companyDomain !== null || (row.provider === 'exa' && row.sourceAuthority === 'verified_first_party')) {
+  } else if (companyDomain !== null) {
     fail('offline_observation_verification_invalid');
   }
   return row as OfflineProviderObservation;
@@ -489,91 +362,6 @@ function assertCurationMatchesCorpus(
   ));
 }
 
-function companyIdFor(opaqueExampleId: string): string {
-  return `cm_eval_company_${opaqueExampleId.slice('cm_example_'.length)}`;
-}
-
-function providerEvidence(
-  observation: OfflineProviderObservation,
-  companyId: string,
-): ProviderEvidence {
-  return {
-    provider: observation.provider,
-    providerLocator: observation.providerLocator,
-    queryVersion: observation.queryVersion,
-    url: observation.url,
-    ...(observation.title === null ? {} : { title: observation.title }),
-    ...(observation.text === null ? {} : { text: observation.text }),
-    ...(observation.author === null ? {} : { author: observation.author }),
-    ...(observation.authorAccountId === null ? {} : { authorAccountId: observation.authorAccountId }),
-    publishedAt: observation.publishedAt,
-    observedAt: observation.observedAt,
-    ...(observation.expiresAt === null ? {} : { expiresAt: observation.expiresAt }),
-    candidateCompanyIds: [companyId],
-    ...(observation.verifiedCompany ? { verifiedCompanyIds: [companyId] } : {}),
-    sourceAuthority: observation.sourceAuthority,
-  };
-}
-
-async function normalizedEvaluationEvidence(
-  opaqueExampleId: string,
-  legalName: string,
-  observations: OfflineProviderObservation[],
-  capturedAt: number,
-  occurrenceDigest: string,
-): Promise<NormalizedCompanyEvidence[]> {
-  const companyId = companyIdFor(opaqueExampleId);
-  const officialDomains = [...new Set(observations.flatMap((observation) =>
-    observation.officialCompanyDomain === null ? [] : [observation.officialCompanyDomain]
-  ))].sort();
-  const normalized = await normalizeCompanyEvidence({
-    ownerAccountId: 'cm_eval_account',
-    subjects: [{
-      companyId,
-      name: legalName,
-      claims: [{
-        claimId: 'cm_eval_legal_name',
-        type: 'alias',
-        value: legalName,
-        trustState: 'verified',
-        allowedUses: ['discovery', 'attribution'],
-      }, ...officialDomains.map((domain, index) => ({
-        claimId: `cm_eval_official_domain_${index + 1}`,
-        type: 'domain' as const,
-        value: domain,
-        trustState: 'verified' as const,
-        allowedUses: ['discovery', 'attribution'] as const,
-      }))],
-    }],
-    evidence: observations.map((observation) => providerEvidence(observation, companyId)),
-    now: capturedAt,
-  });
-  const observationByLocator = new Map(observations.map((observation) => [
-    `${observation.provider}\u0000${observation.providerLocator}`,
-    observation,
-  ]));
-  const groupOrigins = new Map<string, Set<string>>();
-  for (const evidence of normalized.evidence) {
-    const observation = observationByLocator.get(`${evidence.provider}\u0000${evidence.providerLocator}`)!;
-    if (observation.syndication.relationship !== 'independent') continue;
-    const origins = groupOrigins.get(observation.syndication.groupIdentity) ?? new Set<string>();
-    origins.add(observation.publisherOrigin);
-    groupOrigins.set(observation.syndication.groupIdentity, origins);
-  }
-  return normalized.evidence.map((evidence) => {
-    const observation = observationByLocator.get(`${evidence.provider}\u0000${evidence.providerLocator}`)!;
-    const independence = evidence.independence === 'first_party'
-      ? 'first_party'
-      : observation.syndication.relationship === 'independent' &&
-          groupOrigins.get(observation.syndication.groupIdentity)?.size === 1
-        ? 'independent'
-        : observation.syndication.relationship === 'syndicated'
-          ? 'syndicated'
-          : 'unknown';
-    return { ...evidence, independence, occurrenceDedupeKey: occurrenceDigest };
-  });
-}
-
 function emptyPrediction(
   opaqueExampleId: string,
   discovered: boolean,
@@ -613,11 +401,14 @@ export async function runCompanyMonitoringOfflinePredictions(input: {
     authorizationPublicKeyPem: string;
   };
   checkpoints?: OfflinePredictionCheckpoint[];
+  reconciliations?: OfflinePredictionReconciliation[];
   checkpointAuthenticationKey?: string;
   onCheckpoint?: (checkpoint: OfflinePredictionCheckpoint) => Promise<void> | void;
+  createAttemptId?: () => string;
   classify: (input: {
     candidate: NormalizedCompanyCandidate;
     evidence: NormalizedCompanyEvidence[];
+    attemptId: string;
   }) => Promise<OfflineClassifierResult>;
   monotonicNow?: () => number;
 }): Promise<PredictionSet> {
@@ -628,7 +419,12 @@ export async function runCompanyMonitoringOfflinePredictions(input: {
     !isEvidenceDigest(input.expectedCurationSha256) ||
     curationSha256 !== input.expectedCurationSha256
   ) fail('offline_curation_digest_mismatch');
+  if (!input.previous
+    && input.curation.classifierRuntimeSha256 !== input.corpus.classifierRuntimeSha256) {
+    fail('offline_curation_corpus_mismatch');
+  }
   const observations = validateManifest(input.observations, input.corpus);
+  validateOfflineFirstPartyIdentityBindings(curationById, observations);
   const corpusSha256 = computeBlindCorpusDigest(input.corpus);
   const protocolSha256 = createHash('sha256').update(canonicalJson(input.protocol)).digest('hex');
   const providerObservationsSha256 = computeOfflineProviderObservationDigest(
@@ -644,39 +440,61 @@ export async function runCompanyMonitoringOfflinePredictions(input: {
     input.runtime.requestedModel !== observations.runtime.requestedModel ||
     input.runtime.providerRoute !== observations.runtime.providerRoute
   ) fail('offline_classifier_configuration_mismatch');
+  if (
+    input.curation.classifierRuntimeSha256 !==
+      computeOfflineClassifierRuntimeDigest(observations.runtime)
+  ) fail('offline_classifier_runtime_digest_mismatch');
   const capturedAt = parseRfc3339Timestamp(observations.capturedAt)!;
   const rows = new Map(observations.rows.map((row) => [row.opaqueExampleId, row]));
   const examples = new Map(input.corpus.examples.map((example) => [example.opaqueExampleId, example]));
   const monotonicNow = input.monotonicNow ?? (() => performance.now());
   const predictions = input.previous
-    ? validatePreviousPredictions(input.corpus, input.previous, input.approvedThresholdDigest)
+    ? validatePreviousPredictions(
+      input.corpus,
+      input.previous,
+      input.approvedThresholdDigest,
+      input.curation.classifierRuntimeSha256,
+    )
     : new Map<string, Prediction>();
   const opaqueExampleIds = [...examples.keys()].sort();
-  const checkpointAuthenticationKey = text(
+  const checkpointAuthenticationKeyValue = decodeOfflineCheckpointAuthenticationKey(
     input.checkpointAuthenticationKey,
-    'offline_checkpoint_authentication_missing',
-    1_024,
   );
   const authenticateCheckpoint = (
     checkpoint: Omit<OfflinePredictionCheckpoint, 'authenticationSha256'>,
-  ): string => createHmac('sha256', checkpointAuthenticationKey)
-    .update(canonicalJson(checkpoint))
-    .digest('hex');
-  const completedCheckpointIds = new Set((input.checkpoints ?? []).flatMap((checkpoint) =>
-    checkpoint.state === 'completed' ? [checkpoint.opaqueExampleId] : []
-  ));
+  ): string => authenticateOfflineArtifact(checkpoint, checkpointAuthenticationKeyValue);
+  const reconciliations = new Map<string, OfflinePredictionReconciliation>();
+  for (const value of input.reconciliations ?? []) {
+    const reconciliation = exact(
+      value,
+      RECONCILIATION_KEYS,
+      'offline_reconciliation_field_forbidden',
+    );
+    verifyOfflineArtifactAuthentication(reconciliation, checkpointAuthenticationKeyValue);
+    if (
+      reconciliation.schemaVersion !== 'cm_offline_prediction_reconciliation_v1' ||
+      !examples.has(String(reconciliation.opaqueExampleId)) ||
+      !ATTEMPT_ID.test(String(reconciliation.attemptId)) ||
+      !isEvidenceDigest(reconciliation.providerResponseSha256) ||
+      reconciliations.has(String(reconciliation.opaqueExampleId))
+    ) fail('offline_reconciliation_invalid');
+    finiteNonNegative(reconciliation.providerLatencyMs, 'offline_reconciliation_invalid');
+    reconciliations.set(
+      String(reconciliation.opaqueExampleId),
+      reconciliation as OfflinePredictionReconciliation,
+    );
+  }
+  const checkpointGroups = new Map<string, {
+    started?: OfflinePredictionCheckpoint;
+    completed?: OfflinePredictionCheckpoint;
+  }>();
   for (const checkpointValue of input.checkpoints ?? []) {
     const checkpoint = exact(
       checkpointValue,
       CHECKPOINT_KEYS,
       'offline_checkpoint_field_forbidden',
-    ) as OfflinePredictionCheckpoint;
-    if (!isEvidenceDigest(checkpoint.authenticationSha256)) fail('offline_checkpoint_authentication_invalid');
-    const { authenticationSha256, ...checkpointBody } = checkpoint;
-    const expectedAuthentication = authenticateCheckpoint(checkpointBody);
-    if (!timingSafeEqual(Buffer.from(authenticationSha256), Buffer.from(expectedAuthentication))) {
-      fail('offline_checkpoint_authentication_invalid');
-    }
+    );
+    verifyOfflineArtifactAuthentication(checkpoint, checkpointAuthenticationKeyValue);
     if (
       checkpoint.schemaVersion !== 'cm_offline_prediction_checkpoint_v1' ||
       checkpoint.protocolSha256 !== protocolSha256 ||
@@ -686,16 +504,39 @@ export async function runCompanyMonitoringOfflinePredictions(input: {
       checkpoint.providerObservationsSha256 !== providerObservationsSha256 ||
       canonicalJson(checkpoint.runtime) !== canonicalJson(observations.runtime)
     ) fail('offline_checkpoint_anchor_mismatch');
-    if (!examples.has(checkpoint.opaqueExampleId)) fail('offline_checkpoint_membership_invalid');
+    if (!examples.has(String(checkpoint.opaqueExampleId))) fail('offline_checkpoint_membership_invalid');
+    if (!ATTEMPT_ID.test(String(checkpoint.attemptId))) fail('offline_checkpoint_attempt_invalid');
+    const typedCheckpoint = checkpoint as OfflinePredictionCheckpoint;
     if (checkpoint.state === 'started') {
       if (checkpoint.prediction !== null) fail('offline_checkpoint_state_invalid');
-      if (completedCheckpointIds.has(checkpoint.opaqueExampleId)) continue;
-      fail('offline_checkpoint_reconciliation_required');
-    }
-    if (
+    } else if (
       checkpoint.state !== 'completed' || checkpoint.prediction === null ||
       checkpoint.prediction.opaqueExampleId !== checkpoint.opaqueExampleId
     ) fail('offline_checkpoint_state_invalid');
+    const group = checkpointGroups.get(typedCheckpoint.opaqueExampleId) ?? {};
+    if (checkpoint.state === 'started') {
+      if (group.started) fail('offline_checkpoint_state_invalid');
+      group.started = typedCheckpoint;
+    } else {
+      if (group.completed) fail('offline_checkpoint_state_invalid');
+      group.completed = typedCheckpoint;
+    }
+    checkpointGroups.set(typedCheckpoint.opaqueExampleId, group);
+  }
+  const matchedReconciliationIds = new Set<string>();
+  for (const [opaqueExampleId, group] of checkpointGroups) {
+    if (group.started && group.completed && group.started.attemptId !== group.completed.attemptId) {
+      fail('offline_checkpoint_attempt_mismatch');
+    }
+    if (!group.completed) {
+      const reconciliation = reconciliations.get(opaqueExampleId);
+      if (!group.started || !reconciliation || reconciliation.attemptId !== group.started.attemptId) {
+        fail('offline_checkpoint_reconciliation_required');
+      }
+      matchedReconciliationIds.add(opaqueExampleId);
+      continue;
+    }
+    const checkpoint = group.completed;
     validatePredictionSetArtifact({
       schemaVersion: 'cm_predictions_v1',
       corpusVersion: input.corpus.corpusVersion,
@@ -703,6 +544,7 @@ export async function runCompanyMonitoringOfflinePredictions(input: {
       protocolVersion: input.corpus.protocolVersion,
       policyVersion: input.corpus.policyVersion,
       modelVersion: input.corpus.modelVersion,
+      classifierRuntimeSha256: input.curation.classifierRuntimeSha256,
       queryVersion: input.corpus.queryVersion,
       parentPredictionSetSha256: input.previous
         ? computePredictionSetDigest(input.previous.predictions)
@@ -712,14 +554,19 @@ export async function runCompanyMonitoringOfflinePredictions(input: {
         : null,
       predictions: [checkpoint.prediction],
     });
-    if (
-      predictions.has(checkpoint.opaqueExampleId)
-    ) fail('offline_checkpoint_membership_invalid');
-    predictions.set(checkpoint.opaqueExampleId, checkpoint.prediction);
+    if (predictions.has(opaqueExampleId)) fail('offline_checkpoint_membership_invalid');
+    predictions.set(opaqueExampleId, checkpoint.prediction);
   }
+  if ([...reconciliations.keys()].some((opaqueExampleId) =>
+    !matchedReconciliationIds.has(opaqueExampleId)
+  )) fail('offline_reconciliation_checkpoint_invalid');
   const pendingExampleIds = opaqueExampleIds.filter((opaqueExampleId) => !predictions.has(opaqueExampleId));
 
-  const predict = async (opaqueExampleId: string): Promise<Prediction> => {
+  const predict = async (
+    opaqueExampleId: string,
+    attemptId: string,
+    reconciliation?: OfflinePredictionReconciliation,
+  ): Promise<Prediction> => {
     const example = examples.get(opaqueExampleId)!;
     const row = rows.get(opaqueExampleId)!;
     if (row.evidence.length === 0) {
@@ -727,7 +574,7 @@ export async function runCompanyMonitoringOfflinePredictions(input: {
     }
     const curatorCandidate = curationById.get(opaqueExampleId);
     if (!curatorCandidate) fail('offline_curation_membership_mismatch');
-    const evidence = await normalizedEvaluationEvidence(
+    const evidence = await normalizeOfflineEvaluationEvidence(
       opaqueExampleId,
       curatorCandidate.company.legalName,
       row.evidence,
@@ -739,9 +586,17 @@ export async function runCompanyMonitoringOfflinePredictions(input: {
     }
     const candidate = projectCompanyMonitoringCandidate(evidence, example.occurrenceDigest);
     const startedAt = monotonicNow();
-    const classification = await input.classify({ candidate, evidence });
+    const classification = reconciliation?.classification ?? await input.classify({
+      candidate,
+      evidence,
+      attemptId,
+    });
     const completedAt = monotonicNow();
     if (
+      typeof classification.providerResponseId !== 'string' ||
+      classification.providerResponseId.length === 0 ||
+      classification.providerResponseId !== classification.providerResponseId.trim() ||
+      classification.providerResponseId.length > 200 ||
       classification.route.resolvedModel !== observations.runtime.requestedModel ||
       classification.route.configuredProviderRoute !== observations.runtime.providerRoute ||
       classification.route.resolvedProvider !== observations.runtime.resolvedProvider ||
@@ -769,7 +624,9 @@ export async function runCompanyMonitoringOfflinePredictions(input: {
           ? example.corporateFamilyDigest
           : null,
       confidence: policy.overallConfidence ?? 0,
-      latencyMs: row.latencyMs + Math.max(0, completedAt - startedAt),
+      latencyMs: row.latencyMs + (
+        reconciliation?.providerLatencyMs ?? Math.max(0, completedAt - startedAt)
+      ),
       costUsd: row.costUsd + classification.costUsd,
     };
   };
@@ -784,6 +641,10 @@ export async function runCompanyMonitoringOfflinePredictions(input: {
       cursor += 1;
       const opaqueExampleId = pendingExampleIds[index]!;
       try {
+        const reconciliation = reconciliations.get(opaqueExampleId);
+        const attemptId = reconciliation?.attemptId ??
+          (input.createAttemptId ?? (() => `cm_attempt_${randomUUID()}`))();
+        if (!ATTEMPT_ID.test(attemptId)) fail('offline_checkpoint_attempt_invalid');
         const startedCheckpoint = {
           schemaVersion: 'cm_offline_prediction_checkpoint_v1',
           protocolSha256,
@@ -794,13 +655,20 @@ export async function runCompanyMonitoringOfflinePredictions(input: {
           runtime: observations.runtime,
           state: 'started',
           opaqueExampleId,
+          attemptId,
           prediction: null,
         } satisfies Omit<OfflinePredictionCheckpoint, 'authenticationSha256'>;
-        await input.onCheckpoint?.({
-          ...startedCheckpoint,
-          authenticationSha256: authenticateCheckpoint(startedCheckpoint),
-        });
-        const prediction = await predict(opaqueExampleId);
+        if (!reconciliation) {
+          await input.onCheckpoint?.({
+            ...startedCheckpoint,
+            authenticationSha256: authenticateCheckpoint(startedCheckpoint),
+          });
+        }
+        const prediction = await predict(
+          opaqueExampleId,
+          attemptId,
+          reconciliation,
+        );
         const completedCheckpoint = {
           schemaVersion: 'cm_offline_prediction_checkpoint_v1',
           protocolSha256,
@@ -811,6 +679,7 @@ export async function runCompanyMonitoringOfflinePredictions(input: {
           runtime: observations.runtime,
           state: 'completed',
           opaqueExampleId,
+          attemptId,
           prediction,
         } satisfies Omit<OfflinePredictionCheckpoint, 'authenticationSha256'>;
         await input.onCheckpoint?.({
@@ -837,6 +706,7 @@ export async function runCompanyMonitoringOfflinePredictions(input: {
     protocolVersion: input.corpus.protocolVersion,
     policyVersion: input.corpus.policyVersion,
     modelVersion: input.corpus.modelVersion,
+    classifierRuntimeSha256: input.curation.classifierRuntimeSha256,
     queryVersion: input.corpus.queryVersion,
     parentPredictionSetSha256: input.previous
       ? computePredictionSetDigest(input.previous.predictions)
@@ -854,6 +724,7 @@ function validatePreviousPredictions(
   corpus: BlindCorpus,
   previous: NonNullable<Parameters<typeof runCompanyMonitoringOfflinePredictions>[0]['previous']>,
   approvedThresholdDigest: string,
+  inputCurationRuntimeDigest: string,
 ): Map<string, Prediction> {
   validateBlindCorpusArtifact(previous.corpus);
   validatePredictionSetArtifact(previous.predictions);
@@ -877,6 +748,7 @@ function validatePreviousPredictions(
     previous.report.corpus.exampleCount !== previous.corpus.examples.length ||
     previous.report.versions.policyVersion !== previous.corpus.policyVersion ||
     previous.report.versions.modelVersion !== previous.corpus.modelVersion ||
+    previous.report.versions.classifierRuntimeSha256 !== previous.corpus.classifierRuntimeSha256 ||
     previous.report.versions.queryVersion !== previous.corpus.queryVersion ||
     previous.report.versions.curatorAccessVersion !== previous.corpus.curatorAccessVersion ||
     previous.corpus.status !== 'locked' ||
@@ -885,9 +757,12 @@ function validatePreviousPredictions(
   ) fail('offline_previous_corpus_invalid');
   for (const field of [
     'purpose', 'protocolVersion', 'policyVersion', 'modelVersion', 'queryVersion',
-    'curatorAccessVersion',
+    'classifierRuntimeSha256', 'curatorAccessVersion',
   ] as const) {
     if (corpus[field] !== previous.corpus[field]) fail('offline_continuation_version_mismatch');
+  }
+  if (previous.predictions.classifierRuntimeSha256 !== inputCurationRuntimeDigest) {
+    fail('offline_continuation_classifier_runtime_mismatch');
   }
   const continuation = corpus.continuation;
   if (
@@ -920,6 +795,8 @@ function validatePreviousPredictions(
     authorization.parentPredictionSetSha256 !== previous.expectedPredictionSetSha256 ||
     authorization.parentGoldLabelSetSha256 !== previous.corpus.sealedGoldLabelsSha256 ||
     authorization.parentReportSha256 !== previous.expectedReportSha256 ||
+    authorization.classifierRuntimeSha256 !== previous.predictions.classifierRuntimeSha256 ||
+    authorization.classifierRuntimeSha256 !== inputCurationRuntimeDigest ||
     authorization.childCorpusSha256 !== computeBlindCorpusDigest(corpus) ||
     authorization.expansionManifestSha256 !== previous.corpus.precommittedExpansion.manifestSha256 ||
     typeof signatureBase64 !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(signatureBase64)
@@ -937,7 +814,10 @@ function validatePreviousPredictions(
     if (error instanceof CompanyMonitoringOfflinePredictionError) throw error;
     fail('offline_continuation_authorization_invalid');
   }
-  for (const field of ['corpusVersion', 'protocolVersion', 'policyVersion', 'modelVersion', 'queryVersion'] as const) {
+  for (const field of [
+    'corpusVersion', 'protocolVersion', 'policyVersion', 'modelVersion',
+    'classifierRuntimeSha256', 'queryVersion',
+  ] as const) {
     const expected = field === 'corpusVersion'
       ? previous.corpus.corpusVersion
       : previous.corpus[field];
@@ -947,8 +827,12 @@ function validatePreviousPredictions(
     fail('offline_previous_predictions_mismatch');
   }
   const previousExampleIds = new Set(previous.corpus.examples.map((example) => example.opaqueExampleId));
+  const previousPredictionIds = new Set(
+    previous.predictions.predictions.map((prediction) => prediction.opaqueExampleId),
+  );
   if (
     previous.predictions.predictions.length !== previousExampleIds.size ||
+    previousPredictionIds.size !== previous.predictions.predictions.length ||
     previous.predictions.predictions.some((prediction) => !previousExampleIds.has(prediction.opaqueExampleId))
   ) fail('offline_previous_predictions_mismatch');
   return new Map(previous.predictions.predictions.map((prediction) => [prediction.opaqueExampleId, prediction]));
@@ -980,7 +864,11 @@ export function createOfflinePredictionRunReceipt(input: {
   );
   if (
     input.predictions.corpusSha256 !== corpusSha256 ||
-    input.observations.curationSha256 !== curationSha256
+    input.observations.curationSha256 !== curationSha256 ||
+    input.curation.classifierRuntimeSha256 !== input.corpus.classifierRuntimeSha256 ||
+    input.predictions.classifierRuntimeSha256 !== input.corpus.classifierRuntimeSha256 ||
+    computeOfflineClassifierRuntimeDigest(input.observations.runtime)
+      !== input.corpus.classifierRuntimeSha256
   ) fail('offline_prediction_receipt_input_mismatch');
   return {
     schemaVersion: 'cm_offline_prediction_run_receipt_v1',
@@ -1078,7 +966,8 @@ export function validateOfflinePredictionBundle(input: {
   const predictions = bundle.predictions as PredictionSet;
   const corpusSha256 = computeBlindCorpusDigest(input.corpus);
   for (const field of [
-    'corpusVersion', 'protocolVersion', 'policyVersion', 'modelVersion', 'queryVersion',
+    'corpusVersion', 'protocolVersion', 'policyVersion', 'modelVersion',
+    'classifierRuntimeSha256', 'queryVersion',
   ] as const) {
     if (predictions[field] !== input.corpus[field]) fail('offline_prediction_bundle_invalid');
   }

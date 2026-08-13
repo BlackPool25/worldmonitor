@@ -8,7 +8,7 @@ import {
   COMPANY_MONITORING_CLASSIFIER_ENDPOINT,
   COMPANY_MONITORING_CLASSIFIER_MAX_TIMEOUT_MS,
   CompanyMonitoringClassifierTransportError,
-  requestCompanyMonitoringClassification,
+  requestCompanyMonitoringClassification as requestCompanyMonitoringClassificationTransport,
 } from '../scripts/lib/company-monitoring-classifier-client.mjs';
 
 const candidate = {
@@ -43,6 +43,18 @@ const evidence = [{
 const apiKey = 'openrouter-test-key';
 const model = 'provider/classifier-model';
 const providerRoute = 'provider-route';
+const expectedResolvedProvider = 'Pinned Provider';
+const attemptId = 'cm_attempt_00000000-0000-4000-8000-000000000001';
+
+function requestCompanyMonitoringClassification(
+  input: Parameters<typeof requestCompanyMonitoringClassificationTransport>[0],
+) {
+  return requestCompanyMonitoringClassificationTransport({
+    expectedResolvedProvider,
+    attemptId,
+    ...input,
+  });
+}
 
 function routerMetadata(resolvedModel = model, provider = 'Pinned Provider') {
   return {
@@ -60,6 +72,7 @@ function routerMetadata(resolvedModel = model, provider = 'Pinned Provider') {
 
 function successEnvelope(content: string, resolvedModel = model) {
   return {
+    id: 'gen-company-monitoring-1',
     model: resolvedModel,
     provider: 'Pinned Provider',
     usage: { cost: 0.001 },
@@ -101,6 +114,7 @@ describe('company-monitoring classifier client', () => {
     });
 
     assert.deepEqual(result, {
+      providerResponseId: 'gen-company-monitoring-1',
       content: JSON.stringify(untrustedOutput),
       route: {
         resolvedModel: model,
@@ -125,6 +139,8 @@ describe('company-monitoring classifier client', () => {
       ...buildCompanyMonitoringClassificationRequest({ candidate, evidence, model }),
       temperature: 0,
       reasoning: { effort: 'none' },
+      metadata: { company_monitoring_attempt_id: attemptId },
+      trace: { trace_id: attemptId },
       provider: {
         only: [providerRoute],
         allow_fallbacks: false,
@@ -137,6 +153,8 @@ describe('company-monitoring classifier client', () => {
     assert.equal('tool_choice' in body, false);
     assert.equal(body.response_format.type, 'json_schema');
     assert.equal(body.response_format.json_schema.strict, true);
+    const modelInput = JSON.parse(body.messages[1].content.split('\n')[1]);
+    assert.equal('occurrenceDedupeKey' in modelInput.candidate, false);
   });
 
   it('fails before fetch when the API key or model is missing', async () => {
@@ -160,6 +178,18 @@ describe('company-monitoring classifier client', () => {
           error instanceof CompanyMonitoringClassifierTransportError && error.code === 'configuration',
       );
     }
+    await assert.rejects(
+      requestCompanyMonitoringClassificationTransport({
+        candidate,
+        evidence,
+        apiKey,
+        model,
+        providerRoute,
+        fetchImpl,
+      }),
+      (error: unknown) =>
+        error instanceof CompanyMonitoringClassifierTransportError && error.code === 'configuration',
+    );
     assert.equal(fetchCalls, 0);
   });
 
@@ -240,6 +270,7 @@ describe('company-monitoring classifier client', () => {
       });
 
       assert.deepEqual(result, {
+        providerResponseId: 'gen-company-monitoring-1',
         content,
         route: {
           resolvedModel: model,
@@ -253,6 +284,7 @@ describe('company-monitoring classifier client', () => {
 
   it('fails closed when the provider omits the resolved model identity', async () => {
     const fetchImpl: typeof fetch = async () => jsonResponse({
+      id: 'gen-company-monitoring-1',
       choices: [{
         finish_reason: 'stop',
         message: { role: 'assistant', content: '{}' },
@@ -293,6 +325,7 @@ describe('company-monitoring classifier client', () => {
       approvedResolvedModels: [resolvedModel],
       fetchImpl,
     }), {
+      providerResponseId: 'gen-company-monitoring-1',
       content: '{}',
       route: {
         resolvedModel,
@@ -389,6 +422,31 @@ describe('company-monitoring classifier client', () => {
           model,
           providerRoute,
           fetchImpl,
+        }),
+        (error: unknown) =>
+          error instanceof CompanyMonitoringClassifierTransportError &&
+          error.code === 'provider_response',
+      );
+    }
+  });
+
+  it('binds every returned provider identity to the configured expected provider', async () => {
+    const coherentWrongProvider = successEnvelope('{}');
+    coherentWrongProvider.provider = 'Other Provider';
+    coherentWrongProvider.openrouter_metadata = routerMetadata(model, 'Other Provider');
+    const contradictoryProvider = successEnvelope('{}');
+    contradictoryProvider.provider = 'Other Provider';
+
+    for (const envelope of [coherentWrongProvider, contradictoryProvider]) {
+      await assert.rejects(
+        requestCompanyMonitoringClassification({
+          candidate,
+          evidence,
+          apiKey,
+          model,
+          providerRoute,
+          expectedResolvedProvider,
+          fetchImpl: async () => jsonResponse(envelope),
         }),
         (error: unknown) =>
           error instanceof CompanyMonitoringClassifierTransportError &&

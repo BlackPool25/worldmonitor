@@ -41,6 +41,7 @@ const versions = {
   protocolVersion: 'cm_eval_v1',
   policyVersion: 'cm_policy_v1',
   modelVersion: 'deepseek_v4_flash_2026_08_05',
+  classifierRuntimeSha256: syntheticDigest('classifier-runtime'),
   queryVersion: 'cm_query_v1',
 };
 const directions = ['positive', 'negative', 'mixed'] as const;

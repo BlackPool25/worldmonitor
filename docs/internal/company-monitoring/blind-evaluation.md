@@ -135,7 +135,10 @@ Provider capture and classifier predictions use a second external manifest. A
 
 The validator rejects missing examples, incomplete Exa coverage, reused provider
 results, query drift, observations after the capture timestamp, and runtime
-model or route drift. The classifier receives the company identity required for
+model or route drift. The retained curation manifest binds the exact requested
+model, configured route, and expected resolved provider through
+`classifierRuntimeSha256`; a self-consistent observation manifest cannot change
+that triple while keeping the frozen model version. The classifier receives the company identity required for
 attribution and only the captured provider observations. It does not receive
 curator reference URLs, reference excerpts, occurrence identities, or gold
 labels. Output contains only opaque prediction rows.
@@ -195,8 +198,9 @@ npm run --silent company-monitoring:offline-predictions -- \
 The runtime requires `OPENROUTER_API_KEY`,
 `COMPANY_MONITORING_CLASSIFIER_MODEL`, and
 `COMPANY_MONITORING_CLASSIFIER_PROVIDER_ROUTE`. The independent runtime custodian
-must also supply `COMPANY_MONITORING_OFFLINE_CHECKPOINT_HMAC_KEY`; do not share it
-with the curator or policy author. The runtime custodian must also supply an
+must also supply `COMPANY_MONITORING_OFFLINE_CHECKPOINT_HMAC_KEY` as canonical
+base64 for at least 32 random bytes; do not share it with the curator or policy
+author. The runtime custodian must also supply an
 Ed25519 `COMPANY_MONITORING_OFFLINE_BUNDLE_SIGNING_PRIVATE_KEY` and retain its
 public key separately for the extraction command. The signed bundle binds every
 prediction and the complete run receipt; editing either makes extraction fail
@@ -217,6 +221,8 @@ a null receipt. Each observation also retains its provider-owned publisher
 origin, official-company-domain binding when applicable, and syndication
 relationship, upstream URL, and group identity. Rewritten copies from one
 syndication group therefore do not count as independent corroboration. Each run
+checks every claimed official domain or verified X account against the separate
+identity bindings retained in the curation manifest. It then
 checks the retained curation and observation digests before it schedules
 classifier work. The command creates one sealed `0600`
 bundle without overwriting an existing artifact. The bundle contains the
@@ -228,12 +234,36 @@ Each completed opaque prediction also has an immutable, anchor-validated
 checkpoint in the sealed checkpoint directory. A retry loads those checkpoints
 and calls the provider only for missing IDs; one late provider failure therefore
 does not repeat successful paid classifications. An unmatched `.started.json`
-means the provider request may already have been accepted. The retry stops with
-`offline_checkpoint_reconciliation_required` before any new call. Reconcile that
-specific provider attempt under the approved custody process; never delete the
-started marker merely to force a retry.
+contains an authenticated attempt ID that is also sent as OpenRouter request
+and trace metadata. The retry stops with
+`offline_checkpoint_reconciliation_required` before any new call. Retrieve the
+retained response for that attempt, create a sealed reconciliation, and supply
+its directory to the resumed run:
+
+```bash
+npm run --silent company-monitoring:offline-predictions -- reconcile \
+  --checkpoint /private/path/pilot-prediction-checkpoints/cm_example_000001.started.json \
+  --retained-provider-response /private/path/openrouter-attempt-response.json \
+  --expected-provider-response-digest "$RETAINED_RESPONSE_SHA256" \
+  --output /private/path/pilot-prediction-reconciliations/cm_example_000001.reconciliation.json
+
+# Add this option to the resumed `run` command.
+--reconciliation-directory /private/path/pilot-prediction-reconciliations
+```
+
+The retained response wrapper includes the authenticated attempt ID, provider
+response ID, original provider latency, and raw provider response. The runtime
+custodian must retain and approve its digest independently. The reconcile
+command authenticates the started checkpoint, verifies the retained digest and
+attempt/response-ID binding, validates the recovered response against the
+checkpoint's pinned model and provider, and HMAC-authenticates the complete
+reconciliation. The resumed run preserves the original provider latency and
+creates the completed checkpoint without a second paid request. Never delete
+the started marker merely to force a retry.
 Completed checkpoints are authenticated with the separate runtime-custody key;
 editing their prediction bytes or copied anchors makes the retry fail closed.
+A started and completed checkpoint for one opaque example must carry the same
+attempt ID.
 
 ## Progressive lifecycle
 

@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { generateKeyPairSync, sign } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { createHash, generateKeyPairSync, sign } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 import {
   CompanyMonitoringOfflinePredictionError,
+  computeOfflineClassifierRuntimeDigest,
   computeOfflineProviderObservationDigest,
+  createOfflinePredictionReconciliation,
   createOfflinePredictionBundle,
   createOfflinePredictionRunReceipt,
   runCompanyMonitoringOfflinePredictions,
@@ -39,7 +43,7 @@ import {
 } from '../shared/company-monitoring-blind-evaluation.ts';
 
 const approvedThresholdDigest = '29ce1d431086f3b7a9a955776f0c2c009d87c809f810f32f8b10aef53f8ecfc2';
-const checkpointAuthenticationKey = 'test-only-checkpoint-authentication-key';
+const checkpointAuthenticationKey = Buffer.alloc(32, 7).toString('base64');
 const bundleKeys = generateKeyPairSync('ed25519');
 const bundleSigningPrivateKeyPem = bundleKeys.privateKey.export({
   type: 'pkcs8',
@@ -164,6 +168,11 @@ function curation(count = 2): CompanyMonitoringCurationManifest {
     protocolVersion: 'cm_eval_v1',
     policyVersion: 'cm-admission-policy-v1',
     modelVersion: 'deepseek_v4_flash_digitalocean_v1',
+    classifierRuntimeSha256: computeOfflineClassifierRuntimeDigest({
+      requestedModel: 'deepseek/deepseek-v4-flash',
+      providerRoute: 'digitalocean',
+      resolvedProvider: 'DigitalOcean',
+    }),
     queryVersion: 'cm_provider_queries_v1',
     curatorAccessVersion: 'cm_curator_access_v1',
     candidates: Array.from({ length: count }, (_, index) => index + 1).map((ordinal) => ({
@@ -175,6 +184,8 @@ function curation(count = 2): CompanyMonitoringCurationManifest {
         legalName: `Blind Boundary Company ${ordinal} Ltd`,
         stableIdentity: `company:${ordinal}`,
         corporateFamilyIdentity: `family:${ordinal}`,
+        officialDomains: [],
+        verifiedXAccountIds: ordinal === 1 ? ['1000000000000000001'] : [],
         geography: 'US' as const,
         privateStatus: 'private' as const,
         privateStatusEvidence: {
@@ -354,6 +365,21 @@ function expectedError(code: string) {
     error instanceof CompanyMonitoringOfflinePredictionError && error.code === code;
 }
 
+function runOfflineCli(args: string[]) {
+  return spawnSync(
+    fileURLToPath(new URL('../node_modules/.bin/tsx', import.meta.url)),
+    [fileURLToPath(new URL('../scripts/company-monitoring-offline-predictions.mts', import.meta.url)), ...args],
+    {
+      encoding: 'utf8',
+      env: {
+        PATH: process.env.PATH,
+        NODE_NO_WARNINGS: '1',
+        COMPANY_MONITORING_OFFLINE_CHECKPOINT_HMAC_KEY: checkpointAuthenticationKey,
+      },
+    },
+  );
+}
+
 describe('Company Monitoring sealed offline predictions', () => {
   it('stops before classifier access while the approved protocol remains STOP', async () => {
     const { curator, corpus, captured } = await bundle();
@@ -378,6 +404,30 @@ describe('Company Monitoring sealed offline predictions', () => {
     assert.equal(classifierCalls, 0);
   });
 
+  it('rejects weak checkpoint authentication keys before classifier access', async () => {
+    const { curator, corpus, captured } = await bundle();
+    let classifierCalls = 0;
+    await assert.rejects(
+      runCompanyMonitoringOfflinePredictions({
+        protocol: continuedProtocol(),
+        approvedThresholdDigest,
+        curation: curator,
+        expectedCurationSha256: computeCompanyMonitoringCurationManifestDigest(curator),
+        corpus,
+        observations: captured,
+        expectedObservationsSha256: computeOfflineProviderObservationDigest(captured, corpus),
+        runtime: captured.runtime,
+        checkpointAuthenticationKey: 'YQ==',
+        classify: async () => {
+          classifierCalls += 1;
+          throw new Error('must not run');
+        },
+      }),
+      expectedError('offline_checkpoint_authentication_invalid'),
+    );
+    assert.equal(classifierCalls, 0);
+  });
+
   it('uses only provider observations, applies the merged policy, and emits opaque predictions', async () => {
     const { curator, corpus, captured } = await bundle();
     let classifierInput = '';
@@ -396,6 +446,7 @@ describe('Company Monitoring sealed offline predictions', () => {
       classify: async ({ candidate, evidence }) => {
         classifierInput = JSON.stringify({ candidate, evidence });
         return {
+          providerResponseId: 'gen-offline-1',
           content: modelOutput(evidence.map((row) => row.evidenceFingerprint)),
           route: {
             resolvedModel: captured.runtime.requestedModel,
@@ -437,6 +488,7 @@ describe('Company Monitoring sealed offline predictions', () => {
       runtime: captured.runtime,
       checkpointAuthenticationKey,
       classify: async () => ({
+        providerResponseId: 'gen-offline-2',
         content: '{}',
         route: {
           resolvedModel: captured.runtime.requestedModel,
@@ -553,7 +605,55 @@ describe('Company Monitoring sealed offline predictions', () => {
     );
     assert.equal(mismatchCalls, 0);
 
+    const coherentRuntimeDrift = structuredClone(captured);
+    coherentRuntimeDrift.runtime.requestedModel = 'other/provider-model';
+    let runtimeDigestCalls = 0;
+    await assert.rejects(
+      runCompanyMonitoringOfflinePredictions({
+        ...base,
+        observations: coherentRuntimeDrift,
+        expectedObservationsSha256: computeOfflineProviderObservationDigest(
+          coherentRuntimeDrift,
+          corpus,
+        ),
+        runtime: coherentRuntimeDrift.runtime,
+        classify: async () => {
+          runtimeDigestCalls += 1;
+          throw new Error('must not run');
+        },
+      }),
+      expectedError('offline_classifier_runtime_digest_mismatch'),
+    );
+    assert.equal(runtimeDigestCalls, 0);
+
+    const driftCurator = structuredClone(curator);
+    driftCurator.classifierRuntimeSha256 = computeOfflineClassifierRuntimeDigest(
+      coherentRuntimeDrift.runtime,
+    );
+    coherentRuntimeDrift.curationSha256 = computeCompanyMonitoringCurationManifestDigest(driftCurator);
+    let lockedCorpusRuntimeCalls = 0;
+    await assert.rejects(
+      runCompanyMonitoringOfflinePredictions({
+        ...base,
+        curation: driftCurator,
+        expectedCurationSha256: coherentRuntimeDrift.curationSha256,
+        observations: coherentRuntimeDrift,
+        expectedObservationsSha256: computeOfflineProviderObservationDigest(
+          coherentRuntimeDrift,
+          corpus,
+        ),
+        runtime: coherentRuntimeDrift.runtime,
+        classify: async () => {
+          lockedCorpusRuntimeCalls += 1;
+          throw new Error('must not run');
+        },
+      }),
+      expectedError('offline_curation_corpus_mismatch'),
+    );
+    assert.equal(lockedCorpusRuntimeCalls, 0);
+
     const validResult = {
+      providerResponseId: 'gen-offline-3',
       content: modelOutput([]),
       route: {
         resolvedModel: captured.runtime.requestedModel,
@@ -605,6 +705,7 @@ describe('Company Monitoring sealed offline predictions', () => {
       runtime: captured.runtime,
       checkpointAuthenticationKey,
       classify: async ({ evidence }) => ({
+        providerResponseId: 'gen-offline-4',
         content: modelOutput(evidence.map((row) => row.evidenceFingerprint)),
         route: {
           resolvedModel: captured.runtime.requestedModel,
@@ -659,6 +760,50 @@ describe('Company Monitoring sealed offline predictions', () => {
         corpus,
         observations: captured,
         expectedObservationsSha256: computeOfflineProviderObservationDigest(captured, corpus),
+      }),
+      expectedError('offline_prediction_bundle_invalid'),
+    );
+    const runtimeDrift = {
+      requestedModel: 'other/provider-model',
+      providerRoute: captured.runtime.providerRoute,
+      resolvedProvider: captured.runtime.resolvedProvider,
+    };
+    const runtimeDriftCurator = structuredClone(curator);
+    runtimeDriftCurator.classifierRuntimeSha256 = computeOfflineClassifierRuntimeDigest(runtimeDrift);
+    const runtimeDriftObservations = structuredClone(captured);
+    runtimeDriftObservations.runtime = runtimeDrift;
+    runtimeDriftObservations.curationSha256 =
+      computeCompanyMonitoringCurationManifestDigest(runtimeDriftCurator);
+    const runtimeDriftPredictions = structuredClone(predictions);
+    runtimeDriftPredictions.classifierRuntimeSha256 = runtimeDriftCurator.classifierRuntimeSha256;
+    const runtimeDriftBundle = createOfflinePredictionBundle({
+      predictions: runtimeDriftPredictions,
+      receipt: {
+        ...receipt,
+        curationSha256: runtimeDriftObservations.curationSha256,
+        providerObservationsSha256: computeOfflineProviderObservationDigest(
+          runtimeDriftObservations,
+          corpus,
+        ),
+        predictionSetSha256: computePredictionSetDigest(runtimeDriftPredictions),
+        runtime: runtimeDrift,
+      },
+      signingPrivateKeyPem: bundleSigningPrivateKeyPem,
+    });
+    assert.throws(
+      () => validateOfflinePredictionBundle({
+        bundle: runtimeDriftBundle,
+        verificationPublicKeyPem: bundleVerificationPublicKeyPem,
+        protocol: continuedProtocol(),
+        approvedThresholdDigest,
+        curation: runtimeDriftCurator,
+        expectedCurationSha256: runtimeDriftObservations.curationSha256,
+        corpus,
+        observations: runtimeDriftObservations,
+        expectedObservationsSha256: computeOfflineProviderObservationDigest(
+          runtimeDriftObservations,
+          corpus,
+        ),
       }),
       expectedError('offline_prediction_bundle_invalid'),
     );
@@ -717,7 +862,16 @@ describe('Company Monitoring sealed offline predictions', () => {
   });
 
   it('preserves verified first-party Exa authority only for a bound official domain', async () => {
-    const { curator, corpus, captured } = await bundle();
+    const curator = curation();
+    const authoritativeSource = curator.candidates[0]!.sources[0]!;
+    authoritativeSource.url = 'https://blindboundary.example/material-event';
+    authoritativeSource.sourceOrigin = 'blindboundary.example';
+    authoritativeSource.evidenceAuthority = 'official_company';
+    curator.candidates[0]!.company.officialDomains = ['blindboundary.example'];
+    const corpus = lockedCorpus(curator);
+    const captured = observations(corpus);
+    captured.corpusSha256 = computeBlindCorpusDigest(corpus);
+    captured.curationSha256 = computeCompanyMonitoringCurationManifestDigest(curator);
     const exa = captured.rows[0]!.evidence[0]!;
     exa.url = 'https://news.blindboundary.example/material-event';
     exa.publisherOrigin = 'news.blindboundary.example';
@@ -739,6 +893,7 @@ describe('Company Monitoring sealed offline predictions', () => {
       classify: async ({ evidence }) => {
         exaAuthority = evidence.find((row) => row.provider === 'exa')?.sourceAuthority;
         return {
+          providerResponseId: 'gen-offline-5',
           content: modelOutput(evidence.map((row) => row.evidenceFingerprint)),
           route: {
             resolvedModel: captured.runtime.requestedModel,
@@ -751,6 +906,61 @@ describe('Company Monitoring sealed offline predictions', () => {
     });
 
     assert.equal(exaAuthority, 'verified_first_party');
+  });
+
+  it('rejects self-asserted first-party identity without an independent curation binding', async () => {
+    const { curator, corpus, captured } = await bundle();
+    const exa = captured.rows[0]!.evidence[0]!;
+    exa.url = 'https://news.blindboundary.example/material-event';
+    exa.publisherOrigin = 'news.blindboundary.example';
+    exa.sourceAuthority = 'verified_first_party';
+    exa.verifiedCompany = true;
+    exa.officialCompanyDomain = 'blindboundary.example';
+    let classifierCalls = 0;
+
+    await assert.rejects(
+      runCompanyMonitoringOfflinePredictions({
+        protocol: continuedProtocol(),
+        approvedThresholdDigest,
+        curation: curator,
+        expectedCurationSha256: computeCompanyMonitoringCurationManifestDigest(curator),
+        corpus,
+        observations: captured,
+        expectedObservationsSha256: computeOfflineProviderObservationDigest(captured, corpus),
+        runtime: captured.runtime,
+        checkpointAuthenticationKey,
+        classify: async () => {
+          classifierCalls += 1;
+          throw new Error('must not run');
+        },
+      }),
+      expectedError('offline_observation_identity_binding_mismatch'),
+    );
+    assert.equal(classifierCalls, 0);
+
+    const unverified = await bundle();
+    const unverifiedX = unverified.captured.rows[0]!.evidence.find((row) => row.provider === 'x')!;
+    unverifiedX.verifiedCompany = false;
+    let unverifiedCalls = 0;
+    await assert.rejects(
+      runCompanyMonitoringOfflinePredictions({
+        protocol: continuedProtocol(),
+        approvedThresholdDigest,
+        curation: unverified.curator,
+        expectedCurationSha256: computeCompanyMonitoringCurationManifestDigest(unverified.curator),
+        corpus: unverified.corpus,
+        observations: unverified.captured,
+        expectedObservationsSha256: syntheticDigest('unverified-observations'),
+        runtime: unverified.captured.runtime,
+        checkpointAuthenticationKey,
+        classify: async () => {
+          unverifiedCalls += 1;
+          throw new Error('must not run');
+        },
+      }),
+      expectedError('offline_observation_verification_invalid'),
+    );
+    assert.equal(unverifiedCalls, 0);
   });
 
   it('preserves parent predictions and classifies only a continuation expansion', async () => {
@@ -779,6 +989,7 @@ describe('Company Monitoring sealed offline predictions', () => {
       runtime: parent.captured.runtime,
       checkpointAuthenticationKey,
       classify: async ({ evidence }) => ({
+        providerResponseId: 'gen-offline-6',
         content: modelOutput(evidence.map((row) => row.evidenceFingerprint)),
         route: {
           resolvedModel: parent.captured.runtime.requestedModel,
@@ -806,6 +1017,7 @@ describe('Company Monitoring sealed offline predictions', () => {
       versions: {
         policyVersion: parent.corpus.policyVersion,
         modelVersion: parent.corpus.modelVersion,
+        classifierRuntimeSha256: parent.corpus.classifierRuntimeSha256,
         queryVersion: parent.corpus.queryVersion,
         goldLabelVersion: 'cm_gold_v1',
         curatorAccessVersion: parent.corpus.curatorAccessVersion,
@@ -849,17 +1061,21 @@ describe('Company Monitoring sealed offline predictions', () => {
       parentPredictionSetSha256,
       parentGoldLabelSetSha256: parent.corpus.sealedGoldLabelsSha256!,
       parentReportSha256: parentReport.reportSha256,
+      classifierRuntimeSha256: childCurator.classifierRuntimeSha256,
       childCorpusSha256: computeBlindCorpusDigest(childCorpus),
       expansionManifestSha256: parent.corpus.precommittedExpansion!.manifestSha256,
     };
-    const authorization: OfflineContinuationAuthorization = {
-      ...authorizationBody,
+    const signAuthorization = (
+      body: Omit<OfflineContinuationAuthorization, 'signatureBase64'>,
+    ): OfflineContinuationAuthorization => ({
+      ...body,
       signatureBase64: sign(
         null,
-        Buffer.from(canonicalJson(authorizationBody)),
+        Buffer.from(canonicalJson(body)),
         continuationKeyPair.privateKey,
       ).toString('base64'),
-    };
+    });
+    const authorization = signAuthorization(authorizationBody);
     const continuationPrevious = {
       corpus: parent.corpus,
       expectedCorpusSha256: parentCorpusSha256,
@@ -897,6 +1113,188 @@ describe('Company Monitoring sealed offline predictions', () => {
       expectedError('offline_continuation_authorization_invalid'),
     );
     assert.equal(unauthorizedCalls, 0);
+    for (const [field, value] of [
+      ['approvedThresholdDigest', syntheticDigest('wrong-threshold')],
+      ['parentCorpusSha256', syntheticDigest('wrong-parent-corpus')],
+      ['parentPredictionSetSha256', syntheticDigest('wrong-parent-predictions')],
+      ['parentGoldLabelSetSha256', syntheticDigest('wrong-parent-gold')],
+      ['parentReportSha256', syntheticDigest('wrong-parent-report')],
+      ['classifierRuntimeSha256', syntheticDigest('wrong-classifier-runtime')],
+      ['childCorpusSha256', syntheticDigest('wrong-child-corpus')],
+      ['expansionManifestSha256', syntheticDigest('wrong-expansion')],
+    ] as const) {
+      let signedFieldCalls = 0;
+      const mutatedBody = { ...authorizationBody, [field]: value };
+      await assert.rejects(
+        runCompanyMonitoringOfflinePredictions({
+          protocol: continuedProtocol(),
+          approvedThresholdDigest,
+          curation: childCurator,
+          expectedCurationSha256: computeCompanyMonitoringCurationManifestDigest(childCurator),
+          corpus: childCorpus,
+          observations: childCaptured,
+          expectedObservationsSha256: computeOfflineProviderObservationDigest(childCaptured, childCorpus),
+          runtime: childCaptured.runtime,
+          checkpointAuthenticationKey,
+          previous: {
+            ...continuationPrevious,
+            authorization: signAuthorization(mutatedBody),
+          },
+          classify: async () => {
+            signedFieldCalls += 1;
+            throw new Error('must not run');
+          },
+        }),
+        expectedError('offline_continuation_authorization_invalid'),
+      );
+      assert.equal(signedFieldCalls, 0, `${field} must fail before classification`);
+    }
+    const assertContinuationFailure = async ({
+      curator,
+      corpus,
+      captured,
+      previous = continuationPrevious,
+      code,
+    }: {
+      curator: CompanyMonitoringCurationManifest;
+      corpus: BlindCorpus;
+      captured: OfflineProviderObservationManifest;
+      previous?: typeof continuationPrevious;
+      code: string;
+    }) => {
+      let calls = 0;
+      await assert.rejects(
+        runCompanyMonitoringOfflinePredictions({
+          protocol: continuedProtocol(),
+          approvedThresholdDigest,
+          curation: curator,
+          expectedCurationSha256: computeCompanyMonitoringCurationManifestDigest(curator),
+          corpus,
+          observations: captured,
+          expectedObservationsSha256: computeOfflineProviderObservationDigest(captured, corpus),
+          runtime: captured.runtime,
+          checkpointAuthenticationKey,
+          previous,
+          classify: async () => {
+            calls += 1;
+            throw new Error('must not run');
+          },
+        }),
+        expectedError(code),
+      );
+      assert.equal(calls, 0, `${code} must fail before classification`);
+    };
+    const continuationVariant = (
+      curator: CompanyMonitoringCurationManifest,
+    ): { corpus: BlindCorpus; captured: OfflineProviderObservationManifest } => {
+      const corpus = lockedCorpus(curator);
+      corpus.continuation = structuredClone(childCorpus.continuation);
+      const captured = structuredClone(childCaptured);
+      captured.corpusVersion = corpus.corpusVersion;
+      captured.protocolVersion = corpus.protocolVersion;
+      captured.policyVersion = corpus.policyVersion;
+      captured.modelVersion = corpus.modelVersion;
+      captured.queryVersion = corpus.queryVersion;
+      captured.corpusSha256 = computeBlindCorpusDigest(corpus);
+      captured.curationSha256 = computeCompanyMonitoringCurationManifestDigest(curator);
+      return { corpus, captured };
+    };
+
+    const versionCurator = structuredClone(childCurator);
+    versionCurator.modelVersion = 'deepseek_v4_flash_digitalocean_v2';
+    const versionVariant = continuationVariant(versionCurator);
+    await assertContinuationFailure({
+      curator: versionCurator,
+      ...versionVariant,
+      code: 'offline_continuation_version_mismatch',
+    });
+
+    const runtimeDriftCurator = structuredClone(childCurator);
+    const runtimeDrift = {
+      requestedModel: 'other/provider-model',
+      providerRoute: 'other-route',
+      resolvedProvider: 'Other Provider',
+    };
+    runtimeDriftCurator.classifierRuntimeSha256 =
+      computeOfflineClassifierRuntimeDigest(runtimeDrift);
+    const runtimeDriftCorpus = structuredClone(childCorpus);
+    const runtimeDriftCaptured = structuredClone(childCaptured);
+    runtimeDriftCaptured.runtime = runtimeDrift;
+    runtimeDriftCaptured.curationSha256 =
+      computeCompanyMonitoringCurationManifestDigest(runtimeDriftCurator);
+    await assertContinuationFailure({
+      curator: runtimeDriftCurator,
+      corpus: runtimeDriftCorpus,
+      captured: runtimeDriftCaptured,
+      previous: {
+        ...continuationPrevious,
+        authorization: signAuthorization({
+          ...authorizationBody,
+          classifierRuntimeSha256: runtimeDriftCurator.classifierRuntimeSha256,
+        }),
+      },
+      code: 'offline_continuation_classifier_runtime_mismatch',
+    });
+
+    const parentMismatchCorpus = structuredClone(childCorpus);
+    parentMismatchCorpus.continuation!.parentReportSha256 = syntheticDigest('wrong-parent-report');
+    const parentMismatchCaptured = structuredClone(childCaptured);
+    parentMismatchCaptured.corpusSha256 = computeBlindCorpusDigest(parentMismatchCorpus);
+    await assertContinuationFailure({
+      curator: childCurator,
+      corpus: parentMismatchCorpus,
+      captured: parentMismatchCaptured,
+      code: 'offline_continuation_parent_mismatch',
+    });
+
+    const prefixCurator = structuredClone(childCurator);
+    prefixCurator.candidates[0]!.occurrence.stableIdentity = 'changed-parent-prefix';
+    const prefixVariant = continuationVariant(prefixCurator);
+    await assertContinuationFailure({
+      curator: prefixCurator,
+      ...prefixVariant,
+      code: 'offline_continuation_changed_example',
+    });
+
+    const expansionCurator = structuredClone(childCurator);
+    expansionCurator.candidates[2]!.occurrence.stableIdentity = 'changed-expansion';
+    const expansionVariant = continuationVariant(expansionCurator);
+    await assertContinuationFailure({
+      curator: expansionCurator,
+      ...expansionVariant,
+      code: 'offline_continuation_expansion_mismatch',
+    });
+
+    const invalidPreviousPredictions = structuredClone(parentPredictions);
+    invalidPreviousPredictions.policyVersion = 'cm-admission-policy-v2';
+    const invalidPreviousPredictionSetSha256 = computePredictionSetDigest(invalidPreviousPredictions);
+    const invalidPreviousReport = structuredClone(parentReport);
+    invalidPreviousReport.predictionSetSha256 = invalidPreviousPredictionSetSha256;
+    invalidPreviousReport.reportSha256 = computeScoreReportDigest(invalidPreviousReport);
+    const invalidPreviousChildCorpus = structuredClone(childCorpus);
+    invalidPreviousChildCorpus.continuation!.parentReportSha256 = invalidPreviousReport.reportSha256;
+    const invalidPreviousCaptured = structuredClone(childCaptured);
+    invalidPreviousCaptured.corpusSha256 = computeBlindCorpusDigest(invalidPreviousChildCorpus);
+    const invalidPreviousAuthorizationBody = {
+      ...authorizationBody,
+      parentPredictionSetSha256: invalidPreviousPredictionSetSha256,
+      parentReportSha256: invalidPreviousReport.reportSha256,
+      childCorpusSha256: computeBlindCorpusDigest(invalidPreviousChildCorpus),
+    };
+    await assertContinuationFailure({
+      curator: childCurator,
+      corpus: invalidPreviousChildCorpus,
+      captured: invalidPreviousCaptured,
+      previous: {
+        ...continuationPrevious,
+        predictions: invalidPreviousPredictions,
+        expectedPredictionSetSha256: invalidPreviousPredictionSetSha256,
+        report: invalidPreviousReport,
+        expectedReportSha256: invalidPreviousReport.reportSha256,
+        authorization: signAuthorization(invalidPreviousAuthorizationBody),
+      },
+      code: 'offline_previous_predictions_mismatch',
+    });
     let classifierCalls = 0;
     const childPredictions = await runCompanyMonitoringOfflinePredictions({
       protocol: continuedProtocol(),
@@ -912,6 +1310,7 @@ describe('Company Monitoring sealed offline predictions', () => {
       classify: async ({ evidence }) => {
         classifierCalls += 1;
         return {
+          providerResponseId: 'gen-offline-7',
           content: modelOutput(evidence.map((row) => row.evidenceFingerprint)),
           route: {
             resolvedModel: childCaptured.runtime.requestedModel,
@@ -952,6 +1351,8 @@ describe('Company Monitoring sealed offline predictions', () => {
 
     let active = 0;
     let maximumActive = 0;
+    let releaseInitialBatch!: () => void;
+    const initialBatch = new Promise<void>((resolve) => { releaseInitialBatch = resolve; });
     const result = await runCompanyMonitoringOfflinePredictions({
       protocol: continuedProtocol(),
       approvedThresholdDigest,
@@ -965,9 +1366,14 @@ describe('Company Monitoring sealed offline predictions', () => {
       classify: async ({ evidence }) => {
         active += 1;
         maximumActive = Math.max(maximumActive, active);
-        await new Promise((resolve) => setTimeout(resolve, 10));
+        if (active === 4) releaseInitialBatch();
+        await Promise.race([
+          initialBatch,
+          new Promise((resolve) => setTimeout(resolve, 500)),
+        ]);
         active -= 1;
         return {
+          providerResponseId: 'gen-offline-8',
           content: modelOutput(evidence.map((row) => row.evidenceFingerprint)),
           route: {
             resolvedModel: captured.runtime.requestedModel,
@@ -1024,6 +1430,7 @@ describe('Company Monitoring sealed offline predictions', () => {
       classify: async ({ candidate, evidence }) => {
         if (candidate.companyId.endsWith('000003')) throw new Error('injected late failure');
         return {
+          providerResponseId: `gen-offline-${candidate.companyId}`,
           content: modelOutput(evidence.map((row) => row.evidenceFingerprint)),
           route: {
             resolvedModel: captured.runtime.requestedModel,
@@ -1064,6 +1471,149 @@ describe('Company Monitoring sealed offline predictions', () => {
     assert.equal(resumedCalls, 0);
   });
 
+  it('reconciles one provider-accepted attempt without issuing a second request', async () => {
+    const curator = curation(1);
+    const corpus = lockedCorpus(curator);
+    const captured = observations(corpus);
+    captured.rows = captured.rows.slice(0, 1);
+    captured.corpusSha256 = computeBlindCorpusDigest(corpus);
+    captured.curationSha256 = computeCompanyMonitoringCurationManifestDigest(curator);
+    const anchors = {
+      protocol: continuedProtocol(),
+      approvedThresholdDigest,
+      curation: curator,
+      expectedCurationSha256: computeCompanyMonitoringCurationManifestDigest(curator),
+      corpus,
+      observations: captured,
+      expectedObservationsSha256: computeOfflineProviderObservationDigest(captured, corpus),
+      runtime: captured.runtime,
+      checkpointAuthenticationKey,
+    };
+    const checkpoints: OfflinePredictionCheckpoint[] = [];
+    let requestAttemptId = '';
+    await assert.rejects(
+      runCompanyMonitoringOfflinePredictions({
+        ...anchors,
+        createAttemptId: () => 'cm_attempt_00000000-0000-4000-8000-000000000001',
+        onCheckpoint: (checkpoint) => { checkpoints.push(checkpoint); },
+        classify: async ({ attemptId }) => {
+          requestAttemptId = attemptId;
+          throw new Error('response lost after provider acceptance');
+        },
+      }),
+      /response lost after provider acceptance/,
+    );
+    const started = checkpoints.find((checkpoint) => checkpoint.state === 'started');
+    assert.ok(started);
+    assert.equal(started.attemptId, requestAttemptId);
+
+    const retainedProviderResponse = {
+      schemaVersion: 'cm_offline_retained_provider_response_v1' as const,
+      attemptId: started.attemptId,
+      providerResponseId: 'gen-recovered-provider-response',
+      providerLatencyMs: 345,
+      response: {},
+    };
+    const providerResponseSha256 = createHash('sha256')
+      .update(canonicalJson(retainedProviderResponse))
+      .digest('hex');
+    const reconciliation = createOfflinePredictionReconciliation({
+      checkpoint: started,
+      retainedProviderResponse,
+      providerResponseSha256,
+      classification: {
+        providerResponseId: retainedProviderResponse.providerResponseId,
+        content: modelOutput([]),
+        route: {
+          resolvedModel: captured.runtime.requestedModel,
+          resolvedProvider: captured.runtime.resolvedProvider,
+          configuredProviderRoute: captured.runtime.providerRoute,
+        },
+        costUsd: 0.001,
+      },
+      checkpointAuthenticationKey,
+    });
+    assert.throws(
+      () => createOfflinePredictionReconciliation({
+        checkpoint: started,
+        retainedProviderResponse,
+        providerResponseSha256: syntheticDigest('substituted-retained-response'),
+        classification: reconciliation.classification,
+        checkpointAuthenticationKey,
+      }),
+      expectedError('offline_retained_provider_response_digest_mismatch'),
+    );
+    assert.throws(
+      () => createOfflinePredictionReconciliation({
+        checkpoint: started,
+        retainedProviderResponse,
+        providerResponseSha256,
+        classification: {
+          ...reconciliation.classification,
+          providerResponseId: 'gen-substituted-provider-response',
+        },
+        checkpointAuthenticationKey,
+      }),
+      expectedError('offline_reconciliation_checkpoint_invalid'),
+    );
+    const tamperedReconciliation = structuredClone(reconciliation);
+    tamperedReconciliation.classification.content = '{}';
+    await assert.rejects(
+      runCompanyMonitoringOfflinePredictions({
+        ...anchors,
+        checkpoints,
+        reconciliations: [tamperedReconciliation],
+        classify: async () => { throw new Error('must not run'); },
+      }),
+      expectedError('offline_checkpoint_authentication_invalid'),
+    );
+    let orphanCalls = 0;
+    await assert.rejects(
+      runCompanyMonitoringOfflinePredictions({
+        ...anchors,
+        reconciliations: [reconciliation],
+        classify: async () => {
+          orphanCalls += 1;
+          throw new Error('must not accept an orphan reconciliation');
+        },
+      }),
+      expectedError('offline_reconciliation_checkpoint_invalid'),
+    );
+    assert.equal(orphanCalls, 0);
+
+    let replayCalls = 0;
+    const result = await runCompanyMonitoringOfflinePredictions({
+      ...anchors,
+      checkpoints,
+      reconciliations: [reconciliation],
+      classify: async () => {
+        replayCalls += 1;
+        throw new Error('must not replay a reconciled provider attempt');
+      },
+    });
+    assert.equal(replayCalls, 0);
+    assert.equal(result.predictions.length, 1);
+    assert.equal(result.predictions[0]!.latencyMs, captured.rows[0]!.latencyMs + 345);
+
+    const otherAttemptCheckpoints: OfflinePredictionCheckpoint[] = [];
+    await runCompanyMonitoringOfflinePredictions({
+      ...anchors,
+      createAttemptId: () => 'cm_attempt_00000000-0000-4000-8000-000000000009',
+      onCheckpoint: (checkpoint) => { otherAttemptCheckpoints.push(checkpoint); },
+      classify: async () => reconciliation.classification,
+    });
+    const otherCompleted = otherAttemptCheckpoints.find((checkpoint) => checkpoint.state === 'completed');
+    assert.ok(otherCompleted);
+    await assert.rejects(
+      runCompanyMonitoringOfflinePredictions({
+        ...anchors,
+        checkpoints: [started, otherCompleted],
+        classify: async () => { throw new Error('must not run'); },
+      }),
+      expectedError('offline_checkpoint_attempt_mismatch'),
+    );
+  });
+
   it('exits the run command before credentials or sealed inputs while the protocol remains STOP', () => {
     const result = spawnSync(
       fileURLToPath(new URL('../node_modules/.bin/tsx', import.meta.url)),
@@ -1085,6 +1635,7 @@ describe('Company Monitoring sealed offline predictions', () => {
         encoding: 'utf8',
         env: {
           PATH: process.env.PATH,
+          NODE_NO_WARNINGS: '1',
           COMPANY_MONITORING_CLASSIFIER_MODEL: '',
           COMPANY_MONITORING_CLASSIFIER_PROVIDER_ROUTE: '',
           OPENROUTER_API_KEY: '',
@@ -1094,5 +1645,167 @@ describe('Company Monitoring sealed offline predictions', () => {
     assert.equal(result.status, 1);
     assert.equal(result.stdout, '');
     assert.equal(result.stderr, 'offline_runtime_protocol_stop\n');
+  });
+
+  it('executes the sealed preflight, digest, reconcile, and extraction CLI paths', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cm-offline-cli-'));
+    try {
+      const curator = curation(1);
+      const corpus = lockedCorpus(curator);
+      const captured = observations(corpus);
+      captured.rows = captured.rows.slice(0, 1);
+      captured.corpusSha256 = computeBlindCorpusDigest(corpus);
+      captured.curationSha256 = computeCompanyMonitoringCurationManifestDigest(curator);
+      const continued = continuedProtocol();
+      const paths = Object.fromEntries([
+        'protocol', 'curation', 'corpus', 'observations', 'bundle', 'public-key',
+        'predictions', 'checkpoint', 'provider-response', 'reconciliation',
+      ].map((name) => [name, join(directory, `${name}.json`)]));
+      writeFileSync(paths.protocol!, canonicalJson(continued));
+      writeFileSync(paths.curation!, canonicalJson(curator));
+      writeFileSync(paths.corpus!, canonicalJson(corpus));
+      writeFileSync(paths.observations!, canonicalJson(captured));
+
+      const preflight = runOfflineCli([
+        'preflight', '--protocol', paths.protocol!,
+        '--approved-threshold-digest', approvedThresholdDigest,
+      ]);
+      assert.equal(preflight.status, 0, preflight.stderr);
+      assert.equal(preflight.stdout, '{"status":"continue"}\n');
+
+      const observationDigest = computeOfflineProviderObservationDigest(captured, corpus);
+      const digest = runOfflineCli([
+        'digest-observations', '--corpus', paths.corpus!, '--observations', paths.observations!,
+      ]);
+      assert.equal(digest.status, 0, digest.stderr);
+      assert.equal(digest.stdout, `${observationDigest}\n`);
+
+      const checkpoints: OfflinePredictionCheckpoint[] = [];
+      await assert.rejects(runCompanyMonitoringOfflinePredictions({
+        protocol: continued,
+        approvedThresholdDigest,
+        curation: curator,
+        expectedCurationSha256: captured.curationSha256,
+        corpus,
+        observations: captured,
+        expectedObservationsSha256: observationDigest,
+        runtime: captured.runtime,
+        checkpointAuthenticationKey,
+        createAttemptId: () => 'cm_attempt_00000000-0000-4000-8000-000000000002',
+        onCheckpoint: (checkpoint) => { checkpoints.push(checkpoint); },
+        classify: async () => { throw new Error('response lost'); },
+      }), /response lost/);
+      const started = checkpoints.find((checkpoint) => checkpoint.state === 'started')!;
+      writeFileSync(paths.checkpoint!, canonicalJson(started));
+      const retainedProviderResponse = {
+        schemaVersion: 'cm_offline_retained_provider_response_v1',
+        attemptId: started.attemptId,
+        providerResponseId: 'gen-cli-recovered-response',
+        providerLatencyMs: 678,
+        response: {
+          id: 'gen-cli-recovered-response',
+          model: captured.runtime.requestedModel,
+          provider: captured.runtime.resolvedProvider,
+          usage: { cost: 0.001 },
+          openrouter_metadata: {
+            requested: captured.runtime.requestedModel,
+            strategy: 'direct',
+            attempt: 1,
+            endpoints: {
+              total: 1,
+              available: [{
+                provider: captured.runtime.resolvedProvider,
+                model: captured.runtime.requestedModel,
+                selected: true,
+              }],
+            },
+            attempts: [{
+              provider: captured.runtime.resolvedProvider,
+              model: captured.runtime.requestedModel,
+              status: 200,
+            }],
+            pipeline: [],
+          },
+          choices: [{
+            finish_reason: 'stop',
+            message: { role: 'assistant', content: modelOutput([]) },
+          }],
+        },
+      };
+      writeFileSync(paths['provider-response']!, canonicalJson(retainedProviderResponse));
+      const providerResponseSha256 = createHash('sha256')
+        .update(canonicalJson(retainedProviderResponse))
+        .digest('hex');
+      const rejectedReconcile = runOfflineCli([
+        'reconcile', '--checkpoint', paths.checkpoint!,
+        '--retained-provider-response', paths['provider-response']!,
+        '--expected-provider-response-digest', syntheticDigest('wrong-provider-response'),
+        '--output', paths.reconciliation!,
+      ]);
+      assert.equal(rejectedReconcile.status, 1);
+      assert.match(rejectedReconcile.stderr, /offline_retained_provider_response_digest_mismatch/);
+      const reconcile = runOfflineCli([
+        'reconcile', '--checkpoint', paths.checkpoint!,
+        '--retained-provider-response', paths['provider-response']!,
+        '--expected-provider-response-digest', providerResponseSha256,
+        '--output', paths.reconciliation!,
+      ]);
+      assert.equal(reconcile.status, 0, reconcile.stderr);
+      const reconciliation = JSON.parse(readFileSync(paths.reconciliation!, 'utf8'));
+      assert.equal(reconciliation.attemptId, started.attemptId);
+      assert.equal(reconciliation.providerResponseSha256, providerResponseSha256);
+      assert.match(reconciliation.authenticationSha256, /^[a-f0-9]{64}$/);
+
+      const predictions = await runCompanyMonitoringOfflinePredictions({
+        protocol: continued,
+        approvedThresholdDigest,
+        curation: curator,
+        expectedCurationSha256: captured.curationSha256,
+        corpus,
+        observations: captured,
+        expectedObservationsSha256: observationDigest,
+        runtime: captured.runtime,
+        checkpointAuthenticationKey,
+        checkpoints: [started],
+        reconciliations: [reconciliation],
+        classify: async () => { throw new Error('must not replay'); },
+      });
+      const receipt = createOfflinePredictionRunReceipt({
+        protocol: continued,
+        approvedThresholdDigest,
+        curation: curator,
+        corpus,
+        observations: captured,
+        predictions,
+      });
+      writeFileSync(paths.bundle!, canonicalJson(createOfflinePredictionBundle({
+        predictions,
+        receipt,
+        signingPrivateKeyPem: bundleSigningPrivateKeyPem,
+      })));
+      writeFileSync(paths['public-key']!, bundleVerificationPublicKeyPem);
+      const extract = runOfflineCli([
+        'extract-predictions', '--bundle', paths.bundle!,
+        '--bundle-verification-public-key', paths['public-key']!,
+        '--protocol', paths.protocol!, '--approved-threshold-digest', approvedThresholdDigest,
+        '--curation', paths.curation!, '--expected-curation-digest', captured.curationSha256,
+        '--corpus', paths.corpus!, '--observations', paths.observations!,
+        '--expected-observations-digest', observationDigest, '--output', paths.predictions!,
+      ]);
+      assert.equal(extract.status, 0, extract.stderr);
+      assert.deepEqual(JSON.parse(readFileSync(paths.predictions!, 'utf8')), predictions);
+      const noOverwrite = runOfflineCli([
+        'extract-predictions', '--bundle', paths.bundle!,
+        '--bundle-verification-public-key', paths['public-key']!,
+        '--protocol', paths.protocol!, '--approved-threshold-digest', approvedThresholdDigest,
+        '--curation', paths.curation!, '--expected-curation-digest', captured.curationSha256,
+        '--corpus', paths.corpus!, '--observations', paths.observations!,
+        '--expected-observations-digest', observationDigest, '--output', paths.predictions!,
+      ]);
+      assert.equal(noOverwrite.status, 1);
+      assert.equal(noOverwrite.stderr, 'offline_output_write_failed\n');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });

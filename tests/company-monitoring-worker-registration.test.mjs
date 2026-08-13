@@ -51,6 +51,7 @@ describe('company monitoring worker deployment registration', () => {
       'OPENROUTER_API_KEY',
       'COMPANY_MONITORING_CLASSIFIER_MODEL',
       'COMPANY_MONITORING_CLASSIFIER_PROVIDER_ROUTE',
+      'COMPANY_MONITORING_CLASSIFIER_RESOLVED_PROVIDER',
     ]);
     for (const dependency of [
       'scripts/company-monitoring-worker.mjs',

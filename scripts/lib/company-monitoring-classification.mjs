@@ -128,7 +128,6 @@ const SYSTEM_PROMPT = [
 function candidateForModel(candidate) {
   return {
     companyId: candidate.companyId,
-    occurrenceDedupeKey: candidate.occurrenceDedupeKey,
     firstDiscoveredAt: candidate.firstDiscoveredAt,
     attemptCount: candidate.attemptCount,
     expiresAt: candidate.expiresAt,

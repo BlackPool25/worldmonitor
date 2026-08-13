@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   buildCompanyMonitoringClassificationRequest,
 } from './company-monitoring-classification.mjs';
@@ -11,6 +12,7 @@ const OPENROUTER_SITE_URL = 'https://worldmonitor.app';
 const OPENROUTER_APP_TITLE = 'World Monitor';
 const SERVICE_USER_AGENT = 'WorldMonitor-CompanyMonitoring/1.0 (+https://worldmonitor.app)';
 const MAX_PROVIDER_RESPONSE_BYTES = 256 * 1024;
+const ATTEMPT_ID = /^cm_attempt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -106,7 +108,7 @@ function approvedResolvedModels(configuredModel, approvedResolvedModels) {
   return approved;
 }
 
-function providerAttestation(envelope, configuredModel) {
+function providerAttestation(envelope, configuredModel, expectedResolvedProvider) {
   const metadata = envelope.openrouter_metadata;
   const attempts = metadata?.attempts;
   if (
@@ -134,6 +136,8 @@ function providerAttestation(envelope, configuredModel) {
     typeof endpoint.provider !== 'string' ||
     endpoint.provider.length === 0 ||
     endpoint.provider !== endpoint.provider.trim() ||
+    endpoint.provider !== expectedResolvedProvider ||
+    envelope.provider !== expectedResolvedProvider ||
     endpoint.model !== envelope.model ||
     (attempt !== undefined && (
       !isRecord(attempt) ||
@@ -163,7 +167,13 @@ function providerCostUsd(envelope) {
   return cost;
 }
 
-async function parseProviderEnvelope(response, approvedModels, configuredModel, providerRoute) {
+async function parseProviderEnvelope(
+  response,
+  approvedModels,
+  configuredModel,
+  providerRoute,
+  expectedResolvedProvider,
+) {
   const responseText = await readBoundedProviderResponse(response);
   let envelope;
   try {
@@ -175,13 +185,23 @@ async function parseProviderEnvelope(response, approvedModels, configuredModel, 
   if (!isRecord(envelope) || ('error' in envelope && envelope.error != null)) {
     throw providerResponseError('Classifier provider returned an invalid response envelope');
   }
+  if (
+    typeof envelope.id !== 'string' || envelope.id.length === 0 ||
+    envelope.id !== envelope.id.trim() || envelope.id.length > 200
+  ) {
+    throw providerResponseError('Classifier provider response is missing its response identity');
+  }
   if (typeof envelope.model !== 'string' || envelope.model.length === 0 || envelope.model !== envelope.model.trim()) {
     throw providerResponseError('Classifier provider did not attest the resolved model identity');
   }
   if (!approvedModels.has(envelope.model)) {
     throw providerResponseError('Classifier provider returned an unapproved resolved model identity');
   }
-  const resolvedProvider = providerAttestation(envelope, configuredModel);
+  const resolvedProvider = providerAttestation(
+    envelope,
+    configuredModel,
+    expectedResolvedProvider,
+  );
   const costUsd = providerCostUsd(envelope);
   if (!Array.isArray(envelope.choices) || envelope.choices.length !== 1) {
     throw providerResponseError('Classifier provider must return exactly one choice');
@@ -210,6 +230,7 @@ async function parseProviderEnvelope(response, approvedModels, configuredModel, 
   // Deliberately do not parse or validate this string. The deterministic
   // policy evaluator owns all model-output validation and fail-closed reasons.
   return {
+    providerResponseId: envelope.id,
     content: message.content,
     route: {
       resolvedModel: envelope.model,
@@ -218,6 +239,31 @@ async function parseProviderEnvelope(response, approvedModels, configuredModel, 
     },
     costUsd,
   };
+}
+
+export async function parseCompanyMonitoringClassificationResponse({
+  response,
+  model,
+  providerRoute,
+  expectedResolvedProvider,
+  approvedResolvedModels: configuredApprovedResolvedModels = [],
+}) {
+  const configuredModel = requireConfiguredString(model, 'model');
+  const configuredProviderRoute = requireConfiguredString(providerRoute, 'providerRoute');
+  const configuredResolvedProvider = requireConfiguredString(
+    expectedResolvedProvider,
+    'expectedResolvedProvider',
+  );
+  if (!(response instanceof Response) || !response.ok) {
+    throw providerResponseError('Classifier provider did not return a successful Response');
+  }
+  return await parseProviderEnvelope(
+    response,
+    approvedResolvedModels(configuredModel, configuredApprovedResolvedModels),
+    configuredModel,
+    configuredProviderRoute,
+    configuredResolvedProvider,
+  );
 }
 
 /**
@@ -233,6 +279,8 @@ export async function requestCompanyMonitoringClassification({
   apiKey,
   model,
   providerRoute,
+  expectedResolvedProvider,
+  attemptId = `cm_attempt_${randomUUID()}`,
   fetchImpl = (...args) => globalThis.fetch(...args),
   timeoutMs = COMPANY_MONITORING_CLASSIFIER_DEFAULT_TIMEOUT_MS,
   approvedResolvedModels: configuredApprovedResolvedModels = [],
@@ -240,6 +288,14 @@ export async function requestCompanyMonitoringClassification({
   const configuredApiKey = requireConfiguredString(apiKey, 'apiKey');
   const configuredModel = requireConfiguredString(model, 'model');
   const configuredProviderRoute = requireConfiguredString(providerRoute, 'providerRoute');
+  const configuredResolvedProvider = requireConfiguredString(
+    expectedResolvedProvider,
+    'expectedResolvedProvider',
+  );
+  const configuredAttemptId = requireConfiguredString(attemptId, 'attemptId');
+  if (!ATTEMPT_ID.test(configuredAttemptId)) {
+    throw configurationError('attemptId must be a canonical Company Monitoring attempt ID');
+  }
   const approvedModels = approvedResolvedModels(configuredModel, configuredApprovedResolvedModels);
   const requestTimeoutMs = checkedTimeoutMs(timeoutMs);
   if (typeof fetchImpl !== 'function') {
@@ -255,6 +311,8 @@ export async function requestCompanyMonitoringClassification({
     ...requestBody,
     temperature: 0,
     reasoning: { effort: 'none' },
+    metadata: { company_monitoring_attempt_id: configuredAttemptId },
+    trace: { trace_id: configuredAttemptId },
     provider: {
       only: [configuredProviderRoute],
       allow_fallbacks: false,
@@ -303,10 +361,11 @@ export async function requestCompanyMonitoringClassification({
     );
   }
 
-  return await parseProviderEnvelope(
+  return await parseCompanyMonitoringClassificationResponse({
     response,
-    approvedModels,
-    configuredModel,
-    configuredProviderRoute,
-  );
+    model: configuredModel,
+    providerRoute: configuredProviderRoute,
+    expectedResolvedProvider: configuredResolvedProvider,
+    approvedResolvedModels: [...approvedModels],
+  });
 }

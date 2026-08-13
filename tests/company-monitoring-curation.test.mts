@@ -19,6 +19,7 @@ const versions = {
   protocolVersion: 'cm_eval_v1',
   policyVersion: 'cm-admission-policy-v1',
   modelVersion: 'deepseek_v4_flash_2026_08_05',
+  classifierRuntimeSha256: createHash('sha256').update('classifier-runtime').digest('hex'),
   queryVersion: 'cm_query_v1',
   curatorAccessVersion: 'cm_curator_access_v1',
 };
@@ -52,6 +53,8 @@ function manifest(
         legalName: `Synthetic ${namespace} Company ${index + 1} Ltd`,
         stableIdentity: `synthetic-company:${namespace}:${index + 1}`,
         corporateFamilyIdentity: `synthetic-family:${namespace}:${index + 1}`,
+        officialDomains: [`publisher-${namespace}.example`],
+        verifiedXAccountIds: [],
         geography: index % 2 === 0 ? 'US' as const : 'GB' as const,
         privateStatus: 'private' as const,
         privateStatusEvidence: {
@@ -319,7 +322,10 @@ describe('Company Monitoring public-evidence curation CLI', () => {
           'audit-manifest',
           input,
         ],
-        { encoding: 'utf8' },
+        {
+          encoding: 'utf8',
+          env: { ...process.env, NODE_NO_WARNINGS: '1' },
+        },
       );
       assert.equal(result.status, 1);
       assert.equal(result.stderr, 'curation_input_unreadable\n');

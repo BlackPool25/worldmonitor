@@ -6,13 +6,17 @@ import {
   CompanyMonitoringOfflinePredictionError,
   assertCompanyMonitoringOfflineRuntimePermitted,
   computeOfflineProviderObservationDigest,
+  createOfflinePredictionReconciliation,
   createOfflinePredictionBundle,
   createOfflinePredictionRunReceipt,
   validateOfflinePredictionBundle,
   runCompanyMonitoringOfflinePredictions,
+  validateOfflineRetainedProviderResponse,
   type OfflineContinuationAuthorization,
   type OfflineProviderObservationManifest,
   type OfflinePredictionCheckpoint,
+  type OfflinePredictionReconciliation,
+  type OfflineRetainedProviderResponse,
 } from '../shared/company-monitoring-offline-predictions.ts';
 import {
   type BlindCorpus,
@@ -24,10 +28,11 @@ import { canonicalJson, type JsonObject } from '../shared/company-monitoring-eva
 import { loadEnvFile } from './_seed-utils.mjs';
 import {
   CompanyMonitoringClassifierTransportError,
+  parseCompanyMonitoringClassificationResponse,
   requestCompanyMonitoringClassification,
 } from './lib/company-monitoring-classifier-client.mjs';
 
-type Command = 'preflight' | 'run' | 'digest-observations' | 'extract-predictions';
+type Command = 'preflight' | 'run' | 'digest-observations' | 'reconcile' | 'extract-predictions';
 
 class UsageError extends Error {}
 
@@ -35,8 +40,9 @@ function usage(): never {
   throw new UsageError([
     'usage:',
     '  company-monitoring:offline-predictions preflight --protocol FILE --approved-threshold-digest SHA256',
-    '  company-monitoring:offline-predictions run --protocol FILE --approved-threshold-digest SHA256 --curation FILE --expected-curation-digest SHA256 --corpus FILE --observations FILE --expected-observations-digest SHA256 --checkpoint-directory DIR --output FILE [--previous-corpus FILE --expected-previous-corpus-digest SHA256 --previous-predictions FILE --expected-previous-predictions-digest SHA256 --previous-report FILE --expected-previous-report-digest SHA256 --continuation-authorization FILE]',
+    '  company-monitoring:offline-predictions run --protocol FILE --approved-threshold-digest SHA256 --curation FILE --expected-curation-digest SHA256 --corpus FILE --observations FILE --expected-observations-digest SHA256 --checkpoint-directory DIR --output FILE [--reconciliation-directory DIR] [--previous-corpus FILE --expected-previous-corpus-digest SHA256 --previous-predictions FILE --expected-previous-predictions-digest SHA256 --previous-report FILE --expected-previous-report-digest SHA256 --continuation-authorization FILE]',
     '  company-monitoring:offline-predictions digest-observations --corpus FILE --observations FILE',
+    '  company-monitoring:offline-predictions reconcile --checkpoint FILE --retained-provider-response FILE --expected-provider-response-digest SHA256 --output FILE',
     '  company-monitoring:offline-predictions extract-predictions --bundle FILE --bundle-verification-public-key FILE --protocol FILE --approved-threshold-digest SHA256 --curation FILE --expected-curation-digest SHA256 --corpus FILE --observations FILE --expected-observations-digest SHA256 --output FILE',
   ].join('\n'));
 }
@@ -123,6 +129,41 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === 'reconcile') {
+    exactOptions(options, [
+      'checkpoint', 'retained-provider-response', 'expected-provider-response-digest', 'output',
+    ]);
+    loadEnvFile(import.meta.url, {
+      only: ['COMPANY_MONITORING_OFFLINE_CHECKPOINT_HMAC_KEY'],
+    });
+    const checkpointAuthenticationKey = process.env.COMPANY_MONITORING_OFFLINE_CHECKPOINT_HMAC_KEY;
+    if (!checkpointAuthenticationKey) {
+      throw new CompanyMonitoringOfflinePredictionError('offline_checkpoint_authentication_missing');
+    }
+    const checkpoint = readJson<OfflinePredictionCheckpoint>(required(options, 'checkpoint'));
+    const providerResponseSha256 = required(options, 'expected-provider-response-digest');
+    const retainedProviderResponse = validateOfflineRetainedProviderResponse(
+      readJson<OfflineRetainedProviderResponse>(required(options, 'retained-provider-response')),
+      providerResponseSha256,
+    );
+    const response = new Response(canonicalJson(retainedProviderResponse.response));
+    const classification = await parseCompanyMonitoringClassificationResponse({
+      response,
+      model: checkpoint.runtime.requestedModel,
+      providerRoute: checkpoint.runtime.providerRoute,
+      expectedResolvedProvider: checkpoint.runtime.resolvedProvider,
+    });
+    const reconciliation = createOfflinePredictionReconciliation({
+      checkpoint,
+      retainedProviderResponse,
+      providerResponseSha256,
+      classification,
+      checkpointAuthenticationKey,
+    });
+    writeSealedArtifact(required(options, 'output'), reconciliation);
+    return;
+  }
+
   if (command === 'extract-predictions') {
     exactOptions(options, [
       'bundle', 'bundle-verification-public-key', 'protocol', 'approved-threshold-digest', 'curation',
@@ -148,7 +189,8 @@ async function main(): Promise<void> {
   exactOptions(options, [
     'protocol', 'approved-threshold-digest', 'curation', 'expected-curation-digest',
     'corpus', 'observations',
-    'expected-observations-digest', 'previous-corpus', 'checkpoint-directory', 'output',
+    'expected-observations-digest', 'previous-corpus', 'checkpoint-directory',
+    'reconciliation-directory', 'output',
     'expected-previous-corpus-digest', 'previous-predictions',
     'expected-previous-predictions-digest', 'previous-report', 'expected-previous-report-digest',
     'continuation-authorization',
@@ -201,6 +243,13 @@ async function main(): Promise<void> {
     .filter((name) => /^cm_example_[a-f0-9]{6}\.(started|completed)\.json$/.test(name))
     .sort()
     .map((name) => readJson<OfflinePredictionCheckpoint>(join(checkpointDirectory, name)));
+  const reconciliationDirectory = options.get('reconciliation-directory');
+  const reconciliations = reconciliationDirectory === undefined
+    ? []
+    : readdirSync(reconciliationDirectory)
+      .filter((name) => /^cm_example_[a-f0-9]{6}\.reconciliation\.json$/.test(name))
+      .sort()
+      .map((name) => readJson<OfflinePredictionReconciliation>(join(reconciliationDirectory, name)));
   const result = await runCompanyMonitoringOfflinePredictions({
     protocol,
     approvedThresholdDigest,
@@ -212,6 +261,7 @@ async function main(): Promise<void> {
     runtime: { requestedModel: model, providerRoute },
     checkpointAuthenticationKey,
     checkpoints,
+    reconciliations,
     onCheckpoint: (checkpoint) => writeSealedArtifact(
       join(checkpointDirectory, `${checkpoint.opaqueExampleId}.${checkpoint.state}.json`),
       checkpoint,
@@ -228,12 +278,14 @@ async function main(): Promise<void> {
       ),
       authorizationPublicKeyPem: continuationPublicKey!,
     },
-    classify: ({ candidate, evidence }) => requestCompanyMonitoringClassification({
+    classify: ({ candidate, evidence, attemptId }) => requestCompanyMonitoringClassification({
       candidate,
       evidence,
       apiKey,
       model,
       providerRoute,
+      expectedResolvedProvider: observations.runtime.resolvedProvider,
+      attemptId,
     }),
   });
   const receipt = createOfflinePredictionRunReceipt({

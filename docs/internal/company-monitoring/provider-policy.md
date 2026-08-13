@@ -92,10 +92,14 @@ marks endpoints with unknown policy as retaining and training. The dedicated
 Company Monitoring client now sends `provider.only` with one configured route,
 `allow_fallbacks: false`, `require_parameters: true`, `data_collection: deny`,
 and `zdr: true`. It sends `temperature: 0`, disables reasoning, requests router
-metadata, and fails closed unless the response proves the requested model, direct
-single-attempt route, selected endpoint, no transformation pipeline, and request
-cost. `COMPANY_MONITORING_CLASSIFIER_PROVIDER_ROUTE` is required; a key and model
-alone no longer enable admission classification.
+metadata, and fails closed unless the response proves the requested model,
+direct single-attempt route, selected endpoint, expected resolved provider, no
+transformation pipeline, and request cost. Live admission requires both
+`COMPANY_MONITORING_CLASSIFIER_PROVIDER_ROUTE` and
+`COMPANY_MONITORING_CLASSIFIER_RESOLVED_PROVIDER`; a key and model alone no
+longer enable admission classification. Admission receipts include the
+requested route and the attested resolved provider in their model-version
+identity.
 
 These request controls do not override the checked-in protocol. While Stage 0 is
 `STOP`, the worker's checked-in classifier runtime gate remains `false`, and the
