@@ -1032,7 +1032,6 @@ describe('feed catalog drift', () => {
     'The Province',
     'CTV News',
     'CP24',
-    'Chronicle Herald',
     'Montreal Gazette',
   ] as const;
   const CANADA_CATALOG = [...CANADA_CATALOG_5960, ...CANADA_DEPTH_CATALOG] as const;
@@ -1078,7 +1077,7 @@ describe('feed catalog drift', () => {
     for (const name of CANADA_CATALOG) {
       assert.ok(byName.has(name), `${name} must be in FEEDS.us catalog`);
     }
-    assert.equal(CANADA_CATALOG.length, 24, 'frozen 24-source Canada roster (20 native + 4 GNews-only)');
+    assert.equal(CANADA_CATALOG.length, 23, 'frozen 23-source Canada roster (20 native + 3 GNews-only)');
     assert.deepEqual([...feeds.CANADA_EN_DEFAULT_SOURCES], ['CBC News', 'CTV News', 'Toronto Star']);
     assert.ok(byName.has('CTV News'), 'CTV News must be catalogued via GNews site: fallback');
     assert.ok(byName.has('CP24'), 'CP24 must be catalogued via GNews site: fallback');
@@ -1146,7 +1145,7 @@ describe('feed catalog drift', () => {
     const serverUs = new Map((serverFeeds.VARIANT_FEEDS.full?.us ?? []).map((f) => [f.name, f]));
     const serverEu = new Map((serverFeeds.VARIANT_FEEDS.full?.europe ?? []).map((f) => [f.name, f]));
 
-    const CANADA_GNEWS_ONLY = new Set(['CTV News', 'CP24', 'Chronicle Herald', 'Montreal Gazette']);
+    const CANADA_GNEWS_ONLY = new Set(['CTV News', 'CP24', 'Montreal Gazette']);
     for (const name of CANADA_CATALOG) {
       assert.ok(serverUs.has(name), `server us catalog must include ${name}`);
       const clientUrl = typeof clientUs.get(name)?.url === 'string' ? clientUs.get(name)!.url as string : '';

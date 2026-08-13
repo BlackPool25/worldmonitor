@@ -104,10 +104,9 @@ export const FULL_FEEDS: Record<string, Feed[]> = {
     { name: "Maclean's", url: rss('https://macleans.ca/feed/') },
     { name: 'The Province', url: rss('https://theprovince.com/feed/') },
     // GNews-only (#6604): no parseable native RSS. CA locale. Do not allowlist publisher hosts.
-    { name: 'CTV News', url: rss('https://news.google.com/rss/search?q=site:ctvnews.ca+when:2d&hl=en-CA&gl=CA&ceid=CA:en') },
-    { name: 'CP24', url: rss('https://news.google.com/rss/search?q=site:cp24.com+when:2d&hl=en-CA&gl=CA&ceid=CA:en') },
-    { name: 'Chronicle Herald', url: rss('https://news.google.com/rss/search?q=site:thechronicleherald.ca+when:14d&hl=en-CA&gl=CA&ceid=CA:en') },
-    { name: 'Montreal Gazette', url: rss('https://news.google.com/rss/search?q=site:montrealgazette.com+when:2d&hl=en-CA&gl=CA&ceid=CA:en') },
+    { name: 'CTV News', url: rss('https://news.google.com/rss/search?q=site:ctvnews.ca+when:1d&hl=en-CA&gl=CA&ceid=CA:en') },
+    { name: 'CP24', url: rss('https://news.google.com/rss/search?q=site:cp24.com+when:1d&hl=en-CA&gl=CA&ceid=CA:en') },
+    { name: 'Montreal Gazette', url: rss('https://news.google.com/rss/search?q=site:montrealgazette.com+when:1d&hl=en-CA&gl=CA&ceid=CA:en') },
   ],
 
   europe: [
@@ -1284,7 +1283,6 @@ export const CANADA_DEPTH_OPT_IN_SOURCES = [
   "Maclean's",
   'The Province',
   'CP24',
-  'Chronicle Herald',
   'Montreal Gazette',
 ] as const;
 

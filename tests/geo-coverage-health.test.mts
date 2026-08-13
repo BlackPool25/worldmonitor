@@ -65,7 +65,6 @@ const EXPECTED_REQUIRED_SOURCE_GEOGRAPHY = new Map<string, readonly string[]>([
   ['Citi Newsroom', ['GH']],
   ['Civil.ge', ['GE']],
   ['CNA', ['SG']],
-  ['Chronicle Herald', ['CA']],
   ['CP24', ['CA']],
   ['CTV News', ['CA']],
   ['Montreal Gazette', ['CA']],
@@ -338,7 +337,6 @@ describe('geographic coverage health (#5957)', () => {
       'Winnipeg Free Press',
       'CTV News',
       'CP24',
-      'Chronicle Herald',
       'Montreal Gazette',
     ]));
     assert.deepEqual(canada.defaultOnSources, ['CBC News', 'CTV News', 'Toronto Star']);

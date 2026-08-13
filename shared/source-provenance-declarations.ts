@@ -119,7 +119,6 @@ export const CONFIGURED_SOURCE_PROVENANCE_DECLARATIONS: Readonly<
   "China Tech Giants": { risk: 'unknown', type: 'unknown' },
   "China Tech Policy": { risk: 'unknown', type: 'unknown' },
   "Chosun Ilbo": { risk: 'unknown', type: 'unknown' },
-  "Chronicle Herald": { risk: 'reviewed', type: 'reviewed' },
   "CISA": { risk: 'unknown', type: 'reviewed' },
   "Citi Newsroom": { risk: 'unknown', type: 'unknown' },
   "Civil.ge": { risk: 'reviewed', type: 'reviewed' },

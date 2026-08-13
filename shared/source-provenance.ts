@@ -87,7 +87,7 @@ export const SOURCE_TYPES: Record<string, SourceType> = {
   'Winnipeg Free Press': 'mainstream', 'Edmonton Journal': 'mainstream',
   'Ottawa Citizen': 'mainstream', 'The Province': 'mainstream',
   'CTV News': 'mainstream', 'CP24': 'mainstream',
-  'Chronicle Herald': 'mainstream', 'Montreal Gazette': 'mainstream',
+  'Montreal Gazette': 'mainstream',
   'Yle News': 'mainstream', 'NRK': 'mainstream', 'Aftenposten': 'mainstream',
   'DR Nyheder': 'mainstream', 'Arctic Today': 'mainstream',
   // Brazilian Addition
@@ -323,7 +323,6 @@ export const SOURCE_PROPAGANDA_RISK: Record<string, SourceRiskProfile> = {
   'The Province': { risk: 'low', note: 'Vancouver daily tabloid (Postmedia)' },
   'CTV News': { risk: 'low', note: 'Canadian national television news (Bell Media); GNews site: fallback, no native RSS' },
   'CP24': { risk: 'low', note: 'Toronto 24-hour news channel (Bell Media); GNews site: fallback, no native RSS' },
-  'Chronicle Herald': { risk: 'low', note: 'Halifax daily newspaper; GNews site: fallback, native RSS dead' },
   'Montreal Gazette': { risk: 'low', note: 'Montreal English daily (Postmedia); GNews site: fallback, native RSS dead' },
   'Yle News': { risk: 'medium', stateAffiliated: 'Finland', note: 'Finnish public broadcaster English service (Yle)' },
   'NRK': { risk: 'medium', stateAffiliated: 'Norway', note: 'Norwegian public broadcaster' },
