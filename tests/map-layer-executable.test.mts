@@ -59,6 +59,13 @@ describe('LAYER_REGISTRY — deckGLOnly flag', () => {
     assert.deepEqual(LAYER_REGISTRY.canadaRoads.renderers, ['flat']);
   });
 
+  test('Toronto restrictions reuse canadaRoads and do not add a second layer id', () => {
+    assert.equal('torontoRoads' in LAYER_REGISTRY, false);
+    assert.ok(LAYER_REGISTRY.canadaRoads);
+    assert.equal(LAYER_REGISTRY.canadaRoads.key, 'canadaRoads');
+    assert.match(LAYER_REGISTRY.canadaRoads.fallbackLabel, /Toronto/i);
+  });
+
   test('layers without deckGLOnly do not accidentally set the flag to false', () => {
     // Spot-check: layers that existed before PR #3366 should have
     // deckGLOnly unset (undefined), not explicitly `false`. An

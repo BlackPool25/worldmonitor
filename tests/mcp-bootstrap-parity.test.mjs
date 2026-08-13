@@ -401,6 +401,10 @@ const EXCLUDED_FROM_MCP = new Map([
     'operational: consumer-price market/retailer completion and validator-rejection coverage published for /api/health; the underlying price observations are exposed through get_consumer_prices, while this health snapshot is not a queryable MCP slice (#5945).'],
   ['consumer-prices:coverage:us',
     'operational: consumer-price market/retailer completion and validator-rejection coverage published for /api/health; the underlying price observations are exposed through get_consumer_prices, while this health snapshot is not a queryable MCP slice (#5945).'],
+  ['infra:ontario-511:v1',
+    'dashboard-internal: Ontario 511 events, alerts, and road conditions overlay on the canadaRoads map layer; not a queryable MCP slice (#6608).'],
+  ['infra:toronto-roads:v1',
+    'dashboard-internal: City of Toronto CART v3 road restrictions overlay on the same canadaRoads map layer; not a queryable MCP slice (#6609).'],
 ]);
 
 const EDUCATION_EXCLUSION_REASON = EXCLUDED_FROM_MCP.get('resilience:education-attainment:v1');

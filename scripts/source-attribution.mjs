@@ -100,6 +100,12 @@ const PROVIDER_OVERRIDES = {
     attribution: 'Alberta 511 (Alberta Transportation and Economic Corridors). https://511.alberta.ca/',
     status: 'terms-review',
   },
+  'secure.toronto.ca': {
+    provider: 'City of Toronto Open Data',
+    license: 'CKAN package_show for road-restrictions: license_id=notspecified, license_title="License not specified" (https://ckan0.cf.opendata.inter.prod-toronto.ca/api/3/action/package_show?id=road-restrictions). Portal dataset page chrome links OGL-Toronto but is not data-bound to this dataset.',
+    attribution: 'City of Toronto, Road Restrictions. https://open.toronto.ca/dataset/road-restrictions/',
+    status: 'terms-review',
+  },
   'api.elections.kalshi.com': {
     provider: 'Kalshi',
     license: 'Kalshi API terms; commercial-use and redistribution terms require review',

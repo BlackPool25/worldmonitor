@@ -206,3 +206,53 @@ test('seeder is a standalone nixpacks job and does not loop ais-relay or reuse 5
   assert.doesNotMatch(RELAY_SOURCE, /toronto-roads/);
   assert.doesNotMatch(RELAY_SOURCE, /secure\.toronto\.ca/);
 });
+
+test("this test file does not import the seeder module", () => {
+  const self = readFileSync(new URL(import.meta.url), "utf8");
+  assert.equal(/from ['"][^'"]*seed-toronto-road-restrictions/.test(self), false);
+});
+
+test("toronto restrictions share canadaRoads and do not invent a second MapLayers key", () => {
+  const types = readFileSync(join(root, "src/types/index.ts"), "utf8");
+  const layers = readFileSync(join(root, "src/config/map-layer-definitions.ts"), "utf8");
+  const client = readFileSync(join(root, "src/services/canada-roads.ts"), "utf8");
+  assert.match(types, /canadaRoads\?: boolean/);
+  assert.doesNotMatch(types, /torontoRoads\?: boolean/);
+  assert.match(layers, /canadaRoads:\s+def\('canadaRoads'/);
+  assert.doesNotMatch(layers, /torontoRoads:\s+def\(/);
+  assert.match(client, /getHydratedData\('canadaRoads'\)/);
+  assert.match(client, /getHydratedData\('torontoRoads'\)/);
+  assert.match(client, /unionCanadaRoadRecords/);
+  assert.match(client, /ontario-511/);
+  assert.match(client, /toronto-roads/);
+});
+
+test("railway registers seed-toronto-road-restrictions as an active */15 nixpacks job", () => {
+  const registry = JSON.parse(readFileSync(join(root, "scripts/railway-services.json"), "utf8"));
+  const entry = registry.find((s) => s.service === "seed-toronto-road-restrictions");
+  assert.ok(entry);
+  assert.equal(entry.entry, "scripts/seed-toronto-road-restrictions.mjs");
+  assert.equal(entry.deployMode, "nixpacks-root-scripts");
+  assert.equal(entry.lifecycle, "active");
+  assert.equal(entry.cronSchedule, "*/15 * * * *");
+  assert.ok(entry.watchPatterns.includes("scripts/lib/toronto-road-restrictions.mjs"));
+  assert.ok(entry.watchPatterns.includes("scripts/seed-toronto-road-restrictions.mjs"));
+  assert.equal(entry.watchPatterns.some((p) => p.includes("511")), false);
+});
+
+test("bootstrap keeps canadaRoads on the fast tier and unions the Toronto redis key", () => {
+  const src = readFileSync(join(root, "shared/bootstrap-tier-keys.js"), "utf8");
+  assert.match(src, /canadaRoads: 'infra:ontario-511:v1'/);
+  assert.match(src, /torontoRoads: 'infra:toronto-roads:v1'/);
+  const fast = src.slice(src.indexOf("const FAST_KEY_NAMES"), src.indexOf("const ON_DEMAND_KEY_NAMES"));
+  assert.match(fast, /'canadaRoads'/);
+  assert.match(fast, /'torontoRoads'/);
+});
+
+test("seed-freshness-baseline acknowledges the Toronto roads cutover", () => {
+  const baseline = JSON.parse(readFileSync(join(root, "scripts/seed-freshness-baseline.json"), "utf8"));
+  const row = baseline.acknowledged.find((a) => a.issue === 6609 || a.name === "torontoRoads");
+  assert.ok(row);
+  assert.equal(row.status, "EMPTY");
+  assert.equal(row.cutover.probeKey, "seed-meta:infra:toronto-roads");
+});
