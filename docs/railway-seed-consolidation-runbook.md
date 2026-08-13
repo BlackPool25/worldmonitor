@@ -147,7 +147,7 @@ rejects every other host even if a workflow variable is misconfigured.
 | `ingestion-acceptance-production-watchdog` | Watchdog HMAC only; no Railway credential |
 | `ingestion-acceptance-production` | Mutation HMAC, `RAILWAY_RECONCILE_DEPLOY_TOKEN_V2`, and project ID |
 | `ingestion-acceptance-production-verification` | Verifier HMAC, `RAILWAY_RECONCILE_VIEWER_TOKEN`, project ID, and GitHub read evidence |
-| `ingestion-acceptance-production-breakglass` | Operator HMAC plus the same `RAILWAY_RECONCILE_VIEWER_TOKEN`; required reviewers gate the resolve job |
+| `ingestion-acceptance-production-breakglass` | Operator HMAC plus the same `RAILWAY_RECONCILE_VIEWER_TOKEN`; main-only secret boundary with no required reviewer |
 
 Both Railway tokens are distinct project tokens with identical capability; the
 names record intended use, not an enforced boundary. See the scope note below.
@@ -173,14 +173,13 @@ workflow contract tests, so treat any change to those guards as a change to a
 security boundary. Note also that `projectTokenCreate` rejects a CLI session
 with `Not Authorized`; both tokens must be created from the Railway dashboard.
 
-Breakglass approval is **one-person by deliberate choice.** The environment
-requires a reviewer, so `resolve` pauses until a human approves and GitHub
-records who did, but `prevent_self_review` is **off**: the operator who
-dispatches recovery may approve their own run. Turning it on with a single
-reviewer would deadlock the emergency path — the one person able to trigger
-recovery would be forbidden from approving it, exactly when it is needed. Real
-two-person control needs a second named reviewer added first; until then the
-`approver` workflow input stays an audit assertion, not a verified second party.
+Breakglass authorization is **one-person by deliberate choice.** The environment
+keeps its `main`-only branch policy and isolated secrets, but has no required
+reviewer. Requiring that same operator to review their own dispatch adds no
+independent authorization and sends one approval email for every recovery
+attempt. The `approver` workflow input records the delegated operator identity
+in the immutable controller audit; it is not a verified second party. Real
+two-person control requires a second named operator and `prevent_self_review`.
 
 The protected resolver deliberately repeats the GitHub, convergence, and
 provider-inactivity reads after environment approval; the earlier proof is not
