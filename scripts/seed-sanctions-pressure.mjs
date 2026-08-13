@@ -8,6 +8,7 @@ import sax from 'sax';
 
 import { loadEnvFile, runSeed, verifySeedKey, writeExtraKeyWithMeta } from './_seed-utils.mjs';
 import { fetchOfacSourceResponse } from './_sanctions-source.mjs';
+import { SANCTIONS_MAX_CONTENT_AGE_MIN, SANCTIONS_SOURCE_VERSION, fetchSemaEntries, mergeSanctionEntries, sanctionsListContentMeta } from './_sema-sanctions.mjs';
 
 loadEnvFile(import.meta.url);
 
@@ -224,11 +225,13 @@ async function fetchSource(source) {
       }
       const sorted = [...seen.entries()].sort(([a], [b]) => a.localeCompare(b));
 
+      const aliasNames = uniqueSorted((aliases ?? []).map((a) => a.nameParts.join(' ')).filter((part) => part && part !== name));
       parties.set(profileId, {
         name,
         entityType,
         countryCodes: sorted.map(([c]) => c),
         countryNames: sorted.map(([, n]) => n),
+        aliases: aliasNames,
       });
     }
 
@@ -254,6 +257,8 @@ async function fetchSource(source) {
         effectiveAt,
         isNew: false,
         note,
+        _aliases: party?.aliases ?? [],
+        _identifiers: [],
       });
     }
 
@@ -487,14 +492,42 @@ async function fetchSanctionsPressure() {
   const hasPrevious = previousIds.size > 0;
   console.log(`  Previous state: ${hasPrevious ? `${previousIds.size} known IDs` : 'none (first run or expired)'}`);
 
-  // Sequential fetch: SDN then Consolidated. SAX streaming keeps peak RAM low
-  // regardless of file size — no full XML string or DOM tree is ever built.
-  const results = [];
+  // Sequential OFAC fetch: SDN then Consolidated. SAX streaming keeps peak RAM
+  // low regardless of file size — no full XML string or DOM tree is ever built.
+  // Each list is independent: SEMA fail still publishes OFAC (and vice versa).
+  const ofacResults = [];
   for (const source of OFAC_SOURCES) {
-    results.push(await fetchSource(source));
+    try {
+      ofacResults.push(await fetchSource(source));
+    } catch (err) {
+      console.warn(`  OFAC ${source.label} fetch failed: ${err?.message || err}`);
+    }
   }
-  const entries = results.flatMap((result) => result.entries);
-  const datasetDate = results.reduce((max, result) => Math.max(max, result.datasetDate || 0), 0);
+
+  let semaEntries = [];
+  let semaPublishedAt = 0;
+  try {
+    const sema = await fetchSemaEntries();
+    semaEntries = sema.records;
+    semaPublishedAt = sema.publishedAtMs || 0;
+    console.log(`  SEMA: ${semaEntries.length} entries, publishedAt=${semaPublishedAt || 'unknown'}`);
+  } catch (err) {
+    console.warn(`  SEMA fetch failed: ${err?.message || err}`);
+  }
+
+  const ofacEntries = ofacResults.flatMap((result) => result.entries);
+  if (ofacEntries.length === 0 && semaEntries.length === 0) {
+    throw new Error('all sanctions lists failed');
+  }
+
+  const entries = mergeSanctionEntries({
+    ofac: ofacEntries,
+    eu: [],
+    uk: [],
+    sema: semaEntries,
+  });
+  const ofacDatasetDate = ofacResults.reduce((max, result) => Math.max(max, result.datasetDate || 0), 0);
+  const datasetDate = Math.max(ofacDatasetDate, semaPublishedAt);
 
   if (hasPrevious) {
     for (const entry of entries) {
@@ -507,7 +540,7 @@ async function fetchSanctionsPressure() {
   const newEntryCount = hasPrevious ? entries.filter((entry) => entry.isNew).length : 0;
   const vesselCount = entries.filter((entry) => entry.entityType === 'SANCTIONS_ENTITY_TYPE_VESSEL').length;
   const aircraftCount = entries.filter((entry) => entry.entityType === 'SANCTIONS_ENTITY_TYPE_AIRCRAFT').length;
-  console.log(`  Merged: ${totalCount} total (${results[0]?.entries.length ?? 0} SDN + ${results[1]?.entries.length ?? 0} consolidated), ${newEntryCount} new, ${vesselCount} vessels, ${aircraftCount} aircraft`);
+  console.log(`  Merged: ${totalCount} total (${ofacResults[0]?.entries.length ?? 0} SDN + ${ofacResults[1]?.entries.length ?? 0} consolidated + ${semaEntries.length} SEMA), ${newEntryCount} new, ${vesselCount} vessels, ${aircraftCount} aircraft`);
 
   // Build compact entity index for name-based lookup (Phase 1 — issue #2042).
   // Each record: { id, name, et (compact type), cc (country codes), pr (programs) }
@@ -525,8 +558,8 @@ async function fetchSanctionsPressure() {
     fetchedAt: String(Date.now()),
     datasetDate: String(datasetDate),
     totalCount,
-    sdnCount: results[0]?.entries.length ?? 0,
-    consolidatedCount: results[1]?.entries.length ?? 0,
+    sdnCount: ofacResults[0]?.entries.length ?? 0,
+    consolidatedCount: ofacResults[1]?.entries.length ?? 0,
     newEntryCount,
     vesselCount,
     aircraftCount,
@@ -549,20 +582,32 @@ export function declareRecords(data) {
   return data?.totalCount ?? 0;
 }
 
+export function sanctionsPressureContentMeta(data, nowMs) {
+  return sanctionsListContentMeta(data, nowMs);
+}
+
 runSeed('sanctions', 'pressure', CANONICAL_KEY, fetchSanctionsPressure, {
   ttlSeconds: CACHE_TTL,
   // The bounded direct/proxy/signed recovery ladder can spend about 7 minutes
-  // across both serial XML sources. Keep its fetch deadline explicit and the
-  // lock alive longer so a slow recovery cannot leave a second run racing it.
-  lockTtlMs: 600_000,
-  fetchPhaseTimeoutMs: 480_000,
+  // across both serial XML sources, plus the SEMA XML. Keep its fetch deadline
+  // explicit and the lock alive longer so a slow recovery cannot race a second run.
+  lockTtlMs: 660_000,
+  fetchPhaseTimeoutMs: 540_000,
   validateFn: validate,
-  sourceVersion: 'ofac-sls-advanced-xml-v1',
+  sourceVersion: SANCTIONS_SOURCE_VERSION,
   recordCount: (data) => data.totalCount ?? 0,
+  contentMeta: sanctionsPressureContentMeta,
+  maxContentAgeMin: SANCTIONS_MAX_CONTENT_AGE_MIN,
   // Strip internal-only fields before writing the main key so the pressure payload
   // does not include the entity index (~hundreds of KB) or state snapshot.
   publishTransform: (data) => {
     const { _entityIndex: _ei, _state: _s, _countryCounts: _cc, ...rest } = data;
+    if (Array.isArray(rest.entries)) {
+      rest.entries = rest.entries.map((entry) => {
+        const { _aliases, _identifiers, _publishedAt, ...publicEntry } = entry;
+        return publicEntry;
+      });
+    }
     return rest;
   },
   extraKeys: [

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<data-set xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<record>
+		<Country>Belarus / Bélarus</Country>
+		<LastName>Oleksin</LastName>
+		<GivenName>Aleksey</GivenName>
+		<Aliases>Aliaksei Aleksin</Aliases>
+		<Schedule>1, Part 1</Schedule>
+		<Item>56</Item>
+		<DateOfListing>2021-06-17</DateOfListing>
+	</record>
+<record>
+		<Country>Belarus / Bélarus</Country>
+		<EntityOrShip>Belaeronavigatsia Republican Unitary Air Navigation Services Enterprise</EntityOrShip>
+		<Schedule>1, Part 2</Schedule>
+		<Item>1</Item>
+		<DateOfListing>2021-06-17</DateOfListing>
+	</record>
+<record>
+		<Country>Russia / Russie</Country>
+		<EntityOrShip>Balitiyskiy III</EntityOrShip>
+		<TitleOrShip>General Cargo/Multi Purpose | Cargo classique/navire polyvalent</TitleOrShip>
+		<ShipIMONumber>7612448</ShipIMONumber>
+		<DateOfBirthOrShipBuildDate>1980</DateOfBirthOrShipBuildDate>
+		<Schedule>1.1</Schedule>
+		<Item>1</Item>
+		<DateOfListing>2025-02-21</DateOfListing>
+	</record>
+<record>
+		<Country>Belarus / Bélarus</Country>
+		<LastName>Lukashenko</LastName>
+		<GivenName>Aleksandr Grigoryevich</GivenName>
+		<DateOfBirthOrShipBuildDate>1954-08-30</DateOfBirthOrShipBuildDate>
+		<Schedule>1, Part 1</Schedule>
+		<Item>8</Item>
+		<DateOfListing>2020-09-28</DateOfListing>
+	</record>
+<record>
+		<Country>Russia / Russie</Country>
+		<EntityOrShip>STREIT Group</EntityOrShip>
+		<Aliases>STREIT Group FZE or STREIT Group FZE-LLC</Aliases>
+		<Schedule>1, Part 2</Schedule>
+		<Item>861</Item>
+		<DateOfListing>2026-08-06</DateOfListing>
+	</record>
+</data-set>
