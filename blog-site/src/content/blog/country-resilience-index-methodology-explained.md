@@ -1,6 +1,6 @@
 ---
 title: "Country Resilience Index Methodology"
-description: "A practical guide to the WorldMonitor Country Resilience Index: 196 countries, 72 indicators across 21 active dimensions and 6 domains, 3 pillars, and a transparent 0-100 score."
+description: "A practical guide to the WorldMonitor Country Resilience Index: 72 indicators across 21 active dimensions and 6 domains, with transparent 0-100 scoring."
 metaTitle: "Country Resilience Index Methodology | WorldMonitor"
 keywords: "country resilience index, resilience score methodology, country risk methodology, national resilience indicators, shock absorption score"
 audience: "Risk analysts, policy teams, country researchers, resilience modelers"
