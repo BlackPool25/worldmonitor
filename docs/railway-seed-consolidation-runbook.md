@@ -375,10 +375,22 @@ incident note.
 default branch. Scheduled runs first require the latest `main` commit's `gate`
 status to be green; a missing, pending, or failed gate makes the workflow fail
 closed instead of producing a green skipped run. Manual runs execute directly.
-After the repository gate, the workflow checks live Railway watch paths, cron
-schedules, required routing variables, and service presence against
-`scripts/railway-services.json`, then runs the deploy-drift check, then checks
-public compact health. It fails on
+The workflow runs two independent jobs. Read the one that answers your question.
+
+- `monitor` is the gated job. After the repository gate, it checks live Railway
+  watch paths, cron schedules, required routing variables, and service presence
+  against `scripts/railway-services.json`, then checks public compact health.
+- `Railway deploy drift` is a separate job. It has no `needs:` and no gate
+  condition, so it runs in parallel with `monitor` and publishes its own
+  conclusion. A failed gate turns `monitor` red but leaves this job's verdict
+  intact (#6523).
+
+During a gate outage, read the `Railway deploy drift` job, not `monitor`. A red
+`monitor` alone says nothing about the fleet. Note that the run's overall
+conclusion and its badge stay red whenever `monitor` fails, so you must open the
+run and read the job conclusions to tell a clean fleet from a stranded one.
+
+`monitor` fails on
 every actionable problem, including `SEED_ERROR`, `STALE_SEED`,
 `STALE_CONTENT`, and degraded composed coverage. Statuses that explicitly end
 in `_ON_DEMAND` remain informational. It deliberately does not run on an
@@ -499,12 +511,15 @@ manual recovery.
 The observer combines run summaries from the preceding 24 hours with separate
 queries for every active target status, including runs that started before that
 window. It repeats the active sweep around the history read and defers if the
-inventory changes, then reads attempt jobs only for active, recent, durably
-referenced, or non-success terminal runs. It follows at most 10 pages per
-query, makes at most 250 GitHub API requests, and bounds each request to 10
-seconds. Durable barriers and dispatch holds remain authoritative beyond that
-window; exhausting any read budget defers recovery rather than dispatching on
-partial history.
+inventory changes. With a durable mutation barrier, it reads attempt jobs only
+for active and durably referenced runs because the barrier already forbids
+recovery. After strict terminal acceptance, `lastAccepted.acceptedAt` retires
+older failures while a failure that finishes after the watermark is still read.
+Before the first trusted acceptance, it keeps the full fail-closed non-success
+scan. It follows at most 10 pages per query, makes at most 250 GitHub API
+requests, and bounds each request to 10 seconds. Durable barriers and dispatch
+holds remain authoritative beyond that window; exhausting any read budget
+defers recovery rather than dispatching on partial history.
 
 Do **not** use `railway redeploy`: Railway documents it as rebuilding the most
 recent deployment with the same code, so it cannot pick up a newer fixed commit.
@@ -752,11 +767,11 @@ All new services share these settings:
 |---|---|
 | **Service name** | `seed-bundle-static-ref` |
 | **Start command** | `node scripts/seed-bundle-static-ref.mjs` |
-| **Cron schedule** | `0 3 * * 0` (weekly, Sunday 03:00 UTC) |
+| **Cron schedule** | `0 3 * * *` (daily at 03:00 UTC) |
 | **Watch paths** | `scripts/**`, `shared/**` |
 | **Replaces** | 4 services (including the retired defense-patents producer) |
 | **Net savings** | 3 slots |
-| **Members** | Submarine Cables (weekly), Defense Patents (weekly), Chokepoint Baselines (400d, runs rarely), Military Bases (30d, runs rarely) |
+| **Members** | Submarine Cables (weekly), Defense Patents (weekly), Defense Industrial Base (10d), Chokepoint Baselines (400d, runs rarely), Military Bases (30d, runs rarely) |
 | **Required variable** | `USPTO_API_KEY=${{shared.USPTO_API_KEY}}` |
 
 Defense Patents is an intentional data-series migration, not a continuation of
@@ -766,6 +781,20 @@ empty for wire compatibility. The producer marks the discontinuity with
 `sourceVersion: uspto-odp-v1` and `schemaVersion: 2`; operational comparisons
 must not treat pre-migration grant dates and post-migration filing dates as one
 continuous metric.
+
+Defense Industrial Base writes `military:industrial-base:v1` from World Bank
+`MS.MIL.*` series and `military:arms-suppliers:v1` from SIPRI-derived five-year
+supplier shares. Both values have a 30-day TTL. Each source is eligible every
+10 days, and the daily service evaluates that interval before day 10, which
+keeps the canonical TTL above the three-refresh safety floor. The sources run
+as separate bounded processes under a 570-second bundle budget, so one failure
+cannot block the other source's publication. A SIPRI portal failure preserves
+last-good supplier rows with their original timestamps. A separate
+SIPRI-completion marker stays old after a partial pass, so the next daily tick
+retries the portal instead of treating the partial pass as complete.
+Strict health-probe registration is a staged follow-up after the first Railway
+run publishes both seed-meta keys; the follow-up must cite real Railway
+pre-seed evidence under the health-probe cutover contract.
 
 ### Bundle 4: seed-bundle-resilience
 
@@ -962,9 +991,9 @@ Recovery is accepted only when:
 | **Watch paths** | See `scripts/railway-services.json` (exact runtime closure; run `node scripts/audit-railway-watch-paths.mjs`) |
 | **Replaces** | 5 services |
 | **Net savings** | 4 slots |
-| **Members** | Crypto Quotes (5min), Hyperliquid Flow (5min), Stablecoin Markets (10min), ETF Flows (15min), China Corporate Disclosures (30min), China Stock Connect (60min), Gulf Quotes (10min), Token Panels (30min), Gold ETF Flows (2h), Gold CB Reserves (daily), SEC CIK Map (daily), SEC 8-K Stream (30min) |
+| **Members** | Crypto Quotes (5min), Hyperliquid Flow (5min), Stablecoin Markets (10min), ETF Flows (15min), Market Correlation Series (15min), China Corporate Disclosures (30min), China Stock Connect (60min), Gulf Quotes (10min), Token Panels (30min), Gold ETF Flows (2h), Gold CB Reserves (daily), SEC CIK Map (daily), SEC 8-K Stream (30min) |
 | **Required env** | `PROXY_URL` (required independently by Gulf Quotes / ETF Flows and selected for an exchange only when its source-specific setting is absent). Proxy configuration precedence is `SSE_PROXY_URL` → `SZSE_PROXY_URL` → `PROXY_URL` for SSE and `SZSE_PROXY_URL` → `PROXY_URL` for SZSE; the process selects the first non-empty setting rather than attempting each URL sequentially. This is the deployment contract; production provisioning and live fallback acceptance require separate verification. |
-| **Note** | Crypto Quotes, Stablecoin Markets, ETF Flows, Gulf Quotes, and Token Panels back up ais-relay inline loops. Hyperliquid Flow, China Corporate Disclosures, China Stock Connect, Gold ETF Flows, Gold CB Reserves, SEC CIK Map, and SEC 8-K Stream are primary in this bundle. China Corporate Disclosures reads official metadata only: SSE uses direct then the selected proxy, while SZSE uses direct then distinct port attempts within the selected proxy. China Stock Connect reads aggregate exchange statistics over direct then the selected proxy only — it stops short of the edge hop, because a seeder fetches upstream data and the web tier serves it from Redis, and borrowing an edge function's egress for acquisition inverts that. It additionally caps every `www.szse.cn` request in a run under one shared 100s wall-clock budget, because its SZSE endpoints are date-keyed and the number of probes depends on how many sessions the exchange has published. Gulf Quotes uses Alpha Vantage (richer than relay's Yahoo-only). |
+| **Note** | Crypto Quotes, Stablecoin Markets, ETF Flows, Gulf Quotes, and Token Panels back up ais-relay inline loops. Hyperliquid Flow, Market Correlation Series, China Corporate Disclosures, China Stock Connect, Gold ETF Flows, Gold CB Reserves, SEC CIK Map, and SEC 8-K Stream are primary in this bundle. China Corporate Disclosures reads official metadata only: SSE uses direct then the selected proxy, while SZSE uses direct then distinct port attempts within the selected proxy. China Stock Connect reads aggregate exchange statistics over direct then the selected proxy only — it stops short of the edge hop, because a seeder fetches upstream data and the web tier serves it from Redis, and borrowing an edge function's egress for acquisition inverts that. It additionally caps every `www.szse.cn` request in a run under one shared 100s wall-clock budget, because its SZSE endpoints are date-keyed and the number of probes depends on how many sessions the exchange has published. Gulf Quotes uses Alpha Vantage (richer than relay's Yahoo-only). |
 
 ### Bundle 11: seed-bundle-relay-backup
 
