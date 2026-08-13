@@ -8084,6 +8084,20 @@
       ]
     },
     {
+      "host": "www.earthquakescanada.nrcan.gc.ca",
+      "provider": "Earthquakes Canada (NRCan)",
+      "kind": "structured",
+      "observed": true,
+      "license": "Earthquakes Canada citation terms; live Atom redistribution not explicitly granted (historical catalogues on the Open Government Portal are OGL-Canada)",
+      "attribution": "Natural Resources Canada, Earthquakes Canada; link to https://www.earthquakescanada.nrcan.gc.ca/index-en.php?tpl_region=canada. Event-metadata citation: https://www.earthquakescanada.nrcan.gc.ca/cite-en.php",
+      "status": "terms-review",
+      "references": [
+        {
+          "path": "scripts/seismology/nrcan-atom.mjs"
+        }
+      ]
+    },
+    {
       "host": "www.ecb.europa.eu",
       "provider": "www.ecb.europa.eu",
       "kind": "structured",

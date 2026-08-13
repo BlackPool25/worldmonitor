@@ -704,6 +704,26 @@
     "documentedAt": "scripts/seed-military-cii.mjs (header docblock declares rootDirectory: scripts and */10 cron)"
   },
   {
+    "entry": "scripts/seed-earthquakes.mjs",
+    "deployMode": "nixpacks-root-scripts",
+    "service": "seed-earthquakes",
+    "watchPatterns": [
+      "scripts/_html-entities.mjs",
+      "scripts/_proxy-utils.cjs",
+      "scripts/_seed-contract.mjs",
+      "scripts/_seed-envelope-source.mjs",
+      "scripts/_seed-utils.mjs",
+      "scripts/lib/llm-telemetry.cjs",
+      "scripts/nixpacks.toml",
+      "scripts/package-lock.json",
+      "scripts/package.json",
+      "scripts/seed-earthquakes.mjs",
+      "scripts/seismology/nrcan-atom.mjs"
+    ],
+    "cronSchedule": "*/5 * * * *",
+    "documentedAt": "docs/railway-seed-consolidation-runbook.md#standalone-seed-crons-43-not-bundled"
+  },
+  {
     "entry": "scripts/seed-bundle-ecb-eu.mjs",
     "deployMode": "nixpacks-root-scripts",
     "service": "seed-bundle-ecb-eu",
