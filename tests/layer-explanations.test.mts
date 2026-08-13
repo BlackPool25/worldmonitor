@@ -116,6 +116,7 @@ describe('layer explanation metadata', () => {
       'ciiChoropleth',
       'natural',
       'weather',
+      'canadaRoads',
       'flights',
       'ais',
       'waterways',
@@ -172,6 +173,9 @@ describe('layer explanation metadata', () => {
 
     assertDuration(renderedFreshnessText('weather'), /every\s+([0-9]+)\s+(minute)s?/i, relayConstMinutes('WEATHER_SEED_INTERVAL_MS'), 'weather relay seed cadence');
     assertDuration(renderedFreshnessText('weather'), /([0-9]+)-\s*(minute)\s+freshness budget/i, healthMaxStale('weatherAlerts'), 'weather health freshness budget');
+
+    assertDuration(renderedFreshnessText('canadaRoads'), /every\s+([0-9]+)\s+(minute)s?/i, 15, 'ontario 511 seed cadence');
+    assertDuration(renderedFreshnessText('canadaRoads'), /([0-9]+)-\s*(minute)\s+freshness budget/i, healthMaxStale('canadaRoads'), 'ontario 511 health freshness budget');
 
     const aviationCadenceMin = maxStaleMin('scripts/seed-aviation.mjs', 'intl') / 3;
     assertDuration(renderedFreshnessText('flights'), /([0-9]+)-\s*(minute)\s+cadence/i, aviationCadenceMin, 'aviation disruption seed cadence');
