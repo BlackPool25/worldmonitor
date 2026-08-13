@@ -76,7 +76,9 @@ export interface FoodStockRecord {
   commodity: string;
   marketingYear: string;
   stocksToUse: number;
+  hasStocksToUse: boolean;
   endingStocksTmt: number;
+  hasEndingStocks: boolean;
   totalUseTmt: number;
   productionTmt: number;
   consumptionTmt: number;

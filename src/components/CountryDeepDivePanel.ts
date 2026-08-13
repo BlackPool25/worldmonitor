@@ -2796,8 +2796,15 @@ export class CountryDeepDivePanel implements CountryBriefPanel {
 
   private formatStocksToUse(
     ratio: number | undefined,
-    rec?: { source?: string; endingStocksTmt?: number; totalUseTmt?: number },
+    rec?: { source?: string; endingStocksTmt?: number; totalUseTmt?: number; hasStocksToUse?: boolean },
   ): string {
+    // Presence first. Everything below is a heuristic over a coerced zero; this
+    // is the server telling us outright whether the number is a measurement.
+    // USDA estimates ending stocks only for selected countries, so a minor
+    // producer with real production and consumption but no stocks series used
+    // to render a confident "0.0%" here — the most alarming value the card can
+    // show, from data that was never measured.
+    if (rec?.hasStocksToUse === false) return '—';
     if (rec?.source === 'faostat') return '—';
     if (ratio == null || !Number.isFinite(ratio) || ratio < 0) return '—';
     if (ratio === 0 && !(Number(rec?.totalUseTmt) > 0)) return '—';

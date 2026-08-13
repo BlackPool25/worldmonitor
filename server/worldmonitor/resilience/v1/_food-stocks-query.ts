@@ -48,7 +48,9 @@ export function flattenSnapshot(
   commodity: string;
   marketingYear: string;
   stocksToUse: number;
+  hasStocksToUse: boolean;
   endingStocksTmt: number;
+  hasEndingStocks: boolean;
   totalUseTmt: number;
   productionTmt: number;
   consumptionTmt: number;
@@ -68,6 +70,13 @@ export function flattenSnapshot(
       const consumption = Number(rec.consumption) || 0;
       const exports = Number(rec.exports) || 0;
       const ratio = Number(rec.stocksToUseRatio);
+      // Presence, computed from the seeded record BEFORE the null -> 0 coercion
+      // below. `null` is what the parser writes when USDA published no stocks
+      // series for this country-commodity; `0` is what proto3 forces onto the
+      // wire, and the two are otherwise indistinguishable to every consumer.
+      const hasStocksToUse = rec.stocksToUseRatio != null && Number.isFinite(ratio);
+      const endingStocksRaw = Number(rec.endingStocks);
+      const hasEndingStocks = rec.endingStocks != null && Number.isFinite(endingStocksRaw);
       // Prefer the persisted denominator. `_world` excludes exports (they are
       // internal transfers), so recomputing `consumption + exports` here would
       // publish a totalUseTmt that disagrees with stocksToUse on every world row.
@@ -76,8 +85,10 @@ export function flattenSnapshot(
         countryCode: iso2,
         commodity: slug,
         marketingYear: String(rec.marketingYear ?? ''),
-        stocksToUse: Number.isFinite(ratio) ? ratio : 0,
-        endingStocksTmt: Number(rec.endingStocks) || 0,
+        stocksToUse: hasStocksToUse ? ratio : 0,
+        hasStocksToUse,
+        endingStocksTmt: hasEndingStocks ? endingStocksRaw : 0,
+        hasEndingStocks,
         totalUseTmt: Number.isFinite(persistedTotalUse)
           ? persistedTotalUse
           : (iso2 === FOOD_STOCKS_WORLD_KEY ? consumption : consumption + exports),

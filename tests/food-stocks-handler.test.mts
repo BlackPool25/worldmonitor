@@ -126,12 +126,74 @@ describe('flattenSnapshot', () => {
     assert.ok(Math.abs(br.endingStocksTmt / br.totalUseTmt - br.stocksToUse) < 1e-12);
   });
 
+  test('a PSD row with no stocks series is flagged absent, not reported as 0%', () => {
+    // The regression this presence flag exists for. USDA estimates ending stocks
+    // for selected countries only, so a real producer can report production and
+    // consumption with no stocks series — and before hasStocksToUse the card
+    // rendered that as a confident "0.0%", the most alarming value it can show.
+    const snap = {
+      KE: {
+        commodities: {
+          corn: {
+            marketingYear: '2025/26',
+            production: 4000,
+            consumption: 5200,
+            imports: null,
+            exports: null,
+            endingStocks: null,
+            stocksToUseRatio: null,
+            totalUse: 5200,
+            unit: '1000 MT',
+            source: 'psd',
+          },
+        },
+      },
+    };
+    const [ke] = flattenSnapshot(snap as never, 'KE');
+    assert.equal(ke.hasStocksToUse, false, 'no stocks series means no ratio');
+    assert.equal(ke.hasEndingStocks, false);
+    assert.equal(ke.stocksToUse, 0, 'the wire value is still a proto3 zero');
+    assert.equal(ke.endingStocksTmt, 0);
+    // ...but the row is NOT distinguishable by the old heuristics: it is a psd
+    // row with a positive denominator, so source and totalUseTmt both look fine.
+    assert.equal(ke.source, 'psd');
+    assert.ok(ke.totalUseTmt > 0, 'the old source+totalUse heuristic cannot catch this');
+    assert.equal(ke.productionTmt, 4000, 'production is a real measurement and survives');
+  });
+
+  test('a real zero ratio is still reported as present', () => {
+    const snap = {
+      ZW: {
+        commodities: {
+          corn: {
+            marketingYear: '2025/26', production: 10, consumption: 100,
+            imports: 0, exports: 0, endingStocks: 0, stocksToUseRatio: 0,
+            totalUse: 100, unit: '1000 MT', source: 'psd',
+          },
+        },
+      },
+    };
+    const [zw] = flattenSnapshot(snap as never, 'ZW');
+    assert.equal(zw.hasStocksToUse, true, 'a measured 0% must stay present');
+    assert.equal(zw.hasEndingStocks, true);
+    assert.equal(zw.stocksToUse, 0);
+  });
+
   test('a FAOSTAT production-only row is distinguishable from a genuine zero', () => {
     const [ng] = flattenSnapshot(snapshot as never, 'NG');
     assert.equal(ng.source, 'faostat');
     assert.equal(ng.stocksToUse, 0);
-    assert.equal(ng.totalUseTmt, 0, 'source=faostat AND totalUse=0 is the documented "unknown" signal');
+    assert.equal(ng.hasStocksToUse, false, 'gap-fill rows never carry a measured ratio');
+    assert.equal(ng.hasEndingStocks, false);
+    assert.equal(ng.totalUseTmt, 0);
     assert.equal(ng.productionTmt, 12000, 'production is real even though stocks are not');
+  });
+
+  test('a fully-populated PSD row reports both values present', () => {
+    const [br] = flattenSnapshot(snapshot as never, 'BR');
+    assert.equal(br.hasStocksToUse, true);
+    assert.equal(br.hasEndingStocks, true);
+    assert.equal(br.endingStocksTmt, 4653);
   });
 
   test('a malformed entry is skipped rather than throwing', () => {

@@ -1229,9 +1229,14 @@ export const RPC_TOOLS: ToolDef[] = [
               marketingYear: { type: 'string', description: 'e.g. "2024/25". A marketing year, NOT a calendar year — never compare across countries as if it were one.' },
               stocksToUse: {
                 type: 'number',
-                description: 'Ending stocks / total use. 0 is ambiguous: it means UNKNOWN when source="faostat" or totalUseTmt=0, and a genuine 0% only when source="psd" and totalUseTmt>0. Check both before reporting a zero.',
+                description: 'Ending stocks / total use (0.18 = 18%). Read hasStocksToUse FIRST — when it is false this 0 is a placeholder, not a measurement. USDA estimates stocks for selected countries only, so a real producer can report production and consumption with no stocks series.',
               },
-              endingStocksTmt: { type: 'number', description: '0 when unknown (see stocksToUse); always 0 for source="faostat" rows.' },
+              hasStocksToUse: {
+                type: 'boolean',
+                description: 'False when stocksToUse is a placeholder. Never report a 0% stocks-to-use without checking this.',
+              },
+              endingStocksTmt: { type: 'number', description: 'Ending stocks in 1000 MT. Read hasEndingStocks first; 0 is a placeholder when that flag is false.' },
+              hasEndingStocks: { type: 'boolean', description: 'False when endingStocksTmt is a placeholder rather than a measurement.' },
               totalUseTmt: {
                 type: 'number',
                 description: 'Denominator of stocksToUse. For a country this is consumption + exports; for WORLD it is consumption only, because world exports are internal transfers already counted in the importer\'s consumption.',

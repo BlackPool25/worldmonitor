@@ -852,11 +852,25 @@ components:
                 stocksToUse:
                     type: number
                     format: double
-                    description: Ending stocks divided by domestic use plus exports (0.18 = 18%). Zero when unknown.
+                    description: |-
+                        Ending stocks divided by total use (0.18 = 18%). Read has_stocks_to_use
+                         BEFORE this value: proto3 has no presence for a bare double, so an unknown
+                         ratio and a genuine 0% are the same wire value. USDA/PSD estimates ending
+                         stocks only for selected countries, so a minor producer routinely reports
+                         real production and consumption with no stocks series at all — and 0.0% on
+                         a food-security surface reads as famine, not as "not measured".
+                hasStocksToUse:
+                    type: boolean
+                    description: False when stocks_to_use is a placeholder rather than a measurement.
                 endingStocksTmt:
                     type: number
                     format: double
-                    description: Ending stocks in thousand metric tons. Zero when unknown.
+                    description: |-
+                        Ending stocks in thousand metric tons. Read has_ending_stocks first, for
+                         the same reason as stocks_to_use above.
+                hasEndingStocks:
+                    type: boolean
+                    description: False when ending_stocks_tmt is a placeholder rather than a measurement.
                 totalUseTmt:
                     type: number
                     format: double
