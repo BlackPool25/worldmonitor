@@ -25,7 +25,9 @@ async function fetchOntario511() {
   });
   if (!isCompleteVendor511(envelope, ONTARIO_511)) {
     const failed = envelope.failedResources?.join(', ') || 'incomplete';
-    throw new Error(`Ontario 511: partial poll (${failed} failed); keeping last-good`);
+    const err = new Error(`Ontario 511: partial poll (${failed} failed); keeping last-good`);
+    err.nonRetryable = true;
+    throw err;
   }
   const combined = [...envelope.events, ...envelope.alerts, ...envelope.conditions];
   // Publish the capped map payload only (NWS weather pattern). Kind is on

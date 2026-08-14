@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { __testing__ as limiterTesting } from '../scripts/_511-rate-limit.mjs';
+import { __testing__ as healthTesting } from '../api/health.js';
 import {
   MAX_RECORDS,
   ONTARIO_511,
@@ -307,12 +308,110 @@ test('Ontario partial poll must not replace last-good or flip health green', asy
     seeder.indexOf('export function declareRecords'),
   );
   assert.match(fetchOntario, /if \(!isCompleteVendor511\(envelope, ONTARIO_511\)\)/);
-  assert.match(fetchOntario, /throw new Error/);
+  assert.match(fetchOntario, /new Error\(`Ontario 511: partial poll/);
+  assert.match(fetchOntario, /nonRetryable = true/);
+  assert.match(fetchOntario, /throw err/);
   assert.ok(
-    fetchOntario.indexOf('throw new Error')
+    fetchOntario.indexOf('new Error')
     < fetchOntario.indexOf('return { records:'),
     'partial ticks must throw before any last-good successor is returned',
   );
+});
+
+test('last-good complete; next poll partial → last-good unchanged, health not green', async () => {
+  const completeFn = async (url) => {
+    if (String(url).includes('/event')) {
+      return jsonResponse([{
+        ID: 216791,
+        Latitude: 42.853554,
+        Longitude: -81.27517,
+        EventType: 'closures',
+        IsFullClosure: true,
+      }]);
+    }
+    if (String(url).includes('/alerts')) {
+      return jsonResponse([{
+        Id: 635,
+        Message: 'Restricted Fire Zone',
+        HighImportance: true,
+      }]);
+    }
+    return jsonResponse([{
+      LocationDescription: 'Hwy 401',
+      Condition: ['Bare and dry'],
+      RoadwayName: '401',
+      EncodedPolyline: ['yklkG|jqcNC?'],
+    }]);
+  };
+  const complete = await fetchVendor511(ONTARIO_511, { fetchFn: completeFn, staggerMs: 0 });
+  assert.equal(isCompleteVendor511(complete, ONTARIO_511), true);
+  const lastGood = {
+    records: select511Records([...complete.events, ...complete.alerts, ...complete.conditions]),
+  };
+  assert.ok(lastGood.records.length >= 3);
+  const lastGoodIds = lastGood.records.map((r) => r.id).sort();
+
+  const { classifyKey, STATUS_COUNTS, BOOTSTRAP_KEYS, SEED_META } = healthTesting;
+  const NOW = 1_700_000_000_000;
+  const redisKey = BOOTSTRAP_KEYS.canadaRoads;
+  const metaKey = SEED_META.canadaRoads.key;
+  const lastGoodHealth = classifyKey('canadaRoads', redisKey, { allowOnDemand: false }, {
+    keyStrens: new Map([[redisKey, 256]]),
+    keyErrors: new Map(),
+    keyMetaValues: new Map([[metaKey, JSON.stringify({
+      fetchedAt: NOW - 5 * 60_000,
+      recordCount: lastGood.records.length,
+    })]]),
+    keyMetaErrors: new Map(),
+    now: NOW,
+  });
+  assert.equal(lastGoodHealth.status, 'OK');
+  assert.equal(STATUS_COUNTS[lastGoodHealth.status], 'ok');
+
+  const partialFn = async (url) => {
+    if (String(url).includes('/alerts')) return new Response('nope', { status: 503 });
+    if (String(url).includes('/event')) {
+      return jsonResponse([{
+        ID: 1,
+        Latitude: 43.6,
+        Longitude: -79.4,
+        EventType: 'roadwork',
+      }]);
+    }
+    return jsonResponse([]);
+  };
+  const partial = await fetchVendor511(ONTARIO_511, { fetchFn: partialFn, staggerMs: 0 });
+  assert.equal(isCompleteVendor511(partial, ONTARIO_511), false);
+  assert.deepEqual(partial.failedResources, ['alerts']);
+  assert.ok(partial.records.length > 0, 'surviving records would have replaced last-good');
+
+  let stored = lastGood;
+  let tickHealthGreen = false;
+  if (isCompleteVendor511(partial, ONTARIO_511)) {
+    stored = {
+      records: select511Records([...partial.events, ...partial.alerts, ...partial.conditions]),
+    };
+    tickHealthGreen = true;
+  }
+  assert.equal(stored, lastGood);
+  assert.deepEqual(stored.records.map((r) => r.id).sort(), lastGoodIds);
+  assert.equal(tickHealthGreen, false);
+
+  // Throwing skips runSeed publish + fresh seed-meta. A leaked partial write
+  // with fresh fetchedAt would classify OK (the hole); this tick must not.
+  const leakedPartialHealth = classifyKey('canadaRoads', redisKey, { allowOnDemand: false }, {
+    keyStrens: new Map([[redisKey, 128]]),
+    keyErrors: new Map(),
+    keyMetaValues: new Map([[metaKey, JSON.stringify({
+      fetchedAt: NOW,
+      recordCount: partial.records.length,
+    })]]),
+    keyMetaErrors: new Map(),
+    now: NOW,
+  });
+  assert.equal(leakedPartialHealth.status, 'OK', 'fixture: publishing the partial would flip health green');
+  assert.equal(STATUS_COUNTS[leakedPartialHealth.status], 'ok');
+  assert.equal(tickHealthGreen, false, 'partial poll must not be a health-green successor');
 });
 
 test('BC Open511 host is rejected and does not use this /api/v2/get client', async () => {
