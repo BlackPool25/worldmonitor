@@ -346,18 +346,16 @@ test('BC Open511 shares canadaRoads and does not invent a second MapLayers key',
   assert.match(client, /key: 'bcOpen511', source: 'bc-open511'/);
 });
 
-test('railway registers seed-open511 as an active */15 nixpacks job', () => {
+test('bc open511 runs as a bundle member, not its own */15 service', () => {
+  // seed-bundle-canada (#6711) owns this seeder gated on intervalMs 30min.
+  // DriveBC returned the full active set in a single page, so a tick is one
+  // request, not MAX_PAGES — halving 84 MB/day costs nothing in coverage.
   const registry = JSON.parse(readFileSync(new URL('../scripts/railway-services.json', import.meta.url), 'utf8'));
-  const entry = registry.find((s) => s.service === 'seed-open511');
-  assert.ok(entry);
-  assert.equal(entry.entry, 'scripts/seed-open511.mjs');
-  assert.equal(entry.deployMode, 'nixpacks-root-scripts');
-  assert.equal(entry.lifecycle, 'active');
-  assert.equal(entry.cronSchedule, '*/15 * * * *');
-  assert.ok(entry.watchPatterns.includes('scripts/lib/open511.mjs'));
-  assert.ok(entry.watchPatterns.includes('scripts/seed-open511.mjs'));
-  assert.ok(entry.watchPatterns.includes('scripts/_511-rate-limit.mjs'));
-  assert.equal(entry.watchPatterns.some((p) => p.includes('provincial-511')), false);
+  assert.equal(
+    registry.some((s) => s.service === 'seed-open511'),
+    false,
+    'a standalone row would claim a slot the bundle already covers',
+  );
 });
 
 test('bootstrap keeps canadaRoads on the fast tier; bcOpen511 is on-demand (~797 KB)', () => {
@@ -377,9 +375,14 @@ test('seed-freshness-baseline acknowledges the BC Open511 cutover', () => {
   assert.ok(row);
   assert.equal(row.status, 'EMPTY');
   assert.equal(row.cutover.probeKey, 'seed-meta:infra:bc-open511');
-  assert.equal(row.expiresAt, '2026-08-16T20:45:00.000Z');
-  assert.equal(row.cutover.firstScheduledRunAt, '2026-08-16T20:45:00.000Z');
-  assert.equal(row.cutover.activatedAt, '2026-08-15T21:00:00.000Z');
+  // Widened by the member's own gate: on intervalMs 30min the first publish can
+  // land half an hour after the bundle is provisioned, so an expiry pinned to
+  // the provisioning instant would red the monitor while the seeder works.
+  assert.equal(row.expiresAt, '2026-08-16T21:15:00.000Z');
+  assert.equal(row.cutover.firstScheduledRunAt, '2026-08-16T21:15:00.000Z');
+  assert.equal(row.cutover.activatedAt, '2026-08-15T21:30:00.000Z');
+  const gapMs = Date.parse(row.cutover.firstScheduledRunAt) - Date.parse(row.cutover.activatedAt);
+  assert.ok(gapMs > 0 && gapMs < 24 * 60 * 60 * 1000, 'rollout window must stay under the 24h cap');
 });
 
 test('following next_url without status=ACTIVE still requests ACTIVE pages', async () => {
