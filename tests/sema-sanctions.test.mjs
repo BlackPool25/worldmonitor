@@ -83,6 +83,13 @@ describe('SEMA fixture parse', () => {
     assert.equal(newest._publishedAt, '2026-08-06');
     assert.equal(publishedAtMs, Date.UTC(2026, 7, 6));
     assert.equal(String(newest.effectiveAt), String(Date.UTC(2026, 7, 6)));
+
+    const tarasevich = records.find((row) => /TARASEVICH/.test(row.name));
+    const mashadziyeu = records.find((row) => /MASHADZIYEU/.test(row.name));
+    assert.ok(tarasevich && mashadziyeu);
+    const jvcfor = records.find((row) => row.programs[0] === 'JVCFOR');
+    assert.ok(jvcfor);
+    assert.equal(jvcfor.programs[0], 'JVCFOR');
   });
 });
 
