@@ -107,6 +107,7 @@ const SOURCE_DOMAIN_OVERRIDES = new Map([
   ['bothsidesofthetable.com', 'technology'],
   ['contxto.com', 'technology'],
   ['corridorrisk.io', 'infrastructure'],
+  ['CWFIS / CWFIF (NRCan)', 'environment'],
   ['data.ecb.europa.eu', 'finance'],
   ['SEC EDGAR', 'finance'],
   ['datalab.wto.org', 'finance'],
