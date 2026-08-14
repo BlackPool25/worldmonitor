@@ -14,8 +14,11 @@ import {
   CWFIS_PRESCRIBED_LAYER,
   CWFIS_WFS_BASE,
   CWFIS_WFS_HOST,
+  CWFIS_ARCHIVE_MATCHED_REFUSAL,
   MAX_CWFIS_RESPONSE_BYTES,
+  assertNotCwfisArchive,
   buildCwfisGetFeatureUrl,
+  currentValidCql,
   cwfisWfsCacheKey,
   fetchApprovedWfs,
   fetchCwfisLayer,
@@ -24,6 +27,7 @@ import {
   mergeWildfireSources,
   parseCwfisGeoJson,
   parseCwfisGml,
+  resolveCwfisCqlFilter,
   stableCwfisFireId,
 } from '../scripts/wildfire/cwfis-wfs.mjs';
 
@@ -107,17 +111,45 @@ describe('cwfis live fixture coordinates and ids', () => {
     assert.equal(fire.id, 'cwfis:2026_BC_2026-V10742');
   });
 
-  it('falls back to a lat-lon-time bucket when native ids are missing', () => {
-    const statusDate = '2026-08-13T11:30:00Z';
-    const id = stableCwfisFireId({
+  it('joins only on cwfis:${national_fire_id}; missing nid is not a join key', () => {
+    assert.equal(stableCwfisFireId({ national_fire_id: '2026_BC_2026-V10742' }), 'cwfis:2026_BC_2026-V10742');
+    assert.equal(stableCwfisFireId({
+      id: 20824134,
       latitude: 49.89345,
       longitude: -121.45475,
-      status_date: statusDate,
-    });
-    const timeBucket = Math.round(Date.parse(statusDate) / 60_000);
-    assert.equal(id, `cwfis:${(49.89345).toFixed(4)},${(-121.45475).toFixed(4)},${timeBucket}`);
-    assert.equal(id, 'cwfis:49.8935,-121.4548,29777010');
-    assert.ok(id.length <= 100);
+      status_date: '2026-08-13T11:30:00Z',
+    }), '');
+    assert.equal(stableCwfisFireId({ national_fire_id: '   ' }), '');
+    assert.equal(stableCwfisFireId({}), '');
+    assert.equal(
+      parseCwfisGeoJson({
+        type: 'FeatureCollection',
+        features: [{
+          type: 'Feature',
+          properties: {
+            latitude: 49.89345,
+            longitude: -121.45475,
+            agency_code: 'BC',
+            status_date: '2026-08-13T11:30:00Z',
+          },
+        }],
+      }, 'active').fireDetections.length,
+      0,
+    );
+  });
+
+  it('duplicate national_fire_id collapses to one join key', () => {
+    const nid = '2026_BC_2026-V10742';
+    assert.equal(stableCwfisFireId({ national_fire_id: nid }), stableCwfisFireId({ national_fire_id: nid }));
+    const parsed = parseCwfisGeoJson({
+      type: 'FeatureCollection',
+      features: [
+        { type: 'Feature', properties: { national_fire_id: nid, latitude: 49.89, longitude: -121.45, agency_code: 'BC' } },
+        { type: 'Feature', properties: { national_fire_id: nid, latitude: 49.90, longitude: -121.46, agency_code: 'BC' } },
+      ],
+    }, 'active');
+    assert.equal(parsed.fireDetections.length, 2);
+    assert.equal(parsed.fireDetections[0].id, parsed.fireDetections[1].id);
   });
 });
 
@@ -331,6 +363,67 @@ describe('independent FIRMS + CWFIS merge', () => {
     assert.equal(activeCalled, true);
     assert.ok(result.fireDetections.length >= 1);
     assert.equal(result.fireDetections[0].kind, 'active');
+  });
+});
+
+
+describe('default CQL archive guard', () => {
+  it('locks record_end >= now as the default filter', () => {
+    const now = new Date('2026-08-14T01:21:00.000Z');
+    assert.equal(currentValidCql(now), 'record_end >= 2026-08-14T01:21:00Z');
+    assert.equal(resolveCwfisCqlFilter(undefined, now), 'record_end >= 2026-08-14T01:21:00Z');
+    assert.equal(resolveCwfisCqlFilter('', now), 'record_end >= 2026-08-14T01:21:00Z');
+    assert.equal(resolveCwfisCqlFilter('   ', now), 'record_end >= 2026-08-14T01:21:00Z');
+    assert.throws(() => resolveCwfisCqlFilter('agency_code=BC', now), /record_end/);
+    assert.ok(CWFIS_ARCHIVE_MATCHED_REFUSAL < 187566);
+    assert.throws(() => assertNotCwfisArchive(187566), /archive shape refused/);
+    assert.doesNotThrow(() => assertNotCwfisArchive(584));
+    const defaultUrl = buildCwfisGetFeatureUrl({ typeName: CWFIS_ACTIVE_LAYER, now });
+    const emptyUrl = buildCwfisGetFeatureUrl({ typeName: CWFIS_ACTIVE_LAYER, cqlFilter: '', now });
+    assert.match(new URL(defaultUrl).searchParams.get('CQL_FILTER') || '', /record_end >= 2026-08-14T01:21:00Z/);
+    assert.equal(new URL(emptyUrl).searchParams.get('CQL_FILTER'), 'record_end >= 2026-08-14T01:21:00Z');
+  });
+
+  it('sends the default CQL even when tests pass an empty cqlFilter', async () => {
+    const requests = [];
+    await fetchCwfisLayer(CWFIS_ACTIVE_LAYER, {
+      kind: 'active',
+      pageSize: 2,
+      maxPages: 1,
+      cqlFilter: '',
+      now: new Date('2026-08-14T01:21:00.000Z'),
+      fetchFn: async (url) => {
+        requests.push(url);
+        const body = {
+          type: 'FeatureCollection',
+          features: JSON.parse(activeJson).features,
+          numberMatched: 584,
+          numberReturned: 2,
+        };
+        return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
+      },
+    });
+    assert.ok(requests.length >= 1);
+    const parsed = new URL(requests[0]);
+    assert.match(parsed.searchParams.get('CQL_FILTER') || '', /record_end >=/);
+    assert.doesNotMatch(requests[0], /CQL_FILTER=$/);
+  });
+
+  it('refuses a 187k archive-shaped GetFeature page', async () => {
+    await assert.rejects(
+      fetchCwfisLayer(CWFIS_ACTIVE_LAYER, {
+        kind: 'active',
+        pageSize: 2,
+        maxPages: 1,
+        fetchFn: async () => new Response(JSON.stringify({
+          type: 'FeatureCollection',
+          features: JSON.parse(activeJson).features,
+          numberMatched: 187566,
+          numberReturned: 2,
+        }), { headers: { 'content-type': 'application/json' } }),
+      }),
+      /archive shape refused/,
+    );
   });
 });
 

@@ -514,7 +514,7 @@ Ports are ranked by throughput and weighted by strategic importance in the infra
 Natural hazards and climate stress, merged from independent government and UN-coordinated sources.
 
 - Natural disasters from 3 sources (USGS earthquakes M4.5+, GDACS alerts, NASA EONET events)
-- NASA FIRMS satellite fire detection (VIIRS thermal hotspots) merged with CWFIS national agency-reported active fires; prescribed burns are labelled and never paged as emergencies
+- NASA FIRMS satellite fire detection (VIIRS thermal hotspots) merged with CWFIS national agency-reported active fires; prescribed burns are stored with kind=prescribed and emergency=false (the map and RPC do not yet filter on that flag)
 - Western Pacific tropical-cyclone observations (Hong Kong Observatory, Japan Meteorological Agency)
 - Climate anomaly detection over 15 conflict- and disaster-prone zones (Open-Meteo ERA5)
 - Weather alerts and severe conditions

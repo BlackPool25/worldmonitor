@@ -7,7 +7,8 @@
 //   - startCommand: node seed-fire-detections.mjs
 //   - Cron schedule: "*/10 * * * *" (every 10min UTC)
 
-import { loadEnvFile, runSeed, CHROME_UA, sleep } from './_seed-utils.mjs';
+import { loadEnvFile, runSeed, CHROME_UA, sleep, MAX_PAYLOAD_BYTES } from './_seed-utils.mjs';
+import { buildEnvelope } from './_seed-envelope-source.mjs';
 import { compactWildfireDashboardPayload, WILDFIRE_CANONICAL_DETECTION_LIMIT } from './_wildfire-dashboard.mjs';
 import { fetchCwfisFires, mergeWildfireSources } from './wildfire/cwfis-wfs.mjs';
 
@@ -142,8 +143,24 @@ export function declareRecords(data) {
 // Ranking is the dashboard comparator (possibleExplosion -> confidence -> brightness -> frp ->
 // detectedAt), so what gets dropped is always the lowest-signal tail, and the real FIRMS count
 // survives in `pagination.totalCount`.
+const CANONICAL_SOURCE_VERSION = `${FIRMS_SOURCES.join('+')}+cwfis-wfs-v1`;
+
+function measureCanonicalPublishBytes(data) {
+  return Buffer.byteLength(JSON.stringify(buildEnvelope({
+    fetchedAt: Date.now(),
+    recordCount: Array.isArray(data?.fireDetections) ? data.fireDetections.length : 0,
+    sourceVersion: CANONICAL_SOURCE_VERSION,
+    schemaVersion: 1,
+    state: 'OK',
+    data,
+  })), 'utf8');
+}
+
 function capCanonicalPayload(data) {
-  const capped = compactWildfireDashboardPayload(data, WILDFIRE_CANONICAL_DETECTION_LIMIT);
+  const capped = compactWildfireDashboardPayload(data, WILDFIRE_CANONICAL_DETECTION_LIMIT, {
+    maxBytes: MAX_PAYLOAD_BYTES,
+    measureBytes: measureCanonicalPublishBytes,
+  });
   // Same reference back = already under the cap (or an unrecognized shape). Never dereference
   // blindly here: a throw inside publishTransform is the exact FATAL this function exists to
   // prevent.
@@ -188,7 +205,7 @@ async function main() {
     // the dashboard renders. Capping inside fetchAllRegions would not have that property.
     publishTransform: capCanonicalPayload,
     lockTtlMs: 2_400_000, // 40 min — 27 slots × ~72s worst case (30s timeout + 6s backoff + 30s retry + 6s pace) ≈ 32.4 min; pad headroom. Next cron tick sees lock held and safely skips.
-    sourceVersion: `${FIRMS_SOURCES.join('+')}+cwfis-wfs-v1`,
+    sourceVersion: CANONICAL_SOURCE_VERSION,
     extraKeys: [{
       key: BOOTSTRAP_KEY,
       transform: compactWildfireDashboardPayload,

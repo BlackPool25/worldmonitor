@@ -39,6 +39,9 @@ export const MAX_CWFIS_RESPONSE_BYTES = 12 * 1024 * 1024;
 export const CWFIS_PAGE_SIZE = 1000;
 export const CWFIS_MAX_PAGES = 8;
 export const CWFIS_FETCH_TIMEOUT_MS = 30_000;
+// Live no-CQL GetFeature is 187,566 historical rows (2010+). Current-valid
+// record_end >= now is hundreds. Anything at this scale is the archive.
+export const CWFIS_ARCHIVE_MATCHED_REFUSAL = 20_000;
 
 const AGENCY_REGION = Object.freeze({
   AB: 'Alberta',
@@ -92,6 +95,23 @@ export function currentValidCql(now = new Date()) {
   return `record_end >= ${iso}`;
 }
 
+export function resolveCwfisCqlFilter(cqlFilter, now = new Date()) {
+  const raw = cqlFilter == null ? '' : String(cqlFilter).trim();
+  const resolved = raw || currentValidCql(now);
+  if (!/\brecord_end\s*>=/i.test(resolved)) {
+    throw new CwfisWfsError('CWFIS CQL must keep record_end >= now; refusing the historical archive');
+  }
+  return resolved;
+}
+
+export function assertNotCwfisArchive(numberMatched) {
+  if (numberMatched != null && Number(numberMatched) >= CWFIS_ARCHIVE_MATCHED_REFUSAL) {
+    throw new CwfisWfsError(
+      `CWFIS archive shape refused (numberMatched=${numberMatched}); default CQL record_end >= now is required`,
+    );
+  }
+}
+
 function asFiniteNumber(value) {
   if (typeof value !== 'number' && typeof value !== 'string') return null;
   if (typeof value === 'string' && value.trim() === '') return null;
@@ -113,27 +133,16 @@ function regionForAgency(code) {
 }
 
 /**
- * Stable fire id for #6620 (BC provincial) dedupe.
- * Native national_fire_id if present, else native numeric id, else lat-lon-time.
- * Prefixed with cwfis: so it cannot collide with FIRMS lat-lon-date ids.
- * FireDetection.id is proto-capped at 100 chars.
+ * Stable fire id. #6620 (BC provincial points) may join ONLY on
+ * cwfis:${national_fire_id}. Native row ids and lat-lon-time buckets are
+ * version-unstable and must not be join keys. Missing or blank
+ * national_fire_id is not publishable. FireDetection.id is proto-capped at 100.
  */
 export function stableCwfisFireId(props = {}, kind = 'active') {
   const national = String(props.national_fire_id || '').trim();
-  const nativeId = props.id != null && String(props.id).trim() !== '' ? String(props.id).trim() : '';
-  let core;
-  if (national) core = national;
-  else if (nativeId) core = nativeId;
-  else {
-    const lat = asFiniteNumber(props.latitude);
-    const lon = asFiniteNumber(props.longitude);
-    const detectedAt = parseTimestamp(props.status_date || props.situation_report_date || props.record_start);
-    if (lat == null || lon == null) return '';
-    const timeBucket = detectedAt > 0 ? Math.round(detectedAt / 60_000) : 0;
-    core = `${lat.toFixed(4)},${lon.toFixed(4)},${timeBucket}`;
-  }
+  if (!national) return '';
   const prefix = kind === 'prescribed' ? 'cwfis:prescribed:' : 'cwfis:';
-  const id = `${prefix}${core}`;
+  const id = `${prefix}${national}`;
   return id.length <= 100 ? id : id.slice(0, 100);
 }
 
@@ -322,6 +331,7 @@ export function buildCwfisGetFeatureUrl({
   bbox,
   cqlFilter,
   outputFormat = 'application/json',
+  now,
 } = {}) {
   assertCwfisLayer(typeName);
   const url = new URL(CWFIS_WFS_BASE);
@@ -334,7 +344,7 @@ export function buildCwfisGetFeatureUrl({
   url.searchParams.set('sortBy', 'id');
   if (outputFormat) url.searchParams.set('outputFormat', outputFormat);
   if (bbox) url.searchParams.set('bbox', String(bbox));
-  if (cqlFilter) url.searchParams.set('CQL_FILTER', String(cqlFilter));
+  url.searchParams.set('CQL_FILTER', resolveCwfisCqlFilter(cqlFilter, now));
   return url.toString();
 }
 
@@ -449,7 +459,7 @@ export async function fetchCwfisLayer(typeName, {
 } = {}) {
   assertCwfisLayer(typeName);
   const resolvedKind = kind || (typeName === CWFIS_PRESCRIBED_LAYER ? 'prescribed' : 'active');
-  const filter = cqlFilter === undefined ? currentValidCql(now) : cqlFilter;
+  const filter = resolveCwfisCqlFilter(cqlFilter, now);
   const fireDetections = [];
   const seen = new Set();
   let startIndex = 0;
@@ -461,11 +471,12 @@ export async function fetchCwfisLayer(typeName, {
       startIndex,
       count: pageSize,
       bbox,
-      cqlFilter: filter || undefined,
+      cqlFilter: filter,
       outputFormat: 'application/json',
     });
     if (nextHref) parseWfsUrl(nextHref);
     const parsed = await fetchWfsPage(url, { kind: resolvedKind, fetchFn, cache, preferJson: true });
+    assertNotCwfisArchive(parsed.numberMatched);
     for (const detection of parsed.fireDetections) {
       if (seen.has(detection.id)) continue;
       seen.add(detection.id);
@@ -476,7 +487,11 @@ export async function fetchCwfisLayer(typeName, {
     nextHref = parsed.nextHref;
     if (nextHref) {
       try {
-        parseWfsUrl(nextHref);
+        const parsedNext = parseWfsUrl(nextHref);
+        if (!parsedNext.searchParams.get('CQL_FILTER') && !parsedNext.searchParams.get('cql_filter')) {
+          parsedNext.searchParams.set('CQL_FILTER', filter);
+        }
+        nextHref = parsedNext.toString();
       } catch {
         nextHref = null;
       }
