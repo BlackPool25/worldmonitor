@@ -133,7 +133,7 @@ test('host allowlist is secure.toronto.ca only', () => {
   assert.equal(isAllowedTorontoHost('https://open.toronto.ca/dataset/road-restrictions/'), false);
 });
 
-test('selectTorontoRoadRecords prefers closures and caps at MAX_RECORDS', () => {
+test('selectTorontoRoadRecords prefers closures and hazards so the 400 cap cannot drop them', () => {
   const records = [];
   for (let i = 0; i < MAX_RECORDS + 20; i++) {
     records.push(normalizeTorontoRoadRecord({
@@ -153,9 +153,48 @@ test('selectTorontoRoadRecords prefers closures and caps at MAX_RECORDS', () => 
     type: 'ROAD_CLOSED',
     currImpact: 'High',
   }));
+  records.push(normalizeTorontoRoadRecord({
+    id: 'hazard-1',
+    district: 'NORTH YORK',
+    latitude: '43.73',
+    longitude: '-79.42',
+    type: 'HAZARD',
+    currImpact: 'High',
+  }));
   const selected = selectTorontoRoadRecords(records);
   assert.equal(selected.length, MAX_RECORDS);
   assert.equal(selected[0].id, 'closed-1');
+  assert.ok(selected.some((r) => r.id === 'hazard-1'));
+  assert.equal(selected.filter((r) => r.type === 'CONSTRUCTION').length, MAX_RECORDS - 2);
+});
+
+test('fetchTorontoRoadRestrictions records truncated:true when the 400 cap fires', async () => {
+  const closure = [];
+  for (let i = 0; i < MAX_RECORDS + 5; i++) {
+    closure.push({
+      id: `n-${i}`,
+      district: 'TORONTO',
+      latitude: '43.65',
+      longitude: '-79.38',
+      type: i === 0 ? 'ROAD_CLOSED' : 'CONSTRUCTION',
+      currImpact: i === 0 ? 'High' : 'None',
+    });
+  }
+  const result = await fetchTorontoRoadRestrictions({
+    fetchFn: async () => jsonResponse({ Closure: closure }),
+  });
+  assert.equal(result.records.length, MAX_RECORDS);
+  assert.equal(result.truncated, true);
+  assert.equal(result.records[0].id, 'n-0');
+  assert.equal(result.records[0].type, 'ROAD_CLOSED');
+});
+
+test('fetchTorontoRoadRestrictions omits truncated when the list fits', async () => {
+  const result = await fetchTorontoRoadRestrictions({
+    fetchFn: async () => jsonResponse(FIXTURE),
+  });
+  assert.equal(result.records.length, 3);
+  assert.equal(result.truncated, undefined);
 });
 
 test('fetchTorontoRoadRestrictions uses CHROME_UA and the CART v3 URL', async () => {
@@ -216,7 +255,7 @@ test("toronto restrictions share canadaRoads and do not invent a second MapLayer
   const types = readFileSync(join(root, "src/types/index.ts"), "utf8");
   const layers = readFileSync(join(root, "src/config/map-layer-definitions.ts"), "utf8");
   const client = readFileSync(join(root, "src/services/canada-roads.ts"), "utf8");
-  assert.match(types, /canadaRoads\?: boolean/);
+  assert.match(types, /canadaRoads: boolean/);
   assert.doesNotMatch(types, /torontoRoads\?: boolean/);
   assert.match(layers, /canadaRoads:\s+def\('canadaRoads'/);
   assert.doesNotMatch(layers, /torontoRoads:\s+def\(/);

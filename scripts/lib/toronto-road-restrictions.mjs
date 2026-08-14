@@ -322,8 +322,12 @@ export async function fetchTorontoRoadRestrictions(opts = {}) {
   }
   const text = await readLimitedText(resp, maxBytes);
   const body = parseRestrictionsJson(text);
-  const records = selectTorontoRoadRecords(normalizeTorontoRoadList(body));
-  return { records };
+  const all = normalizeTorontoRoadList(body);
+  const records = selectTorontoRoadRecords(all);
+  return {
+    records,
+    ...(all.length > MAX_RECORDS ? { truncated: true } : {}),
+  };
 }
 
 export { CHROME_UA };
