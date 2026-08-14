@@ -105,6 +105,7 @@ const SOURCE_DOMAIN_OVERRIDES = new Map([
   ['archive-api.open-meteo.com', 'environment'],
   ['British Geological Survey World Mineral Statistics', 'energy'],
   ['bothsidesofthetable.com', 'technology'],
+  ['City of Toronto Open Data', 'infrastructure'],
   ['contxto.com', 'technology'],
   ['corridorrisk.io', 'infrastructure'],
   ['data.ecb.europa.eu', 'finance'],
