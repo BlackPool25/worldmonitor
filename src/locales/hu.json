@@ -2891,6 +2891,7 @@
     "moreEvents": "további események",
     "monitoring": "Monitorozás",
     "viewUSGS": "Megtekintés az USGS-en",
+    "viewNRCan": "Megtekintés az Earthquakes Canada-n",
     "expired": "Lejárt",
     "timeAgo": {
       "s": "{{count}}s ezzel ezelőtt",

@@ -2813,6 +2813,7 @@
     "moreEvents": "weitere Ereignisse",
     "monitoring": "Überwachung",
     "viewUSGS": "Auf USGS ansehen",
+    "viewNRCan": "Auf Earthquakes Canada ansehen",
     "expired": "Abgelaufen",
     "timeAgo": {
       "s": "vor {{count}} s",

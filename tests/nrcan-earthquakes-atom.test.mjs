@@ -6,14 +6,19 @@ import { fileURLToPath } from 'node:url';
 
 import {
   EARTHQUAKES_MAX_CONTENT_AGE_MIN,
+  EARTHQUAKES_WINDOW_MS,
   MAX_NRCAN_ATOM_BYTES,
   NRCAN_ATOM_HOST,
   NRCAN_ATOM_URL,
+  NRCAN_ID_PREFIX,
   NrcanAtomParseError,
+  USGS_MIN_MAGNITUDE,
   earthquakeIdentity,
   earthquakesContentMeta,
   fetchApprovedAtom,
   fetchMergedEarthquakes,
+  isIndustryRelated,
+  isPublishableEarthquake,
   mergeEarthquakeFeeds,
   nrcanAtomCacheKey,
   parseNrcanAtom,
@@ -32,11 +37,13 @@ const EMPTY_ATOM = `<?xml version="1.0" encoding="utf-8"?>
 </feed>
 `;
 
+const MERGE_NOW = Date.parse('2026-08-13T21:30:00Z');
+
 function usgsEq(overrides = {}) {
   return {
     id: 'us7000test',
     place: '192 km SW of Port Hardy, BC',
-    magnitude: 3.2,
+    magnitude: 4.6,
     depthKm: 10,
     location: { latitude: 49.563, longitude: -129.4835 },
     occurredAt: Date.parse('2026-08-13T09:54:32Z'),
@@ -48,14 +55,15 @@ function usgsEq(overrides = {}) {
 
 function nrcanEq(overrides = {}) {
   return {
-    id: '20260813.0954001',
+    id: `${NRCAN_ID_PREFIX}20260813.0954001`,
     place: '192 km SW of Port Hardy, BC',
-    magnitude: 3.16,
+    magnitude: 4.61,
     depthKm: 10,
     location: { latitude: 49.563, longitude: -129.4835 },
     occurredAt: Date.parse('2026-08-13T09:54:32Z'),
     sourceUrl: 'https://www.earthquakescanada.nrcan.gc.ca/?eventid=20260813.0954001',
     source: 'nrcan',
+    category: 'known earthquake',
     ...overrides,
   };
 }
@@ -66,22 +74,23 @@ describe('nrcan atom fixture (live host capture)', () => {
     assert.equal(earthquakes.length, 3);
     assert.equal(feedUpdatedAt, Date.parse('2026-08-13T21:20:06Z'));
 
-    const industry = earthquakes.find((eq) => eq.id === '20260813.1111001');
+    const industry = earthquakes.find((eq) => eq.id === `${NRCAN_ID_PREFIX}20260813.1111001`);
     assert.ok(industry);
     assert.equal(industry.source, 'nrcan');
+    assert.equal(industry.category, 'suspected industry-related');
     assert.equal(industry.magnitude, 2.17);
     assert.equal(industry.depthKm, 1);
     assert.equal(industry.location.latitude, 56.2548);
     assert.equal(industry.location.longitude, -116.5788);
     assert.equal(industry.occurredAt, Date.parse('2026-08-13T11:11:27Z'));
 
-    const offshore = earthquakes.find((eq) => eq.id === '20260813.0954001');
+    const offshore = earthquakes.find((eq) => eq.id === `${NRCAN_ID_PREFIX}20260813.0954001`);
     assert.equal(offshore.magnitude, 3.16);
     assert.equal(offshore.depthKm, 10);
     assert.equal(offshore.location.latitude, 49.563);
     assert.equal(offshore.location.longitude, -129.4835);
 
-    const quebec = earthquakes.find((eq) => eq.id === '20260813.0639001');
+    const quebec = earthquakes.find((eq) => eq.id === `${NRCAN_ID_PREFIX}20260813.0639001`);
     assert.equal(quebec.magnitude, 0.04);
     assert.equal(quebec.depthKm, 15.05);
     assert.equal(quebec.location.latitude, 47.552);
@@ -112,45 +121,96 @@ describe('parse failure vs empty Atom', () => {
 });
 
 describe('dedup identity', () => {
-  it('dedups by event id or time+mag+lat/lon bucket, not by place string', () => {
+  it('dedups by namespaced id or time+mag+lat/lon bucket, not by place string', () => {
     const samePlaceDifferentQuakes = mergeEarthquakeFeeds(
-      [usgsEq({ id: 'us-a', occurredAt: Date.parse('2026-08-13T09:54:32Z'), magnitude: 3.2 })],
+      [usgsEq({ id: 'us-a', occurredAt: Date.parse('2026-08-13T09:54:32Z'), magnitude: 4.6 })],
       [nrcanEq({
-        id: 'nrcan-b',
+        id: `${NRCAN_ID_PREFIX}nrcan-b`,
         place: '192 km SW of Port Hardy, BC',
         occurredAt: Date.parse('2026-08-13T12:00:00Z'),
-        magnitude: 1.1,
+        magnitude: 4.7,
         location: { latitude: 50.1, longitude: -128.0 },
       })],
+      MERGE_NOW,
     );
     assert.equal(samePlaceDifferentQuakes.length, 2, 'unique place string is not identity');
 
     const sameBucketDifferentPlace = mergeEarthquakeFeeds(
-      [usgsEq({ id: 'us-x', place: 'USGS wording' })],
-      [nrcanEq({ id: 'nrcan-y', place: 'NRCan wording' })],
+      [usgsEq({ id: 'us7000abcd', place: 'USGS wording' })],
+      [nrcanEq({ id: `${NRCAN_ID_PREFIX}20260813.0954001`, place: 'NRCan wording' })],
+      MERGE_NOW,
     );
-    assert.equal(sameBucketDifferentPlace.length, 1);
+    assert.equal(sameBucketDifferentPlace.length, 1, 'cross-agency bucket match keeps USGS');
     assert.equal(sameBucketDifferentPlace[0].source, 'usgs');
+    assert.equal(sameBucketDifferentPlace[0].id, 'us7000abcd');
 
-    const sameId = mergeEarthquakeFeeds(
-      [usgsEq({ id: 'shared-id' })],
-      [nrcanEq({ id: 'shared-id', place: 'other place', magnitude: 9, location: { latitude: 1, longitude: 2 } })],
+    const namespacedIdsDoNotCollide = mergeEarthquakeFeeds(
+      [usgsEq({ id: '20260813.0954001', magnitude: 5.1, location: { latitude: 10, longitude: 20 }, occurredAt: Date.parse('2026-08-13T01:00:00Z') })],
+      [nrcanEq({ id: `${NRCAN_ID_PREFIX}20260813.0954001`, magnitude: 5.2, location: { latitude: 40, longitude: -80 }, occurredAt: Date.parse('2026-08-13T08:00:00Z') })],
+      MERGE_NOW,
     );
-    assert.equal(sameId.length, 1);
-    assert.equal(sameId[0].source, 'usgs');
+    assert.equal(namespacedIdsDoNotCollide.length, 2, 'raw NRCan eventid must not collide with a USGS id');
   });
 
   it('does not treat a unique name/place string as identity', () => {
-    const a = nrcanEq({ id: 'one', place: 'unique place name' });
+    const a = nrcanEq({ id: `${NRCAN_ID_PREFIX}one`, place: 'unique place name' });
     const b = nrcanEq({
-      id: 'two',
+      id: `${NRCAN_ID_PREFIX}two`,
       place: 'unique place name',
-      occurredAt: Date.parse('2026-08-01T00:00:00Z'),
-      magnitude: 4.4,
+      occurredAt: Date.parse('2026-08-12T00:00:00Z'),
+      magnitude: 4.8,
       location: { latitude: 60, longitude: -130 },
     });
     assert.notEqual(earthquakeIdentity(a), earthquakeIdentity(b));
-    assert.equal(mergeEarthquakeFeeds([], [a, b]).length, 2);
+    assert.equal(mergeEarthquakeFeeds([], [a, b], MERGE_NOW).length, 2);
+  });
+});
+
+describe('publish filter: industry-related + M4.5 week window', () => {
+  it('keeps category on the parsed record but does not publish M0.04 or industry-related', () => {
+    const { earthquakes } = parseNrcanAtom(fixtureXml);
+    const quebec = earthquakes.find((eq) => eq.id === `${NRCAN_ID_PREFIX}20260813.0639001`);
+    const industry = earthquakes.find((eq) => eq.id === `${NRCAN_ID_PREFIX}20260813.1111001`);
+    assert.equal(quebec.magnitude, 0.04);
+    assert.equal(quebec.category, 'known earthquake');
+    assert.equal(industry.category, 'suspected industry-related');
+    assert.equal(isIndustryRelated(industry), true);
+    assert.equal(isPublishableEarthquake(quebec, MERGE_NOW), false);
+    assert.equal(isPublishableEarthquake(industry, MERGE_NOW), false);
+    assert.equal(USGS_MIN_MAGNITUDE, 4.5);
+    assert.equal(EARTHQUAKES_WINDOW_MS, 7 * 24 * 60 * 60 * 1000);
+
+    const published = mergeEarthquakeFeeds([], earthquakes, MERGE_NOW);
+    assert.equal(published.length, 0, 'fixture M0.04 / M2.17 industry / M3.16 must not enter the global M4.5 week layer');
+  });
+
+  it('drops a live-shaped M0.04 and an industry-related M4.6 across merge', () => {
+    const micro = nrcanEq({
+      id: `${NRCAN_ID_PREFIX}micro`,
+      magnitude: 0.04,
+      place: '13 km SW of La Malbaie, QC',
+      category: 'known earthquake',
+    });
+    const blast = nrcanEq({
+      id: `${NRCAN_ID_PREFIX}blast`,
+      magnitude: 4.8,
+      place: 'Suspected industry-related event, 27 km S of Woodland Cree 226, AB',
+      category: 'suspected industry-related',
+    });
+    const stale = nrcanEq({
+      id: `${NRCAN_ID_PREFIX}stale`,
+      magnitude: 5.1,
+      occurredAt: Date.parse('2026-07-20T00:00:00Z'),
+      category: 'known earthquake',
+    });
+    const keep = nrcanEq({
+      id: `${NRCAN_ID_PREFIX}keep`,
+      magnitude: 4.7,
+      location: { latitude: 48.2, longitude: -123.1 },
+      occurredAt: Date.parse('2026-08-12T18:00:00Z'),
+    });
+    const published = mergeEarthquakeFeeds([usgsEq()], [micro, blast, stale, keep], MERGE_NOW);
+    assert.deepEqual(published.map((eq) => eq.id), ['us7000test', `${NRCAN_ID_PREFIX}keep`]);
   });
 });
 
@@ -159,6 +219,7 @@ describe('independent upstreams and content-age min()', () => {
     const nrcanOnly = await fetchMergedEarthquakes({
       fetchUsgs: async () => { throw new Error('USGS down'); },
       fetchNrcan: async () => ({ earthquakes: [nrcanEq()], newestAt: 100, oldestAt: 50 }),
+      nowMs: MERGE_NOW,
     });
     assert.equal(nrcanOnly.earthquakes.length, 1);
     assert.equal(nrcanOnly.earthquakes[0].source, 'nrcan');
@@ -168,6 +229,7 @@ describe('independent upstreams and content-age min()', () => {
     const usgsOnly = await fetchMergedEarthquakes({
       fetchUsgs: async () => ({ earthquakes: [usgsEq()], newestAt: 200, oldestAt: 20 }),
       fetchNrcan: async () => { throw new NrcanAtomParseError('bad atom'); },
+      nowMs: MERGE_NOW,
     });
     assert.equal(usgsOnly.earthquakes.length, 1);
     assert.equal(usgsOnly.earthquakes[0].source, 'usgs');

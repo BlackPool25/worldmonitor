@@ -10,6 +10,10 @@ export const NRCAN_OFFICIAL_PAGE = 'https://www.earthquakescanada.nrcan.gc.ca/in
 // Live canada-en.atom was 343771 bytes on 2026-08-13; 342KB is below that, so raise.
 export const MAX_NRCAN_ATOM_BYTES = 1024 * 1024;
 export const EARTHQUAKES_MAX_CONTENT_AGE_MIN = 2 * 24 * 60; // 48h — min() of successful upstream newest
+// Align NRCan's 30-day national bulletin with the USGS M4.5+ week layer.
+export const USGS_MIN_MAGNITUDE = 4.5;
+export const EARTHQUAKES_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+export const NRCAN_ID_PREFIX = 'nrcan:';
 
 const TITLE_RE = /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC:\s*M(\d+(?:\.\d+)?)\s+(.*)$/i;
 const EVENT_ID_RE = /[?&]eventid=([^&]+)/i;
@@ -67,7 +71,26 @@ function parseDepthKm(block) {
 function nrcanEventId(idText) {
   const raw = String(idText || '').trim();
   const fromQuery = raw.match(EVENT_ID_RE);
-  return fromQuery ? fromQuery[1] : raw;
+  const eventId = fromQuery ? fromQuery[1] : raw;
+  return eventId ? `${NRCAN_ID_PREFIX}${eventId}` : '';
+}
+
+function parseCategory(block) {
+  const match = block.match(/<category\b[^>]*\bterm=["']([^"']+)["']/i);
+  return match ? decodeHtmlEntities(match[1]).trim() : '';
+}
+
+export function isIndustryRelated(eq) {
+  const haystack = `${eq?.category || ''} ${eq?.place || ''}`;
+  return /industry-related/i.test(haystack);
+}
+
+export function isPublishableEarthquake(eq, nowMs = Date.now()) {
+  if (!Number.isFinite(eq?.magnitude) || eq.magnitude < USGS_MIN_MAGNITUDE) return false;
+  if (!Number.isFinite(eq?.occurredAt) || eq.occurredAt <= 0) return false;
+  if (nowMs - eq.occurredAt > EARTHQUAKES_WINDOW_MS) return false;
+  if (isIndustryRelated(eq)) return false;
+  return true;
 }
 
 function parseFeedUpdatedAt(xml) {
@@ -119,6 +142,7 @@ export function parseNrcanAtom(xml) {
       occurredAt: occurredAt ?? 0,
       sourceUrl: idText || NRCAN_OFFICIAL_PAGE,
       source: 'nrcan',
+      category: parseCategory(block),
     });
   }
 
@@ -274,12 +298,13 @@ export function earthquakeIdentity(eq) {
   return identityFromId(eq) || identityFromBucket(eq);
 }
 
-export function mergeEarthquakeFeeds(usgsEvents = [], nrcanEvents = []) {
+export function mergeEarthquakeFeeds(usgsEvents = [], nrcanEvents = [], nowMs = Date.now()) {
   const out = [];
   const seenIds = new Set();
   const seenBuckets = new Set();
 
   const consider = (eq) => {
+    if (!isPublishableEarthquake(eq, nowMs)) return;
     const idKey = identityFromId(eq);
     const bucketKey = identityFromBucket(eq);
     if (idKey && seenIds.has(idKey)) return;
@@ -294,7 +319,7 @@ export function mergeEarthquakeFeeds(usgsEvents = [], nrcanEvents = []) {
   return out;
 }
 
-export async function fetchMergedEarthquakes({ fetchUsgs, fetchNrcan }) {
+export async function fetchMergedEarthquakes({ fetchUsgs, fetchNrcan, nowMs = Date.now() }) {
   const [usgsResult, nrcanResult] = await Promise.allSettled([
     fetchUsgs(),
     fetchNrcan(),
@@ -312,7 +337,7 @@ export async function fetchMergedEarthquakes({ fetchUsgs, fetchNrcan }) {
   const usgsEvents = usgsOk ? (usgsResult.value.earthquakes || []) : [];
   const nrcanEvents = nrcanOk ? (nrcanResult.value.earthquakes || []) : [];
   return {
-    earthquakes: mergeEarthquakeFeeds(usgsEvents, nrcanEvents),
+    earthquakes: mergeEarthquakeFeeds(usgsEvents, nrcanEvents, nowMs),
     _usgsNewestAt: usgsOk ? (usgsResult.value.newestAt ?? null) : null,
     _usgsOldestAt: usgsOk ? (usgsResult.value.oldestAt ?? null) : null,
     _nrcanNewestAt: nrcanOk ? (nrcanResult.value.newestAt ?? null) : null,

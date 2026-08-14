@@ -866,7 +866,7 @@ export const CACHE_TOOLS: ToolDef[] = [
     name: 'get_natural_disasters',
     _uiResourceUri: NATURAL_DISASTERS_UI_URI,
     _outputBudgetBytes: 131072,
-    description: 'Recent earthquakes (USGS), active wildfires (NASA FIRMS), and natural hazard events. Includes magnitude, location, and threat severity.',
+    description: 'Recent M4.5+ earthquakes (USGS and Earthquakes Canada / NRCan), active wildfires (NASA FIRMS), and natural hazard events. Includes magnitude, location, source, and threat severity.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -887,7 +887,7 @@ export const CACHE_TOOLS: ToolDef[] = [
         properties: {
           earthquakes: { type: 'array', items: { type: 'object', properties: {
             id: { type: 'string' }, place: { type: 'string' }, magnitude: { type: 'number' },
-            depthKm: { type: 'number' }, occurredAt: { type: 'number' }, sourceUrl: { type: 'string' },
+            depthKm: { type: 'number' }, occurredAt: { type: 'number' }, sourceUrl: { type: 'string' }, source: { type: 'string' }, category: { type: 'string' },
             location: { type: 'object', properties: {
               latitude: { type: 'number' }, longitude: { type: 'number' },
             } },

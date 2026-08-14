@@ -112,6 +112,7 @@ const SOURCE_DOMAIN_OVERRIDES = new Map([
   ['datalab.wto.org', 'finance'],
   ['disrupt-africa.com', 'technology'],
   ['Element84 Earth Search STAC', 'environment'],
+  ['Earthquakes Canada (NRCan)', 'environment'],
   ['SEC EDGAR Full-Text Search', 'finance'],
   ['fc.yahoo.com', 'finance'],
   ['gml.noaa.gov', 'environment'],

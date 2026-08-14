@@ -2891,6 +2891,7 @@
     "moreEvents": "और घटनाएं",
     "monitoring": "निगरानी",
     "viewUSGS": "USGS पर देखें",
+    "viewNRCan": "Earthquakes Canada पर देखें",
     "expired": "समाप्त",
     "timeAgo": {
       "s": "{{count}} सेकंड पहले",

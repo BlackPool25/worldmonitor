@@ -2822,6 +2822,7 @@
     "moreEvents": "更多事件",
     "monitoring": "监控中",
     "viewUSGS": "在USGS上查看",
+    "viewNRCan": "在Earthquakes Canada上查看",
     "expired": "已过期",
     "timeAgo": {
       "s": "{{count}}秒前",

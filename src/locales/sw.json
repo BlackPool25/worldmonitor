@@ -2901,6 +2901,7 @@
     "moreEvents": "matukio zaidi",
     "monitoring": "Ufuatiliaji",
     "viewUSGS": "Tazama kwenye USGS",
+    "viewNRCan": "Tazama kwenye Earthquakes Canada",
     "expired": "Muda wake umeisha",
     "timeAgo": {
       "s": "Sekunde {{count}} zilizopita",

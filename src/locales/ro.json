@@ -2840,6 +2840,7 @@
     "moreEvents": "mai multe evenimente",
     "monitoring": "Monitorizare",
     "viewUSGS": "Vizualizare pe USGS",
+    "viewNRCan": "Vizualizare pe Earthquakes Canada",
     "expired": "A expirat",
     "timeAgo": {
       "s": "Acum {{count}}",
