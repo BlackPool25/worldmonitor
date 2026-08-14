@@ -1297,7 +1297,7 @@
           "dayNight": "即時太陽終結線顯示晝夜區域",
           "geoBoundaries": "非軍事區、停火線和爭議邊界",
           "ciiChoropleth": "國家不穩定指數熱力圖 — 按CII評分為國家著色（綠色=穩定，紅色=危急）",
-          "canadaRoads": "Highway incidents, alerts, and road conditions in Ontario and Alberta (511)"
+          "canadaRoads": "Highway incidents and alerts in Ontario and Alberta, plus Ontario road conditions (511)"
         },
         "notes": {
           "timeAffects": "影響範圍：地震、天氣、抗議、中斷"

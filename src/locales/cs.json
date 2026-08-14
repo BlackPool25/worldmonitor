@@ -1289,7 +1289,7 @@
           "dayNight": "Sluneční terminátor v reálném čase ukazující denní a noční zóny",
           "geoBoundaries": "Demilitarizované zóny, linie příměří a sporné hranice",
           "ciiChoropleth": "Tepelná mapa Country Instability Index — zbarvuje země podle skóre CII (zelená=stabilní, červená=kritická)",
-          "canadaRoads": "Highway incidents, alerts, and road conditions in Ontario and Alberta (511)"
+          "canadaRoads": "Highway incidents and alerts in Ontario and Alberta, plus Ontario road conditions (511)"
         },
         "notes": {
           "timeAffects": "Ovlivňuje: Zemětřesení, Počasí, Protesty, Výpadky"

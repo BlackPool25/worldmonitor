@@ -1297,7 +1297,7 @@
           "dayNight": "Gündüz ve gece bölgelerini gösteren gerçek zamanlı güneş terminatörü",
           "geoBoundaries": "Silahsızlandırılmış bölgeler, ateşkes hatları ve tartışmalı sınırlar",
           "ciiChoropleth": "Ülke istikrarsızlık endeksi ısı haritası — CII puanına göre renklendirme (yeşil=istikrarlı, kırmızı=kritik)",
-          "canadaRoads": "Highway incidents, alerts, and road conditions in Ontario and Alberta (511)"
+          "canadaRoads": "Highway incidents and alerts in Ontario and Alberta, plus Ontario road conditions (511)"
         },
         "notes": {
           "timeAffects": "Etkiler: Depremler, Hava Durumu, Protestolar, Kesintiler"

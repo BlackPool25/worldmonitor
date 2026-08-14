@@ -1301,7 +1301,7 @@
           "dayNight": "Солнечный терминатор в реальном времени, показывающий зоны дня и ночи",
           "geoBoundaries": "Демилитаризованные зоны, линии прекращения огня и спорные границы",
           "ciiChoropleth": "Тепловая карта индекса нестабильности стран — цвета по CII (зелёный=стабильно, красный=критично)",
-          "canadaRoads": "Highway incidents, alerts, and road conditions in Ontario and Alberta (511)"
+          "canadaRoads": "Highway incidents and alerts in Ontario and Alberta, plus Ontario road conditions (511)"
         },
         "notes": {
           "timeAffects": "Влияет на: Землетрясения, Погода, Протесты, Сбои"

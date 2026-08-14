@@ -1151,7 +1151,7 @@
           "financeGulfInvestments": "GCC-Staatsfonds-Investitionen und ausländische Direktinvestitionen",
           "geoBoundaries": "Entmilitarisierte Zonen, Waffenstillstandslinien und umstrittene Grenzen",
           "ciiChoropleth": "Country Instability Index Heatmap — färbt Länder nach CII-Wert ein (grün=stabil, rot=kritisch)",
-          "canadaRoads": "Highway incidents, alerts, and road conditions in Ontario and Alberta (511)"
+          "canadaRoads": "Highway incidents and alerts in Ontario and Alberta, plus Ontario road conditions (511)"
         },
         "notes": {
           "timeAffects": "Betrifft: Erdbeben, Wetter, Proteste, Ausfälle"

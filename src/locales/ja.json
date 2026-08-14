@@ -1297,7 +1297,7 @@
           "dayNight": "リアルタイムの太陽ターミネーターで昼夜のゾーンを表示",
           "geoBoundaries": "非武装地帯、停戦ライン、係争境界線",
           "ciiChoropleth": "国家不安定度指数ヒートマップ — CIIスコアで国を色分け（緑=安定、赤=危機的）",
-          "canadaRoads": "Highway incidents, alerts, and road conditions in Ontario and Alberta (511)"
+          "canadaRoads": "Highway incidents and alerts in Ontario and Alberta, plus Ontario road conditions (511)"
         },
         "notes": {
           "timeAffects": "影響: 地震、気象、抗議活動、障害"

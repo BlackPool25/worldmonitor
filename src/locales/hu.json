@@ -1438,7 +1438,7 @@
           "dayNight": "Valós idejű napenergia terminátor nap és éj zónákat mutatja",
           "geoBoundaries": "Demilitarizált zónák, tűzszünet vonalak és vitatott határok",
           "ciiChoropleth": "Országinstabilitási Index hőtérkép — országokat CII pontszám szerint színezi (zöld=stabil, piros=kritikus)",
-          "canadaRoads": "Highway incidents, alerts, and road conditions in Ontario and Alberta (511)"
+          "canadaRoads": "Highway incidents and alerts in Ontario and Alberta, plus Ontario road conditions (511)"
         },
         "notes": {
           "timeAffects": "Érintett: Földrengések, Időjárás, Tüntetések, Leállások"
