@@ -173,7 +173,7 @@ describe('pagination and cache key', () => {
     );
   });
 
-  it('paginates with WFS 2.0 startIndex/count, follows next, and bounds max pages', async () => {
+  it('fails closed when maxPages is exhausted before numberMatched is complete', async () => {
     const requests = [];
     const page0 = {
       type: 'FeatureCollection',
@@ -193,21 +193,23 @@ describe('pagination and cache key', () => {
       links: [],
     };
 
-    const result = await fetchCwfisLayer(CWFIS_ACTIVE_LAYER, {
-      kind: 'active',
-      pageSize: 1,
-      maxPages: 2,
-      cqlFilter: '',
-      fetchFn: async (url) => {
-        requests.push(url);
-        const parsed = new URL(url);
-        const start = Number(parsed.searchParams.get('startIndex') || 0);
-        const body = start === 0 ? page0 : page1;
-        return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
-      },
-    });
+    await assert.rejects(
+      fetchCwfisLayer(CWFIS_ACTIVE_LAYER, {
+        kind: 'active',
+        pageSize: 1,
+        maxPages: 2,
+        cqlFilter: '',
+        fetchFn: async (url) => {
+          requests.push(url);
+          const parsed = new URL(url);
+          const start = Number(parsed.searchParams.get('startIndex') || 0);
+          const body = start === 0 ? page0 : page1;
+          return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
+        },
+      }),
+      /pagination incomplete.*2 of 3/i,
+    );
 
-    assert.equal(result.fireDetections.length, 2);
     assert.ok(requests.length >= 2);
     assert.match(requests[0], /startIndex=0/);
     assert.match(requests[0], /count=1/);
@@ -215,6 +217,53 @@ describe('pagination and cache key', () => {
     assert.ok(CWFIS_MAX_PAGES >= 2);
     assert.ok(CWFIS_PAGE_SIZE >= 1);
     assert.ok(requests.length <= CWFIS_MAX_PAGES);
+  });
+
+  it('returns only after numberMatched proves pagination complete', async () => {
+    const features = JSON.parse(activeJson).features;
+    const result = await fetchCwfisLayer(CWFIS_ACTIVE_LAYER, {
+      kind: 'active',
+      pageSize: 1,
+      maxPages: 2,
+      cqlFilter: '',
+      fetchFn: async (url) => {
+        const start = Number(new URL(url).searchParams.get('startIndex') || 0);
+        return new Response(JSON.stringify({
+          type: 'FeatureCollection',
+          features: features.slice(start, start + 1),
+          numberMatched: 2,
+          numberReturned: 1,
+          links: start === 0 ? [{
+            rel: 'next',
+            href: 'https://geoserver.cwfif.nrcan.gc.ca/geoserver/ows?service=WFS&version=2.0.0&request=GetFeature&typeNames=public:cwfif_national_activefires&count=1&startIndex=1&sortBy=id&outputFormat=application/json',
+          }] : [],
+        }), { headers: { 'content-type': 'application/json' } });
+      },
+    });
+
+    assert.equal(result.fireDetections.length, 2);
+  });
+
+  it('rejects a next link that does not advance startIndex', async () => {
+    await assert.rejects(
+      fetchCwfisLayer(CWFIS_ACTIVE_LAYER, {
+        kind: 'active',
+        pageSize: 1,
+        maxPages: 2,
+        cqlFilter: '',
+        fetchFn: async () => new Response(JSON.stringify({
+          type: 'FeatureCollection',
+          features: JSON.parse(activeJson).features.slice(0, 1),
+          numberMatched: 2,
+          numberReturned: 1,
+          links: [{
+            rel: 'next',
+            href: 'https://geoserver.cwfif.nrcan.gc.ca/geoserver/ows?service=WFS&version=2.0.0&request=GetFeature&typeNames=public:cwfif_national_activefires&count=1&startIndex=0&sortBy=id&outputFormat=application/json',
+          }],
+        }), { headers: { 'content-type': 'application/json' } }),
+      }),
+      /did not advance/i,
+    );
   });
 
   it('falls back to GML when JSON returns 400', async () => {
@@ -232,7 +281,10 @@ describe('pagination and cache key', () => {
         }
         assert.equal(init.redirect, 'error');
         assert.equal(init.headers['User-Agent'], CHROME_UA);
-        return new Response(activeGml, { headers: { 'content-type': 'application/gml+xml; version=3.2' } });
+        return new Response(
+          activeGml.replace('numberMatched="584"', 'numberMatched="1"'),
+          { headers: { 'content-type': 'application/gml+xml; version=3.2' } },
+        );
       },
     });
     assert.equal(jsonAttempted, true);
@@ -357,7 +409,10 @@ describe('independent FIRMS + CWFIS merge', () => {
           return new Response('nope', { status: 500 });
         }
         activeCalled = true;
-        return new Response(activeJson, { headers: { 'content-type': 'application/json' } });
+        return new Response(JSON.stringify({
+          ...JSON.parse(activeJson),
+          numberMatched: 2,
+        }), { headers: { 'content-type': 'application/json' } });
       },
     });
     assert.equal(activeCalled, true);
@@ -397,7 +452,7 @@ describe('default CQL archive guard', () => {
         const body = {
           type: 'FeatureCollection',
           features: JSON.parse(activeJson).features,
-          numberMatched: 584,
+          numberMatched: 2,
           numberReturned: 2,
         };
         return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });

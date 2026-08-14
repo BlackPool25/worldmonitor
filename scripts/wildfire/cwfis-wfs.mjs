@@ -464,6 +464,9 @@ export async function fetchCwfisLayer(typeName, {
   const seen = new Set();
   let startIndex = 0;
   let nextHref = null;
+  let paginationComplete = false;
+  let lastProgress = 0;
+  let lastMatched = null;
 
   for (let page = 0; page < maxPages; page += 1) {
     const url = nextHref || buildCwfisGetFeatureUrl({
@@ -484,6 +487,9 @@ export async function fetchCwfisLayer(typeName, {
     }
     const returned = parsed.numberReturned ?? parsed.fireDetections.length;
     const matched = parsed.numberMatched;
+    const progress = startIndex + returned;
+    lastProgress = progress;
+    lastMatched = matched;
     nextHref = parsed.nextHref;
     if (nextHref) {
       try {
@@ -492,17 +498,33 @@ export async function fetchCwfisLayer(typeName, {
           parsedNext.searchParams.set('CQL_FILTER', filter);
         }
         nextHref = parsedNext.toString();
-      } catch {
-        nextHref = null;
+      } catch (err) {
+        throw new CwfisWfsError(`CWFIS pagination next URL rejected: ${err.message}`);
       }
     }
-    if (!nextHref && (returned < pageSize || (matched != null && startIndex + returned >= matched))) {
+
+    const matchedComplete = matched != null && progress >= matched;
+    const shortPageComplete = matched == null && returned < pageSize;
+    if (!nextHref && (matchedComplete || shortPageComplete)) {
+      paginationComplete = true;
       break;
     }
+
+    if (returned === 0) {
+      throw new CwfisWfsError(`CWFIS pagination made no progress at startIndex=${startIndex}`);
+    }
     const nextStart = nextHref ? startIndexFromHref(nextHref) : startIndex + (returned || pageSize);
-    if (nextStart == null || nextStart <= startIndex) break;
+    if (nextStart == null || nextStart <= startIndex) {
+      throw new CwfisWfsError(`CWFIS pagination did not advance from startIndex=${startIndex}`);
+    }
     startIndex = nextStart;
-    if (!nextHref && returned === 0) break;
+  }
+
+  if (!paginationComplete) {
+    const expected = lastMatched == null ? 'unknown' : lastMatched;
+    throw new CwfisWfsError(
+      `CWFIS pagination incomplete after ${maxPages} page(s): ${lastProgress} of ${expected}`,
+    );
   }
 
   return { fireDetections, typeName, kind: resolvedKind };
@@ -579,5 +601,4 @@ export async function mergeWildfireSources({ fetchFirms, fetchCwfis }) {
     _cwfisPrescribedCount: cwfisOk ? (cwfisResult.value?._cwfisPrescribedCount ?? null) : null,
   };
 }
-
 
