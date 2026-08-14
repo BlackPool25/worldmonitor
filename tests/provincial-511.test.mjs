@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { __testing__ as limiterTesting } from '../scripts/_511-rate-limit.mjs';
@@ -11,6 +12,7 @@ import {
   declareVendor511Records,
   fetchVendor511,
   get,
+  isCompleteVendor511,
   isVendor511Host,
   normalize511List,
   normalize511Record,
@@ -181,6 +183,135 @@ test('all-endpoint failure throws so last-good is preserved', async () => {
   await assert.rejects(
     () => fetchVendor511(ONTARIO_511, { fetchFn, staggerMs: 0 }),
     /all endpoints failed/,
+  );
+});
+
+test('Ontario partial poll must not replace last-good or flip health green', async () => {
+  // events fail, alerts+conditions empty-success — surviving [] must not be a successor
+  const eventsDownOthersEmpty = async (url) => {
+    if (String(url).includes('/event')) return new Response('nope', { status: 503 });
+    return jsonResponse([]);
+  };
+  limiterTesting.reset();
+  const partialEmpty = await fetchVendor511(ONTARIO_511, {
+    fetchFn: eventsDownOthersEmpty,
+    staggerMs: 0,
+  });
+  assert.equal(partialEmpty.events.length, 0);
+  assert.equal(partialEmpty.alerts.length, 0);
+  assert.equal(partialEmpty.conditions.length, 0);
+  assert.deepEqual(partialEmpty.failedResources, ['event']);
+  assert.equal(isCompleteVendor511(partialEmpty, ONTARIO_511), false);
+
+  // one resource errors while the others return records
+  const eventsDownOthersOk = async (url) => {
+    if (String(url).includes('/event')) return new Response('nope', { status: 500 });
+    if (String(url).includes('/alerts')) {
+      return jsonResponse([{
+        Id: 635,
+        Message: 'Restricted Fire Zone',
+        HighImportance: true,
+      }]);
+    }
+    return jsonResponse([{
+      LocationDescription: 'Hwy 401',
+      Condition: ['Bare and dry'],
+      RoadwayName: '401',
+      EncodedPolyline: ['yklkG|jqcNC?'],
+    }]);
+  };
+  limiterTesting.reset();
+  const partialOthers = await fetchVendor511(ONTARIO_511, {
+    fetchFn: eventsDownOthersOk,
+    staggerMs: 0,
+  });
+  assert.equal(partialOthers.alerts.length, 1);
+  assert.equal(partialOthers.conditions.length, 1);
+  assert.deepEqual(partialOthers.failedResources, ['event']);
+  assert.equal(isCompleteVendor511(partialOthers, ONTARIO_511), false);
+
+  const alertsDownOthersOk = async (url) => {
+    if (String(url).includes('/alerts')) return new Response('nope', { status: 502 });
+    if (String(url).includes('/event')) {
+      return jsonResponse([{
+        ID: 216791,
+        Latitude: 42.853554,
+        Longitude: -81.27517,
+        EventType: 'closures',
+        IsFullClosure: true,
+      }]);
+    }
+    return jsonResponse([]);
+  };
+  limiterTesting.reset();
+  const partialAlerts = await fetchVendor511(ONTARIO_511, {
+    fetchFn: alertsDownOthersOk,
+    staggerMs: 0,
+  });
+  assert.equal(partialAlerts.events.length, 1);
+  assert.deepEqual(partialAlerts.failedResources, ['alerts']);
+  assert.equal(isCompleteVendor511(partialAlerts, ONTARIO_511), false);
+
+  const conditionsDownOthersOk = async (url) => {
+    if (String(url).includes('/roadconditions')) return new Response('nope', { status: 504 });
+    return jsonResponse([]);
+  };
+  limiterTesting.reset();
+  const partialConditions = await fetchVendor511(ONTARIO_511, {
+    fetchFn: conditionsDownOthersOk,
+    staggerMs: 0,
+  });
+  assert.equal(partialConditions.events.length, 0);
+  assert.equal(partialConditions.alerts.length, 0);
+  assert.deepEqual(partialConditions.failedResources, ['roadconditions']);
+  assert.equal(isCompleteVendor511(partialConditions, ONTARIO_511), false);
+
+  // complete successor: every configured Ontario resource succeeds (empty lists OK).
+  const completeQuiet = async (url) => {
+    if (String(url).includes('/event')) {
+      return jsonResponse([{
+        ID: 216791,
+        Latitude: 42.853554,
+        Longitude: -81.27517,
+        EventType: 'closures',
+        IsFullClosure: true,
+      }]);
+    }
+    return jsonResponse([]);
+  };
+  limiterTesting.reset();
+  const complete = await fetchVendor511(ONTARIO_511, {
+    fetchFn: completeQuiet,
+    staggerMs: 0,
+  });
+  assert.equal(complete.events.length, 1);
+  assert.equal(complete.alerts.length, 0);
+  assert.equal(complete.conditions.length, 0);
+  assert.deepEqual(complete.failedResources, []);
+  assert.equal(isCompleteVendor511(complete, ONTARIO_511), true);
+  assert.deepEqual(
+    ONTARIO_511.resources.map((r) => r.resource),
+    ['event', 'alerts', 'roadconditions'],
+  );
+
+  // Seeder maps !complete → throw → runSeed preserveExistingKeys (TTL only).
+  // That keeps last-good and does not write fresh seed-meta / OK_ZERO
+  // (health stays put).
+  const seeder = readFileSync(new URL('../scripts/seed-provincial-511.mjs', import.meta.url), 'utf8');
+  assert.match(seeder, /isCompleteVendor511\(envelope, ONTARIO_511\)/);
+  assert.match(seeder, /partial poll \(\$\{failed\} failed\); keeping last-good/);
+  assert.match(seeder, /runSeed\('infra', 'ontario-511'/);
+  assert.doesNotMatch(seeder, /publishing \$\{records\.length\} surviving/);
+  const fetchOntario = seeder.slice(
+    seeder.indexOf('async function fetchOntario511'),
+    seeder.indexOf('export function declareRecords'),
+  );
+  assert.match(fetchOntario, /if \(!isCompleteVendor511\(envelope, ONTARIO_511\)\)/);
+  assert.match(fetchOntario, /throw new Error/);
+  assert.ok(
+    fetchOntario.indexOf('throw new Error')
+    < fetchOntario.indexOf('return { records:'),
+    'partial ticks must throw before any last-good successor is returned',
   );
 });
 

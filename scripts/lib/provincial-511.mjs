@@ -286,6 +286,24 @@ export function validateVendor511Envelope(envelope) {
     && Array.isArray(envelope.conditions);
 }
 
+/**
+ * A vendor 511 poll is complete only when every configured resource
+ * succeeded. Empty success counts. Any failed resource is partial:
+ * last-good must stay, and health must not flip green, until a
+ * complete successor arrives. Ontario resources are event+alerts+
+ * roadconditions (all three must succeed).
+ *
+ * @param {{ failedResources?: string[] } | null | undefined} envelope
+ * @param {{ resources?: ReadonlyArray<{ resource: string }> } | null | undefined} config
+ */
+export function isCompleteVendor511(envelope, config) {
+  if (!envelope || typeof envelope !== 'object') return false;
+  const resources = config?.resources;
+  if (!Array.isArray(resources) || resources.length === 0) return false;
+  if (!Array.isArray(envelope.failedResources)) return false;
+  return envelope.failedResources.length === 0;
+}
+
 async function readLimitedJson(resp, maxBytes) {
   const contentLength = resp.headers?.get?.('content-length');
   if (contentLength && Number(contentLength) > maxBytes) {
@@ -361,7 +379,10 @@ function defaultSleep(ms) {
 /**
  * Fetch every configured resource, staggering calls so one Ontario tick uses
  * 3 of the host's 10/60 tokens without bursting. One endpoint failure does
- * not empty the others. Total failure throws so runSeed keeps last-good.
+ * not empty the others — the envelope records failedResources. Total failure
+ * throws so runSeed keeps last-good. A partial envelope is not a complete
+ * successor: callers must not overwrite last-good or refresh health green
+ * until isCompleteVendor511(envelope, config) is true.
  *
  * @param {typeof ONTARIO_511} config
  * @param {{

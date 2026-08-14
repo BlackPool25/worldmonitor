@@ -7,6 +7,7 @@
 import { loadEnvFile, CHROME_UA, runSeed } from './_seed-utils.mjs';
 import {
   fetchVendor511,
+  isCompleteVendor511,
   ONTARIO_511,
   select511Records,
 } from './lib/provincial-511.mjs';
@@ -22,17 +23,14 @@ async function fetchOntario511() {
     userAgent: CHROME_UA,
     staggerMs: STAGGER_MS,
   });
-  const combined = [...envelope.events, ...envelope.alerts, ...envelope.conditions];
-  const records = select511Records(combined);
-  if (envelope.failedResources.length) {
-    console.warn(
-      `  Ontario 511: ${envelope.failedResources.join(', ')} failed; `
-      + `publishing ${records.length} surviving record(s)`,
-    );
+  if (!isCompleteVendor511(envelope, ONTARIO_511)) {
+    const failed = envelope.failedResources?.join(', ') || 'incomplete';
+    throw new Error(`Ontario 511: partial poll (${failed} failed); keeping last-good`);
   }
+  const combined = [...envelope.events, ...envelope.alerts, ...envelope.conditions];
   // Publish the capped map payload only (NWS weather pattern). Kind is on
   // each record; do not also persist the uncapped event/alert/condition arrays.
-  return { records };
+  return { records: select511Records(combined) };
 }
 
 export function declareRecords(data) {
