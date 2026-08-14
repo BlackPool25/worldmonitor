@@ -5,6 +5,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { CHROME_UA } from '../scripts/_seed-utils.mjs';
+import { __testing__ as healthTesting } from '../api/health.js';
 import {
   CWFIS_ACTIVE_LAYER,
   CWFIS_FETCH_TIMEOUT_MS,
@@ -19,6 +20,7 @@ import {
   assertNotCwfisArchive,
   buildCwfisGetFeatureUrl,
   currentValidCql,
+  cwfisWildfireAfterPublish,
   cwfisWfsCacheKey,
   fetchApprovedWfs,
   fetchCwfisLayer,
@@ -244,6 +246,42 @@ describe('pagination and cache key', () => {
     assert.equal(result.fireDetections.length, 2);
   });
 
+  it('rejects repeated pages even when requested offsets reach numberMatched', async () => {
+    const repeatedFeature = JSON.parse(activeJson).features.slice(0, 1);
+    await assert.rejects(
+      fetchCwfisLayer(CWFIS_ACTIVE_LAYER, {
+        kind: 'active',
+        pageSize: 1,
+        maxPages: 2,
+        cqlFilter: '',
+        fetchFn: async () => new Response(JSON.stringify({
+          type: 'FeatureCollection',
+          features: repeatedFeature,
+          numberMatched: 2,
+          numberReturned: 1,
+          links: [],
+        }), { headers: { 'content-type': 'application/json' } }),
+      }),
+      /pagination repeated a page/i,
+    );
+  });
+
+  it('rejects numberReturned that does not match the received WFS rows', () => {
+    assert.throws(
+      () => parseCwfisGeoJson({
+        type: 'FeatureCollection',
+        features: JSON.parse(activeJson).features.slice(0, 1),
+        numberMatched: 2,
+        numberReturned: 2,
+      }),
+      /numberReturned mismatch: declared 2, received 1/i,
+    );
+    assert.throws(
+      () => parseCwfisGml(activeGml.replace('numberReturned="1"', 'numberReturned="2"')),
+      /numberReturned mismatch: declared 2, received 1/i,
+    );
+  });
+
   it('rejects a next link that does not advance startIndex', async () => {
     await assert.rejects(
       fetchCwfisLayer(CWFIS_ACTIVE_LAYER, {
@@ -418,6 +456,65 @@ describe('independent FIRMS + CWFIS merge', () => {
     assert.equal(activeCalled, true);
     assert.ok(result.fireDetections.length >= 1);
     assert.equal(result.fireDetections[0].kind, 'active');
+    assert.equal(result._cwfisState, 'degraded');
+    assert.equal(result._cwfisErrorCode, 'CWFIS_PRESCRIBED_FAILED');
+  });
+
+  it('fails the CWFIS subsource when the active layer is incomplete', async () => {
+    const activeFeature = JSON.parse(activeJson).features.slice(0, 1);
+    const prescribedFeature = JSON.parse(prescribedJson).features.slice(0, 1);
+    await assert.rejects(
+      fetchCwfisFires({
+        cqlFilter: '',
+        pageSize: 1,
+        maxPages: 1,
+        fetchFn: async (url) => {
+          const typeName = new URL(url).searchParams.get('typeNames');
+          const active = typeName === CWFIS_ACTIVE_LAYER;
+          return new Response(JSON.stringify({
+            type: 'FeatureCollection',
+            features: active ? activeFeature : prescribedFeature,
+            numberMatched: active ? 2 : 1,
+            numberReturned: 1,
+            links: [],
+          }), { headers: { 'content-type': 'application/json' } });
+        },
+      }),
+      /CWFIS active layer failed:.*pagination incomplete.*1 of 2/i,
+    );
+  });
+
+  it('publishes FIRMS fallback with health-visible CWFIS degradation metadata', async () => {
+    const firmsOnly = await mergeWildfireSources({
+      fetchFirms: async () => ({ fireDetections: [firmsDetection()] }),
+      fetchCwfis: async () => { throw new Error('active paging incomplete'); },
+    });
+    assert.equal(firmsOnly._cwfisState, 'failed');
+    assert.equal(firmsOnly._cwfisErrorCode, 'CWFIS_SOURCE_FAILED');
+
+    const patch = cwfisWildfireAfterPublish(firmsOnly).freshnessMetaPatch;
+    assert.deepEqual(patch, {
+      sourceState: 'degraded',
+      errorCode: 'CWFIS_SOURCE_FAILED',
+      canadaSourceFailureCount: 1,
+    });
+
+    const now = Date.parse('2026-08-14T12:00:00Z');
+    const dataKey = healthTesting.BOOTSTRAP_KEYS.wildfires;
+    const metaKey = healthTesting.SEED_META.wildfires.key;
+    const entry = healthTesting.classifyKey('wildfires', dataKey, { allowOnDemand: false }, {
+      keyStrens: new Map([[dataKey, 256]]),
+      keyErrors: new Map(),
+      keyMetaValues: new Map([[metaKey, JSON.stringify({
+        fetchedAt: now - 60_000,
+        recordCount: firmsOnly.fireDetections.length,
+        ...patch,
+      })]]),
+      keyMetaErrors: new Map(),
+      now,
+    });
+    assert.equal(entry.status, 'SEED_ERROR');
+    assert.equal(entry.errorCode, 'CWFIS_SOURCE_FAILED');
   });
 });
 
@@ -491,6 +588,7 @@ describe('module import contract', () => {
   it('seeder merges FIRMS and CWFIS into the canonical wildfire key', () => {
     assert.match(seederSrc, /mergeWildfireSources/);
     assert.match(seederSrc, /fetchCwfisFires/);
+    assert.match(seederSrc, /afterPublish:\s*cwfisWildfireAfterPublish/);
     assert.match(seederSrc, /wildfire:fires:v1/);
     assert.doesNotMatch(seederSrc, /wildfire:canada/);
     assert.doesNotMatch(seederSrc, /fetch\.bind/);

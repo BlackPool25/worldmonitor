@@ -210,17 +210,37 @@ export function parseCwfisGeoJson(payload, kind = 'active') {
     throw new CwfisWfsError('CWFIS GeoJSON is not a FeatureCollection');
   }
   const fireDetections = [];
-  for (const feature of doc.features) {
+  const pageRowKeys = [];
+  for (let index = 0; index < doc.features.length; index += 1) {
+    const feature = doc.features[index];
+    const props = feature?.properties && typeof feature.properties === 'object'
+      ? feature.properties
+      : {};
+    pageRowKeys.push(String(
+      feature?.id
+      || props.id
+      || props.national_fire_id
+      || props.agency_fire_id
+      || JSON.stringify(feature)
+      || `row:${index}`,
+    ));
     const normalized = normalizeCwfisFeature(feature, kind);
     if (normalized) fireDetections.push(normalized);
+  }
+  const declaredNumberReturned = asFiniteNumber(doc.numberReturned);
+  if (declaredNumberReturned != null && declaredNumberReturned !== doc.features.length) {
+    throw new CwfisWfsError(
+      `CWFIS numberReturned mismatch: declared ${declaredNumberReturned}, received ${doc.features.length}`,
+    );
   }
   const nextHref = Array.isArray(doc.links)
     ? doc.links.find((link) => link?.rel === 'next')?.href
     : undefined;
   return {
     fireDetections,
+    pageRowKeys,
     numberMatched: asFiniteNumber(doc.numberMatched ?? doc.totalFeatures),
-    numberReturned: asFiniteNumber(doc.numberReturned) ?? doc.features.length,
+    numberReturned: doc.features.length,
     nextHref: typeof nextHref === 'string' ? nextHref : null,
   };
 }
@@ -249,9 +269,12 @@ export function parseCwfisGml(xml, kind = 'active') {
   const nextHref = ((attrs.match(/\bnext="([^"]+)"/i) || [])[1] || '').replace(/&amp;/g, '&') || null;
 
   const fireDetections = [];
+  const pageRowKeys = [];
+  let rawRowCount = 0;
   const memberRe = /<(?:wfs:)?member\b[^>]*>([\s\S]*?)<\/(?:wfs:)?member>/gi;
   let match;
   while ((match = memberRe.exec(xml)) !== null) {
+    rawRowCount += 1;
     const block = match[1];
     const props = {
       id: gmlField(block, 'id'),
@@ -270,14 +293,26 @@ export function parseCwfisGml(xml, kind = 'active') {
       record_start: gmlField(block, 'record_start'),
       record_end: gmlField(block, 'record_end'),
     };
+    pageRowKeys.push(String(
+      props.id
+      || props.national_fire_id
+      || props.agency_fire_id
+      || block,
+    ));
     const normalized = normalizeCwfisFeature({ properties: props }, kind);
     if (normalized) fireDetections.push(normalized);
+  }
+  if (numberReturned != null && numberReturned !== rawRowCount) {
+    throw new CwfisWfsError(
+      `CWFIS numberReturned mismatch: declared ${numberReturned}, received ${rawRowCount}`,
+    );
   }
 
   return {
     fireDetections,
+    pageRowKeys,
     numberMatched,
-    numberReturned: numberReturned ?? fireDetections.length,
+    numberReturned: rawRowCount,
     nextHref,
   };
 }
@@ -462,6 +497,7 @@ export async function fetchCwfisLayer(typeName, {
   const filter = resolveCwfisCqlFilter(cqlFilter, now);
   const fireDetections = [];
   const seen = new Set();
+  const seenPageRows = new Set();
   let startIndex = 0;
   let nextHref = null;
   let paginationComplete = false;
@@ -480,12 +516,21 @@ export async function fetchCwfisLayer(typeName, {
     if (nextHref) parseWfsUrl(nextHref);
     const parsed = await fetchWfsPage(url, { kind: resolvedKind, fetchFn, cache, preferJson: true });
     assertNotCwfisArchive(parsed.numberMatched);
+    let newPageRows = 0;
+    for (const rowKey of parsed.pageRowKeys || []) {
+      if (seenPageRows.has(rowKey)) continue;
+      seenPageRows.add(rowKey);
+      newPageRows += 1;
+    }
     for (const detection of parsed.fireDetections) {
       if (seen.has(detection.id)) continue;
       seen.add(detection.id);
       fireDetections.push(detection);
     }
     const returned = parsed.numberReturned ?? parsed.fireDetections.length;
+    if (returned > 0 && newPageRows === 0) {
+      throw new CwfisWfsError(`CWFIS pagination repeated a page at startIndex=${startIndex}`);
+    }
     const matched = parsed.numberMatched;
     const progress = startIndex + returned;
     lastProgress = progress;
@@ -548,20 +593,36 @@ export async function fetchCwfisFires(options = {}) {
   ]);
   const activeOk = activeResult.status === 'fulfilled';
   const prescribedOk = prescribedResult.status === 'fulfilled';
-  if (!activeOk && !prescribedOk) {
+  if (!activeOk) {
     const activeErr = activeResult.reason?.message || activeResult.reason;
-    const prescribedErr = prescribedResult.reason?.message || prescribedResult.reason;
-    throw new CwfisWfsError(`All CWFIS layers failed (active: ${activeErr}; prescribed: ${prescribedErr})`);
+    throw new CwfisWfsError(`CWFIS active layer failed: ${activeErr}`);
   }
-  if (!activeOk) console.warn(`[cwfis] active layer failed: ${activeResult.reason?.message || activeResult.reason}`);
   if (!prescribedOk) console.warn(`[cwfis] prescribed layer failed: ${prescribedResult.reason?.message || prescribedResult.reason}`);
 
-  const active = activeOk ? (activeResult.value.fireDetections || []) : [];
+  const active = activeResult.value.fireDetections || [];
   const prescribed = prescribedOk ? (prescribedResult.value.fireDetections || []) : [];
   return {
     fireDetections: mergeById(active, prescribed),
     _cwfisActiveCount: active.length,
     _cwfisPrescribedCount: prescribed.length,
+    _cwfisState: prescribedOk ? 'ok' : 'degraded',
+    _cwfisErrorCode: prescribedOk ? null : 'CWFIS_PRESCRIBED_FAILED',
+  };
+}
+
+export function cwfisWildfireAfterPublish(data) {
+  if (data?._cwfisState === 'ok') {
+    return { freshnessMetaPatch: { sourceState: 'ok' } };
+  }
+  const errorCode = data?._cwfisErrorCode === 'CWFIS_PRESCRIBED_FAILED'
+    ? 'CWFIS_PRESCRIBED_FAILED'
+    : 'CWFIS_SOURCE_FAILED';
+  return {
+    freshnessMetaPatch: {
+      sourceState: 'degraded',
+      errorCode,
+      canadaSourceFailureCount: 1,
+    },
   };
 }
 
@@ -593,12 +654,17 @@ export async function mergeWildfireSources({ fetchFirms, fetchCwfis }) {
     ? tagFirmsDetections(firmsResult.value?.fireDetections || [])
     : [];
   const cwfisDetections = cwfisOk ? (cwfisResult.value?.fireDetections || []) : [];
+  const cwfisState = cwfisOk ? (cwfisResult.value?._cwfisState || 'ok') : 'failed';
+  const cwfisErrorCode = cwfisOk
+    ? (cwfisResult.value?._cwfisErrorCode ?? null)
+    : 'CWFIS_SOURCE_FAILED';
   return {
     fireDetections: mergeById(firmsDetections, cwfisDetections),
     _firmsCount: firmsDetections.length,
     _cwfisCount: cwfisDetections.length,
     _cwfisActiveCount: cwfisOk ? (cwfisResult.value?._cwfisActiveCount ?? null) : null,
     _cwfisPrescribedCount: cwfisOk ? (cwfisResult.value?._cwfisPrescribedCount ?? null) : null,
+    _cwfisState: cwfisState,
+    _cwfisErrorCode: cwfisErrorCode,
   };
 }
-

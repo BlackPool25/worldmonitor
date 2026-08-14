@@ -10,7 +10,11 @@
 import { loadEnvFile, runSeed, CHROME_UA, sleep, MAX_PAYLOAD_BYTES } from './_seed-utils.mjs';
 import { buildEnvelope } from './_seed-envelope-source.mjs';
 import { compactWildfireDashboardPayload, WILDFIRE_CANONICAL_DETECTION_LIMIT } from './_wildfire-dashboard.mjs';
-import { fetchCwfisFires, mergeWildfireSources } from './wildfire/cwfis-wfs.mjs';
+import {
+  cwfisWildfireAfterPublish,
+  fetchCwfisFires,
+  mergeWildfireSources,
+} from './wildfire/cwfis-wfs.mjs';
 
 loadEnvFile(import.meta.url);
 
@@ -215,6 +219,7 @@ async function main() {
     declareRecords,
     schemaVersion: 1,
     maxStaleMin: 360,
+    afterPublish: cwfisWildfireAfterPublish,
   });
 }
 
