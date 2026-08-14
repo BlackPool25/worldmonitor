@@ -253,7 +253,6 @@ describe('wildfire dashboard payload cap', () => {
     assert.ok(gzipSync(compacted).byteLength < 20_000, `gzip payload is too large: ${gzipSync(compacted).byteLength} bytes`);
   });
 });
-
 // The volume of the run that crashed seed-fire-detections (Railway deployment 8008ae7a,
 // 2026-07-30): 20,442 deduped VIIRS detections across 3 sources x 9 regions, every upstream
 // fetch OK. atomicPublish threw `Payload too large: 5.2MB > 5MB limit`, main().catch printed
@@ -830,4 +829,3 @@ describe('tagged FIRMS+CWFIS payload cap', () => {
     }
   });
 });
-
