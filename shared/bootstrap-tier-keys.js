@@ -71,6 +71,7 @@ export const BOOTSTRAP_CACHE_KEYS = Object.freeze({
   weatherAlerts: 'weather:alerts:v1',
   canadaRoads: 'infra:ontario-511:v1',
   albertaRoads: 'infra:alberta-511:v1',
+  torontoRoads: 'infra:toronto-roads:v1',
   spending: 'economic:spending:v1',
   techEvents: 'research:tech-events-bootstrap:v1',
   gdeltIntel: 'intelligence:gdelt-intel:v1',
@@ -200,6 +201,9 @@ const ON_DEMAND_KEY_NAMES = new Set([
   // string and gets registered as a duplicate key.
   'fxYoy', 'sharedFxRates',
   'marketCorrelationSeries',
+  // Toronto's live road-restrictions snapshot is about 2 MB. Keep it off the
+  // global FAST payload and fetch it only when the Canada-roads layer renders.
+  'torontoRoads',
 ]);
 
 /**

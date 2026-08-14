@@ -318,7 +318,7 @@ test("toronto restrictions share canadaRoads and do not invent a second MapLayer
   assert.match(layers, /canadaRoads:\s+def\('canadaRoads'/);
   assert.doesNotMatch(layers, /torontoRoads:\s+def\(/);
   assert.match(client, /getHydratedData\('canadaRoads'\)/);
-  assert.match(client, /getHydratedData\('torontoRoads'\)/);
+  assert.match(client, /key: 'torontoRoads'/);
   assert.match(client, /unionCanadaRoadRecords/);
   assert.match(client, /ontario-511/);
   assert.match(client, /toronto-roads/);
@@ -337,13 +337,16 @@ test("railway registers seed-toronto-road-restrictions as an active */15 nixpack
   assert.equal(entry.watchPatterns.some((p) => p.includes("511")), false);
 });
 
-test("bootstrap keeps canadaRoads on the fast tier and unions the Toronto redis key", () => {
+test("bootstrap keeps Ontario and Alberta fast but fetches Toronto roads on demand", () => {
   const src = readFileSync(join(root, "shared/bootstrap-tier-keys.js"), "utf8");
   assert.match(src, /canadaRoads: 'infra:ontario-511:v1'/);
   assert.match(src, /torontoRoads: 'infra:toronto-roads:v1'/);
   const fast = src.slice(src.indexOf("const FAST_KEY_NAMES"), src.indexOf("const ON_DEMAND_KEY_NAMES"));
   assert.match(fast, /'canadaRoads'/);
-  assert.match(fast, /'torontoRoads'/);
+  assert.match(fast, /'albertaRoads'/);
+  assert.doesNotMatch(fast, /'torontoRoads'/);
+  const onDemand = src.slice(src.indexOf("const ON_DEMAND_KEY_NAMES"));
+  assert.match(onDemand, /'torontoRoads'/);
 });
 
 test("seed-freshness-baseline acknowledges the Toronto roads cutover", () => {

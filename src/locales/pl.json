@@ -481,7 +481,7 @@
         "climate": "Przełącz anomalie klimatyczne",
         "outages": "Przełącz awarie internetu",
         "tradeRoutes": "Przełącz szlaki handlowe",
-        "canadaRoads": "Toggle Ontario and Alberta 511 roads overlay"
+        "canadaRoads": "Toggle Canada roads overlay"
       },
       "view": {
         "dark": "Przełącz na tryb ciemny",
@@ -1005,7 +1005,7 @@
         "renewableInstallations": "Czysta energia",
         "radiationSpike": "Skok radioaktywności",
         "radiationElevated": "Podwyższona radioaktywność",
-        "canadaRoads": "Ontario and Alberta Roads (511)"
+        "canadaRoads": "Canada Roads"
       },
       "layersTitle": "Warstwy",
       "layerSearch": "Szukaj warstw...",
@@ -1119,7 +1119,7 @@
           "techFires": "Aktywne pożary w pobliżu infrastruktury technologicznej",
           "geoBoundaries": "Strefy zdemilitaryzowane, linie zawieszenia broni i sporne granice",
           "ciiChoropleth": "Mapa cieplna Country Instability Index — koloruje kraje według wyniku CII (zielony=stabilny, czerwony=krytyczny)",
-          "canadaRoads": "Highway incidents and alerts in Ontario and Alberta, plus Ontario road conditions (511)"
+          "canadaRoads": "Official road incidents, alerts, conditions, closures, construction, and hazards across supported Canadian jurisdictions"
         },
         "notes": {
           "timeAffects": "Wpływ na: Trzęsienia ziemi, Pogoda, Protesty, Przestoje"

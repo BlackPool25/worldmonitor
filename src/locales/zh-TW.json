@@ -477,7 +477,7 @@
         "climate": "切換氣候異常",
         "outages": "切換網際網路中斷",
         "tradeRoutes": "切換貿易路線",
-        "canadaRoads": "Toggle Ontario and Alberta 511 roads overlay"
+        "canadaRoads": "Toggle Canada roads overlay"
       },
       "view": {
         "dark": "切換到暗色模式",
@@ -1190,7 +1190,7 @@
         "renewableInstallations": "清潔能源",
         "radiationSpike": "輻射峰值",
         "radiationElevated": "輻射升高",
-        "canadaRoads": "Ontario and Alberta Roads (511)"
+        "canadaRoads": "Canada Roads"
       },
       "tooltip": {
         "earthquake": "地震",
@@ -1297,7 +1297,7 @@
           "dayNight": "即時太陽終結線顯示晝夜區域",
           "geoBoundaries": "非軍事區、停火線和爭議邊界",
           "ciiChoropleth": "國家不穩定指數熱力圖 — 按CII評分為國家著色（綠色=穩定，紅色=危急）",
-          "canadaRoads": "Highway incidents and alerts in Ontario and Alberta, plus Ontario road conditions (511)"
+          "canadaRoads": "Official road incidents, alerts, conditions, closures, construction, and hazards across supported Canadian jurisdictions"
         },
         "notes": {
           "timeAffects": "影響範圍：地震、天氣、抗議、中斷"

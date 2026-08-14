@@ -51,6 +51,7 @@ import {
   fetchEarthquakes,
   fetchWeatherAlerts,
   fetchCanadaRoads,
+  getCanadaRoadSourceStates,
   fetchInternetOutages,
   fetchTrafficAnomalies,
   fetchDdosAttacks,
@@ -2832,13 +2833,23 @@ export class DataLoaderManager implements AppModule {
   async loadCanadaRoads(): Promise<void> {
     try {
       const records = await fetchCanadaRoads();
+      const sourceStates = getCanadaRoadSourceStates();
+      const degradedSources = Object.entries(sourceStates)
+        .filter(([, state]) => state === 'unavailable' || state === 'malformed')
+        .map(([key]) => key);
       this.ctx.map?.setCanadaRoads(records);
       this.ctx.map?.setLayerReady('canadaRoads', records.length > 0);
-      this.ctx.statusPanel?.updateFeed('Canada 511', { status: 'ok', itemCount: records.length });
+      this.ctx.statusPanel?.updateFeed('Canada Roads', {
+        status: degradedSources.length > 0 ? 'warning' : 'ok',
+        itemCount: records.length,
+        errorMessage: degradedSources.length > 0
+          ? `Partial coverage: ${degradedSources.join(', ')}`
+          : undefined,
+      });
       dataFreshness.recordUpdate('ontario_511', records.length);
     } catch (error) {
       this.ctx.map?.setLayerReady('canadaRoads', false);
-      this.ctx.statusPanel?.updateFeed('Canada 511', { status: 'error' });
+      this.ctx.statusPanel?.updateFeed('Canada Roads', { status: 'error' });
       dataFreshness.recordError('ontario_511', String(error));
     }
   }

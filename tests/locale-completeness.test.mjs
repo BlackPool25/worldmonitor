@@ -105,7 +105,7 @@ describe('locale completeness', () => {
   }
 
   for (const file of ['en.json', ...localeFiles]) {
-    it(`${file} discloses Ontario and Alberta 511 coverage for the canadaRoads layer`, () => {
+    it(`${file} describes the shared Canada roads layer without stale province-only copy`, () => {
       const locale = JSON.parse(readFileSync(join(LOCALES_DIR, file), 'utf8'));
       const values = [
         locale.components.deckgl.layers.canadaRoads,
@@ -113,9 +113,8 @@ describe('locale completeness', () => {
       ];
       for (const value of values) {
         assert.equal(typeof value, 'string');
-        assert.match(value, /Ontario/i, `${file} canadaRoads copy must name Ontario`);
-        assert.match(value, /Alberta/i, `${file} canadaRoads copy must name Alberta`);
-        assert.match(value, /511/, `${file} canadaRoads copy must identify 511`);
+        assert.match(value, /Canada|Canadian/i, `${file} canadaRoads copy must identify Canadian scope`);
+        assert.doesNotMatch(value, /Ontario and Alberta/i, `${file} canadaRoads copy must not claim only two provinces`);
       }
     });
   }

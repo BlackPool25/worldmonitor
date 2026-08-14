@@ -1,126 +1,92 @@
 import { createCircuitBreaker } from '@/utils';
-import { getHydratedData } from '@/services/bootstrap';
+import { ensureHydrated, getHydratedData } from '@/services/bootstrap';
 import { toApiUrl } from '@/services/runtime';
+import {
+  loadCanadaRoadSourcesCore,
+  type CanadaRoadRecord,
+  type CanadaRoadSourceDescriptor,
+  type CanadaRoadSourceStates,
+} from './canada-roads-core';
 
-export interface CanadaRoadRecord {
-  id: string;
-  kind?: 'event' | 'alert' | 'condition';
-  lat: number | null;
-  lon: number | null;
-  centroid?: [number, number] | null;
-  severity: string;
-  eventType: string;
-  isFullClosure: boolean;
-  lanesAffected: string | null;
-  roadwayName?: string;
-  headline: string;
-  description: string;
-  path?: [number, number][] | null;
-  jurisdiction: string;
-  resource?: string;
-  source?: string;
-}
+export {
+  recordsFromPayload,
+  unionCanadaRoadRecords,
+  type CanadaRoadRecord,
+  type CanadaRoadSourceDescriptor,
+  type CanadaRoadSourceState,
+  type CanadaRoadSourceStates,
+} from './canada-roads-core';
 
-/** Unions bootstrap `canadaRoads` (infra:ontario-511:v1) with `albertaRoads` (infra:alberta-511:v1). */
+export const CANADA_ROAD_SOURCES: readonly CanadaRoadSourceDescriptor[] = Object.freeze([
+  { key: 'canadaRoads', source: 'ontario-511', jurisdiction: 'ON', onDemand: false },
+  { key: 'albertaRoads', source: 'alberta-511', jurisdiction: 'AB', onDemand: false },
+  { key: 'torontoRoads', source: 'toronto-roads', jurisdiction: 'Toronto', onDemand: true },
+]);
+
+let lastSourceStates: CanadaRoadSourceStates = Object.fromEntries(
+  CANADA_ROAD_SOURCES.map(({ key }) => [key, 'unavailable']),
+);
+
 const breaker = createCircuitBreaker<CanadaRoadRecord[]>({
-  name: 'Canada 511',
+  name: 'Canada roads',
   cacheTtlMs: 30 * 60 * 1000,
   persistCache: true,
 });
 
-function recordsFromPayload(payload: unknown): CanadaRoadRecord[] | null {
-  if (!payload || typeof payload !== 'object') return null;
-  const value = payload as {
-    records?: CanadaRoadRecord[];
-    events?: CanadaRoadRecord[];
-    alerts?: CanadaRoadRecord[];
-    conditions?: CanadaRoadRecord[];
-    data?: unknown;
-  };
-  if (value.data && typeof value.data === 'object' && value.data !== value) {
-    const nested = recordsFromPayload(value.data);
-    if (nested) return nested;
-  }
-  if (Array.isArray(value.records)) return value.records;
-  const combined = [
-    ...(Array.isArray(value.events) ? value.events : []),
-    ...(Array.isArray(value.alerts) ? value.alerts : []),
-    ...(Array.isArray(value.conditions) ? value.conditions : []),
-  ];
-  return combined.length || Array.isArray(value.events) ? combined : null;
+const ON_DEMAND_LOADERS: Record<string, () => Promise<unknown | undefined>> = {
+  torontoRoads: () => ensureHydrated('torontoRoads'),
+};
+
+const HYDRATED_LOADERS: Record<string, () => unknown | undefined> = {
+  canadaRoads: () => getHydratedData('canadaRoads'),
+  albertaRoads: () => getHydratedData('albertaRoads'),
+  torontoRoads: () => getHydratedData('torontoRoads'),
+};
+
+interface CanadaRoadLoadDependencies {
+  getHydrated?: (key: string) => unknown | undefined;
+  ensureOnDemand?: (key: string) => Promise<unknown | undefined>;
+  fetchFn?: typeof fetch;
 }
 
-function stampSource(
-  records: CanadaRoadRecord[] | null,
-  source: string,
-  jurisdiction: string,
-): CanadaRoadRecord[] | null {
-  if (!records) return null;
-  return records.map((record) => ({
-    ...record,
-    source: record.source || source,
-    jurisdiction: record.jurisdiction || jurisdiction,
-  }));
+async function fetchTierKey(key: string, fetchFn: typeof fetch): Promise<unknown | undefined> {
+  const resp = await fetchFn(
+    toApiUrl(`/api/bootstrap?keys=${encodeURIComponent(key)}`),
+    { credentials: 'include', signal: AbortSignal.timeout(8000) },
+  );
+  if (!resp.ok) throw new Error(`Bootstrap fetch failed for ${key}: ${resp.status}`);
+  const json = await resp.json() as { data?: Record<string, unknown> };
+  return json.data?.[key];
 }
 
-export function unionCanadaRoadRecords(
-  ...groups: Array<CanadaRoadRecord[] | null>
-): CanadaRoadRecord[] | null {
-  const present = groups.filter((group): group is CanadaRoadRecord[] => group != null);
-  if (present.length === 0) return null;
-  const seen = new Set<string>();
-  const out: CanadaRoadRecord[] = [];
-  for (const group of present) {
-    for (const record of group) {
-      const id = `${record.source || record.jurisdiction || ''}:${record.id}`;
-      if (seen.has(id)) continue;
-      seen.add(id);
-      out.push(record);
-    }
-  }
-  return out;
+export function loadCanadaRoadSources(
+  descriptors: readonly CanadaRoadSourceDescriptor[] = CANADA_ROAD_SOURCES,
+  dependencies: CanadaRoadLoadDependencies = {},
+): Promise<{ records: CanadaRoadRecord[] | null; states: CanadaRoadSourceStates }> {
+  const fetchFn = dependencies.fetchFn ?? fetch;
+  return loadCanadaRoadSourcesCore(descriptors, {
+    getHydrated: (key) => dependencies.getHydrated
+      ? dependencies.getHydrated(key)
+      : HYDRATED_LOADERS[key]?.(),
+    fetchMissing: (descriptor) => descriptor.onDemand
+      ? dependencies.ensureOnDemand
+        ? dependencies.ensureOnDemand(descriptor.key)
+        : ON_DEMAND_LOADERS[descriptor.key]?.() ?? Promise.resolve(undefined)
+      : fetchTierKey(descriptor.key, fetchFn),
+  });
 }
 
 export async function fetchCanadaRoads(): Promise<CanadaRoadRecord[]> {
   return breaker.execute(async () => {
-    const ontarioHydrated = stampSource(
-      recordsFromPayload(getHydratedData('canadaRoads')),
-      'ontario-511',
-      'ON',
-    );
-    const albertaHydrated = stampSource(
-      recordsFromPayload(getHydratedData('albertaRoads')),
-      'alberta-511',
-      'AB',
-    );
-    if (ontarioHydrated != null && albertaHydrated != null) {
-      return unionCanadaRoadRecords(ontarioHydrated, albertaHydrated) ?? [];
-    }
-
-    const missing: string[] = [];
-    if (ontarioHydrated == null) missing.push('canadaRoads');
-    if (albertaHydrated == null) missing.push('albertaRoads');
-    const resp = await fetch(
-      toApiUrl(`/api/bootstrap?keys=${missing.join(',')}`),
-      { credentials: 'include', signal: AbortSignal.timeout(8000) },
-    );
-    if (!resp.ok) throw new Error(`Bootstrap fetch failed: ${resp.status}`);
-    const json = await resp.json() as { data?: { canadaRoads?: unknown; albertaRoads?: unknown } };
-    const ontario = ontarioHydrated ?? stampSource(
-      recordsFromPayload(json.data?.canadaRoads),
-      'ontario-511',
-      'ON',
-    );
-    const alberta = albertaHydrated ?? stampSource(
-      recordsFromPayload(json.data?.albertaRoads),
-      'alberta-511',
-      'AB',
-    );
-    const records = unionCanadaRoadRecords(ontario, alberta);
-    if (records) return records;
-
-    throw new Error('No Canada 511 data in bootstrap');
+    const result = await loadCanadaRoadSources();
+    lastSourceStates = result.states;
+    if (result.records != null) return result.records;
+    throw new Error('No usable Canada road source in bootstrap');
   }, []);
+}
+
+export function getCanadaRoadSourceStates(): CanadaRoadSourceStates {
+  return { ...lastSourceStates };
 }
 
 export function getCanadaRoadsStatus(): string {

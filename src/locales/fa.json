@@ -546,7 +546,7 @@
         "climate": "Toggle climate anomalies",
         "outages": "Toggle internet outages",
         "tradeRoutes": "Toggle trade routes",
-        "canadaRoads": "Toggle Ontario and Alberta 511 roads overlay"
+        "canadaRoads": "Toggle Canada roads overlay"
       },
       "view": {
         "dark": "Switch to dark mode",
@@ -1331,7 +1331,7 @@
         "happiness": "World Happiness",
         "speciesRecovery": "Species Recovery",
         "renewableInstallations": "Clean Energy",
-        "canadaRoads": "Ontario and Alberta Roads (511)"
+        "canadaRoads": "Canada Roads"
       },
       "tooltip": {
         "earthquake": "Earthquake",
@@ -1438,7 +1438,7 @@
           "dayNight": "Real-time solar terminator showing day and night zones",
           "geoBoundaries": "Demilitarized zones, ceasefire lines, and disputed boundaries",
           "ciiChoropleth": "Country Instability Index heat-map — colors countries by CII score (green=stable, red=critical)",
-          "canadaRoads": "Highway incidents and alerts in Ontario and Alberta, plus Ontario road conditions (511)"
+          "canadaRoads": "Official road incidents, alerts, conditions, closures, construction, and hazards across supported Canadian jurisdictions"
         },
         "notes": {
           "timeAffects": "Affects: Earthquakes, Weather, Protests, Outages"

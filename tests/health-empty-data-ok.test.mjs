@@ -36,9 +36,11 @@ const AUDITED_PRESENT_PAYLOAD_KEYS = [
   // (zeroIsValid -> OK_ZERO -> canonical written). So fresh metadata plus a
   // vanished payload is a real publish failure, not a quiet period — the same
   // reasoning api/health.js already applies to `outages`. albertaRoads rides the
-  // same seeder and the same publish path.
+  // same seeder and the same publish path. torontoRoads is a different seeder but
+  // the same contract: an explicit envelope on every successful tick.
   'canadaRoads',
   'albertaRoads',
+  'torontoRoads',
 ];
 
 function classifyMissing(name, meta) {

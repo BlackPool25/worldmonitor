@@ -2007,7 +2007,7 @@ export class DeckGLMap {
       layers.push(this.createWeatherLayer(filteredWeatherAlerts));
     }
 
-    // canadaRoads layer (Ontario 511 + Alberta 511; Scatterplot + PathLayer)
+    // Canada roads layer (provincial 511 feeds and municipal restrictions)
     if (mapLayers.canadaRoads && canadaRoadItems.length > 0) {
       layers.push(...this.createCanadaRoadsLayers(canadaRoadItems));
     } else {
@@ -4944,8 +4944,9 @@ export class DeckGLMap {
       case 'canada-roads-layer':
       case 'canada-roads-paths-layer': {
         const title = obj.headline || obj.roadwayName || t('components.deckgl.layers.canadaRoads');
-        const origin = obj.source === 'alberta-511' ? 'AB' : (obj.jurisdiction || 'ON');
-        const extra = obj.lanesAffected ? `<br/>${text(obj.lanesAffected)}` : '';
+        const origin = obj.jurisdiction || (obj.source === 'alberta-511' ? 'AB' : 'ON');
+        const detail = obj.lanesAffected || obj.currImpact || obj.district;
+        const extra = detail ? `<br/>${text(detail)}` : '';
         return { html: `<div class="deckgl-tooltip"><strong>${text(title)}</strong><br/>${text(origin)} · ${text(obj.severity || obj.eventType || '')}${extra}</div>` };
       }
       case 'outages-layer':

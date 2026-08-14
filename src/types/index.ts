@@ -660,7 +660,7 @@ export interface MapLayers {
   radiationWatch?: boolean;
   sanctions: boolean;
   weather: boolean;
-  /** Ontario 511 incidents, alerts, and road conditions (#6608) plus Alberta 511 events and alerts (#6612). */
+  /** Official Canada road events and conditions, including Ontario, Alberta, and Toronto. */
   canadaRoads: boolean;
   economic: boolean;
   waterways: boolean;
