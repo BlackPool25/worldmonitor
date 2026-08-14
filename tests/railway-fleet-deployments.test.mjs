@@ -8,6 +8,9 @@
 // what these tests are for.
 
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import {
@@ -16,8 +19,11 @@ import {
   readAllDeployments,
   readDeployments,
   readDeploymentsForFleet,
+  readExpectedRepositoryFleet,
   readFleetDeployments,
   runRailway,
+  runRailwayApiAsync,
+  selectExpectedRepositoryServices,
 } from '../scripts/railway-cli.mjs';
 import { createFleetAccumulator } from '../scripts/railway-deployments.mjs';
 
@@ -48,21 +54,199 @@ describe('Railway CLI child capability boundary', () => {
 
   it('applies the allowlist to sync and async Railway children', async () => {
     const childEnvironments = [];
+    const deploymentArgs = [];
     runRailway(['--version'], { env: sourceEnv }, (_command, _args, options) => {
       childEnvironments.push(options.env);
       return { status: 0, signal: null, error: null, stdout: 'railway 4' };
     });
     await readDeployments({ id: 'svc-1' }, 'production', 1, {
       env: sourceEnv,
-      execFileImpl: async (_command, _args, options) => {
+      execFileImpl: async (_command, args, options) => {
+        deploymentArgs.push(args);
         childEnvironments.push(options.env);
         return { stdout: '[]' };
       },
     });
+    const apiData = await runRailwayApiAsync('query { me { id } }', {}, {
+      env: sourceEnv,
+      execFileImpl: async (_command, _args, options) => {
+        childEnvironments.push(options.env);
+        return { stdout: '{"data":{"me":{"id":"viewer"}}}\n' };
+      },
+    });
+    assert.deepEqual(apiData, { me: { id: 'viewer' } });
+    assert.deepEqual(deploymentArgs, [[
+      'deployment',
+      'list',
+      '--service',
+      'svc-1',
+      '--project',
+      'project-1',
+      '--environment',
+      'production',
+      '--limit',
+      '1',
+      '--json',
+    ]]);
     assert.deepEqual(childEnvironments, [
       createRailwayCliEnv(sourceEnv),
       createRailwayCliEnv(sourceEnv),
+      createRailwayCliEnv(sourceEnv),
     ]);
+  });
+
+  it('fails closed on Railway API error and non-data payloads', async () => {
+    const execute = (stdout) => runRailwayApiAsync('query { me { id } }', {}, {
+      execFileImpl: async () => ({ stdout }),
+    });
+
+    await assert.rejects(
+      execute('Railway CLI update available\n{"errors":[{"message":"Viewer denied"}]}\n'),
+      /Viewer denied/,
+    );
+    await assert.rejects(execute('{"data":null}\n'), /no JSON payload/i);
+    await assert.rejects(execute('{"status":"ok"}\n'), /no JSON payload/i);
+    await assert.rejects(execute('{not-json}\n'), SyntaxError);
+
+    const childError = new Error('railway executable failed');
+    await assert.rejects(
+      runRailwayApiAsync('query { me { id } }', {}, {
+        execFileImpl: async () => { throw childError; },
+      }),
+      (error) => error === childError,
+    );
+  });
+});
+
+describe('immutable native-autodeploy fleet', () => {
+  const expected = [
+    { id: 'svc-a', name: 'seed-a' },
+    { id: 'svc-b', name: 'relay-b' },
+  ];
+  const live = (id, name, repo = 'koala73/worldmonitor') => ({
+    id,
+    name,
+    source: { repo, image: null },
+  });
+
+  it('ships the exact 80-service fleet accepted by the terminal production run', () => {
+    const fleet = readExpectedRepositoryFleet();
+    assert.equal(fleet.length, 80);
+    assert.equal(new Set(fleet.map((service) => service.id)).size, 80);
+    assert.equal(new Set(fleet.map((service) => service.name)).size, 80);
+    assert.deepEqual(
+      fleet.map((service) => service.name),
+      [...fleet.map((service) => service.name)].sort(),
+    );
+  });
+
+  it('rejects malformed immutable fleet manifests', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'railway-fleet-manifest-'));
+    const path = join(directory, 'fleet.json');
+    const valid = {
+      version: 1,
+      repository: 'koala73/worldmonitor',
+      acceptedHead: 'a'.repeat(40),
+      acceptedRunId: 123,
+      services: expected,
+    };
+    const cases = [
+      { ...valid, version: 2 },
+      { ...valid, repository: 'someone/else' },
+      { ...valid, acceptedHead: 'not-a-sha' },
+      { ...valid, acceptedRunId: 1.5 },
+      { ...valid, services: [] },
+      { ...valid, services: [{ id: '', name: 'seed-a' }] },
+      { ...valid, services: [...expected, { id: 'svc-a', name: 'other' }] },
+      { ...valid, services: [...expected, { id: 'other', name: 'seed-a' }] },
+    ];
+
+    try {
+      for (const manifest of cases) {
+        writeFileSync(path, JSON.stringify(manifest));
+        assert.throws(() => readExpectedRepositoryFleet(path), /fleet|manifest/i);
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('selects the expected repository services in manifest order', () => {
+    assert.deepEqual(
+      selectExpectedRepositoryServices([
+        live('other', 'database', null),
+        live('svc-b', 'relay-b'),
+        live('svc-a', 'seed-a'),
+      ], expected).map((service) => service.name),
+      ['seed-a', 'relay-b'],
+    );
+  });
+
+  it('fails closed when an expected service is missing, detached, or replaced', () => {
+    assert.throws(
+      () => selectExpectedRepositoryServices([live('svc-a', 'seed-a')], expected),
+      /relay-b.*missing/i,
+    );
+    assert.throws(
+      () => selectExpectedRepositoryServices([
+        live('svc-a', 'seed-a'),
+        live('svc-b', 'relay-b', 'someone/else'),
+      ], expected),
+      /relay-b.*repository source/i,
+    );
+    assert.throws(
+      () => selectExpectedRepositoryServices([
+        live('svc-a', 'seed-a'),
+        live('replacement-id', 'relay-b'),
+      ], expected),
+      /relay-b.*service id/i,
+    );
+  });
+
+  it('fails closed when an unregistered repository service appears', () => {
+    assert.throws(
+      () => selectExpectedRepositoryServices([
+        live('svc-a', 'seed-a'),
+        live('svc-b', 'relay-b'),
+        live('svc-new', 'seed-new'),
+      ], expected),
+      /unexpected repository service.*seed-new/i,
+    );
+  });
+
+  it('rejects malformed, duplicate, renamed, or image-backed live inventory', () => {
+    assert.throws(
+      () => selectExpectedRepositoryServices([null], expected),
+      /malformed service/i,
+    );
+    assert.throws(
+      () => selectExpectedRepositoryServices([
+        live('svc-a', 'seed-a'),
+        live('svc-a', 'relay-b'),
+      ], expected),
+      /repeats id/i,
+    );
+    assert.throws(
+      () => selectExpectedRepositoryServices([
+        live('svc-a', 'seed-a'),
+        live('svc-b', 'seed-a'),
+      ], expected),
+      /repeats name/i,
+    );
+    assert.throws(
+      () => selectExpectedRepositoryServices([
+        live('svc-a', 'renamed'),
+        live('svc-b', 'relay-b'),
+      ], expected),
+      /is named renamed/i,
+    );
+    assert.throws(
+      () => selectExpectedRepositoryServices([
+        { ...live('svc-a', 'seed-a'), source: { repo: 'koala73/worldmonitor', image: 'postgres:17' } },
+        live('svc-b', 'relay-b'),
+      ], expected),
+      /seed-a.*repository source/i,
+    );
   });
 });
 
@@ -247,6 +431,23 @@ describe('fleet paging', () => {
 });
 
 describe('fleet read deadline', () => {
+  it('scopes every direct fallback read to the explicit Railway project', async () => {
+    const options = [];
+    const result = await readDeploymentsForFleet({
+      services: [{ id: 'a' }],
+      environment: 'production',
+      projectId: 'project-1',
+      window: 50,
+      readDirect: async (_service, _environment, _window, directOptions) => {
+        options.push(directOptions);
+        return [];
+      },
+    });
+
+    assert.deepEqual(options, [{ projectId: 'project-1' }]);
+    assert.equal(result.get('a').error, null);
+  });
+
   it('does not start direct fallback reads after the shared run deadline', async () => {
     let elapsed = 0;
     const reads = [];

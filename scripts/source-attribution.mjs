@@ -64,7 +64,30 @@ const SOURCE_HINT_RE = /\b(?:fetch\w*|new\s+URL|axios|rss|feed|statusPage|endpoi
 // hosts without treating every ordinary string literal as an upstream source.
 const DECLARATION_RE = /\b(?:const|let|var)\s+[A-Z][A-Z0-9_]*\s*=\s*$/;
 
+const licensedPublisherFeed = (provider) => ({
+  provider,
+  license: 'Licensed publisher content; redistribution governed by the World Monitor agreement',
+  attribution: `Credit ${provider} and link to the original item.`,
+  status: 'reviewed',
+});
+
 const PROVIDER_OVERRIDES = {
+  'moxie.foxbusiness.com': licensedPublisherFeed('Fox Business'),
+  'www.wired.com': licensedPublisherFeed('Wired'),
+  'www.businessinsider.com': licensedPublisherFeed('Business Insider'),
+  'www.handelsblatt.com': licensedPublisherFeed('Handelsblatt'),
+  'www.welt.de': licensedPublisherFeed('Welt'),
+  'www.telegraph.co.uk': licensedPublisherFeed('The Telegraph'),
+  'www.globenewswire.com': licensedPublisherFeed('GlobeNewswire'),
+  'feed.businesswire.com': licensedPublisherFeed('Business Wire'),
+  'chainwire.org': licensedPublisherFeed('Chainwire'),
+  'www.interfax.ru': licensedPublisherFeed('Interfax'),
+  'ustr.gov': {
+    provider: 'Office of the U.S. Trade Representative',
+    license: 'U.S. government public information; site and document-specific notices apply',
+    attribution: 'Office of the U.S. Trade Representative; link to the original release.',
+    status: 'reviewed',
+  },
   'api.elections.kalshi.com': {
     provider: 'Kalshi',
     license: 'Kalshi API terms; commercial-use and redistribution terms require review',
@@ -488,6 +511,41 @@ const PROVIDER_OVERRIDES = {
 };
 
 const LOGICAL_ENTRIES = [
+  {
+    ...licensedPublisherFeed('Interfax'),
+    host: 'interfax.com',
+    kind: 'feed',
+    observed: true,
+    attribution: 'Credit Interfax and link to the original Interfax English item; Google News is the acquisition transport.',
+  },
+  {
+    ...licensedPublisherFeed('PR Newswire'),
+    host: 'prnewswire.com',
+    kind: 'feed',
+    observed: true,
+    attribution: 'Credit PR Newswire and link to the original release; Google News is the acquisition transport.',
+  },
+  {
+    ...licensedPublisherFeed('Coinbase'),
+    host: 'coinbase.com',
+    kind: 'feed',
+    observed: true,
+    attribution: 'Credit Coinbase and link to the original blog post; Google News is the acquisition transport.',
+  },
+  {
+    ...licensedPublisherFeed('Binance'),
+    host: 'binance.com',
+    kind: 'feed',
+    observed: true,
+    attribution: 'Credit Binance and link to the original announcement; Google News is the acquisition transport.',
+  },
+  {
+    ...licensedPublisherFeed('Jin10'),
+    host: 'jin10.com',
+    kind: 'feed',
+    observed: true,
+    attribution: 'Credit Jin10 and link to the original item; Google News is the acquisition transport.',
+  },
   {
     provider: 'Fintraffic Digitraffic',
     host: 'not-currently-wired',

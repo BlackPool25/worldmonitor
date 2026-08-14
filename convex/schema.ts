@@ -1060,6 +1060,29 @@ export default defineSchema({
     .index("by_dodoPaymentId", ["dodoPaymentId"])
     .index("by_reconciledAt", ["reconciledAt"]),
 
+  // One row per checkout that exhausted the #6027 provider-429 retry ladder
+  // and returned a terminal CHECKOUT_RATE_LIMITED to the buyer (#6698). This
+  // is the rate signal the alarm in `payments/checkoutRateLimitAlarm.ts`
+  // measures; the browser-side Sentry event is corroboration, not the source,
+  // because it is ad-blockable and fires at level `info`.
+  //
+  // Deliberately payload-free and self-pruning: each insert deletes a bounded
+  // batch of rows older than CHECKOUT_RATE_LIMIT_EVENT_RETENTION_MS, so a
+  // storm drains over the inserts that follow it rather than accumulating for
+  // the lifetime of the deployment. Rows left behind when 429s stop entirely
+  // are inert — every count is window-relative, so a stale row can never
+  // inflate a verdict.
+  checkoutRateLimitEvents: defineTable({
+    userId: v.string(),
+    productId: v.string(),
+    occurredAt: v.number(),
+    // Stamped on the row whose insert crossed a threshold and emitted the ops
+    // signal. This doubles as the alert cooldown clock, which is why the alarm
+    // needs no pre-seeded singleton document — there is no state row whose
+    // absence could silently disarm it.
+    alertedAt: v.optional(v.number()),
+  }).index("by_occurredAt", ["occurredAt"]),
+
   productPlans: defineTable({
     dodoProductId: v.string(),
     planKey: v.string(),

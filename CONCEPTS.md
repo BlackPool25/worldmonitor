@@ -585,6 +585,12 @@ Indistinguishable from a healthy no-op by exit status alone, which is why it is
 named and reported explicitly. A tick where every member was merely fresh is a
 healthy no-op and must not be confused with it.
 
+## Market Data Claims
+
+### Tape Claim
+
+The label a market surface is allowed to show for a quote, bar, or stream: unconfigured, delayed, end-of-day, historical, stale, or — only after a separate commercial display/rebroadcast confirmation — licensed live. A configured provider key is not a Tape Claim. `Panel.setDataBadge('live')` means a fresh fetch versus a cache hit, not a licensed tape. Yahoo and seeded Finnhub quotes in this product stay delayed or end-of-day even when their keys exist. See also: Entitlement.
+
 ## Flagged ambiguities
 
 - *"Pool"* had been used for both a labelled market category and the complete set of markets — these are distinct. A pool is always a labelled subset; the complete set has no pool and must be requested as an explicit union.

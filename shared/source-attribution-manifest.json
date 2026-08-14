@@ -1656,6 +1656,23 @@
       ]
     },
     {
+      "host": "chainwire.org",
+      "provider": "Chainwire",
+      "kind": "feed",
+      "observed": true,
+      "license": "Licensed publisher content; redistribution governed by the World Monitor agreement",
+      "attribution": "Credit Chainwire and link to the original item.",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
+          "path": "src/config/feeds.ts"
+        }
+      ]
+    },
+    {
       "host": "challenges.cloudflare.com",
       "provider": "challenges.cloudflare.com",
       "kind": "structured",
@@ -2740,6 +2757,23 @@
       "references": [
         {
           "path": "scripts/_yahoo-sector-valuations.cjs"
+        }
+      ]
+    },
+    {
+      "host": "feed.businesswire.com",
+      "provider": "Business Wire",
+      "kind": "feed",
+      "observed": true,
+      "license": "Licensed publisher content; redistribution governed by the World Monitor agreement",
+      "attribution": "Credit Business Wire and link to the original item.",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
+          "path": "src/config/feeds.ts"
         }
       ]
     },
@@ -4248,6 +4282,23 @@
       "references": [
         {
           "path": "scripts/seed-security-advisories.mjs"
+        }
+      ]
+    },
+    {
+      "host": "moxie.foxbusiness.com",
+      "provider": "Fox Business",
+      "kind": "feed",
+      "observed": true,
+      "license": "Licensed publisher content; redistribution governed by the World Monitor agreement",
+      "attribution": "Credit Fox Business and link to the original item.",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
+          "path": "src/config/feeds.ts"
         }
       ]
     },
@@ -6744,6 +6795,23 @@
       ]
     },
     {
+      "host": "ustr.gov",
+      "provider": "Office of the U.S. Trade Representative",
+      "kind": "feed",
+      "observed": true,
+      "license": "U.S. government public information; site and document-specific notices apply",
+      "attribution": "Office of the U.S. Trade Representative; link to the original release.",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
+          "path": "src/config/feeds.ts"
+        }
+      ]
+    },
+    {
       "host": "venturebeat.com",
       "provider": "venturebeat.com",
       "kind": "feed+structured",
@@ -7544,6 +7612,23 @@
       "attribution": "Credit www.brasilparalelo.com.br and link to the original feed publisher.",
       "status": "terms-review",
       "references": [
+        {
+          "path": "src/config/feeds.ts"
+        }
+      ]
+    },
+    {
+      "host": "www.businessinsider.com",
+      "provider": "Business Insider",
+      "kind": "feed",
+      "observed": true,
+      "license": "Licensed publisher content; redistribution governed by the World Monitor agreement",
+      "attribution": "Credit Business Insider and link to the original item.",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
         {
           "path": "src/config/feeds.ts"
         }
@@ -8477,6 +8562,23 @@
       ]
     },
     {
+      "host": "www.globenewswire.com",
+      "provider": "GlobeNewswire",
+      "kind": "feed",
+      "observed": true,
+      "license": "Licensed publisher content; redistribution governed by the World Monitor agreement",
+      "attribution": "Credit GlobeNewswire and link to the original item.",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
+          "path": "src/config/feeds.ts"
+        }
+      ]
+    },
+    {
       "host": "www.goldseek.com",
       "provider": "www.goldseek.com",
       "kind": "feed",
@@ -8583,6 +8685,23 @@
         },
         {
           "path": "scripts/seed-security-advisories.mjs"
+        },
+        {
+          "path": "src/config/feeds.ts"
+        }
+      ]
+    },
+    {
+      "host": "www.handelsblatt.com",
+      "provider": "Handelsblatt",
+      "kind": "feed",
+      "observed": true,
+      "license": "Licensed publisher content; redistribution governed by the World Monitor agreement",
+      "attribution": "Credit Handelsblatt and link to the original item.",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
         },
         {
           "path": "src/config/feeds.ts"
@@ -8738,6 +8857,23 @@
       "license": "Provider terms for this feed publisher; verify before redistribution",
       "attribution": "Credit www.infobae.com and link to the original feed publisher.",
       "status": "terms-review",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
+          "path": "src/config/feeds.ts"
+        }
+      ]
+    },
+    {
+      "host": "www.interfax.ru",
+      "provider": "Interfax",
+      "kind": "feed",
+      "observed": true,
+      "license": "Licensed publisher content; redistribution governed by the World Monitor agreement",
+      "attribution": "Credit Interfax and link to the original item.",
+      "status": "reviewed",
       "references": [
         {
           "path": "server/worldmonitor/news/v1/_feeds.ts"
@@ -10132,6 +10268,23 @@
       ]
     },
     {
+      "host": "www.telegraph.co.uk",
+      "provider": "The Telegraph",
+      "kind": "feed",
+      "observed": true,
+      "license": "Licensed publisher content; redistribution governed by the World Monitor agreement",
+      "attribution": "Credit The Telegraph and link to the original item.",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
+          "path": "src/config/feeds.ts"
+        }
+      ]
+    },
+    {
       "host": "www.tenders.gov.au",
       "provider": "AusTender",
       "kind": "structured",
@@ -10457,6 +10610,23 @@
       ]
     },
     {
+      "host": "www.welt.de",
+      "provider": "Welt",
+      "kind": "feed",
+      "observed": true,
+      "license": "Licensed publisher content; redistribution governed by the World Monitor agreement",
+      "attribution": "Credit Welt and link to the original item.",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
+          "path": "src/config/feeds.ts"
+        }
+      ]
+    },
+    {
       "host": "www.whitehouse.gov",
       "provider": "www.whitehouse.gov",
       "kind": "feed",
@@ -10510,6 +10680,23 @@
         },
         {
           "path": "src/services/webcams/index.ts"
+        }
+      ]
+    },
+    {
+      "host": "www.wired.com",
+      "provider": "Wired",
+      "kind": "feed",
+      "observed": true,
+      "license": "Licensed publisher content; redistribution governed by the World Monitor agreement",
+      "attribution": "Credit Wired and link to the original item.",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
+          "path": "src/config/feeds.ts"
         }
       ]
     },
@@ -10833,6 +11020,24 @@
   ],
   "logicalEntries": [
     {
+      "provider": "Binance",
+      "license": "Licensed publisher content; redistribution governed by the World Monitor agreement",
+      "attribution": "Credit Binance and link to the original announcement; Google News is the acquisition transport.",
+      "status": "reviewed",
+      "host": "binance.com",
+      "kind": "feed",
+      "observed": true
+    },
+    {
+      "provider": "Coinbase",
+      "license": "Licensed publisher content; redistribution governed by the World Monitor agreement",
+      "attribution": "Credit Coinbase and link to the original blog post; Google News is the acquisition transport.",
+      "status": "reviewed",
+      "host": "coinbase.com",
+      "kind": "feed",
+      "observed": true
+    },
+    {
       "provider": "Fintraffic Digitraffic",
       "host": "not-currently-wired",
       "kind": "candidate",
@@ -10840,6 +11045,33 @@
       "license": "Not applicable: no live fetch is present in this checkout",
       "attribution": "Excluded from the live-provider count: issue audit named Digitraffic, but no current source call was found.",
       "status": "excluded"
+    },
+    {
+      "provider": "Interfax",
+      "license": "Licensed publisher content; redistribution governed by the World Monitor agreement",
+      "attribution": "Credit Interfax and link to the original Interfax English item; Google News is the acquisition transport.",
+      "status": "reviewed",
+      "host": "interfax.com",
+      "kind": "feed",
+      "observed": true
+    },
+    {
+      "provider": "Jin10",
+      "license": "Licensed publisher content; redistribution governed by the World Monitor agreement",
+      "attribution": "Credit Jin10 and link to the original item; Google News is the acquisition transport.",
+      "status": "reviewed",
+      "host": "jin10.com",
+      "kind": "feed",
+      "observed": true
+    },
+    {
+      "provider": "PR Newswire",
+      "license": "Licensed publisher content; redistribution governed by the World Monitor agreement",
+      "attribution": "Credit PR Newswire and link to the original release; Google News is the acquisition transport.",
+      "status": "reviewed",
+      "host": "prnewswire.com",
+      "kind": "feed",
+      "observed": true
     }
   ]
 }

@@ -638,7 +638,7 @@
         "URLHAUS_AUTH_KEY": "用于URLhaus和ThreatFox API。",
         "OTX_API_KEY": "网络威胁图层的可选增强数据源。",
         "ABUSEIPDB_API_KEY": "恶意IP信誉的可选增强数据源。",
-        "FINNHUB_API_KEY": "实时股票报价和市场数据。",
+        "FINNHUB_API_KEY": "延迟或预置的股票报价和市场数据。有密钥也不代表直连行情。",
         "NASA_FIRMS_API_KEY": "消防信息资源管理系统。",
         "OLLAMA_API_URL": "e.g. http://127.0.0.1:11434 (Ollama) or http://127.0.0.1:1234/v1 (LM Studio) — OpenAI-compatible endpoint.",
         "OLLAMA_MODEL": "e.g. llama3.1:8b — model tag to use for summarization."
@@ -931,6 +931,7 @@
       "noComtradeData": "无战略流动数据",
       "comtradeUnavailable": "联合国贸易数据库数据暂时不可用",
       "sourceComtrade": "联合国贸易数据库",
+      "comtradeNationalScope": "联合国 Comtrade 的记录是报告国的国家级官方统计，不是某镇、走廊、工厂、港口或船货的出口。",
       "anomalyBadge": "异常",
       "colReporter": "国家",
       "colCommodity": "商品",
@@ -1908,7 +1909,7 @@
       "infoTooltip": "<strong>Crypto</strong> Live prices, 24h changes, and volume for major cryptocurrencies. Data sourced from CoinGecko."
     },
     "gulfEconomies": {
-      "infoTooltip": "<strong>Gulf Economies</strong> Real-time Gulf stock indices, currency rates, and oil prices for GCC economies (Saudi Arabia, UAE, Kuwait, Qatar, Bahrain, Oman)."
+      "infoTooltip": "<strong>Gulf Economies</strong> Seeded Gulf stock indices, currency rates, and oil prices for GCC economies (Saudi Arabia, UAE, Kuwait, Qatar, Bahrain, Oman)."
     },
     "groceryBasket": {
       "infoTooltip": "<strong>Grocery Index</strong> Global grocery basket price comparison across 24 countries — tracks real-world consumer goods inflation beyond headline CPI."
@@ -2170,7 +2171,7 @@
       "infoTooltip": "<strong>灾难级联</strong> 检测汇聚的自然灾害和基础设施信号：<ul><li>关联地震、野火、洪灾和极端天气</li><li>追踪对基础设施和供应链的级联影响</li><li>突出具有复合灾难风险的地区</li></ul>点击卡片可在地图上放大到受影响区域。"
     },
     "markets": {
-      "infoTooltip": "<strong>市场</strong> 实时股票指数、股票和加密货币价格。使用\"观察列表\"按钮自定义您的观察列表。火花线显示最近价格趋势。",
+      "infoTooltip": "<strong>市场</strong> 延迟或预置的股票指数、股票和加密货币价格。使用\"观察列表\"按钮自定义您的观察列表。火花线显示最近价格趋势。",
       "chart": {
         "title": "{{symbol}} 价格图表",
         "close": "关闭图表"
