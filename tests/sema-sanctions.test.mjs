@@ -13,9 +13,11 @@ import {
   SANCTIONS_SOURCE_VERSION,
   fetchSemaXml,
   mergeSanctionEntries,
+  ofacRegistrationToIdentifier,
   parseSemaXml,
   sameSanctionIdentity,
   sanctionsListContentMeta,
+  semaRecordId,
 } from '../scripts/_sema-sanctions.mjs';
 
 const fixtureXml = readFileSync(
@@ -65,6 +67,45 @@ describe('SEMA fixture parse', () => {
     assert.equal(newest._publishedAt, '2026-08-06');
     assert.equal(publishedAtMs, Date.UTC(2026, 7, 6));
     assert.equal(String(newest.effectiveAt), String(Date.UTC(2026, 7, 6)));
+  });
+});
+
+describe('SEMA ids include Schedule because Item restarts per part', () => {
+  it('puts Schedule in the id and keeps same-Item records distinct', () => {
+    const { records } = parseSemaXml(fixtureXml);
+    const ids = records.map((row) => row.id);
+    assert.equal(new Set(ids).size, ids.length);
+    const person = records.find((row) => row.name === 'Aleksey Oleksin');
+    assert.equal(person.id, 'sema-ca:belarus:1-part-1:56');
+    const entity = records.find((row) => /Belaeronavigatsia/.test(row.name));
+    assert.equal(entity.id, 'sema-ca:belarus:1-part-2:1');
+    const colliding = parseSemaXml(`<?xml version="1.0"?>
+<data-set>
+<record><Country>Belarus / Bélarus</Country><LastName>One</LastName><GivenName>Person</GivenName><Schedule>1, Part 1</Schedule><Item>1</Item><DateOfListing>2021-06-17</DateOfListing></record>
+<record><Country>Belarus / Bélarus</Country><LastName>Two</LastName><GivenName>Person</GivenName><Schedule>1, Part 2</Schedule><Item>1</Item><DateOfListing>2021-06-17</DateOfListing></record>
+</data-set>`).records;
+    assert.equal(colliding.length, 2);
+    assert.equal(colliding[0].id, 'sema-ca:belarus:1-part-1:1');
+    assert.equal(colliding[1].id, 'sema-ca:belarus:1-part-2:1');
+    assert.notEqual(colliding[0].id, colliding[1].id);
+    assert.equal(semaRecordId('Belarus / Bélarus', '1, Part 1', '1'), 'sema-ca:belarus:1-part-1:1');
+  });
+});
+
+describe('OFAC identifier mapping', () => {
+  it('maps IMO and vessel-registration numbers and ignores passports', () => {
+    assert.equal(ofacRegistrationToIdentifier('Vessel Registration Identification', 'IMO 7612448'), 'imo:7612448');
+    assert.equal(ofacRegistrationToIdentifier('IMO', '7612448'), 'imo:7612448');
+    assert.equal(ofacRegistrationToIdentifier('Passport', '7612448'), '');
+    assert.equal(ofacRegistrationToIdentifier('', 'IMO 7612448'), 'imo:7612448');
+  });
+
+  it('parses OFAC IDRegDocument / Feature IMO into _identifiers instead of leaving them empty', () => {
+    assert.match(seedSrc, /IDRegDocument/);
+    assert.match(seedSrc, /IDRegistrationNo/);
+    assert.match(seedSrc, /ofacRegistrationToIdentifier/);
+    assert.match(seedSrc, /_identifiers:\s*party\?\.identifiers/);
+    assert.doesNotMatch(seedSrc, /_identifiers:\s*\[\],/);
   });
 });
 
@@ -133,6 +174,59 @@ describe('dedup identity is not unique-name', () => {
     const merged = mergeSanctionEntries({ ofac: [ofac], eu: [], uk: [], sema: [ship] });
     assert.equal(merged.length, 1);
     assert.ok(merged[0].sourceLists.includes(SEMA_SOURCE));
+  });
+
+  it('does not collapse SDN and CONS that share a name; SEMA attaches onto the OFAC concat', () => {
+    const sdn = {
+      id: 'SDN:1',
+      name: 'Alpha Corp',
+      sourceLists: ['SDN'],
+      programs: ['SDN'],
+      _aliases: [],
+      _identifiers: [],
+    };
+    const cons = {
+      id: 'CONSOLIDATED:1',
+      name: 'Alpha Corp',
+      sourceLists: ['CONSOLIDATED'],
+      programs: ['CONS'],
+      _aliases: [],
+      _identifiers: [],
+    };
+    const ofacOnly = mergeSanctionEntries({ ofac: [sdn, cons] });
+    assert.equal(ofacOnly.length, 2, 'SDN and CONS must stay concatenated');
+    assert.deepEqual(ofacOnly.map((row) => row.id), ['SDN:1', 'CONSOLIDATED:1']);
+
+    const sema = {
+      id: 'sema-ca:alpha:1-part-1:1',
+      name: 'Alpha Corp',
+      sourceLists: [SEMA_SOURCE],
+      programs: ['SEMA'],
+      _aliases: [],
+      _identifiers: [],
+    };
+    const merged = mergeSanctionEntries({ ofac: [sdn, cons], sema: [sema] });
+    assert.equal(merged.length, 2);
+    assert.ok(merged[0].sourceLists.includes('SDN'));
+    assert.ok(merged[0].sourceLists.includes(SEMA_SOURCE));
+    assert.ok(merged[1].sourceLists.includes('CONSOLIDATED'));
+    assert.equal(merged[1].sourceLists.includes(SEMA_SOURCE), false);
+  });
+
+  it('merges thousands of SEMA-only rows in linear time', () => {
+    const sema = Array.from({ length: 6000 }, (_, i) => ({
+      id: `sema-ca:x:1:${i}`,
+      name: `Entity ${i}`,
+      sourceLists: [SEMA_SOURCE],
+      programs: ['SEMA'],
+      _aliases: [`Alias ${i}`],
+      _identifiers: i % 10 === 0 ? [`imo:${1000000 + i}`] : [],
+    }));
+    const t0 = Date.now();
+    const merged = mergeSanctionEntries({ sema });
+    const ms = Date.now() - t0;
+    assert.equal(merged.length, 6000);
+    assert.ok(ms < 2000, `expected O(n) merge, took ${ms}ms`);
   });
 });
 
@@ -252,7 +346,7 @@ describe('seeder merge, health, railway, no new surface', () => {
     assert.doesNotMatch(seedSrc, /ais-relay/);
     assert.doesNotMatch(seedSrc, /SanctionsPressurePanel/);
     assert.doesNotMatch(parseSrc, /proto\/worldmonitor/);
-    assert.equal(SANCTIONS_SOURCE_VERSION, 'ofac-sls-advanced-xml+sema-ca-v1');
+    assert.equal(SANCTIONS_SOURCE_VERSION, 'ofac-sls-advanced-xml+sema-ca-v2');
     assert.match(seedSrc, /sourceVersion:\s*SANCTIONS_SOURCE_VERSION/);
   });
 

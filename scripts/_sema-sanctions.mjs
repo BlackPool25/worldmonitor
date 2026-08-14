@@ -17,7 +17,7 @@ export const SEMA_CACHE_KEY = SEMA_XML_URL;
 export const SEMA_MAX_BYTES = 8 * 1024 * 1024;
 export const SEMA_TIMEOUT_MS = 45_000;
 export const SEMA_PROGRAM = 'SEMA';
-export const SANCTIONS_SOURCE_VERSION = 'ofac-sls-advanced-xml+sema-ca-v1';
+export const SANCTIONS_SOURCE_VERSION = 'ofac-sls-advanced-xml+sema-ca-v2';
 // List publication can sit days-to-weeks between designation batches.
 export const SANCTIONS_MAX_CONTENT_AGE_MIN = 30 * DAY_MIN;
 
@@ -71,6 +71,30 @@ export function normalizeName(value) {
 
 export function normalizeIdentifier(value) {
   return String(value || '').replace(/[^a-z0-9]/gi, '').toUpperCase();
+}
+
+export function slugToken(value, fallback = 'unspecified') {
+  return normalizeName(value).replace(/\s+/g, '-') || fallback;
+}
+
+/** Schedule restarts Item per part, so the id must include Schedule. */
+export function semaRecordId(regimeRaw, scheduleRaw, itemRaw) {
+  const regime = slugToken(englishCountryLabel(regimeRaw) || 'unspecified', 'xx');
+  const schedule = slugToken(scheduleRaw, 'unspecified');
+  const item = String(itemRaw || '0').trim() || '0';
+  return `${SEMA_SOURCE}:${regime}:${schedule}:${item}`;
+}
+
+/** Map an OFAC IDRegDocument / Feature registration onto the shared identifier space. */
+export function ofacRegistrationToIdentifier(typeName, rawNumber) {
+  const type = String(typeName || '');
+  const raw = String(rawNumber || '').trim();
+  if (!raw) return '';
+  if (/imo|vessel registration/i.test(type) || /^IMO\b/i.test(raw)) {
+    const digits = raw.replace(/\D/g, '');
+    if (digits.length >= 7 && digits.length <= 8) return `imo:${digits}`;
+  }
+  return '';
 }
 
 export function identityOf(entry) {
@@ -141,8 +165,7 @@ export function recordToCanonical(block) {
   const identifiers = [];
   if (imo) identifiers.push(`imo:${imo}`);
 
-  const regime = englishCountryLabel(countryRaw) || 'unspecified';
-  const id = `${SEMA_SOURCE}:${normalizeName(regime).replace(/\s+/g, '-') || 'xx'}:${item}`;
+  const id = semaRecordId(countryRaw, schedule, item);
 
   return {
     id,
@@ -189,20 +212,46 @@ export function mergeSanctionEntries(parts = {}) {
   const eu = Array.isArray(parts.eu) ? parts.eu : [];
   const uk = Array.isArray(parts.uk) ? parts.uk : [];
   const merged = [];
+  const idIndex = new Map();
+  const nameIndex = new Map();
 
-  function ingest(entry) {
-    if (!entry?.name) return;
-    const hit = merged.find((existing) => sameSanctionIdentity(existing, entry));
-    if (!hit) {
-      merged.push({
-        ...entry,
-        sourceLists: uniqueSorted(entry.sourceLists || []),
-        programs: uniqueSorted(entry.programs || []),
-        _aliases: uniqueSorted(entry._aliases || []),
-        _identifiers: uniqueSorted(entry._identifiers || []),
-      });
-      return;
+  function cloneEntry(entry) {
+    return {
+      ...entry,
+      sourceLists: uniqueSorted(entry.sourceLists || []),
+      programs: uniqueSorted(entry.programs || []),
+      _aliases: uniqueSorted(entry._aliases || []),
+      _identifiers: uniqueSorted(entry._identifiers || []),
+    };
+  }
+
+  function indexEntry(entry) {
+    const ident = identityOf(entry);
+    for (const id of ident.ids) idIndex.set(id, entry);
+    for (const name of ident.names) {
+      const list = nameIndex.get(name) || [];
+      if (!list.includes(entry)) list.push(entry);
+      nameIndex.set(name, list);
     }
+  }
+
+  function findHit(entry) {
+    const ident = identityOf(entry);
+    for (const id of ident.ids) {
+      const hit = idIndex.get(id);
+      if (hit) return hit;
+    }
+    for (const name of ident.names) {
+      for (const hit of nameIndex.get(name) || []) {
+        const hitIdent = identityOf(hit);
+        if (ident.ids.size > 0 && hitIdent.ids.size > 0) continue;
+        return hit;
+      }
+    }
+    return null;
+  }
+
+  function mergeInto(hit, entry) {
     hit.sourceLists = uniqueSorted([...(hit.sourceLists || []), ...(entry.sourceLists || [])]);
     hit.programs = uniqueSorted([...(hit.programs || []), ...(entry.programs || [])]);
     hit._aliases = uniqueSorted([...(hit._aliases || []), ...(entry._aliases || [])]);
@@ -212,12 +261,28 @@ export function mergeSanctionEntries(parts = {}) {
       hit.countryCodes = [...entry.countryCodes];
       hit.countryNames = [...(entry.countryNames || [])];
     }
+    indexEntry(hit);
   }
 
-  for (const entry of ofac) ingest(entry);
-  for (const entry of eu) ingest(entry);
-  for (const entry of uk) ingest(entry);
-  for (const entry of sema) ingest(entry);
+  function ingest(entry, { identityMerge }) {
+    if (!entry?.name) return;
+    if (identityMerge) {
+      const hit = findHit(entry);
+      if (hit) {
+        mergeInto(hit, entry);
+        return;
+      }
+    }
+    const cloned = cloneEntry(entry);
+    merged.push(cloned);
+    indexEntry(cloned);
+  }
+
+  // OFAC concat is the seed. Do not identity-collapse SDN ↔ CONS.
+  for (const entry of ofac) ingest(entry, { identityMerge: false });
+  for (const entry of eu) ingest(entry, { identityMerge: true });
+  for (const entry of uk) ingest(entry, { identityMerge: true });
+  for (const entry of sema) ingest(entry, { identityMerge: true });
   return merged;
 }
 

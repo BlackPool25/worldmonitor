@@ -8,7 +8,7 @@ import sax from 'sax';
 
 import { loadEnvFile, runSeed, verifySeedKey, writeExtraKeyWithMeta } from './_seed-utils.mjs';
 import { fetchOfacSourceResponse } from './_sanctions-source.mjs';
-import { SANCTIONS_MAX_CONTENT_AGE_MIN, SANCTIONS_SOURCE_VERSION, fetchSemaEntries, mergeSanctionEntries, sanctionsListContentMeta } from './_sema-sanctions.mjs';
+import { SANCTIONS_MAX_CONTENT_AGE_MIN, SANCTIONS_SOURCE_VERSION, fetchSemaEntries, mergeSanctionEntries, ofacRegistrationToIdentifier, sanctionsListContentMeta } from './_sema-sanctions.mjs';
 
 loadEnvFile(import.meta.url);
 
@@ -133,6 +133,8 @@ async function fetchSource(source) {
     const areaCodes   = new Map(); // ID → { code, name }
     const featureTypes = new Map(); // ID → label string
     const legalBasis  = new Map(); // ID → shortRef string
+    const idRegDocTypes = new Map(); // ID → label string
+    const idRegDocsByIdentity = new Map(); // identityId → { typeId, number }[]
     const locations   = new Map(); // ID → { codes[], names[] }
     const parties     = new Map(); // profileId → { name, entityType, countryCodes[], countryNames[] }
     const entries     = [];
@@ -148,6 +150,8 @@ async function fetchSource(source) {
     let inAreaCodeValues    = false;
     let inFeatureTypeValues = false;
     let inLegalBasisValues  = false;
+    let inIDRegDocTypeValues = false;
+    let inIDRegDocuments    = false;
     let inLocations         = false;
     let inDistinctParties   = false;
     let inSanctionsEntries  = false;
@@ -165,13 +169,14 @@ async function fetchSource(source) {
 
     // DistinctParty / Profile
     let partyFixedRef = '';
-    let profileId = '', profileSubTypeId = '';
+    let profileId = '', profileSubTypeId = '', identityId = '';
+    let curDoc = null;           // { typeId, identityId, number }
     let aliases = null;          // Alias[]
     let curAlias = null;         // { primary, typeId, nameParts[] }
     let inDocumentedName = false;
     let namePartsBuf = null;     // string[] collecting NamePartValue text
     let profileFeatures = null;  // Feature[]
-    let curFeature = null;       // { featureTypeId, locationIds[] }
+    let curFeature = null;       // { featureTypeId, locationIds[], detail }
 
     // SanctionsEntry
     let entryId = '', entryProfileId = '';
@@ -226,12 +231,21 @@ async function fetchSource(source) {
       const sorted = [...seen.entries()].sort(([a], [b]) => a.localeCompare(b));
 
       const aliasNames = uniqueSorted((aliases ?? []).map((a) => a.nameParts.join(' ')).filter((part) => part && part !== name));
+      const identifiers = uniqueSorted([
+        ...(idRegDocsByIdentity.get(identityId) || []).map((doc) => (
+          ofacRegistrationToIdentifier(idRegDocTypes.get(doc.typeId) || '', doc.number)
+        )),
+        ...(profileFeatures ?? []).map((feat) => (
+          ofacRegistrationToIdentifier(featureTypes.get(feat.featureTypeId) || '', feat.detail)
+        )),
+      ]);
       parties.set(profileId, {
         name,
         entityType,
         countryCodes: sorted.map(([c]) => c),
         countryNames: sorted.map(([, n]) => n),
         aliases: aliasNames,
+        identifiers,
       });
     }
 
@@ -258,7 +272,7 @@ async function fetchSource(source) {
         isNew: false,
         note,
         _aliases: party?.aliases ?? [],
-        _identifiers: [],
+        _identifiers: party?.identifiers ?? [],
       });
     }
 
@@ -275,6 +289,8 @@ async function fetchSource(source) {
         case 'AreaCodeValues':    inAreaCodeValues = true; break;
         case 'FeatureTypeValues': inFeatureTypeValues = true; break;
         case 'LegalBasisValues':  inLegalBasisValues = true; break;
+        case 'IDRegDocTypeValues': inIDRegDocTypeValues = true; break;
+        case 'IDRegDocuments':    inIDRegDocuments = true; break;
         case 'Locations':         inLocations = true; break;
         case 'DistinctParties':   inDistinctParties = true; break;
         case 'SanctionsEntries':  inSanctionsEntries = true; break;
@@ -288,6 +304,14 @@ async function fetchSource(source) {
           break;
         case 'LegalBasis':
           if (inLegalBasisValues) { refId = attrs.ID || ''; refShortRef = attrs.LegalBasisShortRef || ''; }
+          break;
+        case 'IDRegDocType':
+          if (inIDRegDocTypeValues) { refId = attrs.ID || ''; refDescription = attrs.IDRegDocTypeName || ''; }
+          break;
+        case 'IDRegDocument':
+          if (inIDRegDocuments) {
+            curDoc = { typeId: attrs.IDRegDocTypeID || '', identityId: attrs.IdentityID || '', number: '' };
+          }
           break;
 
         // ── Locations ──
@@ -303,7 +327,10 @@ async function fetchSource(source) {
           if (inDistinctParties) { partyFixedRef = attrs.FixedRef || ''; aliases = []; profileFeatures = []; }
           break;
         case 'Profile':
-          if (inDistinctParties) { profileId = attrs.ID || partyFixedRef; profileSubTypeId = attrs.PartySubTypeID || ''; }
+          if (inDistinctParties) { profileId = attrs.ID || partyFixedRef; profileSubTypeId = attrs.PartySubTypeID || ''; identityId = ''; }
+          break;
+        case 'Identity':
+          if (inDistinctParties) identityId = attrs.ID || '';
           break;
         case 'Alias':
           if (inDistinctParties) curAlias = { primary: attrs.Primary === 'true', typeId: attrs.AliasTypeID || '', nameParts: [] };
@@ -312,7 +339,7 @@ async function fetchSource(source) {
           if (curAlias) { inDocumentedName = true; namePartsBuf = []; }
           break;
         case 'Feature':
-          if (inDistinctParties) curFeature = { featureTypeId: attrs.FeatureTypeID || '', locationIds: [] };
+          if (inDistinctParties) curFeature = { featureTypeId: attrs.FeatureTypeID || '', locationIds: [], detail: '' };
           break;
         case 'VersionLocation':
           if (curFeature && attrs.LocationID) curFeature.locationIds.push(attrs.LocationID);
@@ -369,6 +396,8 @@ async function fetchSource(source) {
         case 'AreaCodeValues':    inAreaCodeValues = false; break;
         case 'FeatureTypeValues': inFeatureTypeValues = false; break;
         case 'LegalBasisValues':  inLegalBasisValues = false; break;
+        case 'IDRegDocTypeValues': inIDRegDocTypeValues = false; break;
+        case 'IDRegDocuments':    inIDRegDocuments = false; break;
         case 'Locations':         inLocations = false; break;
         case 'DistinctParties':   inDistinctParties = false; break;
         case 'SanctionsEntries':  inSanctionsEntries = false; break;
@@ -382,6 +411,26 @@ async function fetchSource(source) {
           break;
         case 'LegalBasis':
           if (inLegalBasisValues && refId) legalBasis.set(refId, refShortRef || t);
+          break;
+        case 'IDRegDocTypeName':
+          if (inIDRegDocTypeValues) refDescription = t || refDescription;
+          break;
+        case 'IDRegDocType':
+          if (inIDRegDocTypeValues && refId) idRegDocTypes.set(refId, refDescription || t);
+          break;
+        case 'IDRegistrationNo':
+          if (curDoc) curDoc.number = t;
+          break;
+        case 'IDRegDocument':
+          if (curDoc?.identityId) {
+            const list = idRegDocsByIdentity.get(curDoc.identityId) || [];
+            list.push(curDoc);
+            idRegDocsByIdentity.set(curDoc.identityId, list);
+          }
+          curDoc = null;
+          break;
+        case 'VersionDetail':
+          if (curFeature && t) curFeature.detail = t;
           break;
 
         // ── Locations ──
@@ -407,7 +456,7 @@ async function fetchSource(source) {
           break;
         case 'Profile':
           if (inDistinctParties && profileId) finalizeParty();
-          profileId = ''; profileSubTypeId = ''; aliases = []; profileFeatures = [];
+          profileId = ''; profileSubTypeId = ''; identityId = ''; aliases = []; profileFeatures = [];
           break;
         case 'DistinctParty':
           partyFixedRef = '';
