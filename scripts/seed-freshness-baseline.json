@@ -76,12 +76,12 @@
       "name": "torontoRoads",
       "status": "EMPTY",
       "issue": 6609,
-      "expiresAt": "2026-08-16T20:15:00.000Z",
-      "reason": "New Toronto road restrictions probe (infra:toronto-roads:v1). seed-toronto-road-restrictions cron is */15; EMPTY is expected until the first Railway tick after this acknowledgement. Expiry equals firstScheduledRunAt so a missed first publication blocks acceptance. Re-anchored from 2026-08-14T20:15Z to 2026-08-16T20:15Z so merge slip does not fail the EMPTY window; activatedAt moved with firstScheduledRunAt to stay inside the 24h MAX_ROLLOUT_WINDOW_MS cap.",
+      "expiresAt": "2026-08-16T22:15:00.000Z",
+      "reason": "New Toronto road restrictions probe (infra:toronto-roads:v1). EMPTY is expected until the first Railway tick after this acknowledgement. Expiry equals firstScheduledRunAt so a missed first publication blocks acceptance. Re-anchored from 2026-08-14T20:15Z to 2026-08-16T20:15Z so merge slip does not fail the EMPTY window; activatedAt moved with firstScheduledRunAt to stay inside the 24h MAX_ROLLOUT_WINDOW_MS cap. This seeder no longer has a */15 cron of its own: seed-bundle-canada (#6711) owns it as a member gated on intervalMs 2h — road restrictions are construction permits, not live incidents, and polling a 3.6MB body every 15 minutes cost 348 MB/day. The first run therefore clears on BUNDLE provisioning, and the 2h gate means it can land up to two hours after that.",
       "cutover": {
         "probeKey": "seed-meta:infra:toronto-roads",
-        "activatedAt": "2026-08-15T20:20:00.000Z",
-        "firstScheduledRunAt": "2026-08-16T20:15:00.000Z"
+        "activatedAt": "2026-08-15T22:20:00.000Z",
+        "firstScheduledRunAt": "2026-08-16T22:15:00.000Z"
       }
     }
   ]

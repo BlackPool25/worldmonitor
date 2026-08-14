@@ -324,17 +324,17 @@ test("toronto restrictions share canadaRoads and do not invent a second MapLayer
   assert.match(client, /toronto-roads/);
 });
 
-test("railway registers seed-toronto-road-restrictions as an active */15 nixpacks job", () => {
+test("toronto roads runs as a bundle member, not its own */15 service", () => {
+  // A 3.62MB construction-permit feed does not earn a dedicated Railway slot,
+  // and */15 on that payload cost 348 MB/day. seed-bundle-canada (#6711) owns
+  // this seeder gated on intervalMs 2h — ~44 MB/day for data that changes on a
+  // permit desk's schedule.
   const registry = JSON.parse(readFileSync(join(root, "scripts/railway-services.json"), "utf8"));
-  const entry = registry.find((s) => s.service === "seed-toronto-road-restrictions");
-  assert.ok(entry);
-  assert.equal(entry.entry, "scripts/seed-toronto-road-restrictions.mjs");
-  assert.equal(entry.deployMode, "nixpacks-root-scripts");
-  assert.equal(entry.lifecycle, "active");
-  assert.equal(entry.cronSchedule, "*/15 * * * *");
-  assert.ok(entry.watchPatterns.includes("scripts/lib/toronto-road-restrictions.mjs"));
-  assert.ok(entry.watchPatterns.includes("scripts/seed-toronto-road-restrictions.mjs"));
-  assert.equal(entry.watchPatterns.some((p) => p.includes("511")), false);
+  assert.equal(
+    registry.some((s) => s.service === "seed-toronto-road-restrictions"),
+    false,
+    "a standalone row would claim a slot the bundle already covers",
+  );
 });
 
 test("bootstrap keeps Ontario and Alberta fast but fetches Toronto roads on demand", () => {
@@ -355,7 +355,14 @@ test("seed-freshness-baseline acknowledges the Toronto roads cutover", () => {
   assert.ok(row);
   assert.equal(row.status, "EMPTY");
   assert.equal(row.issue, 6609);
-  assert.equal(row.expiresAt, "2026-08-16T20:15:00.000Z");
   assert.equal(row.cutover.probeKey, "seed-meta:infra:toronto-roads");
-  assert.equal(row.cutover.firstScheduledRunAt, "2026-08-16T20:15:00.000Z");
+  // The window has to outlast the member's own gate. Toronto runs on
+  // intervalMs 2h, so the first publish can land up to two hours after the
+  // bundle is provisioned — an expiry pinned to the provisioning instant would
+  // red the monitor while the seeder is working correctly. activatedAt moved
+  // with it to stay inside the 24h MAX_ROLLOUT_WINDOW_MS cap.
+  assert.equal(row.expiresAt, "2026-08-16T22:15:00.000Z");
+  assert.equal(row.cutover.firstScheduledRunAt, "2026-08-16T22:15:00.000Z");
+  const gapMs = Date.parse(row.cutover.firstScheduledRunAt) - Date.parse(row.cutover.activatedAt);
+  assert.ok(gapMs > 0 && gapMs < 24 * 60 * 60 * 1000, "rollout window must stay under the 24h cap");
 });
