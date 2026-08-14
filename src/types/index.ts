@@ -661,7 +661,7 @@ export interface MapLayers {
   radiationWatch?: boolean;
   sanctions: boolean;
   weather: boolean;
-  /** Official Canada road events and conditions, including Ontario, Alberta, and Toronto. */
+  /** Official Canada road events and conditions from Ontario, Alberta, Toronto, and British Columbia. */
   canadaRoads: boolean;
   economic: boolean;
   waterways: boolean;

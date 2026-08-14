@@ -41,6 +41,7 @@ const AUDITED_PRESENT_PAYLOAD_KEYS = [
   'canadaRoads',
   'albertaRoads',
   'torontoRoads',
+  'bcOpen511',
 ];
 
 function classifyMissing(name, meta) {

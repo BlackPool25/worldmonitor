@@ -220,7 +220,7 @@ export const LAYER_EXPLANATIONS: Partial<Record<keyof MapLayers, LayerExplanatio
     coverage: 'curated',
     category: 'Transport',
     purpose: 'Shows official road incidents, alerts, conditions, closures, construction, and hazards across supported Canadian jurisdictions.',
-    source: 'Ontario 511 and Alberta 511 provincial feeds plus City of Toronto Road Restrictions, seeded through WorldMonitor.',
+    source: 'Ontario 511 and Alberta 511 provincial feeds, City of Toronto Road Restrictions, and DriveBC Open511, seeded through WorldMonitor.',
     freshness: 'Each road source is seeded every 15 minutes and monitored against a 45-minute freshness budget.',
     confidence: 'Authoritative for the supported provincial and municipal publishers, subject to upstream publication timing and mapped geometry.',
     limitations: [
@@ -230,7 +230,7 @@ export const LAYER_EXPLANATIONS: Partial<Record<keyof MapLayers, LayerExplanatio
       'Road-condition polylines may simplify complex highway geometry.',
     ],
     related: ['US Weather Alerts (NWS)', 'Data freshness status'],
-    evidence: ['scripts/seed-provincial-511.mjs', 'scripts/seed-toronto-road-restrictions.mjs', 'api/health.js', 'src/services/canada-roads.ts'],
+    evidence: ['scripts/seed-provincial-511.mjs', 'scripts/seed-toronto-road-restrictions.mjs', 'scripts/seed-open511.mjs', 'api/health.js', 'src/services/canada-roads.ts'],
   },
   flights: {
     key: 'flights',
@@ -617,6 +617,8 @@ export const LAYER_SYNONYMS: Record<string, Array<keyof MapLayers>> = {
   ontario: ['canadaRoads'],
   alberta: ['canadaRoads'],
   toronto: ['canadaRoads'],
+  britishcolumbia: ['canadaRoads'],
+  drivebc: ['canadaRoads'],
   highway: ['canadaRoads'],
   forest: ['fires'],
   refugee: ['displacement'],

@@ -26,6 +26,7 @@ export const CANADA_ROAD_SOURCES: readonly CanadaRoadSourceDescriptor[] = Object
   { key: 'canadaRoads', source: 'ontario-511', jurisdiction: 'ON', onDemand: false },
   { key: 'albertaRoads', source: 'alberta-511', jurisdiction: 'AB', onDemand: false },
   { key: 'torontoRoads', source: 'toronto-roads', jurisdiction: 'Toronto', onDemand: true },
+  { key: 'bcOpen511', source: 'bc-open511', jurisdiction: 'BC', onDemand: true },
 ]);
 
 let lastSourceStates: CanadaRoadSourceStates = Object.fromEntries(
@@ -40,12 +41,14 @@ const breaker = createCircuitBreaker<CanadaRoadRecord[]>({
 
 const ON_DEMAND_LOADERS: Record<string, () => Promise<unknown | undefined>> = {
   torontoRoads: () => ensureHydrated('torontoRoads'),
+  bcOpen511: () => ensureHydrated('bcOpen511'),
 };
 
 const HYDRATED_LOADERS: Record<string, () => unknown | undefined> = {
   canadaRoads: () => getHydratedData('canadaRoads'),
   albertaRoads: () => getHydratedData('albertaRoads'),
   torontoRoads: () => getHydratedData('torontoRoads'),
+  bcOpen511: () => getHydratedData('bcOpen511'),
 };
 
 interface CanadaRoadLoadDependencies {

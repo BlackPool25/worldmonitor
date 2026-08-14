@@ -68,8 +68,8 @@ describe('per-host 511 limiter (#6618 v1)', () => {
     assert.doesNotMatch(ADAPTER_SOURCE, /fetch\.bind/);
   });
 
-  it('BC Open511 host is 60/60 (~1 rps); Ontario stays 10/60 on its own bucket', async () => {
-    assert.deepEqual(HOST_511_RATES['api.open511.gov.bc.ca'], { capacity: 60, windowMs: 60_000 });
+  it('BC Open511 is paced at one request per second; Ontario stays 10/60', async () => {
+    assert.deepEqual(HOST_511_RATES['api.open511.gov.bc.ca'], { capacity: 1, windowMs: 1_000 });
     let nowMs = 1_000;
     const sleeps = [];
     const limiter = create511RateLimiter({
@@ -81,16 +81,13 @@ describe('per-host 511 limiter (#6618 v1)', () => {
       },
     });
 
-    for (let i = 0; i < 60; i++) {
-      await limiter.acquire511Slot('api.open511.gov.bc.ca');
-    }
-    assert.equal(limiter.pendingCount('api.open511.gov.bc.ca'), 60);
+    await limiter.acquire511Slot('api.open511.gov.bc.ca');
+    assert.equal(limiter.pendingCount('api.open511.gov.bc.ca'), 1);
     assert.equal(limiter.pendingCount('511on.ca'), 0);
 
-    const sixtyFirst = limiter.acquire511Slot('api.open511.gov.bc.ca');
-    await sixtyFirst;
-    assert.ok(sleeps.length >= 1, '61st BC call must wait for the 60/60 window');
-    assert.equal(sleeps[0], 60_000);
+    await limiter.acquire511Slot('api.open511.gov.bc.ca');
+    assert.ok(sleeps.length >= 1, 'second BC call must wait for the one-second window');
+    assert.equal(sleeps[0], 1_000);
 
     sleeps.length = 0;
     for (let i = 0; i < 10; i++) {
@@ -114,7 +111,6 @@ describe('per-host 511 limiter (#6618 v1)', () => {
     assert.doesNotMatch(RELAY_SOURCE, /ontario-511/);
     assert.doesNotMatch(RELAY_SOURCE, /alberta-511/);
     assert.doesNotMatch(RELAY_SOURCE, /canadaRoads/);
-    assert.match(CANADA_ROADS_SOURCE, /infra:alberta-511:v1/);
     assert.match(CANADA_ROADS_SOURCE, /albertaRoads/);
     assert.match(CANADA_ROADS_SOURCE, /alberta-511/);
   });

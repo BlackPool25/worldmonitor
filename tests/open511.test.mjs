@@ -126,9 +126,38 @@ test('two-page pagination follows next_url and rate-limits each page', async () 
   assert.equal(result.pages, 2);
   assert.match(urls[0], /\/events\?status=ACTIVE&limit=500$/);
   assert.match(urls[1], /offset=500/);
-  assert.equal(limiterTesting.pendingTokens('api.open511.gov.bc.ca'), 2);
+  assert.equal(limiterTesting.pendingTokens('api.open511.gov.bc.ca'), 1);
   assert.equal(result.records[0].source, 'bc-open511');
   assert.equal(result.records[1].jurisdiction, 'BC');
+});
+
+test('every Open511 page acquires its own limiter slot', async () => {
+  const slots = [];
+  const fetchFn = async (url) => String(url).includes('offset=500')
+    ? jsonResponse(PAGE2)
+    : jsonResponse(PAGE1);
+  const result = await fetchEvents('https://api.open511.gov.bc.ca', {
+    fetchFn,
+    acquireSlot: async (host) => { slots.push(host); },
+  });
+  assert.equal(result.pages, 2);
+  assert.deepEqual(slots, ['api.open511.gov.bc.ca', 'api.open511.gov.bc.ca']);
+});
+
+test('non-advancing pagination fails closed', async () => {
+  const same = 'https://api.open511.gov.bc.ca/events?status=ACTIVE&limit=1';
+  const fetchFn = async () => jsonResponse({
+    events: [PAGE.events[0]],
+    pagination: { next_url: same },
+  });
+  await assert.rejects(
+    fetchEvents('https://api.open511.gov.bc.ca', {
+      fetchFn,
+      limit: 1,
+      acquireSlot: async () => {},
+    }),
+    /pagination did not advance/,
+  );
 });
 
 test('offset pagination continues until an empty page when next_url is absent', async () => {
@@ -212,7 +241,7 @@ test('CHROME_UA, timeout, redirect error, and no fetch.bind', async () => {
   assert.match(ADAPTER_SOURCE, /redirect: 'error'/);
 });
 
-test('pagination stops at max pages (20)', async () => {
+test('pagination fails closed when max pages is exhausted before completion', async () => {
   let calls = 0;
   const fetchFn = async (url) => {
     calls += 1;
@@ -231,10 +260,11 @@ test('pagination stops at max pages (20)', async () => {
       },
     });
   };
-  const result = await fetchEvents('https://api.open511.gov.bc.ca', { fetchFn, limit: 1, maxPages: 20, acquireSlot: async () => {} });
-  assert.equal(result.pages, 20);
+  await assert.rejects(
+    fetchEvents('https://api.open511.gov.bc.ca', { fetchFn, limit: 1, maxPages: 20, acquireSlot: async () => {} }),
+    /maxPages=20.*before pagination completed/,
+  );
   assert.equal(calls, 20);
-  assert.equal(result.records.length, 20);
 });
 
 test('BC Open511 shares canadaRoads and does not invent a second MapLayers key', () => {
@@ -250,7 +280,7 @@ test('BC Open511 shares canadaRoads and does not invent a second MapLayers key',
   assert.match(client, /unionCanadaRoadRecords/);
   assert.match(client, /ontario-511/);
   assert.match(client, /bc-open511/);
-  assert.match(client, /stampSource\(bc \|\| \[\], 'bc-open511'\)/);
+  assert.match(client, /key: 'bcOpen511', source: 'bc-open511'/);
 });
 
 test('railway registers seed-open511 as an active */15 nixpacks job', () => {
@@ -317,38 +347,29 @@ test('following next_url without status=ACTIVE still requests ACTIVE pages', asy
   assert.match(urls[1], /offset=1/);
 });
 
-test('hitting maxPages warns that remaining pages were dropped', async () => {
-  const warnings = [];
-  const origWarn = console.warn;
-  console.warn = (...args) => { warnings.push(args.join(' ')); };
-  try {
-    const fetchFn = async (url) => {
-      const offset = Number(new URL(url).searchParams.get('offset') || 0);
-      return jsonResponse({
-        events: [{
-          id: `drivebc.ca/DBC-${offset}`,
-          headline: 'CONSTRUCTION',
-          severity: 'MINOR',
-          event_type: 'CONSTRUCTION',
-          geography: { type: 'Point', coordinates: [-123.1, 49.2] },
-        }],
-        pagination: {
-          offset,
-          next_url: `https://api.open511.gov.bc.ca/events?limit=1&offset=${offset + 1}`,
-        },
-      });
-    };
-    const result = await fetchEvents('https://api.open511.gov.bc.ca', {
-      fetchFn, limit: 1, maxPages: 3, acquireSlot: async () => {},
+test('hitting maxPages rejects instead of publishing a partial success', async () => {
+  const fetchFn = async (url) => {
+    const offset = Number(new URL(url).searchParams.get('offset') || 0);
+    return jsonResponse({
+      events: [{
+        id: `drivebc.ca/DBC-${offset}`,
+        headline: 'CONSTRUCTION',
+        severity: 'MINOR',
+        event_type: 'CONSTRUCTION',
+        geography: { type: 'Point', coordinates: [-123.1, 49.2] },
+      }],
+      pagination: {
+        offset,
+        next_url: `https://api.open511.gov.bc.ca/events?limit=1&offset=${offset + 1}`,
+      },
     });
-    assert.equal(result.pages, 3);
-    assert.equal(warnings.length, 1);
-    assert.match(warnings[0], /maxPages=3/);
-    assert.match(warnings[0], /remaining pages dropped/);
-    assert.match(String(result.records.length), /3/);
-  } finally {
-    console.warn = origWarn;
-  }
+  };
+  await assert.rejects(
+    fetchEvents('https://api.open511.gov.bc.ca', {
+      fetchFn, limit: 1, maxPages: 3, acquireSlot: async () => {},
+    }),
+    /maxPages=3.*before pagination completed/,
+  );
 });
 
 test('400-record cap keeps closures and accidents above construction filler', () => {
@@ -409,4 +430,3 @@ test('400-record cap is a no-op below the limit and records truncated:false', ()
   assert.equal(selected.records.length, 1);
   assert.equal(selected.records[0].id, 'drivebc.ca/DBC-1');
 });
-

@@ -301,11 +301,17 @@ export async function fetchEvents(baseUrl, opts = {}) {
   let url = eventsUrl(baseUrl, { status, limit });
   let pages = 0;
   let offset = 0;
+  const visited = new Set();
 
   while (pages < maxPages) {
     if (url.hostname.toLowerCase() !== hostname) {
       throw new Error(`open511: pagination left allowlisted host ${hostname} -> ${url.hostname}`);
     }
+    const pageUrl = url.toString();
+    if (visited.has(pageUrl)) {
+      throw new Error(`open511: pagination did not advance from ${pageUrl}`);
+    }
+    visited.add(pageUrl);
     const body = await fetchOpen511Page(url, opts);
     const pageRecords = normalizeOpen511List(body, ctx);
     records.push(...pageRecords);
@@ -313,8 +319,7 @@ export async function fetchEvents(baseUrl, opts = {}) {
     const next = nextPageUrl(body, url, { status, limit, offset });
     if (!next) break;
     if (pages >= maxPages) {
-      console.warn(`open511: hit maxPages=${maxPages} on ${hostname}; remaining pages dropped`);
-      break;
+      throw new Error(`open511: hit maxPages=${maxPages} on ${hostname} before pagination completed`);
     }
     offset = Number(new URL(next).searchParams.get('offset') || 0) || offset + pageRecords.length;
     url = next;
@@ -375,4 +380,3 @@ export function selectOpen511Records(records, maxRecords = MAX_RECORDS) {
     truncated: true,
   };
 }
-
