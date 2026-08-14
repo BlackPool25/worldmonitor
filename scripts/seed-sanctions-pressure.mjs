@@ -8,7 +8,7 @@ import sax from 'sax';
 
 import { loadEnvFile, runSeed, verifySeedKey, writeExtraKeyWithMeta } from './_seed-utils.mjs';
 import { fetchOfacSourceResponse } from './_sanctions-source.mjs';
-import { SANCTIONS_MAX_CONTENT_AGE_MIN, SANCTIONS_SOURCE_VERSION, fetchSemaEntries, mergeSanctionEntries, ofacRegistrationToIdentifier, sanctionsListContentMeta } from './_sema-sanctions.mjs';
+import { SANCTIONS_MAX_CONTENT_AGE_MIN, SANCTIONS_SOURCE_VERSION, ingestSemaEntries, mergeSanctionEntries, ofacRegistrationToIdentifier, sanctionsListContentMeta, sanctionsSemaHealthMeta } from './_sema-sanctions.mjs';
 
 loadEnvFile(import.meta.url);
 
@@ -555,13 +555,15 @@ async function fetchSanctionsPressure() {
 
   let semaEntries = [];
   let semaPublishedAt = 0;
-  try {
-    const sema = await fetchSemaEntries();
-    semaEntries = sema.records;
-    semaPublishedAt = sema.publishedAtMs || 0;
+  let semaError = null;
+  const sema = await ingestSemaEntries();
+  semaEntries = sema.records;
+  semaPublishedAt = sema.publishedAtMs || 0;
+  semaError = sema.error;
+  if (semaError) {
+    console.warn(`  SEMA fetch failed: ${semaError}`);
+  } else {
     console.log(`  SEMA: ${semaEntries.length} entries, publishedAt=${semaPublishedAt || 'unknown'}`);
-  } catch (err) {
-    console.warn(`  SEMA fetch failed: ${err?.message || err}`);
   }
 
   const ofacEntries = ofacResults.flatMap((result) => result.entries);
@@ -611,6 +613,7 @@ async function fetchSanctionsPressure() {
     sdnCount: ofacResults[0]?.entries.length ?? 0,
     consolidatedCount: ofacResults[1]?.entries.length ?? 0,
     semaCount,
+    semaError: semaError || null,
     newEntryCount,
     vesselCount,
     aircraftCount,
@@ -703,6 +706,11 @@ runSeed('sanctions', 'pressure', CANONICAL_KEY, fetchSanctionsPressure, {
     delete data._state;
     delete data._entityIndex;
     delete data._countryCounts;
+    const semaHealth = sanctionsSemaHealthMeta(data.semaError);
+    if (semaHealth) {
+      return { freshnessMetaPatch: semaHealth };
+    }
+    return undefined;
   },
 
   declareRecords,

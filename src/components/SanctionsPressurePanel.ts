@@ -35,7 +35,11 @@ export class SanctionsPressurePanel extends Panel {
     const summaryHtml = `
       <div class="sanctions-summary">
         ${this.renderSummaryCard(t('components.sanctionsPressure.summary.new'), data.newEntryCount, data.newEntryCount > 0 ? 'highlight' : '')}
-        ${this.renderSummaryCard(t('components.sanctionsPressure.summary.sema'), data.semaCount)}
+        ${this.renderSummaryCard(
+          t('components.sanctionsPressure.summary.sema'),
+          data.semaError ? `${data.semaCount} · ${data.semaError}` : data.semaCount,
+          data.semaError ? 'highlight' : '',
+        )}
         ${this.renderSummaryCard(t('components.sanctionsPressure.summary.vessels'), data.vesselCount)}
         ${this.renderSummaryCard(t('components.sanctionsPressure.summary.aircraft'), data.aircraftCount)}
       </div>

@@ -395,3 +395,71 @@ export async function fetchSemaEntries(options = {}) {
   const { text } = await fetchSemaXml(SEMA_CACHE_KEY, options);
   return parseSemaXml(text);
 }
+
+export const SEMA_EMPTY_ERROR = 'SEMA_EMPTY';
+export const SEMA_INGEST_ERROR_CODE = 'SEMA_INGEST_FAILED';
+
+/**
+ * Fetch+parse SEMA without throwing. Empty XML, HTTP errors, and transport
+ * failures all become `{ error }` so a successful OFAC snapshot cannot hide them.
+ */
+export async function ingestSemaEntries(options = {}) {
+  try {
+    const parsed = await fetchSemaEntries(options);
+    const records = Array.isArray(parsed?.records) ? parsed.records : [];
+    if (records.length === 0) {
+      return { records: [], publishedAtMs: 0, oldestItemAt: 0, error: SEMA_EMPTY_ERROR };
+    }
+    return {
+      records,
+      publishedAtMs: parsed.publishedAtMs || 0,
+      oldestItemAt: parsed.oldestItemAt || 0,
+      error: null,
+    };
+  } catch (err) {
+    return {
+      records: [],
+      publishedAtMs: 0,
+      oldestItemAt: 0,
+      error: String(err?.message || err || 'SEMA_FETCH_FAILED'),
+    };
+  }
+}
+
+/** Seed-meta patch that keeps health off green when SEMA ingest failed. */
+export function sanctionsSemaHealthMeta(semaError) {
+  if (!semaError) return null;
+  return {
+    sourceState: 'error',
+    errorCode: SEMA_INGEST_ERROR_CODE,
+  };
+}
+
+/**
+ * Merge lists and keep a SEMA failure visible on the snapshot.
+ * OFAC-only data still publishes; sourceState/semaError stay set.
+ */
+export function buildSanctionsMergeSnapshot({ ofac = [], eu = [], uk = [], sema = [], semaError = null } = {}) {
+  const ofacEntries = Array.isArray(ofac) ? ofac : [];
+  const euEntries = Array.isArray(eu) ? eu : [];
+  const ukEntries = Array.isArray(uk) ? uk : [];
+  const semaEntries = Array.isArray(sema) ? sema : [];
+  if (ofacEntries.length === 0 && euEntries.length === 0 && ukEntries.length === 0 && semaEntries.length === 0) {
+    throw new Error('all sanctions lists failed');
+  }
+  const entries = mergeSanctionEntries({
+    ofac: ofacEntries,
+    eu: euEntries,
+    uk: ukEntries,
+    sema: semaEntries,
+  });
+  const health = sanctionsSemaHealthMeta(semaError);
+  return {
+    totalCount: entries.length,
+    semaCount: semaEntries.length,
+    semaError: semaError || null,
+    sourceState: health?.sourceState || 'ok',
+    errorCode: health?.errorCode || null,
+    entries,
+  };
+}

@@ -44,6 +44,7 @@ export interface SanctionsPressureResult {
   sdnCount: number;
   consolidatedCount: number;
   semaCount: number;
+  semaError: string | null;
   newEntryCount: number;
   vesselCount: number;
   aircraftCount: number;
@@ -71,6 +72,7 @@ const emptyResult: SanctionsPressureResult = {
   sdnCount: 0,
   consolidatedCount: 0,
   semaCount: 0,
+  semaError: null,
   newEntryCount: 0,
   vesselCount: 0,
   aircraftCount: 0,
@@ -133,6 +135,12 @@ function toProgram(raw: ProtoProgramPressure): ProgramSanctionsPressure {
   };
 }
 
+
+function readSemaError(response: ListSanctionsPressureResponse): string | null {
+  const extra = response as ListSanctionsPressureResponse & { semaError?: unknown };
+  return typeof extra.semaError === 'string' && extra.semaError ? extra.semaError : null;
+}
+
 function toResult(response: ListSanctionsPressureResponse): SanctionsPressureResult {
   return {
     fetchedAt: parseEpoch(response.fetchedAt as string | number | undefined) || new Date(),
@@ -141,6 +149,7 @@ function toResult(response: ListSanctionsPressureResponse): SanctionsPressureRes
     sdnCount: response.sdnCount ?? 0,
     consolidatedCount: response.consolidatedCount ?? 0,
     semaCount: Number((response as ListSanctionsPressureResponse & { semaCount?: number }).semaCount) || 0,
+    semaError: readSemaError(response),
     newEntryCount: response.newEntryCount ?? 0,
     vesselCount: response.vesselCount ?? 0,
     aircraftCount: response.aircraftCount ?? 0,

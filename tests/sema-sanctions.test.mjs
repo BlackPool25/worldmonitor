@@ -5,19 +5,24 @@ import { fileURLToPath } from 'node:url';
 
 import {
   SEMA_CACHE_KEY,
+  SEMA_EMPTY_ERROR,
   SEMA_HOST,
+  SEMA_INGEST_ERROR_CODE,
   SEMA_MAX_BYTES,
   SEMA_SOURCE,
   SEMA_XML_URL,
   SANCTIONS_MAX_CONTENT_AGE_MIN,
   SANCTIONS_SOURCE_VERSION,
+  buildSanctionsMergeSnapshot,
   fetchSemaXml,
+  ingestSemaEntries,
   mergeSanctionEntries,
   ofacRegistrationToIdentifier,
   parseSemaXml,
   programFromSemaCountry,
   sameSanctionIdentity,
   sanctionsListContentMeta,
+  sanctionsSemaHealthMeta,
   semaRecordId,
   isWeakNameToken,
 } from '../scripts/_sema-sanctions.mjs';
@@ -289,6 +294,9 @@ describe('one list failing does not empty the panel', () => {
     assert.match(seedSrc, /SEMA fetch failed/);
     assert.match(seedSrc, /all sanctions lists failed/);
     assert.match(seedSrc, /mergeSanctionEntries/);
+    assert.match(seedSrc, /ingestSemaEntries/);
+    assert.match(seedSrc, /semaError/);
+    assert.match(seedSrc, /sanctionsSemaHealthMeta/);
     const fnStart = seedSrc.indexOf('async function fetchSanctionsPressure()');
     const fnEnd = seedSrc.indexOf('\nfunction validate(');
     const body = seedSrc.slice(fnStart, fnEnd);
@@ -309,7 +317,7 @@ describe('byte cap, allowlist, cache key, UA, redirect', () => {
     assert.equal(SEMA_HOST, 'www.international.gc.ca');
     assert.equal(SEMA_XML_URL, 'https://www.international.gc.ca/world-monde/assets/office_docs/international_relations-relations_internationales/sanctions/sema-lmes.xml');
     assert.equal(SEMA_CACHE_KEY, SEMA_XML_URL);
-    assert.match(seedSrc, /SEMA_CACHE_KEY|SEMA_XML_URL|fetchSemaEntries/);
+    assert.match(seedSrc, /SEMA_CACHE_KEY|SEMA_XML_URL|fetchSemaEntries|ingestSemaEntries/);
   });
 
   it('rejects untrusted hosts and asks fetch to error on redirects', async () => {
@@ -510,10 +518,91 @@ describe('UI and seed surface SEMA beside OFAC', () => {
 
   it('shows semaCount and a GAC SEMA source in the panel', () => {
     assert.match(panelSrc, /semaCount/);
+    assert.match(panelSrc, /semaError/);
     assert.match(panelSrc, /summary\.sema/);
     assert.match(panelSrc, /sourceLists/);
     assert.match(localeEn, /Source: OFAC · GAC SEMA/);
     assert.match(localeEn, /"sema": "SEMA"/);
     assert.match(serviceSrc, /semaCount/);
+    assert.match(serviceSrc, /semaError/);
+  });
+});
+
+describe('SEMA failure stays visible when OFAC succeeds', () => {
+  const ofac = [{
+    id: 'SDN:9',
+    name: 'Kept',
+    sourceLists: ['SDN'],
+    programs: ['SDN'],
+    _aliases: [],
+    _identifiers: [],
+  }];
+
+  it('does not mask SEMA throw, 404, or empty-fail behind an OFAC-only snapshot', async () => {
+    const thrown = await ingestSemaEntries({
+      fetchFn: async () => { throw new Error('ECONNRESET'); },
+    });
+    assert.match(thrown.error, /ECONNRESET/);
+    assert.equal(thrown.records.length, 0);
+    const snapThrow = buildSanctionsMergeSnapshot({ ofac, sema: thrown.records, semaError: thrown.error });
+    assert.equal(snapThrow.totalCount, 1);
+    assert.equal(snapThrow.entries[0].name, 'Kept');
+    assert.equal(snapThrow.semaCount, 0);
+    assert.ok(snapThrow.semaError);
+    assert.equal(snapThrow.sourceState, 'error');
+    assert.equal(snapThrow.errorCode, SEMA_INGEST_ERROR_CODE);
+    assert.deepEqual(sanctionsSemaHealthMeta(thrown.error), {
+      sourceState: 'error',
+      errorCode: SEMA_INGEST_ERROR_CODE,
+    });
+
+    const notFound = await ingestSemaEntries({
+      fetchFn: async () => ({ ok: false, status: 404 }),
+    });
+    assert.match(notFound.error, /HTTP 404/);
+    const snap404 = buildSanctionsMergeSnapshot({ ofac, sema: notFound.records, semaError: notFound.error });
+    assert.equal(snap404.totalCount, 1);
+    assert.equal(snap404.semaCount, 0);
+    assert.match(snap404.semaError, /HTTP 404/);
+    assert.equal(snap404.sourceState, 'error');
+
+    const empty = await ingestSemaEntries({
+      fetchFn: async () => ({
+        ok: true,
+        headers: { get: () => null },
+        text: async () => '<data-set></data-set>',
+      }),
+    });
+    assert.equal(empty.error, SEMA_EMPTY_ERROR);
+    assert.equal(empty.records.length, 0);
+    const snapEmpty = buildSanctionsMergeSnapshot({ ofac, sema: empty.records, semaError: empty.error });
+    assert.equal(snapEmpty.totalCount, 1);
+    assert.equal(snapEmpty.semaCount, 0);
+    assert.equal(snapEmpty.semaError, SEMA_EMPTY_ERROR);
+    assert.equal(snapEmpty.sourceState, 'error');
+    assert.notEqual(snapEmpty.sourceState, 'ok');
+
+    const healthy = await ingestSemaEntries({
+      fetchFn: async () => ({
+        ok: true,
+        headers: { get: () => null },
+        text: async () => fixtureXml,
+      }),
+    });
+    assert.equal(healthy.error, null);
+    assert.ok(healthy.records.length > 0);
+    const snapOk = buildSanctionsMergeSnapshot({ ofac, sema: healthy.records, semaError: healthy.error });
+    assert.equal(snapOk.sourceState, 'ok');
+    assert.equal(snapOk.semaError, null);
+    assert.ok(snapOk.semaCount > 0);
+    assert.equal(sanctionsSemaHealthMeta(null), null);
+
+    assert.match(seedSrc, /ingestSemaEntries/);
+    assert.match(seedSrc, /semaError/);
+    assert.match(seedSrc, /sanctionsSemaHealthMeta/);
+    assert.match(seedSrc, /freshnessMetaPatch/);
+    assert.match(healthSrc, /sourceDegraded/);
+    assert.match(seedHealthSrc, /sourceError/);
+    assert.match(panelSrc, /semaError/);
   });
 });
