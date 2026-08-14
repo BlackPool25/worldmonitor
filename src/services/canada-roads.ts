@@ -17,6 +17,11 @@ export {
   type CanadaRoadSourceStates,
 } from './canada-roads-core';
 
+/**
+ * Unions bootstrap `canadaRoads` (infra:ontario-511:v1) and `albertaRoads`
+ * (infra:alberta-511:v1) with on-demand `torontoRoads`
+ * (infra:toronto-roads:v1).
+ */
 export const CANADA_ROAD_SOURCES: readonly CanadaRoadSourceDescriptor[] = Object.freeze([
   { key: 'canadaRoads', source: 'ontario-511', jurisdiction: 'ON', onDemand: false },
   { key: 'albertaRoads', source: 'alberta-511', jurisdiction: 'AB', onDemand: false },

@@ -77,7 +77,7 @@ export const LAYER_REGISTRY: Record<keyof MapLayers, LayerDefinition> = {
   displacement:             def('displacement',             '&#128101;', 'displacementFlows',        'Displacement Flows'),
   climate:                  def('climate',                  '&#127787;', 'climateAnomalies',         'Climate Anomalies'),
   weather:                  def('weather',                  '&#9928;',   'weatherAlerts',            'US Weather Alerts (NWS)'),
-  canadaRoads:              def('canadaRoads',              '&#128679;', 'canadaRoads',              'Canada Roads', ['flat'], undefined, true),
+  canadaRoads:              def('canadaRoads',              '&#128679;', 'canadaRoads',              'Canada Roads (Ontario, Alberta, Toronto)', ['flat'], undefined, true),
   outages:                  def('outages',                  '&#128225;', 'internetOutages',          'Internet Disruptions'),
   cyberThreats:             def('cyberThreats',             '&#128737;', 'cyberThreats',             'Cyber Threats'),
   natural:                  def('natural',                  '&#127755;', 'naturalEvents',            'Natural Events'),
