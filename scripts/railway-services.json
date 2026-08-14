@@ -440,6 +440,13 @@
     "documentedAt": "docs/railway-seed-consolidation-runbook.md#standalone-seed-crons-added-after-this-snapshot"
   },
   {
+    "entry": "scripts/seed-bundle-canada.mjs",
+    "deployMode": "nixpacks-root-scripts",
+    "lifecycle": "planned",
+    "service": "seed-bundle-canada",
+    "documentedAt": "docs/railway-seed-consolidation-runbook.md#standalone-seed-crons-added-after-this-snapshot"
+  },
+  {
     "entry": "scripts/seed-fx-yoy.mjs",
     "deployMode": "nixpacks-root-scripts",
     "service": "seed-fx-yoy",
