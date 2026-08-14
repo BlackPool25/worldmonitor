@@ -366,9 +366,13 @@ export function rankOpen511Record(record) {
 }
 
 export function selectOpen511Records(records, maxRecords = MAX_RECORDS) {
-  if (!Array.isArray(records) || records.length <= maxRecords) return records || [];
-  return [...records]
-    .sort((a, b) => rankOpen511Record(a) - rankOpen511Record(b) || String(a.id).localeCompare(String(b.id)))
-    .slice(0, maxRecords);
+  const list = Array.isArray(records) ? records : [];
+  if (list.length <= maxRecords) return { records: list, truncated: false };
+  return {
+    records: [...list]
+      .sort((a, b) => rankOpen511Record(a) - rankOpen511Record(b) || String(a.id).localeCompare(String(b.id)))
+      .slice(0, maxRecords),
+    truncated: true,
+  };
 }
 

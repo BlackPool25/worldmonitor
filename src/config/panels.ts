@@ -1457,7 +1457,7 @@ export const LAYER_TO_SOURCE: Partial<Record<keyof MapLayers, DataSourceId[]>> =
   ais: ['ais'],
   natural: ['usgs'],
   weather: ['weather'],
-  canadaRoads: ['ontario_511'],
+  canadaRoads: ['ontario_511', 'bc_open511'],
   outages: ['outages'],
   cyberThreats: ['cyber_threats'],
   protests: ['acled', 'gdelt_doc'],

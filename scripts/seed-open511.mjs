@@ -24,7 +24,8 @@ async function fetchBcOpen511() {
     source: BC_OPEN511.source,
   });
   const envelope = await adapter.fetchEvents({ status: 'ACTIVE', limit: 500 });
-  return { records: selectOpen511Records(envelope.records) };
+  const selected = selectOpen511Records(envelope.records);
+  return { records: selected.records, truncated: selected.truncated };
 }
 
 export function declareRecords(data) {

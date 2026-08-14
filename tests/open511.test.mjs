@@ -386,9 +386,27 @@ test('400-record cap keeps closures and accidents above construction filler', ()
   }
   assert.equal(records.length, 435);
   const selected = selectOpen511Records(records);
-  assert.equal(selected.length, MAX_RECORDS);
-  assert.equal(selected.filter((r) => r.isFullClosure).length, 20);
-  assert.equal(selected.filter((r) => /accident|collision/i.test(`${r.headline} ${r.description}`)).length, 15);
-  assert.equal(selected.filter((r) => r.eventType === 'CONSTRUCTION').length, 365);
+  assert.equal(selected.truncated, true);
+  assert.equal(selected.records.length, MAX_RECORDS);
+  assert.equal(selected.records.filter((r) => r.isFullClosure).length, 20);
+  assert.equal(selected.records.filter((r) => /accident|collision/i.test(`${r.headline} ${r.description}`)).length, 15);
+  assert.equal(selected.records.filter((r) => r.eventType === 'CONSTRUCTION').length, 365);
+});
+
+test('400-record cap is a no-op below the limit and records truncated:false', () => {
+  const records = [
+    normalizeOpen511Event({
+      id: 'drivebc.ca/DBC-1',
+      headline: 'INCIDENT',
+      severity: 'MAJOR',
+      event_type: 'INCIDENT',
+      geography: { type: 'Point', coordinates: [-123.1, 49.2] },
+      roads: [{ name: 'Highway 1', state: 'CLOSED' }],
+    }, { jurisdiction: 'BC', source: 'bc-open511' }),
+  ];
+  const selected = selectOpen511Records(records);
+  assert.equal(selected.truncated, false);
+  assert.equal(selected.records.length, 1);
+  assert.equal(selected.records[0].id, 'drivebc.ca/DBC-1');
 });
 
