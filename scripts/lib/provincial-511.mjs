@@ -7,6 +7,7 @@
  */
 
 import { acquire511Slot } from '../_511-rate-limit.mjs';
+// #6618 limiter v1 lives in scripts/_511-rate-limit.mjs only — no scripts/shared/ mirror.
 
 const CHROME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36';
 const MAX_PAYLOAD_BYTES = 5 * 1024 * 1024;
@@ -14,13 +15,12 @@ const DEFAULT_TIMEOUT_MS = 20_000;
 const MAX_PATH_POINTS = 32;
 
 /** Hosts that speak the vendor `/api/v2/get/:resource` contract. */
-const _vendor511Hosts = {
+const VENDOR_511_HOST_META = Object.freeze({
   '511on.ca': Object.freeze({ jurisdiction: 'ON' }),
-  has(host) {
-    return Object.prototype.hasOwnProperty.call(this, String(host || '').toLowerCase());
-  },
-};
-export const VENDOR_511_HOSTS = Object.freeze(_vendor511Hosts);
+});
+/** Dict of host -> { jurisdiction }. Not a Set -- do not use as a membership test. */
+export const VENDOR_511_HOSTS = VENDOR_511_HOST_META;
+const VENDOR_511_HOST_SET = new Set(Object.keys(VENDOR_511_HOST_META));
 
 export const ONTARIO_511 = Object.freeze({
   baseUrl: 'https://511on.ca',
@@ -33,7 +33,7 @@ export const ONTARIO_511 = Object.freeze({
 });
 
 export function isVendor511Host(host) {
-  return Object.prototype.hasOwnProperty.call(VENDOR_511_HOSTS, String(host || '').toLowerCase());
+  return VENDOR_511_HOST_SET.has(String(host || '').toLowerCase());
 }
 
 export function vendor511Path(resource) {
@@ -136,6 +136,16 @@ function textOf(...values) {
   return '';
 }
 
+function synthesize511Id(item, kind, jurisdiction) {
+  const explicit = String(item?.ID ?? item?.Id ?? item?.id ?? '').trim();
+  if (explicit) return explicit;
+  const roadway = textOf(item?.RoadwayName, item?.roadwayName);
+  const location = textOf(item?.LocationDescription, item?.locationDescription);
+  const poly = polylinesFrom(item?.EncodedPolyline ?? item?.encodedPolyline)[0] || '';
+  const parts = [jurisdiction, kind, roadway, location, poly.slice(0, 32)].filter(Boolean);
+  return parts.join(':') || `${jurisdiction}:${kind}:anon`;
+}
+
 function eventTypeFor(kind, item) {
   if (kind === 'condition') return 'roadcondition';
   if (kind === 'alert') return 'alert';
@@ -167,7 +177,7 @@ export function normalize511Record(item, ctx) {
   const centroid = (lat != null && lon != null) ? [lon, lat] : centroidOfPath(decoded);
   const isFullClosure = Boolean(item?.IsFullClosure ?? item?.isFullClosure);
   const highImportance = Boolean(item?.HighImportance);
-  const id = String(item?.ID ?? item?.Id ?? item?.id ?? '');
+  const id = synthesize511Id(item, kind, jurisdiction);
   return {
     id,
     kind,
@@ -220,6 +230,43 @@ export function normalize511Records(body, ctx) {
       : ctx?.resource === 'roadconditions' ? 'condition'
       : 'event');
   return normalize511List(body, kind, ctx?.jurisdiction || 'ON');
+}
+
+export const MAX_RECORDS = 400;
+
+function isAccidentEvent(record) {
+  return record?.kind === 'event' && /accident/i.test(String(record.eventType || ''));
+}
+
+function isNoReportCondition(record) {
+  if (record?.kind !== 'condition') return false;
+  const text = `${record.description || ''} ${record.headline || ''}`;
+  return /no report/i.test(text) || record.severity === 'Unknown';
+}
+
+/**
+ * Lower is kept first. Events (closures, accidents, other incidents) outrank
+ * Unknown / No-Report road conditions so the 400-record cap cannot drop
+ * live accidents in favor of empty-id "No Report" segments.
+ */
+export function rank511Record(record) {
+  if (record?.isFullClosure) return 0;
+  if (record?.severity === 'Extreme') return 1;
+  if (isAccidentEvent(record)) return 2;
+  if (record?.kind === 'event') return 3;
+  if (record?.kind === 'alert') return 4;
+  if (record?.severity === 'Severe') return 5;
+  if (record?.severity === 'Moderate') return 6;
+  if (isNoReportCondition(record)) return 8;
+  if (record?.centroid) return 7;
+  return 9;
+}
+
+export function select511Records(records, maxRecords = MAX_RECORDS) {
+  if (!Array.isArray(records) || records.length <= maxRecords) return records || [];
+  return [...records]
+    .sort((a, b) => rank511Record(a) - rank511Record(b) || String(a.id).localeCompare(String(b.id)))
+    .slice(0, maxRecords);
 }
 
 export function declareVendor511Records(envelope) {

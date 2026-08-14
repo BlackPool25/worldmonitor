@@ -2835,9 +2835,11 @@ export class DataLoaderManager implements AppModule {
       this.ctx.map?.setCanadaRoads(records);
       this.ctx.map?.setLayerReady('canadaRoads', records.length > 0);
       this.ctx.statusPanel?.updateFeed('Ontario 511', { status: 'ok', itemCount: records.length });
+      dataFreshness.recordUpdate('ontario_511', records.length);
     } catch (error) {
       this.ctx.map?.setLayerReady('canadaRoads', false);
       this.ctx.statusPanel?.updateFeed('Ontario 511', { status: 'error' });
+      dataFreshness.recordError('ontario_511', String(error));
     }
   }
 

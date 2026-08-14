@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { __testing__ as limiterTesting } from '../scripts/_511-rate-limit.mjs';
 import {
+  MAX_RECORDS,
   ONTARIO_511,
   VENDOR_511_HOSTS,
   centroidOfPath,
@@ -13,6 +14,7 @@ import {
   isVendor511Host,
   normalize511List,
   normalize511Record,
+  select511Records,
   validateVendor511Envelope,
   vendor511Path,
 } from '../scripts/lib/provincial-511.mjs';
@@ -40,6 +42,8 @@ test('Ontario is the first vendor config; BC Open511 is not on the allowlist', (
   assert.equal(isVendor511Host('511on.ca'), true);
   assert.equal(isVendor511Host('api.open511.gov.bc.ca'), false);
   assert.equal(isVendor511Host('open511.gov.bc.ca'), false);
+  assert.equal(isVendor511Host('has'), false);
+  assert.equal(Object.hasOwn(VENDOR_511_HOSTS, 'has'), false);
 });
 
 test('empty event/alert/condition lists are valid', () => {
@@ -207,4 +211,66 @@ test('responses larger than 5MB are rejected', async () => {
 test('seeder module is not imported by this test file', () => {
   const src = import.meta.url;
   assert.match(src, /provincial-511\.test\.mjs$/);
+});
+
+test('roadconditions without an ID get a synthesized stable id', () => {
+  const record = normalize511Record({
+    LocationDescription: 'From Highway 17 to Pukaskwa Park',
+    Condition: ['No Report'],
+    RoadwayName: '627',
+    EncodedPolyline: ['yklkG|jqcNC?'],
+  }, { kind: 'condition', jurisdiction: 'ON' });
+  assert.ok(record.id);
+  assert.match(record.id, /^ON:condition:627:/);
+});
+
+test('live-shaped Ontario mix keeps accidents inside the 400-record cap', () => {
+  const events = [];
+  for (let i = 0; i < 104; i++) {
+    events.push(normalize511Record({
+      ID: 200000 + i,
+      Latitude: 43 + (i * 0.001),
+      Longitude: -79.3,
+      EventType: 'closures',
+      IsFullClosure: true,
+      Severity: 'Unknown',
+    }, { kind: 'event', jurisdiction: 'ON' }));
+  }
+  for (let i = 0; i < 11; i++) {
+    events.push(normalize511Record({
+      ID: 300000 + i,
+      Latitude: 44.1,
+      Longitude: -80.2,
+      EventType: 'accidentsAndIncidents',
+      Severity: 'Unknown',
+    }, { kind: 'event', jurisdiction: 'ON' }));
+  }
+  for (let i = 0; i < 499; i++) {
+    events.push(normalize511Record({
+      ID: 400000 + i,
+      Latitude: 45.2,
+      Longitude: -81.1,
+      EventType: 'roadwork',
+      Severity: 'Unknown',
+    }, { kind: 'event', jurisdiction: 'ON' }));
+  }
+  assert.equal(events.length, 614);
+
+  const conditions = [];
+  for (let i = 0; i < 546; i++) {
+    conditions.push(normalize511Record({
+      LocationDescription: `Segment ${i}`,
+      Condition: ['No Report'],
+      RoadwayName: String(400 + (i % 200)),
+      EncodedPolyline: ['yklkG|jqcNC?'],
+    }, { kind: 'condition', jurisdiction: 'ON' }));
+  }
+  assert.equal(conditions.length, 546);
+  assert.equal(conditions.every((r) => r.id && r.severity === 'Unknown'), true);
+
+  const selected = select511Records([...events, ...conditions]);
+  assert.equal(selected.length, MAX_RECORDS);
+  assert.equal(selected.filter((r) => r.isFullClosure).length, 104);
+  assert.equal(selected.filter((r) => /accident/i.test(r.eventType)).length, 11);
+  assert.equal(selected.filter((r) => r.kind === 'condition').length, 0);
 });

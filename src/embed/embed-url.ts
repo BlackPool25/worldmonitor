@@ -94,6 +94,7 @@ export function createBlankMapLayers(): MapLayers {
     radiationWatch: false,
     sanctions: false,
     weather: false,
+    canadaRoads: false,
     economic: false,
     waterways: false,
     outages: false,

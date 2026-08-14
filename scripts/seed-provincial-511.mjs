@@ -8,30 +8,14 @@ import { loadEnvFile, CHROME_UA, runSeed } from './_seed-utils.mjs';
 import {
   fetchVendor511,
   ONTARIO_511,
+  select511Records,
 } from './lib/provincial-511.mjs';
 
 loadEnvFile(import.meta.url);
 
 const CANONICAL_KEY = 'infra:ontario-511:v1';
 const CACHE_TTL = 5400; // 90 min ≥ 3× the */15 cron (900s)
-const MAX_RECORDS = 400;
 const STAGGER_MS = 7000;
-
-function rankRecord(record) {
-  if (record.isFullClosure) return 0;
-  if (record.severity === 'Extreme') return 1;
-  if (record.severity === 'Severe') return 2;
-  if (record.severity === 'Moderate') return 3;
-  if (record.centroid) return 4;
-  return 5;
-}
-
-function selectRecords(records) {
-  if (records.length <= MAX_RECORDS) return records;
-  return [...records]
-    .sort((a, b) => rankRecord(a) - rankRecord(b) || String(a.id).localeCompare(String(b.id)))
-    .slice(0, MAX_RECORDS);
-}
 
 async function fetchOntario511() {
   const envelope = await fetchVendor511(ONTARIO_511, {
@@ -39,7 +23,7 @@ async function fetchOntario511() {
     staggerMs: STAGGER_MS,
   });
   const combined = [...envelope.events, ...envelope.alerts, ...envelope.conditions];
-  const records = selectRecords(combined);
+  const records = select511Records(combined);
   if (envelope.failedResources.length) {
     console.warn(
       `  Ontario 511: ${envelope.failedResources.join(', ')} failed; `

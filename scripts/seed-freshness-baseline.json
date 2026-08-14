@@ -52,12 +52,12 @@
       "name": "canadaRoads",
       "status": "EMPTY",
       "issue": 6608,
-      "expiresAt": "2026-08-14T20:15:00.000Z",
-      "reason": "New Ontario 511 probe (infra:ontario-511:v1). seed-provincial-511 cron is */15; EMPTY is expected until the first Railway tick after this acknowledgement. Expiry equals firstScheduledRunAt so a missed first publication blocks acceptance. If this branch has not merged by 2026-08-14T20:15Z, re-anchor both instants to the next 15-minute UTC tick within the 24h MAX_ROLLOUT_WINDOW_MS cap.",
+      "expiresAt": "2026-08-16T20:15:00.000Z",
+      "reason": "New Ontario 511 probe (infra:ontario-511:v1). seed-provincial-511 cron is */15; EMPTY is expected until the first Railway tick after this acknowledgement. Expiry equals firstScheduledRunAt so a missed first publication blocks acceptance. Re-anchored from 2026-08-14T20:15Z to 2026-08-16T20:15Z so merge slip does not fail the EMPTY window; activatedAt moved with firstScheduledRunAt to stay inside the 24h MAX_ROLLOUT_WINDOW_MS cap.",
       "cutover": {
         "probeKey": "seed-meta:infra:ontario-511",
-        "activatedAt": "2026-08-13T20:20:00.000Z",
-        "firstScheduledRunAt": "2026-08-14T20:15:00.000Z"
+        "activatedAt": "2026-08-15T20:20:00.000Z",
+        "firstScheduledRunAt": "2026-08-16T20:15:00.000Z"
       }
     }
   ]

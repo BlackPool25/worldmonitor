@@ -13,6 +13,7 @@ export type DataSourceId =
   | 'outages'
   | 'cyber_threats'
   | 'weather'
+  | 'ontario_511'
   | 'economic'
   | 'oil'
   | 'spending'
@@ -660,7 +661,7 @@ export interface MapLayers {
   sanctions: boolean;
   weather: boolean;
   /** Ontario 511 highway incidents, alerts, and road conditions (#6608). */
-  canadaRoads?: boolean;
+  canadaRoads: boolean;
   economic: boolean;
   waterways: boolean;
   outages: boolean;
