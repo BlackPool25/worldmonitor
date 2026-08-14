@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-// - Service name: seed-open511
-// Standalone nixpacks seeder for BC Open511 active road events.
+// Runs as the BC-Open511 member of seed-bundle-canada (#6711), not as its own
+// Railway service. Gated on intervalMs 30min: DriveBC returns the full active set
+// in one page, so a tick is a single 0.87MB request rather than MAX_PAGES.
+// Seeder for BC Open511 active road events.
 // Do not add Canada loops to ais-relay.cjs. This is Open511 pagination, not
 // the vendor 511 client. Each page goes through
 // acquire511Slot('api.open511.gov.bc.ca') inside the adapter.
