@@ -2351,7 +2351,7 @@
     },
     "sanctionsPressure": {
       "title": "การคว่ำบาตรและการระบุตัวตน",
-      "infoTooltip": "รายชื่อ SDN และรายชื่อรวมของ OFAC รวมถึงการระบุตัวตน SEMA/JVCFOA ของ Global Affairs Canada Shows which countries face the highest designation pressure, what programs are driving it, and what has been newly added since the last update.",
+      "infoTooltip": "รายชื่อ SDN และรายชื่อรวมของ OFAC รวมถึงการระบุตัวตน SEMA/JVCFOA ของ Global Affairs Canada แสดงว่าประเทศใดที่เผชิญกับความกดดันในการระบุตัวตนมากที่สุด โปรแกรมใดที่เป็นตัวขับเคลื่อน และสิ่งใดที่ได้รับการเพิ่มเข้ามาใหม่นับตั้งแต่การอัปเดตครั้งล่าสุด",
       "loading": "กำลังโหลดข้อมูลการคว่ำบาตร...",
       "unavailable": "ข้อมูลการคว่ำบาตรไม่พร้อมใช้งาน",
       "summary": {

@@ -2420,7 +2420,7 @@
     },
     "sanctionsPressure": {
       "title": "प्रतिबंध और नामांकन",
-      "infoTooltip": "OFAC SDN और संयोजित सूचियाँ तथा Global Affairs Canada SEMA/JVCFOA नामांकन। Shows which countries face the highest designation pressure, what programs are driving it, and what has been newly added since the last update.",
+      "infoTooltip": "OFAC SDN और संयोजित सूचियाँ तथा Global Affairs Canada SEMA/JVCFOA नामांकन। दिखाता है कौन से देशों पर सबसे अधिक दबाव है, कौन से कार्यक्रम यह चला रहे हैं, और पिछली अपडेट से नया क्या जोड़ा गया।",
       "loading": "प्रतिबंध डेटा लोड हो रहा है...",
       "unavailable": "प्रतिबंध डेटा उपलब्ध नहीं।",
       "summary": {
