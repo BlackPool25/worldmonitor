@@ -17,7 +17,7 @@ export const SEMA_CACHE_KEY = SEMA_XML_URL;
 export const SEMA_MAX_BYTES = 8 * 1024 * 1024;
 export const SEMA_TIMEOUT_MS = 45_000;
 export const SEMA_PROGRAM = 'SEMA';
-export const SANCTIONS_SOURCE_VERSION = 'ofac-sls-advanced-xml+sema-ca-v2';
+export const SANCTIONS_SOURCE_VERSION = 'ofac-sls-advanced-xml+sema-ca-v3';
 // List publication can sit days-to-weeks between designation batches.
 export const SANCTIONS_MAX_CONTENT_AGE_MIN = 30 * DAY_MIN;
 
@@ -48,13 +48,41 @@ export function countryFromSemaLabel(raw) {
   return { code, name: english };
 }
 
+/** SEMA <Country> is the regulating schedule, not a person's nationality. */
+export function regimeLabel(raw) {
+  const english = englishCountryLabel(raw);
+  if (/jvcfor|jvcfoa|justice for victims/i.test(english)) return 'JVCFOR';
+  if (/^hamas/i.test(english)) return 'Hamas';
+  if (/settler/i.test(english)) return 'Settler';
+  return english;
+}
+
+/** Map the SEMA Country field onto a program code. JVCFOR/Hamas/Settler are not SEMA. */
+export function programFromSemaCountry(raw) {
+  const english = englishCountryLabel(raw);
+  const token = normalizeName(english);
+  if (!token) return SEMA_PROGRAM;
+  if (token.includes('jvcfor') || token.includes('jvcfoa') || token.includes('justice for victims')) {
+    return 'JVCFOR';
+  }
+  if (token.startsWith('hamas')) return 'HAMAS';
+  if (token.includes('settler')) return 'SETTLER';
+  return SEMA_PROGRAM;
+}
+
+/** Initials and leftover Latin-i crumbs from Cyrillic aliases are not identity. */
+export function isWeakNameToken(token) {
+  const normalized = String(token || '');
+  return normalized.length <= 2 || /^i( i)*$/i.test(normalized);
+}
+
 export function splitAliases(raw) {
   return uniqueSorted(
     String(raw || '')
       .split(/\s*(?:;|\||(?:\s+or\s+))\s*/i)
       .flatMap((part) => part.split(/\s*,\s*/))
       .map((part) => part.replace(/^(?:Belarusian|Belarussian|Russian|Ukrainian|French|Arabic)\s*:\s*/i, '').trim())
-      .filter((part) => part.length > 1),
+      .filter((part) => part.length > 1 && !isWeakNameToken(normalizeName(part))),
   );
 }
 
@@ -101,10 +129,10 @@ export function identityOf(entry) {
   const names = new Set();
   const ids = new Set();
   const legal = normalizeName(entry?.name);
-  if (legal) names.add(legal);
+  if (legal && !isWeakNameToken(legal)) names.add(legal);
   for (const alias of entry?._aliases || []) {
     const token = normalizeName(alias);
-    if (token) names.add(token);
+    if (token && !isWeakNameToken(token)) names.add(token);
   }
   for (const id of entry?._identifiers || []) {
     const token = normalizeIdentifier(id);
@@ -144,7 +172,8 @@ function compactNote(value) {
 
 export function recordToCanonical(block) {
   const countryRaw = xmlText(block, 'Country');
-  const country = countryFromSemaLabel(countryRaw);
+  const regime = regimeLabel(countryRaw);
+  const program = programFromSemaCountry(countryRaw);
   const lastName = xmlText(block, 'LastName');
   const givenName = xmlText(block, 'GivenName');
   const entityOrShip = xmlText(block, 'EntityOrShip');
@@ -171,13 +200,14 @@ export function recordToCanonical(block) {
     id,
     name: legalName,
     entityType,
-    countryCodes: country.code ? [country.code] : [],
-    countryNames: country.code ? [country.name] : [],
-    programs: [SEMA_PROGRAM],
+    countryCodes: [],
+    countryNames: [],
+    programs: [program],
     sourceLists: [SEMA_SOURCE],
     effectiveAt: String(listingEpoch(listed)),
     isNew: false,
-    note: compactNote([schedule && `Schedule ${schedule}`, title].filter(Boolean).join(' · ')),
+    note: compactNote([regime, schedule && `Schedule ${schedule}`, title].filter(Boolean).join(' · ')),
+    _regime: regime,
     _aliases: aliases.filter((alias) => normalizeName(alias) !== normalizeName(legalName)),
     _identifiers: identifiers,
     _publishedAt: listed,
@@ -235,14 +265,21 @@ export function mergeSanctionEntries(parts = {}) {
     }
   }
 
-  function findHit(entry) {
+  function sharesIncomingSource(hit, entry) {
+    const incoming = new Set(entry.sourceLists || []);
+    return (hit.sourceLists || []).some((source) => incoming.has(source));
+  }
+
+  function findHit(entry, { skipSelfMerge = false } = {}) {
     const ident = identityOf(entry);
+    const skip = (hit) => skipSelfMerge && sharesIncomingSource(hit, entry);
     for (const id of ident.ids) {
       const hit = idIndex.get(id);
-      if (hit) return hit;
+      if (hit && !skip(hit)) return hit;
     }
     for (const name of ident.names) {
       for (const hit of nameIndex.get(name) || []) {
+        if (skip(hit)) continue;
         const hitIdent = identityOf(hit);
         if (ident.ids.size > 0 && hitIdent.ids.size > 0) continue;
         return hit;
@@ -264,10 +301,10 @@ export function mergeSanctionEntries(parts = {}) {
     indexEntry(hit);
   }
 
-  function ingest(entry, { identityMerge }) {
+  function ingest(entry, { identityMerge, skipSelfMerge = false }) {
     if (!entry?.name) return;
     if (identityMerge) {
-      const hit = findHit(entry);
+      const hit = findHit(entry, { skipSelfMerge });
       if (hit) {
         mergeInto(hit, entry);
         return;
@@ -279,10 +316,12 @@ export function mergeSanctionEntries(parts = {}) {
   }
 
   // OFAC concat is the seed. Do not identity-collapse SDN ↔ CONS.
+  // SEMA concat mirrors OFAC: do not identity-collapse SEMA ↔ SEMA.
+  // SEMA may attach onto OFAC/EU/UK only.
   for (const entry of ofac) ingest(entry, { identityMerge: false });
   for (const entry of eu) ingest(entry, { identityMerge: true });
   for (const entry of uk) ingest(entry, { identityMerge: true });
-  for (const entry of sema) ingest(entry, { identityMerge: true });
+  for (const entry of sema) ingest(entry, { identityMerge: true, skipSelfMerge: true });
   return merged;
 }
 

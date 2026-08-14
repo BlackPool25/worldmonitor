@@ -589,7 +589,8 @@ async function fetchSanctionsPressure() {
   const newEntryCount = hasPrevious ? entries.filter((entry) => entry.isNew).length : 0;
   const vesselCount = entries.filter((entry) => entry.entityType === 'SANCTIONS_ENTITY_TYPE_VESSEL').length;
   const aircraftCount = entries.filter((entry) => entry.entityType === 'SANCTIONS_ENTITY_TYPE_AIRCRAFT').length;
-  console.log(`  Merged: ${totalCount} total (${ofacResults[0]?.entries.length ?? 0} SDN + ${ofacResults[1]?.entries.length ?? 0} consolidated + ${semaEntries.length} SEMA), ${newEntryCount} new, ${vesselCount} vessels, ${aircraftCount} aircraft`);
+  const semaCount = semaEntries.length;
+  console.log(`  Merged: ${totalCount} total (${ofacResults[0]?.entries.length ?? 0} SDN + ${ofacResults[1]?.entries.length ?? 0} consolidated + ${semaCount} SEMA), ${newEntryCount} new, ${vesselCount} vessels, ${aircraftCount} aircraft`);
 
   // Build compact entity index for name-based lookup (Phase 1 — issue #2042).
   // Each record: { id, name, et (compact type), cc (country codes), pr (programs) }
@@ -609,6 +610,7 @@ async function fetchSanctionsPressure() {
     totalCount,
     sdnCount: ofacResults[0]?.entries.length ?? 0,
     consolidatedCount: ofacResults[1]?.entries.length ?? 0,
+    semaCount,
     newEntryCount,
     vesselCount,
     aircraftCount,
@@ -653,7 +655,7 @@ runSeed('sanctions', 'pressure', CANONICAL_KEY, fetchSanctionsPressure, {
     const { _entityIndex: _ei, _state: _s, _countryCounts: _cc, ...rest } = data;
     if (Array.isArray(rest.entries)) {
       rest.entries = rest.entries.map((entry) => {
-        const { _aliases, _identifiers, _publishedAt, ...publicEntry } = entry;
+        const { _aliases, _identifiers, _publishedAt, _regime, ...publicEntry } = entry;
         return publicEntry;
       });
     }

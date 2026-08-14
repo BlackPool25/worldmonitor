@@ -15,9 +15,11 @@ import {
   mergeSanctionEntries,
   ofacRegistrationToIdentifier,
   parseSemaXml,
+  programFromSemaCountry,
   sameSanctionIdentity,
   sanctionsListContentMeta,
   semaRecordId,
+  isWeakNameToken,
 } from '../scripts/_sema-sanctions.mjs';
 
 const fixtureXml = readFileSync(
@@ -39,19 +41,33 @@ const railwaySrc = readFileSync(
 );
 const healthSrc = readFileSync(new URL('../api/health.js', import.meta.url), 'utf8');
 const seedHealthSrc = readFileSync(new URL('../api/seed-health.js', import.meta.url), 'utf8');
+const panelSrc = readFileSync(
+  new URL('../src/components/SanctionsPressurePanel.ts', import.meta.url),
+  'utf8',
+);
+const localeEn = readFileSync(
+  new URL('../src/locales/en.json', import.meta.url),
+  'utf8',
+);
+const serviceSrc = readFileSync(
+  new URL('../src/services/sanctions-pressure.ts', import.meta.url),
+  'utf8',
+);
 
 describe('SEMA fixture parse', () => {
   it('maps individuals, entities, ships, aliases, IMO, and publication dates', () => {
     const { records, publishedAtMs } = parseSemaXml(fixtureXml);
-    assert.equal(records.length, 5);
+    assert.equal(records.length, 12);
     assert.ok(records.every((row) => row.sourceLists.includes(SEMA_SOURCE)));
 
     const person = records.find((row) => row.name === 'Aleksey Oleksin');
     assert.ok(person);
     assert.equal(person.entityType, 'SANCTIONS_ENTITY_TYPE_INDIVIDUAL');
     assert.deepEqual(person._aliases, ['Aliaksei Aleksin']);
-    assert.equal(person.countryCodes[0], 'BY');
+    assert.deepEqual(person.countryCodes, []);
     assert.equal(person.programs[0], 'SEMA');
+    assert.match(person.note, /Belarus/);
+    assert.equal(person._regime, 'Belarus');
 
     const entity = records.find((row) => /Belaeronavigatsia/.test(row.name));
     assert.ok(entity);
@@ -346,7 +362,7 @@ describe('seeder merge, health, railway, no new surface', () => {
     assert.doesNotMatch(seedSrc, /ais-relay/);
     assert.doesNotMatch(seedSrc, /SanctionsPressurePanel/);
     assert.doesNotMatch(parseSrc, /proto\/worldmonitor/);
-    assert.equal(SANCTIONS_SOURCE_VERSION, 'ofac-sls-advanced-xml+sema-ca-v2');
+    assert.equal(SANCTIONS_SOURCE_VERSION, 'ofac-sls-advanced-xml+sema-ca-v3');
     assert.match(seedSrc, /sourceVersion:\s*SANCTIONS_SOURCE_VERSION/);
   });
 
@@ -363,5 +379,121 @@ describe('seeder merge, health, railway, no new surface', () => {
     assert.ok(service.watchPatterns.includes('scripts/seed-sanctions-pressure.mjs'));
     assert.ok(service.watchPatterns.includes('scripts/_sema-sanctions.mjs'));
     assert.ok(service.watchPatterns.includes('scripts/_sanctions-source.mjs'));
+  });
+});
+
+describe('SEMA does not self-merge', () => {
+  it('keeps the live TARASEVICH / MASHADZIYEU pair as two people', () => {
+    const { records } = parseSemaXml(`<?xml version="1.0"?>
+<data-set>
+<record><Country>Belarus / Bélarus</Country><LastName>MASHADZIYEU</LastName><GivenName>Ruslan Khikmetavich</GivenName><Aliases>Ruslan Khikmetavich MASHADZEOU, Ruslan Chikmetovič MAŠADZEV, Mashadiyev Ruslan Khikmetovich, Ruslan Khikmetovich MASHADIYEV, Belarusian: Руслан Хiкметовiч МАШАДЗЕЎ, Russian: Руслан Хикметович МАШАДИЕВ</Aliases><Schedule>1, Part 1</Schedule><Item>99</Item><DateOfListing>2021-06-17</DateOfListing></record>
+<record><Country>Belarus / Bélarus</Country><LastName>TARASEVICH</LastName><GivenName>Andrei Romanovich</GivenName><Aliases>Andrei Ramanavich TARASEVICH, Belarusian: Андрэй Раманавiч ТАРАСЕВIЧ, Russian: Андрей Романович ТАРАСЕВИЧ</Aliases><Schedule>1, Part 1</Schedule><Item>103</Item><DateOfListing>2021-06-17</DateOfListing></record>
+</data-set>`);
+    assert.equal(records.length, 2);
+    assert.equal(sameSanctionIdentity(records[0], records[1]), false);
+    const merged = mergeSanctionEntries({ sema: records });
+    assert.equal(merged.length, 2);
+    const names = merged.map((row) => row.name).sort();
+    assert.deepEqual(names, ['Andrei Romanovich TARASEVICH', 'Ruslan Khikmetavich MASHADZIYEU']);
+  });
+
+  it('does not collapse vessel Alliance into AI Alliance Russia', () => {
+    const { records } = parseSemaXml(`<?xml version="1.0"?>
+<data-set>
+<record><Country>Russia / Russie</Country><EntityOrShip>AI Alliance Russia</EntityOrShip><Aliases>Alliance, Ассоциация "Альянс В Сфере ИИ", Альянс</Aliases><Schedule>1, Part 2</Schedule><Item>768</Item><DateOfListing>2023-01-01</DateOfListing></record>
+<record><Country>Russia / Russie</Country><EntityOrShip>Alliance</EntityOrShip><Schedule>1.1</Schedule><Item>257</Item><DateOfListing>2025-02-21</DateOfListing></record>
+</data-set>`);
+    assert.equal(records.length, 2);
+    const merged = mergeSanctionEntries({ sema: records });
+    assert.equal(merged.length, 2);
+    assert.ok(merged.some((row) => row.name === 'Alliance'));
+    assert.ok(merged.some((row) => row.name === 'AI Alliance Russia'));
+  });
+
+  it('rejects leftover Latin-i alias crumbs as identity tokens', () => {
+    assert.equal(isWeakNameToken('i'), true);
+    assert.equal(isWeakNameToken('i i'), true);
+    assert.equal(isWeakNameToken('ii'), true);
+    assert.equal(isWeakNameToken('alliance'), false);
+    const left = { name: 'Person A', _aliases: ['I.I.', 'Руслан Хiкметовiч'], _identifiers: [] };
+    const right = { name: 'Person B', _aliases: ['Андрэй Раманавiч'], _identifiers: [] };
+    assert.equal(sameSanctionIdentity(left, right), false);
+  });
+
+  it('still attaches SEMA onto OFAC but concatenates a second SEMA hit', () => {
+    const ofac = {
+      id: 'SDN:alliance',
+      name: 'Alliance',
+      sourceLists: ['SDN'],
+      programs: ['SDN'],
+      _aliases: [],
+      _identifiers: [],
+    };
+    const first = {
+      id: 'sema-ca:russia:1-part-2:768',
+      name: 'AI Alliance Russia',
+      sourceLists: [SEMA_SOURCE],
+      programs: ['SEMA'],
+      _aliases: ['Alliance'],
+      _identifiers: [],
+    };
+    const second = {
+      id: 'sema-ca:russia:1-1:257',
+      name: 'Alliance',
+      sourceLists: [SEMA_SOURCE],
+      programs: ['SEMA'],
+      _aliases: [],
+      _identifiers: [],
+    };
+    const merged = mergeSanctionEntries({ ofac: [ofac], sema: [first, second] });
+    assert.equal(merged.length, 2);
+    assert.equal(merged[0].id, 'SDN:alliance');
+    assert.ok(merged[0].sourceLists.includes(SEMA_SOURCE));
+    assert.ok(merged[1].sourceLists.includes(SEMA_SOURCE));
+    assert.equal(merged[1].sourceLists.includes('SDN'), false);
+  });
+});
+
+describe('SEMA Country is regulation, not nationality', () => {
+  it('leaves countryCodes empty and stores the regime on the note/program', () => {
+    const { records } = parseSemaXml(fixtureXml);
+    assert.ok(records.every((row) => row.countryCodes.length === 0));
+    assert.ok(records.every((row) => row.countryNames.length === 0));
+    const russia = records.find((row) => row.name === 'STREIT Group');
+    assert.equal(russia._regime, 'Russia');
+    assert.match(russia.note, /^Russia/);
+    assert.equal(russia.programs[0], 'SEMA');
+  });
+
+  it('tags JVCFOR, Hamas, and Settler as their own programs, not SEMA', () => {
+    assert.equal(programFromSemaCountry('Justice for Victims of Corrupt Foreign Officials Regulations (JVCFOR) / Règlement'), 'JVCFOR');
+    assert.equal(programFromSemaCountry('Hamas Terrorist Attacks / Attaques terroristes du Hamas'), 'HAMAS');
+    assert.equal(programFromSemaCountry('Extremist Settler Violence / Violence extrémiste des colons'), 'SETTLER');
+    assert.equal(programFromSemaCountry('Russia / Russie'), 'SEMA');
+    const { records } = parseSemaXml(`<?xml version="1.0"?>
+<data-set>
+<record><Country>Justice for Victims of Corrupt Foreign Officials Regulations (JVCFOR) / Règlement relatif à la justice pour les victimes de dirigeants étrangers corrompus (RJVDEC)</Country><LastName>Example</LastName><GivenName>Official</GivenName><Schedule>1</Schedule><Item>1</Item><DateOfListing>2022-01-01</DateOfListing></record>
+<record><Country>Hamas Terrorist Attacks / Attaques terroristes du Hamas</Country><EntityOrShip>Example Hamas Entity</EntityOrShip><Schedule>1</Schedule><Item>1</Item><DateOfListing>2024-01-01</DateOfListing></record>
+<record><Country>Extremist Settler Violence / Violence extrémiste des colons</Country><LastName>Settler</LastName><GivenName>Example</GivenName><Schedule>1</Schedule><Item>1</Item><DateOfListing>2024-01-01</DateOfListing></record>
+</data-set>`);
+    assert.deepEqual(records.map((row) => row.programs[0]), ['JVCFOR', 'HAMAS', 'SETTLER']);
+    assert.ok(records.every((row) => !row.programs.includes('SEMA')));
+    assert.ok(records.every((row) => row.countryCodes.length === 0));
+  });
+});
+
+describe('UI and seed surface SEMA beside OFAC', () => {
+  it('publishes semaCount on the seed payload', () => {
+    assert.match(seedSrc, /semaCount/);
+    assert.match(seedSrc, /semaCount: semaEntries\.length|const semaCount = semaEntries\.length/);
+  });
+
+  it('shows semaCount and a GAC SEMA source in the panel', () => {
+    assert.match(panelSrc, /semaCount/);
+    assert.match(panelSrc, /summary\.sema/);
+    assert.match(panelSrc, /sourceLists/);
+    assert.match(localeEn, /Source: OFAC · GAC SEMA/);
+    assert.match(localeEn, /"sema": "SEMA"/);
+    assert.match(serviceSrc, /semaCount/);
   });
 });

@@ -43,6 +43,7 @@ export interface SanctionsPressureResult {
   totalCount: number;
   sdnCount: number;
   consolidatedCount: number;
+  semaCount: number;
   newEntryCount: number;
   vesselCount: number;
   aircraftCount: number;
@@ -69,6 +70,7 @@ const emptyResult: SanctionsPressureResult = {
   totalCount: 0,
   sdnCount: 0,
   consolidatedCount: 0,
+  semaCount: 0,
   newEntryCount: 0,
   vesselCount: 0,
   aircraftCount: 0,
@@ -138,6 +140,7 @@ function toResult(response: ListSanctionsPressureResponse): SanctionsPressureRes
     totalCount: response.totalCount ?? 0,
     sdnCount: response.sdnCount ?? 0,
     consolidatedCount: response.consolidatedCount ?? 0,
+    semaCount: Number((response as ListSanctionsPressureResponse & { semaCount?: number }).semaCount) || 0,
     newEntryCount: response.newEntryCount ?? 0,
     vesselCount: response.vesselCount ?? 0,
     aircraftCount: response.aircraftCount ?? 0,
