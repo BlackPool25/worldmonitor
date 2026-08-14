@@ -12,7 +12,9 @@ export const TORONTO_ROADS_SOURCE = 'toronto-roads';
 export const TORONTO_ROADS_JURISDICTION = 'Toronto';
 export const MAX_PAYLOAD_BYTES = 12 * 1024 * 1024;
 export const DEFAULT_TIMEOUT_MS = 30_000;
-export const MAX_RECORDS = 400;
+// Live CART was 2379 on 2026-08-14 (448 ROAD_CLOSED + 1931 construction).
+// 400 kept only ROAD_CLOSED and dropped leftover closures + all High construction.
+export const MAX_RECORDS = 4000;
 export const MAX_PATH_POINTS = 32;
 
 const CHROME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36';

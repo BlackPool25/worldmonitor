@@ -133,7 +133,7 @@ test('host allowlist is secure.toronto.ca only', () => {
   assert.equal(isAllowedTorontoHost('https://open.toronto.ca/dataset/road-restrictions/'), false);
 });
 
-test('selectTorontoRoadRecords prefers closures and hazards so the 400 cap cannot drop them', () => {
+test('selectTorontoRoadRecords prefers closures and hazards so the record cap cannot drop them', () => {
   const records = [];
   for (let i = 0; i < MAX_RECORDS + 20; i++) {
     records.push(normalizeTorontoRoadRecord({
@@ -168,7 +168,7 @@ test('selectTorontoRoadRecords prefers closures and hazards so the 400 cap canno
   assert.equal(selected.filter((r) => r.type === 'CONSTRUCTION').length, MAX_RECORDS - 2);
 });
 
-test('fetchTorontoRoadRestrictions records truncated:true when the 400 cap fires', async () => {
+test('fetchTorontoRoadRestrictions records truncated:true when the record cap fires', async () => {
   const closure = [];
   for (let i = 0; i < MAX_RECORDS + 5; i++) {
     closure.push({
@@ -187,6 +187,64 @@ test('fetchTorontoRoadRestrictions records truncated:true when the 400 cap fires
   assert.equal(result.truncated, true);
   assert.equal(result.records[0].id, 'n-0');
   assert.equal(result.records[0].type, 'ROAD_CLOSED');
+});
+
+test('live-shaped CART with more than 400 ROAD_CLOSED keeps leftover closures and High construction', () => {
+  const closedNone = 312;
+  const closedOther = 136;
+  const highConstruction = 145;
+  const otherConstruction = 1786;
+  const records = [];
+  for (let i = 0; i < closedNone; i++) {
+    records.push(normalizeTorontoRoadRecord({
+      id: `closed-none-${i}`,
+      district: 'TORONTO',
+      latitude: '43.65',
+      longitude: '-79.38',
+      type: 'ROAD_CLOSED',
+      currImpact: 'None',
+    }));
+  }
+  for (let i = 0; i < closedOther; i++) {
+    records.push(normalizeTorontoRoadRecord({
+      id: `closed-high-${i}`,
+      district: 'SCARBOROUGH',
+      latitude: '43.76',
+      longitude: '-79.23',
+      type: 'ROAD_CLOSED',
+      currImpact: 'High',
+    }));
+  }
+  for (let i = 0; i < highConstruction; i++) {
+    records.push(normalizeTorontoRoadRecord({
+      id: `const-high-${i}`,
+      district: 'NORTH YORK',
+      latitude: '43.73',
+      longitude: '-79.42',
+      type: 'CONSTRUCTION',
+      currImpact: 'High',
+    }));
+  }
+  for (let i = 0; i < otherConstruction; i++) {
+    records.push(normalizeTorontoRoadRecord({
+      id: `const-low-${i}`,
+      district: 'ETOBICOKE YORK',
+      latitude: '43.69',
+      longitude: '-79.54',
+      type: 'CONSTRUCTION',
+      currImpact: 'Low',
+    }));
+  }
+  const closedCount = closedNone + closedOther;
+  const constructionCount = highConstruction + otherConstruction;
+  assert.ok(closedCount > 400, 'live CART has more ROAD_CLOSED than the old 400 cap');
+  assert.equal(records.length, 2379);
+  const selected = selectTorontoRoadRecords(records);
+  assert.equal(selected.filter((r) => r.type === 'ROAD_CLOSED').length, closedCount);
+  assert.equal(selected.filter((r) => r.type === 'CONSTRUCTION' && String(r.currImpact).toLowerCase() === 'high').length, highConstruction);
+  assert.equal(selected.filter((r) => r.type === 'CONSTRUCTION').length, constructionCount);
+  assert.equal(selected.length, records.length);
+  assert.ok(selected.length > 400);
 });
 
 test('fetchTorontoRoadRestrictions omits truncated when the list fits', async () => {
@@ -293,5 +351,8 @@ test("seed-freshness-baseline acknowledges the Toronto roads cutover", () => {
   const row = baseline.acknowledged.find((a) => a.issue === 6609 || a.name === "torontoRoads");
   assert.ok(row);
   assert.equal(row.status, "EMPTY");
+  assert.equal(row.issue, 6609);
+  assert.equal(row.expiresAt, "2026-08-16T20:15:00.000Z");
   assert.equal(row.cutover.probeKey, "seed-meta:infra:toronto-roads");
+  assert.equal(row.cutover.firstScheduledRunAt, "2026-08-16T20:15:00.000Z");
 });
