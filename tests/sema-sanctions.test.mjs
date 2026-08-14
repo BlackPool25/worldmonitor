@@ -87,9 +87,22 @@ describe('SEMA fixture parse', () => {
     const tarasevich = records.find((row) => /TARASEVICH/.test(row.name));
     const mashadziyeu = records.find((row) => /MASHADZIYEU/.test(row.name));
     assert.ok(tarasevich && mashadziyeu);
+    assert.notEqual(tarasevich.id, mashadziyeu.id);
     const jvcfor = records.find((row) => row.programs[0] === 'JVCFOR');
     assert.ok(jvcfor);
-    assert.equal(jvcfor.programs[0], 'JVCFOR');
+    assert.equal(jvcfor.programs.includes('SEMA'), false);
+    assert.deepEqual(jvcfor.countryCodes, []);
+  });
+
+  it('concatenates the fixture without collapsing TARASEVICH, Alliance, or JVCFOR', () => {
+    const { records } = parseSemaXml(fixtureXml);
+    const merged = mergeSanctionEntries({ sema: records });
+    assert.equal(merged.length, records.length);
+    assert.ok(merged.some((row) => /TARASEVICH/.test(row.name)));
+    assert.ok(merged.some((row) => /MASHADZIYEU/.test(row.name)));
+    assert.ok(merged.some((row) => row.name === 'Alliance'));
+    assert.ok(merged.some((row) => row.name === 'AI Alliance Russia'));
+    assert.ok(merged.some((row) => row.programs[0] === 'JVCFOR' && !row.programs.includes('SEMA')));
   });
 });
 

@@ -2423,7 +2423,7 @@
     },
     "sanctionsPressure": {
       "title": "Sanctions & Designations",
-      "infoTooltip": "OFAC SDN and Consolidated Lists plus Global Affairs Canada SEMA/JVCFOA designations. Shows which countries face the highest designation pressure, what programs are driving it, and what has been newly added since the last update.",
+      "infoTooltip": "فهرست‌های SDN و یکپارچه OFAC به‌علاوه تعیین‌های SEMA/JVCFOA وزارت امور جهانی کانادا. نشان می‌دهد کدام کشورها بیشترین فشار تعیین را دارند، کدام برنامه‌ها آن را هدایت می‌کنند و از آخرین به‌روزرسانی چه موارد جدیدی اضافه شده است.",
       "loading": "Loading sanctions data...",
       "unavailable": "Sanctions data unavailable.",
       "summary": {
@@ -2445,7 +2445,7 @@
       "footer": {
         "updated": "Updated {{time}}",
         "dataset": "dataset {{date}}",
-        "source": "Source: OFAC · GAC SEMA"
+        "source": "منبع: OFAC · GAC SEMA"
       },
       "pills": {
         "newCount": "+{{count}} new",
