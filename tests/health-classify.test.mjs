@@ -1741,6 +1741,34 @@ test('classifyKey: webcams active pointer is registered with seed-meta freshness
   assert.equal(entry.maxStaleMin, 1440);
 });
 
+test('classifyKey: staticRefBundleTick heartbeat goes EMPTY when the cron never fired and STALE when it freezes', () => {
+  const name = 'staticRefBundleTick';
+  const dataKey = STANDALONE_KEYS[name];
+  const seedCfg = SEED_META[name];
+  assert.equal(dataKey, 'bundle:heartbeat:static-ref');
+  assert.equal(seedCfg.key, 'bundle:heartbeat:static-ref');
+  assert.equal(seedCfg.maxStaleMin, 2880, 'daily cron 0 3 * * *; 48h = 2× cadence');
+  assert.equal(ON_DEMAND_KEYS.has(name), false);
+
+  const missing = classifyKey(name, dataKey, { allowOnDemand: true }, makeCtx({}));
+  assert.equal(missing.status, 'EMPTY');
+  assert.equal(STATUS_COUNTS[missing.status], 'crit');
+
+  const stale = classifyKey(name, dataKey, { allowOnDemand: true }, makeCtx({
+    strens: { [dataKey]: 128 },
+    metaValues: { [seedCfg.key]: seedMeta({ fetchedAt: NOW - 2881 * ONE_MIN_MS, recordCount: 1 }) },
+  }));
+  assert.equal(stale.status, 'STALE_SEED');
+  assert.equal(stale.maxStaleMin, 2880);
+  assert.equal(STATUS_COUNTS[stale.status], 'warn');
+
+  const fresh = classifyKey(name, dataKey, { allowOnDemand: true }, makeCtx({
+    strens: { [dataKey]: 128 },
+    metaValues: { [seedCfg.key]: seedMeta({ recordCount: 1 }) },
+  }));
+  assert.equal(fresh.status, 'OK');
+});
+
 test('classifyKey: digestNotifications heartbeat goes stale when the cron stops', () => {
   const entry = classifyKey('digestNotifications', STANDALONE_KEYS.digestNotifications, { allowOnDemand: true },
     makeCtx({
