@@ -41,6 +41,7 @@ export const ALBERTA_511 = Object.freeze({
   baseUrl: ALBERTA_511_BASE_URL,
   jurisdiction: 'AB',
   resources: Object.freeze([
+    Object.freeze({ resource: 'event', kind: 'event' }),
     Object.freeze({ resource: 'alerts', kind: 'alert' }),
   ]),
 });

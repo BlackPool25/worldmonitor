@@ -119,6 +119,7 @@ const SOURCE_DOMAIN_OVERRIDES = new Map([
   ['lavca.org', 'technology'],
   ['news.usni.org', 'military'],
   ['Ontario 511', 'infrastructure'],
+  ['Alberta 511', 'infrastructure'],
   ['oauth.reddit.com', 'news'],
   ['overpass-api.de', 'military'],
   ['pitchbook.com', 'technology'],

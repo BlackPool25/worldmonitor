@@ -3,8 +3,8 @@
 // Railway service — six Canada seeders do not earn six slots. The bundle gates it
 // on intervalMs 15min and gives the section a 180s timeout, because three
 // endpoints x three runSeed attempts can also wait on the per-host 10/60 bucket.
-// Seeds Ontario 511 (events/alerts/roadconditions) and Alberta 511 alerts. One
-// process ticks both jurisdictions, so both provinces clear on the same tick.
+// Seeds Ontario 511 (events/alerts/roadconditions) and Alberta 511 events and
+// alerts. One process ticks both jurisdictions, so both clear on the same tick.
 // Do not add Canada loops to ais-relay.cjs. Manitoba (#6622) is the next
 // config row and needs key= — do not fetch it here.
 // Each fetch goes through acquire511Slot(hostname) inside the adapter
@@ -58,9 +58,10 @@ async function fetchOntario511() {
 async function fetchAlberta511() {
   const envelope = await fetchVendor511(ALBERTA_511, {
     userAgent: CHROME_UA,
-    staggerMs: 0,
+    staggerMs: STAGGER_MS,
   });
-  const records = stampRecords(select511Records(envelope.alerts), 'alberta-511');
+  const combined = [...envelope.events, ...envelope.alerts];
+  const records = stampRecords(select511Records(combined), 'alberta-511');
   if (envelope.failedResources.length) {
     console.warn(
       `  Alberta 511: ${envelope.failedResources.join(', ')} failed; `

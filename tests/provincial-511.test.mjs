@@ -54,7 +54,7 @@ test('Ontario is the first vendor config; BC Open511 is not on the allowlist', (
 test('Alberta 511 is on the vendor allowlist; Manitoba is not fetched', () => {
   assert.equal(ALBERTA_511.jurisdiction, 'AB');
   assert.equal(ALBERTA_511.baseUrl, 'https://511.alberta.ca');
-  assert.deepEqual(ALBERTA_511.resources.map((r) => r.resource), ['alerts']);
+  assert.deepEqual(ALBERTA_511.resources.map((r) => r.resource), ['event', 'alerts']);
   assert.equal(VENDOR_511_HOSTS['511.alberta.ca'].jurisdiction, 'AB');
   assert.equal(isVendor511Host('511.alberta.ca'), true);
   assert.equal(isVendor511Host('511.gov.mb.ca'), false);
@@ -476,11 +476,37 @@ test('get() fetches Alberta alerts over /api/v2/get/alerts?format=json from the 
   assert.equal(limiterTesting.pendingTokens('511on.ca'), 0);
 });
 
-test('Alberta alerts consume 1 token of the 511.alberta.ca bucket, not Ontario\'s', async () => {
+test('Alberta events+alerts consume 2 tokens of the 511.alberta.ca bucket, not Ontario\'s', async () => {
   const fetchFn = async () => jsonResponse([]);
   await fetchVendor511(ALBERTA_511, { fetchFn, staggerMs: 0 });
-  assert.equal(limiterTesting.pendingTokens('511.alberta.ca'), 1);
+  assert.equal(limiterTesting.pendingTokens('511.alberta.ca'), 2);
   assert.equal(limiterTesting.pendingTokens('511on.ca'), 0);
+});
+
+test('fetchVendor511(ALBERTA_511) pulls events and alerts from the vendor adapter', async () => {
+  const urls = [];
+  const fetchFn = async (url) => {
+    urls.push(String(url));
+    if (String(url).includes('/event')) {
+      return jsonResponse([{
+        ID: 44001,
+        Latitude: 51.0447,
+        Longitude: -114.0719,
+        EventType: 'closures',
+        IsFullClosure: true,
+        Description: 'Deerfoot Trail closed',
+      }]);
+    }
+    return jsonResponse(ALBERTA_ALERTS_FIXTURE);
+  };
+  const envelope = await fetchVendor511(ALBERTA_511, { fetchFn, staggerMs: 0 });
+  assert.equal(envelope.events.length, 1);
+  assert.equal(envelope.alerts.length, 2);
+  assert.equal(envelope.events[0].jurisdiction, 'AB');
+  assert.equal(envelope.events[0].kind, 'event');
+  assert.equal(envelope.events[0].isFullClosure, true);
+  assert.ok(urls.some((url) => /\/api\/v2\/get\/event\?format=json$/.test(url)));
+  assert.ok(urls.some((url) => /\/api\/v2\/get\/alerts\?format=json$/.test(url)));
 });
 
 test('adapter uses CHROME_UA, no fetch.bind, and allowlists 511.alberta.ca', () => {

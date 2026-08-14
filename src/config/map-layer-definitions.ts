@@ -220,7 +220,7 @@ export const LAYER_EXPLANATIONS: Partial<Record<keyof MapLayers, LayerExplanatio
     coverage: 'curated',
     category: 'Transport',
     purpose: 'Shows highway incidents, provincial alerts, and road conditions in Ontario and Alberta from the official 511 feeds.',
-    source: 'Ontario 511 (511on.ca) events, alerts, and road-conditions APIs plus Alberta 511 (511.alberta.ca) alerts, seeded through WorldMonitor.',
+    source: 'Ontario 511 (511on.ca) events, alerts, and road-conditions APIs plus Alberta 511 (511.alberta.ca) events and alerts, seeded through WorldMonitor.',
     freshness: 'Ontario and Alberta 511 are seeded every 15 minutes by the same seed-provincial-511 job and monitored against a 45-minute freshness budget.',
     confidence: 'Authoritative for Ontario Ministry of Transportation and Alberta Transportation 511 reports, subject to upstream publication timing and mapped geometry.',
     limitations: [
