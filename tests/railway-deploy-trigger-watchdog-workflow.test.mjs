@@ -158,4 +158,15 @@ describe('Railway deploy trigger watchdog workflow contract', () => {
       assert.ok(!source.includes(forbidden), `workflow must not contain ${forbidden}`);
     }
   });
+
+  it('fails a blind manual classification immediately without a scheduled-history dependency', () => {
+    const marker = workflow.jobs.classify.steps.find(
+      (step) => step.name === 'Record watchdog read-path failure',
+    );
+    assert.equal(String(marker.if), "always() && steps.controller.outputs.read_failure == 'true'");
+    assert.match(dispatchSource, /the manual watchdog could not read GitHub/);
+    assert.match(dispatchSource, /if \(!result\?\.readFailureCode\).*failJob: false/s);
+    assert.match(dispatchSource, /failJob: true/);
+    assert.doesNotMatch(dispatchSource, /readReadFailureStreak|event:\s*'schedule'/);
+  });
 });
