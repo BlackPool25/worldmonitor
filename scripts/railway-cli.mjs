@@ -155,6 +155,40 @@ export function readEnvironmentConfig(environment) {
 }
 
 /**
+ * Prove that an explicit Railway status read resolved the requested target.
+ *
+ * Mutating callers must not infer a project from the checkout link or accept a
+ * same-named environment from an ambiguous payload. Keep this pure so bounded
+ * operator tools can test every fail-closed status shape without invoking the
+ * CLI.
+ */
+export function resolveRailwayTarget(status, expectedProjectId, environmentName) {
+  if (!status || typeof status !== 'object' || Array.isArray(status)) {
+    throw new Error('Railway status must return an object');
+  }
+  if (typeof status.id !== 'string' || status.id !== expectedProjectId) {
+    throw new Error(
+      `Railway status resolved project id ${String(status.id ?? 'missing')}; expected ${expectedProjectId}`,
+    );
+  }
+  const edges = status?.environments?.edges;
+  if (!Array.isArray(edges)) {
+    throw new Error('Railway status must contain an environments connection');
+  }
+  const matches = edges
+    .map((edge) => edge?.node)
+    .filter((node) => node?.name === environmentName);
+  if (matches.length !== 1 || typeof matches[0]?.id !== 'string' || matches[0].id.length === 0) {
+    throw new Error(
+      `Railway status must resolve exactly one environment ${environmentName}; found ${matches.length}`,
+    );
+  }
+  return {
+    environmentId: matches[0].id,
+  };
+}
+
+/**
  * The environment's id, for the deploy mutation.
  *
  * `--project` is not optional on a CI runner. A clean runner has no `.railway`

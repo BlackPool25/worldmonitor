@@ -27,17 +27,20 @@ describe('Railway CLI child capability boundary', () => {
   const sourceEnv = {
     PATH: '/runner/bin',
     HOME: '/runner/home',
+    RAILWAY_API_TOKEN: 'railway-api-token',
     RAILWAY_TOKEN: 'railway-token',
     RAILWAY_PROJECT_ID: 'project-1',
     RAILWAY_RECONCILE_MUTATION_HMAC: 'mutation-secret',
     RAILWAY_RECONCILE_OPERATOR_HMAC: 'operator-secret',
     GH_TOKEN: 'github-secret',
+    GITHUB_TOKEN: 'github-actions-secret',
   };
 
   it('passes Railway credentials but strips control-plane and GitHub credentials', () => {
     assert.deepEqual(createRailwayCliEnv(sourceEnv), {
       HOME: '/runner/home',
       PATH: '/runner/bin',
+      RAILWAY_API_TOKEN: 'railway-api-token',
       RAILWAY_PROJECT_ID: 'project-1',
       RAILWAY_TOKEN: 'railway-token',
     });
