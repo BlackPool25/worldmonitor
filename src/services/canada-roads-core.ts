@@ -42,6 +42,14 @@ export function hasHealthyCanadaRoadSource(states: CanadaRoadSourceStates): bool
 function isCanadaRoadRecord(value: unknown): value is CanadaRoadRecord {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const record = value as Partial<CanadaRoadRecord>;
+  const validPosition = (position: unknown): position is [number, number] => Array.isArray(position)
+    && position.length === 2
+    && position.every((coordinate) => typeof coordinate === 'number' && Number.isFinite(coordinate));
+  const validOptionalString = (field: unknown) => field === undefined || typeof field === 'string';
+  const validNullableString = (field: unknown) => field === undefined || field === null || typeof field === 'string';
+  const validNullableNumber = (field: unknown) => field === undefined
+    || field === null
+    || (typeof field === 'number' && Number.isFinite(field));
   return typeof record.id === 'string'
     && record.id.trim().length > 0
     && (record.lat === null || (typeof record.lat === 'number' && Number.isFinite(record.lat)))
@@ -52,7 +60,21 @@ function isCanadaRoadRecord(value: unknown): value is CanadaRoadRecord {
     && (record.lanesAffected === null || typeof record.lanesAffected === 'string')
     && typeof record.headline === 'string'
     && typeof record.description === 'string'
-    && typeof record.jurisdiction === 'string';
+    && typeof record.jurisdiction === 'string'
+    && (record.kind === undefined || ['event', 'alert', 'condition'].includes(record.kind))
+    && validOptionalString(record.type)
+    && validOptionalString(record.roadwayName)
+    && validOptionalString(record.resource)
+    && validOptionalString(record.source)
+    && validNullableString(record.district)
+    && validNullableString(record.currImpact)
+    && (record.centroid === undefined || record.centroid === null || validPosition(record.centroid))
+    && (record.path === undefined || record.path === null
+      || (Array.isArray(record.path) && record.path.every(validPosition)))
+    && validNullableNumber(record.createdTime)
+    && validNullableNumber(record.lastUpdated)
+    && validNullableNumber(record.startTime)
+    && validNullableNumber(record.endTime);
 }
 
 function validatedRecords(value: unknown): CanadaRoadRecord[] | null {

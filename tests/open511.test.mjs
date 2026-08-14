@@ -231,6 +231,23 @@ test('an empty page that claims more records fails closed', async () => {
   );
 });
 
+test('malformed pagination fields fail closed instead of looking terminal', async () => {
+  for (const pagination of [
+    { offset: 0, next_url: { bad: true } },
+    { offset: 'not-a-number' },
+    { offset: 0, total: -1 },
+    { offset: 0, has_more: 'yes' },
+  ]) {
+    await assert.rejects(
+      fetchEvents('https://api.open511.gov.bc.ca', {
+        fetchFn: async () => jsonResponse({ events: [PAGE.events[0]], pagination }),
+        acquireSlot: async () => {},
+      }),
+      /pagination/,
+    );
+  }
+});
+
 test('vendor 511 host is rejected and does not use this Open511 client', async () => {
   let called = false;
   const fetchFn = async () => {

@@ -120,6 +120,22 @@ test('corrupt record arrays are malformed rather than available or unavailable',
   }
 });
 
+test('corrupt optional record fields are malformed before map rendering', async () => {
+  for (const corrupt of [
+    { ...road('bad-source'), source: { bad: true } },
+    { ...road('bad-centroid'), centroid: ['bad', null] },
+    { ...road('bad-path'), path: [[-123, 49], [null, 50]] },
+    { ...road('bad-time'), lastUpdated: Number.NaN },
+  ]) {
+    const result = await loadCanadaRoadSourcesCore([CANADA_ROAD_SOURCES[0]!], {
+      getHydrated: () => ({ records: [corrupt] }),
+      fetchMissing: async () => undefined,
+    });
+    assert.deepEqual(result.states, { canadaRoads: 'malformed' });
+    assert.equal(result.records, null);
+  }
+});
+
 test('only available and authoritative empty states count as healthy', () => {
   assert.equal(hasHealthyCanadaRoadSource({
     canadaRoads: 'unavailable',

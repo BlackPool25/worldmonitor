@@ -256,8 +256,32 @@ function validateOpen511Page(body) {
   if (!body || typeof body !== 'object' || !Array.isArray(body.events)) {
     throw new Error('open511: page is missing an events array');
   }
-  if ('pagination' in body && (body.pagination == null || typeof body.pagination !== 'object')) {
+  if ('pagination' in body && (body.pagination == null
+    || typeof body.pagination !== 'object'
+    || Array.isArray(body.pagination))) {
     throw new Error('open511: page has malformed pagination metadata');
+  }
+  const pagination = body.pagination ?? {};
+  for (const key of ['next_url', 'next']) {
+    const value = pagination[key];
+    if (value != null && typeof value !== 'string') {
+      throw new Error(`open511: pagination ${key} must be a string`);
+    }
+  }
+  for (const [owner, key] of [[pagination, 'offset'], [pagination, 'total'], [pagination, 'count'], [body, 'total']]) {
+    if (!(key in owner)) continue;
+    const value = owner[key];
+    if ((typeof value !== 'number' && typeof value !== 'string')
+      || value === ''
+      || !Number.isFinite(Number(value))
+      || Number(value) < 0) {
+      throw new Error(`open511: pagination ${key} must be a non-negative number`);
+    }
+  }
+  for (const key of ['has_more', 'hasMore']) {
+    if (key in pagination && typeof pagination[key] !== 'boolean') {
+      throw new Error(`open511: pagination ${key} must be a boolean`);
+    }
   }
 }
 

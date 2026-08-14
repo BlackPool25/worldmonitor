@@ -31,11 +31,20 @@ export const CANADA_ROAD_SOURCES: readonly CanadaRoadSourceDescriptor[] = Object
   { key: 'bcOpen511', source: 'bc-open511', jurisdiction: 'BC', onDemand: true },
 ]);
 
-let lastSourceStates: CanadaRoadSourceStates = Object.fromEntries(
-  CANADA_ROAD_SOURCES.map(({ key }) => [key, 'unavailable']),
+const unavailableSourceStates = (): CanadaRoadSourceStates => Object.fromEntries(
+  CANADA_ROAD_SOURCES.map(({ key }) => [key, 'unavailable' as const]),
 );
 
-const breaker = createCircuitBreaker<CanadaRoadRecord[]>({
+let lastSourceStates: CanadaRoadSourceStates = unavailableSourceStates();
+
+interface CanadaRoadSnapshot {
+  records: CanadaRoadRecord[];
+  states: CanadaRoadSourceStates;
+}
+
+type CanadaRoadCachedValue = CanadaRoadSnapshot | CanadaRoadRecord[];
+
+const breaker = createCircuitBreaker<CanadaRoadCachedValue>({
   name: 'Canada roads',
   cacheTtlMs: 30 * 60 * 1000,
   persistCache: true,
@@ -87,16 +96,28 @@ export function loadCanadaRoadSources(
 }
 
 export async function fetchCanadaRoads(): Promise<CanadaRoadRecord[]> {
-  const records = await breaker.execute(async () => {
+  const cachedValue = await breaker.execute(async () => {
     const result = await loadCanadaRoadSources();
-    lastSourceStates = result.states;
-    if (result.records != null) return result.records;
+    if (result.records != null) return { records: result.records, states: result.states };
     throw new Error('No usable Canada road source in bootstrap');
-  }, []);
+  }, { records: [], states: unavailableSourceStates() });
+  // Persistent caches written by the pre-source-state client contain the
+  // record array only. Keep that valid cache usable during the rollout while
+  // marking sibling coverage unknown/degraded until the next live refresh.
+  const snapshot: CanadaRoadSnapshot = Array.isArray(cachedValue)
+    ? {
+        records: cachedValue,
+        states: {
+          ...unavailableSourceStates(),
+          canadaRoads: cachedValue.length > 0 ? 'available' : 'empty',
+        },
+      }
+    : cachedValue;
+  lastSourceStates = snapshot.states;
   if (!hasHealthyCanadaRoadSource(lastSourceStates)) {
     throw new Error('All Canada road sources are unavailable or malformed');
   }
-  return records;
+  return snapshot.records;
 }
 
 export function getCanadaRoadSourceStates(): CanadaRoadSourceStates {
