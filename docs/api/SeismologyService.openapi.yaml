@@ -81,14 +81,14 @@ paths:
                         application/json:
                             example:
                                 "earthquakes":
-                                    - "concernLevel": "example"
+                                    - "category": "cs.AI"
+                                      "concernLevel": "example"
                                       "concernScore": 42.5
                                       "depthKm": 1.5
                                       "id": "example-id"
                                       "location":
                                           "latitude": 40.7128
                                           "longitude": -74.006
-                                      "magnitude": 1.5
                                 "pagination":
                                     "nextCursor": "next-page-token"
                                     "totalCount": 1
@@ -308,6 +308,12 @@ components:
                 concernLevel:
                     type: string
                     description: 'Human-readable concern level: "low" | "moderate" | "elevated" | "critical".'
+                source:
+                    type: string
+                    description: 'Reporting agency: "usgs" (USGS) or "nrcan" (Earthquakes Canada / NRCan).'
+                category:
+                    type: string
+                    description: NRCan event category when present (e.g. "known earthquake", "suspected industry-related"). Empty for USGS.
             required:
                 - id
             description: Earthquake represents a seismic event from USGS and Earthquakes Canada (NRCan).

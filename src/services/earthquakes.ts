@@ -4,8 +4,8 @@ import { createCircuitBreaker } from '@/utils';
 import { getHydratedData } from '@/services/bootstrap';
 import { SeismologyServiceClient } from '@/services/generated-rpc-clients';
 
-// Seed payload stamps `source` / `category`. Proto field 12 lands when sebuf
-// generate is available; the dashboard and MCP already read the JSON stamp.
+// Proto Earthquake.source / .category (fields 12 / 13) carry USGS vs NRCan
+// attribution. Keep the union so dashboard/MCP can narrow 'usgs' | 'nrcan'.
 export type Earthquake = ProtoEarthquake & {
   source?: 'usgs' | 'nrcan' | string;
   category?: string;

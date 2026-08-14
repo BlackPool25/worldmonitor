@@ -34,4 +34,8 @@ message Earthquake {
   optional double concern_score = 10;
   // Human-readable concern level: "low" | "moderate" | "elevated" | "critical".
   optional string concern_level = 11;
+  // Reporting agency: "usgs" (USGS) or "nrcan" (Earthquakes Canada / NRCan).
+  string source = 12;
+  // NRCan event category when present (e.g. "known earthquake", "suspected industry-related"). Empty for USGS.
+  string category = 13;
 }
