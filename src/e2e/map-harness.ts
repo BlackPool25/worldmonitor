@@ -1188,6 +1188,8 @@ const seedAllDynamicData = (): void => {
       testSiteName: '',
       concernScore: 0,
       concernLevel: '',
+      source: 'usgs',
+      category: '',
     },
   ];
 
