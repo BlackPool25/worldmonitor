@@ -595,6 +595,21 @@ function liveWidthCwfisDetection(index: number): TaggedFireDetection {
   };
 }
 
+function prescribedCwfisDetection(index: number, fireSize = 999_999 - index): TaggedFireDetection {
+  const nid = `2026_EX_${String(100000 + index)}`;
+  return {
+    ...liveWidthCwfisDetection(index),
+    id: `cwfis:prescribed:${nid}`,
+    kind: 'prescribed',
+    emergency: false,
+    fireWasPrescribed: 1,
+    stageOfControl: 'EX',
+    fireSize,
+    nationalFireId: nid,
+    confidence: 'FIRE_CONFIDENCE_UNSPECIFIED',
+  };
+}
+
 const TAGGED_PEAK_FIRMS = 14_416;
 const TAGGED_PEAK_CWFIS = 584;
 
@@ -663,6 +678,59 @@ describe('tagged FIRMS+CWFIS payload cap', () => {
     assert.ok(keptCwfis.every((row: TaggedFireDetection) => row.source === 'cwfis'));
     const rpcIds = limitFireDetectionsForDashboard([...firms, ...cwfis] as FireDetection[]).map((row) => row.id);
     assert.deepEqual(bootstrap.fireDetections.map((row: FireDetection) => row.id), rpcIds);
+  });
+
+  it('drops prescribed / emergency:false fires from the 500-record dashboard picker', () => {
+    const firms = Array.from({ length: 480 }, (_, index) => tagFirmsDetection(firmsDetection(index)));
+    const prescribed = prescribedCwfisDetection(0, 1_000_000);
+    const emergencyFalseOnly = {
+      ...liveWidthCwfisDetection(1),
+      id: 'cwfis:emergency-false-only',
+      emergency: false,
+      kind: 'active',
+      fireWasPrescribed: 0,
+    };
+    const active = liveWidthCwfisDetection(2);
+    const limited = limitFireDetectionsForDashboard(
+      [...firms, prescribed, emergencyFalseOnly, active] as FireDetection[],
+    );
+    assert.equal(limited.some((row: TaggedFireDetection) => row.id === prescribed.id), false);
+    assert.equal(limited.some((row: TaggedFireDetection) => row.id === emergencyFalseOnly.id), false);
+    assert.equal(limited.some((row: TaggedFireDetection) => row.kind === 'prescribed'), false);
+    assert.equal(limited.some((row: TaggedFireDetection) => row.emergency === false), false);
+    assert.ok(limited.some((row) => row.id === active.id));
+  });
+
+  it('does not let a large prescribed EX fire consume a CWFIS bootstrap slot', () => {
+    const firms = Array.from({ length: FIRMS_PEAK_DETECTIONS }, (_, index) =>
+      tagFirmsDetection(firmsDetection(index)));
+    const prescribed = Array.from({ length: 22 }, (_, index) => prescribedCwfisDetection(index, 2_000_000 - index));
+    const active = Array.from({ length: 80 }, (_, index) => liveWidthCwfisDetection(index + 200));
+    const mix = [...firms, ...prescribed, ...active];
+    const bootstrap = compactWildfireDashboardPayload({ fireDetections: mix });
+    const keptCwfis = bootstrap.fireDetections.filter((row: TaggedFireDetection) => row.source === WILDFIRE_CWFIS_SOURCE);
+    assert.equal(bootstrap.fireDetections.length, WILDFIRE_DASHBOARD_DETECTION_LIMIT);
+    assert.equal(keptCwfis.length, WILDFIRE_BOOTSTRAP_CWFIS_RESERVED);
+    assert.ok(keptCwfis.every((row: TaggedFireDetection) => row.kind !== 'prescribed'));
+    assert.ok(keptCwfis.every((row: TaggedFireDetection) => row.emergency !== false));
+    assert.ok(keptCwfis.every((row: TaggedFireDetection) => row.fireWasPrescribed !== 1));
+    assert.equal(bootstrap.fireDetections.some((row: TaggedFireDetection) => row.kind === 'prescribed'), false);
+    const rpc = limitFireDetectionsForDashboard(mix as FireDetection[]);
+    assert.deepEqual(bootstrap.fireDetections.map((row: FireDetection) => row.id), rpc.map((row) => row.id));
+    assert.ok(rpc.every((row: TaggedFireDetection) => row.kind !== 'prescribed' && row.emergency !== false));
+  });
+
+  it('still reserves 50 bootstrap slots for active non-prescribed CWFIS', () => {
+    const firms = Array.from({ length: FIRMS_PEAK_DETECTIONS }, (_, index) =>
+      tagFirmsDetection(firmsDetection(index)));
+    const prescribed = Array.from({ length: 22 }, (_, index) => prescribedCwfisDetection(index, 9_000_000));
+    const active = Array.from({ length: 60 }, (_, index) => liveWidthCwfisDetection(index + 400));
+    const bootstrap = compactWildfireDashboardPayload({ fireDetections: [...firms, ...prescribed, ...active] });
+    const keptActive = bootstrap.fireDetections.filter((row: TaggedFireDetection) =>
+      row.source === WILDFIRE_CWFIS_SOURCE && row.kind === 'active' && row.emergency !== false);
+    assert.equal(keptActive.length, WILDFIRE_BOOTSTRAP_CWFIS_RESERVED);
+    assert.ok(keptActive.every((row: TaggedFireDetection) => String(row.id).startsWith('cwfis:')));
+    assert.equal(keptActive.some((row: TaggedFireDetection) => String(row.id).includes('prescribed')), false);
   });
 
   it('publishes the tagged 5.11MB mix through runSeed without FATAL', async () => {

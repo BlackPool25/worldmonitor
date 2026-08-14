@@ -60,16 +60,33 @@ function isCwfisDetection(detection) {
   return detection?.source === WILDFIRE_CWFIS_SOURCE;
 }
 
+// Keep in lockstep with isEmergencyPagingCandidate in wildfire/cwfis-wfs.mjs.
+// Prescribed / emergency:false burns must not occupy the dashboard 500 or the
+// 50 reserved source=cwfis bootstrap slots (live: 22 prescribed EX, overlap 0).
+function isDashboardEmergencyFire(detection) {
+  if (!detection || typeof detection !== 'object') return false;
+  if (detection.kind === 'prescribed') return false;
+  if (detection.emergency === false) return false;
+  if (detection.fireWasPrescribed === 1 || detection.fireWasPrescribed === true) return false;
+  return true;
+}
+
 export function limitFireDetectionsForDashboard(detections, limit = WILDFIRE_DASHBOARD_DETECTION_LIMIT) {
-  if (!Array.isArray(detections) || detections.length <= limit) return detections;
+  if (!Array.isArray(detections)) return detections;
+  // Dashboard/bootstrap 500 never shows prescribed burns. Canonical 15k and
+  // comparator unit tests (limit !== 500) keep the full mix.
+  const pool = limit === WILDFIRE_DASHBOARD_DETECTION_LIMIT
+    ? detections.filter(isDashboardEmergencyFire)
+    : detections;
+  if (pool.length <= limit) return pool;
   // Reservation is for the dashboard/bootstrap 500 only. Canonical 15k already keeps
   // HIGH CWFIS, and unit tests pass limit=1 to pin comparator order.
   if (limit !== WILDFIRE_DASHBOARD_DETECTION_LIMIT) {
-    return [...detections].sort(compareFireDetectionsForDashboard).slice(0, limit);
+    return [...pool].sort(compareFireDetectionsForDashboard).slice(0, limit);
   }
   const cwfis = [];
   const others = [];
-  for (const detection of detections) {
+  for (const detection of pool) {
     if (isCwfisDetection(detection)) cwfis.push(detection);
     else others.push(detection);
   }
