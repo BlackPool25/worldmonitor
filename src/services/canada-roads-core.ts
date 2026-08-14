@@ -119,6 +119,7 @@ export async function loadCanadaRoadSourcesCore(
   const groups: Array<CanadaRoadRecord[] | null> = [];
   settled.forEach((result, index) => {
     const descriptor = descriptors[index];
+    if (!descriptor) return;
     if (result.status === 'rejected') {
       states[descriptor.key] = 'unavailable';
       groups.push(null);
