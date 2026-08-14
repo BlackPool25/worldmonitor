@@ -484,6 +484,33 @@ describe('independent FIRMS + CWFIS merge', () => {
     );
   });
 
+  it('publishes CWFIS fallback with health-visible FIRMS degradation metadata', async () => {
+    const cwfisOnly = await mergeWildfireSources({
+      fetchFirms: async () => { throw new Error('FIRMS key rejected'); },
+      fetchCwfis: async () => parseCwfisGeoJson(activeJson, 'active'),
+    });
+    assert.equal(cwfisOnly._firmsState, 'failed');
+    assert.equal(cwfisOnly._firmsErrorCode, 'FIRMS_SOURCE_FAILED');
+
+    // A FIRMS outage drops the canonical wildfire key from ~15k worldwide
+    // detections to Canada only. That must never publish as sourceState 'ok'.
+    const patch = cwfisWildfireAfterPublish(cwfisOnly).freshnessMetaPatch;
+    assert.equal(patch.sourceState, 'degraded');
+    assert.equal(patch.errorCode, 'FIRMS_SOURCE_FAILED');
+  });
+
+  it('reports the global source first when both sources degrade', async () => {
+    const patch = cwfisWildfireAfterPublish({
+      _firmsState: 'failed',
+      _firmsErrorCode: 'FIRMS_SOURCE_FAILED',
+      _cwfisState: 'degraded',
+      _cwfisErrorCode: 'CWFIS_PRESCRIBED_FAILED',
+    }).freshnessMetaPatch;
+    assert.equal(patch.sourceState, 'degraded');
+    assert.equal(patch.errorCode, 'FIRMS_SOURCE_FAILED');
+    assert.equal(patch.canadaSourceFailureCount, 1);
+  });
+
   it('publishes FIRMS fallback with health-visible CWFIS degradation metadata', async () => {
     const firmsOnly = await mergeWildfireSources({
       fetchFirms: async () => ({ fireDetections: [firmsDetection()] }),

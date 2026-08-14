@@ -178,13 +178,17 @@ function capCanonicalPayload(data) {
 async function fetchMergedWildfires() {
   const apiKey = process.env.NASA_FIRMS_API_KEY || process.env.FIRMS_API_KEY || '';
   const cache = new Map();
-  if (apiKey) console.log('  FIRMS key configured');
-  else console.warn('  FIRMS key missing — continuing with CWFIS only');
+  // Missing config is NOT runtime degradation. Without this refusal an absent key
+  // reaches mergeWildfireSources, is swallowed by allSettled, and silently
+  // republishes the canonical worldwide key as Canada-only on every tick.
+  // Let a live FIRMS outage degrade; never let a misconfigured deploy do it.
+  if (!apiKey) {
+    console.error('[seed-fire-detections] NASA_FIRMS_API_KEY (or FIRMS_API_KEY) is required but not set. Refusing to run.');
+    process.exit(1);
+  }
+  console.log('  FIRMS key configured');
   return mergeWildfireSources({
-    fetchFirms: async () => {
-      if (!apiKey) throw new Error('NASA_FIRMS_API_KEY (or FIRMS_API_KEY) is not set');
-      return fetchAllRegions(apiKey);
-    },
+    fetchFirms: async () => fetchAllRegions(apiKey),
     fetchCwfis: () => fetchCwfisFires({ fetchFn: globalThis.fetch, cache }),
   });
 }
