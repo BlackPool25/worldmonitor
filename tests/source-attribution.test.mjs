@@ -109,6 +109,12 @@ test('source inventory has complete metadata and matches the generated catalog',
   assert.equal(stats.providerCount, 550);
   assert.equal(stats.observedHosts, 671);
   assert.ok(stats.reviewNeeded > 0, 'terms-review rows must remain visible until a license audit is complete');
+
+  const byHost = new Map(manifest.entries.map((entry) => [entry.host, entry]));
+  assert.equal(byHost.get('auth.opensky-network.org')?.provider, 'opensky-network.org');
+  assert.equal(byHost.get('opensky-network.org')?.provider, 'opensky-network.org');
+  assert.equal(byHost.get('customer-api.wingbits.com')?.provider, 'wingbits.com');
+  assert.equal(byHost.get('ecs-api.wingbits.com')?.provider, 'wingbits.com');
 });
 
 test('the issue audit providers are represented by named attribution rows', () => {

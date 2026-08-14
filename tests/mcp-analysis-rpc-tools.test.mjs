@@ -225,6 +225,7 @@ function analysisPayloads() {
       ],
     },
     'theater-posture:sebuf:v1': {
+      provider: 'wingbits',
       theaters: [{ theater: 'iran-theater', trackedVessels: 2 }],
     },
     'military:surges:v1': {
@@ -557,10 +558,17 @@ describe('military-surge seed adapters', () => {
     assert.deepEqual(mapped.map((f) => f.id), ['z']);
     assert.equal(mapped[0].operator, 'unknown');
     assert.equal(mapped[0].aircraftType, 'unknown');
+    assert.deepEqual(militaryFlightsToSurgeInputs({
+      flights: [
+        { id: 'open', source: 'OpenSky Network', lat: 26.5, lon: 51.0 },
+        { id: 'wingbits', source: 'wingbits', lat: 26.6, lon: 51.1 },
+      ],
+    }).map((flight) => flight.id), ['wingbits']);
   });
 
   it('reads per-theater vessel counts out of the theater-posture payload', () => {
     const counts = theaterPostureVesselCounts({
+      provider: 'wingbits',
       theaters: [
         { theater: 'iran-theater', postureLevel: 'elevated', activeFlights: 9, trackedVessels: 6 },
         { theater: 'taiwan-theater', postureLevel: 'normal', activeFlights: 2, trackedVessels: 0 },
@@ -573,6 +581,8 @@ describe('military-surge seed adapters', () => {
     assert.equal(counts.get('bogus'), undefined);
     assert.equal(theaterPostureVesselCounts(null).size, 0);
     assert.equal(theaterPostureVesselCounts({ theaters: 'nope' }).size, 0);
+    assert.equal(theaterPostureVesselCounts({ provider: 'opensky', theaters: [{ theater: 'iran-theater', trackedVessels: 6 }] }).size, 0);
+    assert.equal(theaterPostureVesselCounts({ theaters: [{ theater: 'iran-theater', trackedVessels: 6 }] }).size, 0);
   });
 
   it('applies vessel counts and lets naval strength drive the posture level', () => {

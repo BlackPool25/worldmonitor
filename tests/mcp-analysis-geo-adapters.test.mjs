@@ -24,8 +24,8 @@ describe('geo-convergence seed adapters', () => {
 
   const flights = () => ({
     flights: [
-      { id: 'opensky-ae1', lat: 32.1, lon: 35.4, lastSeenMs: NOW - 10 * MIN, aircraftType: 'fighter' },
-      { id: 'opensky-ae2', lat: 32.7, lon: 35.1, lastSeenMs: NOW - 20 * MIN, aircraftType: 'tanker' },
+      { id: 'wingbits-ae1', source: 'wingbits', lat: 32.1, lon: 35.4, lastSeenMs: NOW - 10 * MIN, aircraftType: 'fighter' },
+      { id: 'wingbits-ae2', source: 'wingbits', lat: 32.7, lon: 35.1, lastSeenMs: NOW - 20 * MIN, aircraftType: 'tanker' },
     ],
     fetchedAt: NOW - 5 * MIN,
   });
@@ -97,6 +97,18 @@ describe('geo-convergence seed adapters', () => {
     };
     assert.deepEqual(earthquakesToGeoEvents(payload, { now: NOW }), [
       { lat: 32.3, lon: 35.8, time: NOW - 3 * HOUR },
+    ]);
+  });
+
+  it('drops OpenSky flights before MCP convergence analysis', () => {
+    const payload = {
+      flights: [
+        { source: 'OpenSky Network', lat: 32.1, lon: 35.4, lastSeenMs: NOW },
+        { source: 'wingbits', lat: 32.2, lon: 35.5, lastSeenMs: NOW },
+      ],
+    };
+    assert.deepEqual(militaryFlightsToGeoEvents(payload, { now: NOW }), [
+      { lat: 32.2, lon: 35.5, time: NOW },
     ]);
   });
 
