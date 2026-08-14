@@ -5,6 +5,7 @@ import test from 'node:test';
 import { __testing__ as limiterTesting } from '../scripts/_511-rate-limit.mjs';
 import {
   BC_OPEN511,
+  MAX_RECORDS,
   OPEN511_HOSTS,
   centroidOfPath,
   fetchEvents,
@@ -13,6 +14,7 @@ import {
   normalizeOpen511Event,
   normalizeOpen511List,
   open511Adapter,
+  selectOpen511Records,
 } from '../scripts/lib/open511.mjs';
 
 const PAGE = JSON.parse(readFileSync(new URL('./fixtures/open511-bc-active-page.json', import.meta.url), 'utf8'));
@@ -239,7 +241,7 @@ test('BC Open511 shares canadaRoads and does not invent a second MapLayers key',
   const types = readFileSync(new URL('../src/types/index.ts', import.meta.url), 'utf8');
   const layers = readFileSync(new URL('../src/config/map-layer-definitions.ts', import.meta.url), 'utf8');
   const client = readFileSync(new URL('../src/services/canada-roads.ts', import.meta.url), 'utf8');
-  assert.match(types, /canadaRoads\?: boolean/);
+  assert.match(types, /canadaRoads: boolean/);
   assert.doesNotMatch(types, /bcOpen511\?: boolean/);
   assert.match(layers, /canadaRoads:\s+def\('canadaRoads'/);
   assert.doesNotMatch(layers, /bcOpen511:\s+def\(/);
@@ -265,13 +267,15 @@ test('railway registers seed-open511 as an active */15 nixpacks job', () => {
   assert.equal(entry.watchPatterns.some((p) => p.includes('provincial-511')), false);
 });
 
-test('bootstrap keeps canadaRoads on the fast tier and unions the BC Open511 redis key', () => {
+test('bootstrap keeps canadaRoads on the fast tier; bcOpen511 is on-demand (~797 KB)', () => {
   const src = readFileSync(new URL('../shared/bootstrap-tier-keys.js', import.meta.url), 'utf8');
   assert.match(src, /canadaRoads: 'infra:ontario-511:v1'/);
   assert.match(src, /bcOpen511: 'infra:bc-open511:v1'/);
   const fast = src.slice(src.indexOf('const FAST_KEY_NAMES'), src.indexOf('const ON_DEMAND_KEY_NAMES'));
+  const onDemand = src.slice(src.indexOf('const ON_DEMAND_KEY_NAMES'));
   assert.match(fast, /'canadaRoads'/);
-  assert.match(fast, /'bcOpen511'/);
+  assert.doesNotMatch(fast, /'bcOpen511'/);
+  assert.match(onDemand, /'bcOpen511'/);
 });
 
 test('seed-freshness-baseline acknowledges the BC Open511 cutover', () => {
@@ -280,4 +284,111 @@ test('seed-freshness-baseline acknowledges the BC Open511 cutover', () => {
   assert.ok(row);
   assert.equal(row.status, 'EMPTY');
   assert.equal(row.cutover.probeKey, 'seed-meta:infra:bc-open511');
+  assert.equal(row.expiresAt, '2026-08-16T20:45:00.000Z');
+  assert.equal(row.cutover.firstScheduledRunAt, '2026-08-16T20:45:00.000Z');
+  assert.equal(row.cutover.activatedAt, '2026-08-15T21:00:00.000Z');
 });
+
+test('following next_url without status=ACTIVE still requests ACTIVE pages', async () => {
+  const urls = [];
+  const fetchFn = async (url) => {
+    urls.push(String(url));
+    if (String(url).includes('offset=1')) {
+      return jsonResponse({ events: [], pagination: { offset: '1' } });
+    }
+    return jsonResponse({
+      events: [{
+        id: 'drivebc.ca/DBC-page1',
+        headline: 'INCIDENT',
+        severity: 'MAJOR',
+        event_type: 'INCIDENT',
+        geography: { type: 'Point', coordinates: [-123.1, 49.2] },
+      }],
+      pagination: {
+        offset: '0',
+        next_url: 'https://api.open511.gov.bc.ca/events?limit=1&offset=1',
+      },
+    });
+  };
+  const result = await fetchEvents('https://api.open511.gov.bc.ca', { fetchFn, limit: 1 });
+  assert.equal(result.pages, 2);
+  assert.match(urls[0], /status=ACTIVE/);
+  assert.match(urls[1], /status=ACTIVE/);
+  assert.match(urls[1], /offset=1/);
+});
+
+test('hitting maxPages warns that remaining pages were dropped', async () => {
+  const warnings = [];
+  const origWarn = console.warn;
+  console.warn = (...args) => { warnings.push(args.join(' ')); };
+  try {
+    const fetchFn = async (url) => {
+      const offset = Number(new URL(url).searchParams.get('offset') || 0);
+      return jsonResponse({
+        events: [{
+          id: `drivebc.ca/DBC-${offset}`,
+          headline: 'CONSTRUCTION',
+          severity: 'MINOR',
+          event_type: 'CONSTRUCTION',
+          geography: { type: 'Point', coordinates: [-123.1, 49.2] },
+        }],
+        pagination: {
+          offset,
+          next_url: `https://api.open511.gov.bc.ca/events?limit=1&offset=${offset + 1}`,
+        },
+      });
+    };
+    const result = await fetchEvents('https://api.open511.gov.bc.ca', {
+      fetchFn, limit: 1, maxPages: 3, acquireSlot: async () => {},
+    });
+    assert.equal(result.pages, 3);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /maxPages=3/);
+    assert.match(warnings[0], /remaining pages dropped/);
+    assert.match(String(result.records.length), /3/);
+  } finally {
+    console.warn = origWarn;
+  }
+});
+
+test('400-record cap keeps closures and accidents above construction filler', () => {
+  const records = [];
+  for (let i = 0; i < 20; i++) {
+    records.push(normalizeOpen511Event({
+      id: `zzz-closure-${String(i).padStart(4, '0')}`,
+      headline: 'INCIDENT',
+      severity: 'MAJOR',
+      event_type: 'INCIDENT',
+      geography: { type: 'Point', coordinates: [-123.1, 49.2] },
+      roads: [{ name: 'Highway 1', state: 'CLOSED' }],
+    }, { jurisdiction: 'BC', source: 'bc-open511' }));
+  }
+  for (let i = 0; i < 15; i++) {
+    records.push(normalizeOpen511Event({
+      id: `zzz-accident-${String(i).padStart(4, '0')}`,
+      headline: 'Accident',
+      description: 'Two-vehicle collision blocking the left lane',
+      severity: 'MODERATE',
+      event_type: 'INCIDENT',
+      geography: { type: 'Point', coordinates: [-122.8, 49.1] },
+      roads: [{ name: 'Highway 99', state: 'ALL_LANES_OPEN' }],
+    }, { jurisdiction: 'BC', source: 'bc-open511' }));
+  }
+  for (let i = 0; i < 400; i++) {
+    records.push(normalizeOpen511Event({
+      id: `aaa-construction-${String(i).padStart(4, '0')}`,
+      headline: 'CONSTRUCTION',
+      severity: 'MINOR',
+      event_type: 'CONSTRUCTION',
+      geography: { type: 'Point', coordinates: [-123.0, 49.0] },
+      roads: [{ name: 'Highway 5', state: 'ALL_LANES_OPEN' }],
+    }, { jurisdiction: 'BC', source: 'bc-open511' }));
+  }
+  assert.equal(records.length, 435);
+  const selected = selectOpen511Records(records);
+  assert.equal(selected.length, MAX_RECORDS);
+  assert.equal(selected.filter((r) => r.isFullClosure).length, 20);
+  assert.equal(selected.filter((r) => /accident|collision/i.test(`${r.headline} ${r.description}`)).length, 15);
+  assert.equal(selected.filter((r) => r.eventType === 'CONSTRUCTION').length, 365);
+});
+

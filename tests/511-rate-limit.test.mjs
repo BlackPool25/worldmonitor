@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 
 import {
+  HOST_511_RATES,
   acquire511Slot,
   create511RateLimiter,
   reset511RateLimiterForTests,
@@ -65,6 +66,40 @@ describe('per-host 511 limiter (#6618 v1)', () => {
     assert.doesNotMatch(ADAPTER_SOURCE, /open511\.gov\.bc/);
     assert.doesNotMatch(ADAPTER_SOURCE, /from ['"]\.\.\/\.\.\/shared\//);
     assert.doesNotMatch(ADAPTER_SOURCE, /fetch\.bind/);
+  });
+
+  it('BC Open511 host is 60/60 (~1 rps); Ontario stays 10/60 on its own bucket', async () => {
+    assert.deepEqual(HOST_511_RATES['api.open511.gov.bc.ca'], { capacity: 60, windowMs: 60_000 });
+    let nowMs = 1_000;
+    const sleeps = [];
+    const limiter = create511RateLimiter({
+      hostRates: HOST_511_RATES,
+      now: () => nowMs,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        nowMs += ms;
+      },
+    });
+
+    for (let i = 0; i < 60; i++) {
+      await limiter.acquire511Slot('api.open511.gov.bc.ca');
+    }
+    assert.equal(limiter.pendingCount('api.open511.gov.bc.ca'), 60);
+    assert.equal(limiter.pendingCount('511on.ca'), 0);
+
+    const sixtyFirst = limiter.acquire511Slot('api.open511.gov.bc.ca');
+    await sixtyFirst;
+    assert.ok(sleeps.length >= 1, '61st BC call must wait for the 60/60 window');
+    assert.equal(sleeps[0], 60_000);
+
+    sleeps.length = 0;
+    for (let i = 0; i < 10; i++) {
+      await limiter.acquire511Slot('511on.ca');
+    }
+    assert.equal(sleeps.length, 0, 'Ontario 10/60 must not wait on the first 10 calls');
+    await limiter.acquire511Slot('511on.ca');
+    assert.ok(sleeps.length >= 1, '11th Ontario call must still wait');
+    assert.equal(sleeps[0], 60_000);
   });
 
   it('seeder is a standalone nixpacks job and does not loop ais-relay', () => {

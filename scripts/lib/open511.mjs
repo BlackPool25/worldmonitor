@@ -222,11 +222,18 @@ function eventsUrl(baseUrl, { status = 'ACTIVE', limit = DEFAULT_LIMIT, offset }
   return url;
 }
 
+function applyStatus(url, status) {
+  if (status) url.searchParams.set('status', status);
+  return url;
+}
+
 function nextPageUrl(body, currentUrl, { status, limit, offset }) {
   const pagination = body?.pagination && typeof body.pagination === 'object' ? body.pagination : {};
   const next = pagination.next_url || pagination.next || null;
   if (typeof next === 'string' && next.trim()) {
-    return new URL(next, currentUrl);
+    // DriveBC next_url sometimes drops status=ACTIVE; later pages then
+    // include archived events. Re-apply the requested status on every page.
+    return applyStatus(new URL(next, currentUrl), status);
   }
   const events = Array.isArray(body?.events) ? body.events : [];
   if (events.length === 0) return null;
@@ -305,6 +312,10 @@ export async function fetchEvents(baseUrl, opts = {}) {
     pages += 1;
     const next = nextPageUrl(body, url, { status, limit, offset });
     if (!next) break;
+    if (pages >= maxPages) {
+      console.warn(`open511: hit maxPages=${maxPages} on ${hostname}; remaining pages dropped`);
+      break;
+    }
     offset = Number(new URL(next).searchParams.get('offset') || 0) || offset + pageRecords.length;
     url = next;
   }
@@ -333,3 +344,31 @@ export function open511Adapter(baseUrl, defaults = {}) {
 }
 
 export { CHROME_UA, MAX_PAYLOAD_BYTES, MAX_PAGES, DEFAULT_LIMIT };
+
+export const MAX_RECORDS = 400;
+
+function isAccidentEvent(record) {
+  const type = String(record?.eventType || '');
+  if (/construction/i.test(type)) return false;
+  const blob = `${type} ${record?.headline || ''} ${record?.description || ''}`;
+  return /accident|incident|collision|crash/i.test(blob);
+}
+
+/** Lower is kept first so the 400-record cap cannot drop closures/accidents. */
+export function rankOpen511Record(record) {
+  if (record?.isFullClosure) return 0;
+  if (record?.severity === 'Extreme') return 1;
+  if (isAccidentEvent(record)) return 2;
+  if (record?.severity === 'Severe') return 3;
+  if (record?.severity === 'Moderate') return 4;
+  if (record?.centroid) return 5;
+  return 6;
+}
+
+export function selectOpen511Records(records, maxRecords = MAX_RECORDS) {
+  if (!Array.isArray(records) || records.length <= maxRecords) return records || [];
+  return [...records]
+    .sort((a, b) => rankOpen511Record(a) - rankOpen511Record(b) || String(a.id).localeCompare(String(b.id)))
+    .slice(0, maxRecords);
+}
+

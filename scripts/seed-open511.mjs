@@ -9,29 +9,13 @@ import { loadEnvFile, CHROME_UA, runSeed } from './_seed-utils.mjs';
 import {
   BC_OPEN511,
   open511Adapter,
+  selectOpen511Records,
 } from './lib/open511.mjs';
 
 loadEnvFile(import.meta.url);
 
 const CANONICAL_KEY = 'infra:bc-open511:v1';
 const CACHE_TTL = 5400; // 90 min ≥ 3× the */15 cron (900s)
-const MAX_RECORDS = 400;
-
-function rankRecord(record) {
-  if (record.isFullClosure) return 0;
-  if (record.severity === 'Extreme') return 1;
-  if (record.severity === 'Severe') return 2;
-  if (record.severity === 'Moderate') return 3;
-  if (record.centroid) return 4;
-  return 5;
-}
-
-function selectRecords(records) {
-  if (records.length <= MAX_RECORDS) return records;
-  return [...records]
-    .sort((a, b) => rankRecord(a) - rankRecord(b) || String(a.id).localeCompare(String(b.id)))
-    .slice(0, MAX_RECORDS);
-}
 
 async function fetchBcOpen511() {
   const adapter = open511Adapter(BC_OPEN511.baseUrl, {
@@ -40,7 +24,7 @@ async function fetchBcOpen511() {
     source: BC_OPEN511.source,
   });
   const envelope = await adapter.fetchEvents({ status: 'ACTIVE', limit: 500 });
-  return { records: selectRecords(envelope.records) };
+  return { records: selectOpen511Records(envelope.records) };
 }
 
 export function declareRecords(data) {
