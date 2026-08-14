@@ -350,6 +350,32 @@ describe('proto source/category fields (P1)', () => {
     assert.match(eqBlock, /"usgs"/);
     assert.match(eqBlock, /"nrcan"/);
   });
+
+  it('proto-shaped JSON round-trip keeps source: nrcan so MapPopup does not label USGS', () => {
+    const eq = nrcanEq();
+    const protoFields = [
+      'id', 'place', 'magnitude', 'depthKm', 'location', 'occurredAt',
+      'sourceUrl', 'nearTestSite', 'testSiteName', 'concernScore', 'concernLevel',
+      'source', 'category',
+    ];
+    const encoded = Object.fromEntries(protoFields.filter((k) => eq[k] !== undefined).map((k) => [k, eq[k]]));
+    const decoded = JSON.parse(JSON.stringify(encoded));
+    assert.equal(decoded.source, 'nrcan');
+    assert.equal(decoded.category, 'known earthquake');
+    assert.equal(decoded.id.startsWith('nrcan:'), true);
+    const sourceName = decoded.source === 'nrcan' ? 'Earthquakes Canada' : 'USGS';
+    assert.equal(sourceName, 'Earthquakes Canada');
+  });
+
+  it('resticks MCP-Apps / stats so the natural-disasters shell is not USGS-only', () => {
+    const registry = readFileSync(resolve(here, '../api/mcp/ui/registry.ts'), 'utf8');
+    assert.match(registry, /Earthquakes Canada \/ NRCan/);
+    assert.doesNotMatch(registry, /groups recent earthquakes \(USGS magnitude, place, time\)/);
+
+    const stats = readFileSync(resolve(here, '../docs/generated/stats.json'), 'utf8');
+    assert.match(stats, /Earthquakes Canada \/ NRCan/);
+    assert.doesNotMatch(stats, /groups recent earthquakes \(USGS magnitude, place, time\)/);
+  });
 });
 
 describe('module import contract', () => {
