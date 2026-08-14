@@ -1,6 +1,9 @@
 #!/usr/bin/env node
-// - Service name: seed-provincial-511
-// Standalone nixpacks seeder for Ontario 511 events, alerts, and road conditions.
+// Runs as the Provincial-511 member of seed-bundle-canada (#6711), not as its own
+// Railway service — six Canada seeders do not earn six slots. The bundle gates it
+// on intervalMs 15min and gives the section a 180s timeout, because three
+// endpoints x three runSeed attempts can also wait on the per-host 10/60 bucket.
+// Seeder for Ontario 511 events, alerts, and road conditions.
 // Do not add Canada loops to ais-relay.cjs. AB/MB share the vendor adapter later.
 // Each Ontario fetch goes through acquire511Slot('511on.ca') inside the adapter.
 
