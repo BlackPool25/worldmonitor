@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  hasHealthyCanadaRoadSource,
   loadCanadaRoadSourcesCore,
   unionCanadaRoadRecords,
   type CanadaRoadRecord,
@@ -106,6 +107,28 @@ test('malformed and unavailable sources remain distinct', async () => {
     bcOpen511: 'unavailable',
   });
   assert.equal(result.records, null);
+});
+
+test('corrupt record arrays are malformed rather than available or unavailable', async () => {
+  for (const corrupt of [{}, null, 7]) {
+    const result = await loadCanadaRoadSourcesCore([CANADA_ROAD_SOURCES[0]!], {
+      getHydrated: () => ({ records: [corrupt] }),
+      fetchMissing: async () => undefined,
+    });
+    assert.deepEqual(result.states, { canadaRoads: 'malformed' });
+    assert.equal(result.records, null);
+  }
+});
+
+test('only available and authoritative empty states count as healthy', () => {
+  assert.equal(hasHealthyCanadaRoadSource({
+    canadaRoads: 'unavailable',
+    albertaRoads: 'malformed',
+  }), false);
+  assert.equal(hasHealthyCanadaRoadSource({
+    canadaRoads: 'unavailable',
+    albertaRoads: 'empty',
+  }), true);
 });
 
 test('deduplicates by source and id, not by id alone', () => {

@@ -236,11 +236,29 @@ function nextPageUrl(body, currentUrl, { status, limit, offset }) {
     return applyStatus(new URL(next, currentUrl), status);
   }
   const events = Array.isArray(body?.events) ? body.events : [];
-  if (events.length === 0) return null;
-  if (events.length < Number(limit)) return null;
   const currentOffset = Number(pagination.offset ?? offset ?? 0) || 0;
+  const total = Number(pagination.total ?? pagination.count ?? body?.total);
+  const hasMore = pagination.has_more === true
+    || pagination.hasMore === true
+    || (Number.isFinite(total) && total > currentOffset + events.length);
+  if (events.length === 0) {
+    if (hasMore) {
+      throw new Error('open511: pagination claims more results after an empty page');
+    }
+    return null;
+  }
   const nextOffset = currentOffset + events.length;
+  if (!hasMore && events.length < Number(limit)) return null;
   return eventsUrl(currentUrl.origin + '/', { status, limit, offset: nextOffset });
+}
+
+function validateOpen511Page(body) {
+  if (!body || typeof body !== 'object' || !Array.isArray(body.events)) {
+    throw new Error('open511: page is missing an events array');
+  }
+  if ('pagination' in body && (body.pagination == null || typeof body.pagination !== 'object')) {
+    throw new Error('open511: page has malformed pagination metadata');
+  }
 }
 
 /**
@@ -313,6 +331,7 @@ export async function fetchEvents(baseUrl, opts = {}) {
     }
     visited.add(pageUrl);
     const body = await fetchOpen511Page(url, opts);
+    validateOpen511Page(body);
     const pageRecords = normalizeOpen511List(body, ctx);
     records.push(...pageRecords);
     pages += 1;

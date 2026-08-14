@@ -35,6 +35,31 @@ export interface CanadaRoadSourceDescriptor {
 
 export type CanadaRoadSourceStates = Record<string, CanadaRoadSourceState>;
 
+export function hasHealthyCanadaRoadSource(states: CanadaRoadSourceStates): boolean {
+  return Object.values(states).some((state) => state === 'available' || state === 'empty');
+}
+
+function isCanadaRoadRecord(value: unknown): value is CanadaRoadRecord {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Partial<CanadaRoadRecord>;
+  return typeof record.id === 'string'
+    && record.id.trim().length > 0
+    && (record.lat === null || (typeof record.lat === 'number' && Number.isFinite(record.lat)))
+    && (record.lon === null || (typeof record.lon === 'number' && Number.isFinite(record.lon)))
+    && typeof record.severity === 'string'
+    && typeof record.eventType === 'string'
+    && typeof record.isFullClosure === 'boolean'
+    && (record.lanesAffected === null || typeof record.lanesAffected === 'string')
+    && typeof record.headline === 'string'
+    && typeof record.description === 'string'
+    && typeof record.jurisdiction === 'string';
+}
+
+function validatedRecords(value: unknown): CanadaRoadRecord[] | null {
+  if (!Array.isArray(value)) return null;
+  return value.every(isCanadaRoadRecord) ? value : null;
+}
+
 export function recordsFromPayload(payload: unknown): CanadaRoadRecord[] | null {
   if (!payload || typeof payload !== 'object') return null;
   const value = payload as {
@@ -48,13 +73,20 @@ export function recordsFromPayload(payload: unknown): CanadaRoadRecord[] | null 
     const nested = recordsFromPayload(value.data);
     if (nested) return nested;
   }
-  if (Array.isArray(value.records)) return value.records;
+  if (Array.isArray(value.records)) return validatedRecords(value.records);
+  const eventRecords = Array.isArray(value.events) ? validatedRecords(value.events) : [];
+  const alertRecords = Array.isArray(value.alerts) ? validatedRecords(value.alerts) : [];
+  const conditionRecords = Array.isArray(value.conditions) ? validatedRecords(value.conditions) : [];
+  if (eventRecords == null || alertRecords == null || conditionRecords == null) return null;
   const combined = [
-    ...(Array.isArray(value.events) ? value.events : []),
-    ...(Array.isArray(value.alerts) ? value.alerts : []),
-    ...(Array.isArray(value.conditions) ? value.conditions : []),
+    ...eventRecords,
+    ...alertRecords,
+    ...conditionRecords,
   ];
-  return combined.length || Array.isArray(value.events) ? combined : null;
+  const hasKnownArray = Array.isArray(value.events)
+    || Array.isArray(value.alerts)
+    || Array.isArray(value.conditions);
+  return combined.length || hasKnownArray ? combined : null;
 }
 
 function stampSource(

@@ -185,6 +185,52 @@ test('offset pagination continues until an empty page when next_url is absent', 
   assert.match(urls[1], /offset=1/);
 });
 
+test('a successful response without an events array fails closed', async () => {
+  await assert.rejects(
+    fetchEvents('https://api.open511.gov.bc.ca', {
+      fetchFn: async () => jsonResponse({ unexpected: true }),
+      acquireSlot: async () => {},
+    }),
+    /missing an events array/,
+  );
+});
+
+test('pagination metadata continues a short page when more records are declared', async () => {
+  const urls = [];
+  const fetchFn = async (url) => {
+    urls.push(String(url));
+    if (new URL(url).searchParams.get('offset') === '1') {
+      return jsonResponse({ events: [], pagination: { offset: 1, total: 1 } });
+    }
+    return jsonResponse({
+      events: [PAGE.events[0]],
+      pagination: { offset: 0, total: 2 },
+    });
+  };
+  const result = await fetchEvents('https://api.open511.gov.bc.ca', {
+    fetchFn,
+    limit: 500,
+    acquireSlot: async () => {},
+  });
+  assert.equal(result.pages, 2);
+  assert.equal(result.records.length, 1);
+  assert.equal(urls.length, 2);
+  assert.match(urls[1], /offset=1/);
+});
+
+test('an empty page that claims more records fails closed', async () => {
+  await assert.rejects(
+    fetchEvents('https://api.open511.gov.bc.ca', {
+      fetchFn: async () => jsonResponse({
+        events: [],
+        pagination: { offset: 1, total: 2 },
+      }),
+      acquireSlot: async () => {},
+    }),
+    /claims more results after an empty page/,
+  );
+});
+
 test('vendor 511 host is rejected and does not use this Open511 client', async () => {
   let called = false;
   const fetchFn = async () => {

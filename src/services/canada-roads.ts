@@ -2,6 +2,7 @@ import { createCircuitBreaker } from '@/utils';
 import { ensureHydrated, getHydratedData } from '@/services/bootstrap';
 import { toApiUrl } from '@/services/runtime';
 import {
+  hasHealthyCanadaRoadSource,
   loadCanadaRoadSourcesCore,
   type CanadaRoadRecord,
   type CanadaRoadSourceDescriptor,
@@ -9,6 +10,7 @@ import {
 } from './canada-roads-core';
 
 export {
+  hasHealthyCanadaRoadSource,
   recordsFromPayload,
   unionCanadaRoadRecords,
   type CanadaRoadRecord,
@@ -85,12 +87,16 @@ export function loadCanadaRoadSources(
 }
 
 export async function fetchCanadaRoads(): Promise<CanadaRoadRecord[]> {
-  return breaker.execute(async () => {
+  const records = await breaker.execute(async () => {
     const result = await loadCanadaRoadSources();
     lastSourceStates = result.states;
     if (result.records != null) return result.records;
     throw new Error('No usable Canada road source in bootstrap');
   }, []);
+  if (!hasHealthyCanadaRoadSource(lastSourceStates)) {
+    throw new Error('All Canada road sources are unavailable or malformed');
+  }
+  return records;
 }
 
 export function getCanadaRoadSourceStates(): CanadaRoadSourceStates {
