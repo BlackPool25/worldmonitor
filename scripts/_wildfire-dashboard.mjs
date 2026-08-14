@@ -132,10 +132,13 @@ export function trimFireDetectionsToByteBudget(detections, {
 export function compactWildfireDashboardPayload(value, limit = WILDFIRE_DASHBOARD_DETECTION_LIMIT, options = {}) {
   if (!value || typeof value !== 'object' || !Array.isArray(value.fireDetections)) return value;
   const needsCountCap = value.fireDetections.length > limit;
+  // Dashboard/bootstrap 500 must always run limitFire so prescribed EX burns
+  // are dropped even on a quiet day (count ≤ 500). Canonical 15k keeps the mix.
+  const needsDashboardFilter = limit === WILDFIRE_DASHBOARD_DETECTION_LIMIT;
   const needsByteCap = Number.isFinite(options.maxBytes) && typeof options.measureBytes === 'function';
-  if (!needsCountCap && !needsByteCap) return value;
+  if (!needsCountCap && !needsDashboardFilter && !needsByteCap) return value;
 
-  let fireDetections = needsCountCap
+  let fireDetections = (needsCountCap || needsDashboardFilter)
     ? limitFireDetectionsForDashboard(value.fireDetections, limit)
     : value.fireDetections;
   if (needsByteCap) {

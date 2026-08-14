@@ -733,6 +733,26 @@ describe('tagged FIRMS+CWFIS payload cap', () => {
     assert.equal(keptActive.some((row: TaggedFireDetection) => String(row.id).includes('prescribed')), false);
   });
 
+  it('drops prescribed EX burns on a quiet ≤500 dashboard mix', () => {
+    const active = Array.from({ length: 400 }, (_, index) => liveWidthCwfisDetection(index));
+    const prescribed = Array.from({ length: 22 }, (_, index) => prescribedCwfisDetection(index + 400, 2_000_000 - index));
+    const mix = [...active, ...prescribed];
+    assert.equal(mix.length, 422);
+    assert.ok(mix.length <= WILDFIRE_DASHBOARD_DETECTION_LIMIT);
+
+    const bootstrap = compactWildfireDashboardPayload({ fireDetections: mix });
+    assert.equal(bootstrap.fireDetections.length, 400);
+    assert.equal(bootstrap.fireDetections.some((row: TaggedFireDetection) => row.kind === 'prescribed'), false);
+    assert.equal(bootstrap.fireDetections.some((row: TaggedFireDetection) => row.emergency === false), false);
+    assert.equal(bootstrap.fireDetections.some((row: TaggedFireDetection) => row.fireWasPrescribed === 1), false);
+    assert.equal(bootstrap.fireDetections.some((row: TaggedFireDetection) => row.stageOfControl === 'EX'), false);
+    assert.ok(bootstrap.fireDetections.every((row: TaggedFireDetection) => row.kind === 'active' && row.emergency !== false));
+
+    const rpc = limitFireDetectionsForDashboard(mix as FireDetection[]);
+    assert.deepEqual(bootstrap.fireDetections.map((row: FireDetection) => row.id), rpc.map((row) => row.id));
+    assert.ok(rpc.every((row: TaggedFireDetection) => row.kind !== 'prescribed' && row.emergency !== false));
+  });
+
   it('publishes the tagged 5.11MB mix through runSeed without FATAL', async () => {
     const originalFetch = globalThis.fetch;
     const originalExit = process.exit;
