@@ -76,6 +76,19 @@ export function isWeakNameToken(token) {
   return normalized.length <= 2 || /^i( i)*$/i.test(normalized);
 }
 
+/**
+ * A single word is not enough evidence to fuse two designations from DIFFERENT
+ * source lists. `splitAliases` splits on commas, so "Smith, John" yields the bare
+ * tokens "Smith" and "John" — matching those against ~20k OFAC rows produced
+ * false merges, and a false merge DELETES a row from a legal list. Requiring two
+ * or more words keeps the real signal ("Acme Ltd", "AI Alliance Russia") and
+ * drops the noise.
+ */
+export function isCorroboratingNameToken(token) {
+  const normalized = String(token || '').trim();
+  return normalized.includes(' ');
+}
+
 export function splitAliases(raw) {
   return uniqueSorted(
     String(raw || '')
@@ -278,10 +291,15 @@ export function mergeSanctionEntries(parts = {}) {
       if (hit && !skip(hit)) return hit;
     }
     for (const name of ident.names) {
+      // A shared identifier above is strong evidence on its own. A shared NAME
+      // is not: it needs corroboration, or a common surname fuses two unrelated
+      // designations and one of them stops existing.
+      if (!isCorroboratingNameToken(name)) continue;
       for (const hit of nameIndex.get(name) || []) {
         if (skip(hit)) continue;
         const hitIdent = identityOf(hit);
         if (ident.ids.size > 0 && hitIdent.ids.size > 0) continue;
+        if ((hit.entityType || '') !== (entry.entityType || '')) continue;
         return hit;
       }
     }
@@ -291,7 +309,16 @@ export function mergeSanctionEntries(parts = {}) {
   function mergeInto(hit, entry) {
     hit.sourceLists = uniqueSorted([...(hit.sourceLists || []), ...(entry.sourceLists || [])]);
     hit.programs = uniqueSorted([...(hit.programs || []), ...(entry.programs || [])]);
-    hit._aliases = uniqueSorted([...(hit._aliases || []), ...(entry._aliases || [])]);
+    // Nothing may vanish from a legal list. Carry the absorbed row's own name
+    // and id forward so it stays findable and traceable to its schedule item.
+    hit._aliases = uniqueSorted([
+      ...(hit._aliases || []),
+      ...(entry._aliases || []),
+      ...(entry.name && normalizeName(entry.name) !== normalizeName(hit.name) ? [entry.name] : []),
+    ]);
+    if (entry.id && entry.id !== hit.id) {
+      hit.mergedIds = uniqueSorted([...(hit.mergedIds || []), entry.id]);
+    }
     hit._identifiers = uniqueSorted([...(hit._identifiers || []), ...(entry._identifiers || [])]);
     if (entry.note && !hit.note) hit.note = entry.note;
     if ((!hit.countryCodes || hit.countryCodes.length === 0) && entry.countryCodes?.length) {

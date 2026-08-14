@@ -197,6 +197,84 @@ describe('dedup identity is not unique-name', () => {
     assert.equal(row.id, 'SDN:2');
   });
 
+  it('does not let a single-token alias absorb a distinct designation', () => {
+    // Live shape: OFAC's Iranian entity "ALLIANCE" vs SEMA's "AI Alliance Russia"
+    // (alias "Alliance"). A bare one-word alias is not identity — merging here
+    // DELETED the Canadian designation from a legal list.
+    const ofac = {
+      id: 'SDN:9',
+      name: 'ALLIANCE',
+      entityType: 'SANCTIONS_ENTITY_TYPE_ENTITY',
+      sourceLists: ['SDN'],
+      programs: ['IRAN'],
+      countryCodes: ['IR'],
+      _aliases: [],
+      _identifiers: [],
+    };
+    const sema = {
+      id: 'sema-ca:russia:1-part-2:768',
+      name: 'AI Alliance Russia',
+      entityType: 'SANCTIONS_ENTITY_TYPE_ENTITY',
+      sourceLists: [SEMA_SOURCE],
+      programs: ['SEMA'],
+      _aliases: ['Alliance'],
+      _identifiers: [],
+    };
+    const merged = mergeSanctionEntries({ ofac: [ofac], sema: [sema] });
+    assert.equal(merged.length, 2);
+    assert.ok(merged.some((row) => row.id === 'sema-ca:russia:1-part-2:768'));
+    assert.ok(merged.some((row) => row.id === 'SDN:9'));
+  });
+
+  it('does not merge across entity types on a shared name', () => {
+    const person = {
+      id: 'SDN:10',
+      name: 'Neptune Maritime',
+      entityType: 'SANCTIONS_ENTITY_TYPE_INDIVIDUAL',
+      sourceLists: ['SDN'],
+      programs: ['SDN'],
+      _aliases: [],
+      _identifiers: [],
+    };
+    const vessel = {
+      id: 'sema-ca:neptune:1',
+      name: 'Neptune Maritime',
+      entityType: 'SANCTIONS_ENTITY_TYPE_VESSEL',
+      sourceLists: [SEMA_SOURCE],
+      programs: ['SEMA'],
+      _aliases: [],
+      _identifiers: [],
+    };
+    const merged = mergeSanctionEntries({ ofac: [person], sema: [vessel] });
+    assert.equal(merged.length, 2);
+  });
+
+  it('keeps an absorbed row traceable by name and id after a legitimate merge', () => {
+    const ofac = {
+      id: 'SDN:11',
+      name: 'Acme Shipping',
+      entityType: 'SANCTIONS_ENTITY_TYPE_ENTITY',
+      sourceLists: ['SDN'],
+      programs: ['SDN'],
+      _aliases: ['Acme Ltd'],
+      _identifiers: [],
+    };
+    const sema = {
+      id: 'sema-ca:acme:2',
+      name: 'ACME LTD',
+      entityType: 'SANCTIONS_ENTITY_TYPE_ENTITY',
+      sourceLists: [SEMA_SOURCE],
+      programs: ['SEMA'],
+      _aliases: [],
+      _identifiers: [],
+    };
+    const merged = mergeSanctionEntries({ ofac: [ofac], sema: [sema] });
+    assert.equal(merged.length, 1);
+    const [row] = merged;
+    assert.ok(row._aliases.some((alias) => normalizeForAssert(alias) === normalizeForAssert('ACME LTD')));
+    assert.ok((row.mergedIds || []).includes('sema-ca:acme:2'));
+  });
+
   it('merges different unique names that share an IMO identifier', () => {
     const ofac = {
       id: 'SDN:3',
@@ -448,7 +526,11 @@ describe('SEMA does not self-merge', () => {
     assert.equal(sameSanctionIdentity(left, right), false);
   });
 
-  it('still attaches SEMA onto OFAC but concatenates a second SEMA hit', () => {
+  // Previously asserted that the bare alias "Alliance" attached the SEMA row onto
+  // the OFAC row. That IS the false-merge: it deleted "AI Alliance Russia" as a
+  // findable designation. A one-word alias is no longer identity, so all three
+  // designations now survive and none of them silently absorbs another.
+  it('keeps all three Alliance designations distinct; a one-word alias never attaches', () => {
     const ofac = {
       id: 'SDN:alliance',
       name: 'Alliance',
@@ -474,11 +556,15 @@ describe('SEMA does not self-merge', () => {
       _identifiers: [],
     };
     const merged = mergeSanctionEntries({ ofac: [ofac], sema: [first, second] });
-    assert.equal(merged.length, 2);
-    assert.equal(merged[0].id, 'SDN:alliance');
-    assert.ok(merged[0].sourceLists.includes(SEMA_SOURCE));
-    assert.ok(merged[1].sourceLists.includes(SEMA_SOURCE));
-    assert.equal(merged[1].sourceLists.includes('SDN'), false);
+    assert.equal(merged.length, 3);
+    for (const id of ['SDN:alliance', 'sema-ca:russia:1-part-2:768', 'sema-ca:russia:1-1:257']) {
+      assert.ok(merged.some((row) => row.id === id), `${id} must still be findable`);
+    }
+    const ofacRow = merged.find((row) => row.id === 'SDN:alliance');
+    assert.equal(ofacRow.sourceLists.includes(SEMA_SOURCE), false);
+    const semaRows = merged.filter((row) => row.sourceLists.includes(SEMA_SOURCE));
+    assert.equal(semaRows.length, 2);
+    assert.ok(semaRows.every((row) => row.sourceLists.includes('SDN') === false));
   });
 });
 
