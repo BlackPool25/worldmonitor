@@ -13,6 +13,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import { __testing__ } from '../api/health.js';
 
@@ -1767,6 +1768,17 @@ test('classifyKey: staticRefBundleTick heartbeat goes EMPTY when the cron never 
     metaValues: { [seedCfg.key]: seedMeta({ recordCount: 1 }) },
   }));
   assert.equal(fresh.status, 'OK');
+});
+
+test('static-ref tick heartbeat TTL outlives the 48h health gate and the producer label is locked', async () => {
+  const { BUNDLE_HEARTBEAT_TTL_SECONDS, bundleHeartbeatKey } = await import('../scripts/_bundle-runner.mjs');
+  assert.ok(
+    BUNDLE_HEARTBEAT_TTL_SECONDS > SEED_META.staticRefBundleTick.maxStaleMin * 60,
+    'TTL must outlive maxStaleMin so a late tick is STALE_SEED, not EMPTY',
+  );
+  const bundle = readFileSync(new URL('../scripts/seed-bundle-static-ref.mjs', import.meta.url), 'utf8');
+  assert.match(bundle, /runBundle\(\s*'static-ref'\s*,/);
+  assert.equal(STANDALONE_KEYS.staticRefBundleTick, bundleHeartbeatKey('static-ref'));
 });
 
 test('classifyKey: digestNotifications heartbeat goes stale when the cron stops', () => {

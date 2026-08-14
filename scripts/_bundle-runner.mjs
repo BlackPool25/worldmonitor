@@ -110,8 +110,9 @@ async function writeBundleHeartbeat(label) {
       return false;
     }
     const body = await resp.json().catch(() => null);
-    if (body && typeof body === 'object' && body.error) {
-      console.warn(`[Bundle:${label}] tick heartbeat write failed: ${body.error}`);
+    if (!body || typeof body !== 'object' || body.result !== 'OK') {
+      const detail = body && typeof body === 'object' && body.error ? body.error : 'missing OK result';
+      console.warn(`[Bundle:${label}] tick heartbeat write failed: ${detail}`);
       return false;
     }
     return true;
