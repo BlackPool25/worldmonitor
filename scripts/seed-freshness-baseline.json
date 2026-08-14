@@ -53,7 +53,7 @@
       "status": "EMPTY",
       "issue": 6608,
       "expiresAt": "2026-08-16T20:15:00.000Z",
-      "reason": "New Ontario 511 probe (infra:ontario-511:v1). seed-provincial-511 cron is */15; EMPTY is expected until the first Railway tick after this acknowledgement. Expiry equals firstScheduledRunAt so a missed first publication blocks acceptance. Re-anchored from 2026-08-14T20:15Z to 2026-08-16T20:15Z so merge slip does not fail the EMPTY window; activatedAt moved with firstScheduledRunAt to stay inside the 24h MAX_ROLLOUT_WINDOW_MS cap.",
+      "reason": "New Ontario 511 probe (infra:ontario-511:v1). EMPTY is expected until the first Railway tick after this acknowledgement. Expiry equals firstScheduledRunAt so a missed first publication blocks acceptance. Re-anchored from 2026-08-14T20:15Z to 2026-08-16T20:15Z so merge slip does not fail the EMPTY window; activatedAt moved with firstScheduledRunAt to stay inside the 24h MAX_ROLLOUT_WINDOW_MS cap. This seeder no longer has a */15 cron of its own: seed-bundle-canada (#6711) owns it as a member gated on intervalMs 15min, so the first run clears on BUNDLE provisioning rather than on this branch deploying.",
       "cutover": {
         "probeKey": "seed-meta:infra:ontario-511",
         "activatedAt": "2026-08-15T20:20:00.000Z",
