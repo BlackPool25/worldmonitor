@@ -14,6 +14,9 @@ export const EARTHQUAKES_MAX_CONTENT_AGE_MIN = 2 * 24 * 60; // 48h — min() of 
 export const USGS_MIN_MAGNITUDE = 4.5;
 export const EARTHQUAKES_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 export const NRCAN_ID_PREFIX = 'nrcan:';
+export const EARTHQUAKE_DEDUP_TIME_MS = 60_000;
+export const EARTHQUAKE_DEDUP_MAGNITUDE = 0.1;
+export const EARTHQUAKE_DEDUP_DISTANCE_KM = 10;
 
 const TITLE_RE = /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC:\s*M(\d+(?:\.\d+)?)\s+(.*)$/i;
 const EVENT_ID_RE = /[?&]eventid=([^&]+)/i;
@@ -293,30 +296,91 @@ function identityFromBucket(eq) {
   return `bucket:${timeBucket}:${magBucket}:${latBucket}:${lonBucket}`;
 }
 
-/** Identity is event id OR time+mag+lat/lon bucket. Place string is never identity. */
+/** Diagnostic identity only. Merge matching uses explicit cross-agency tolerances below. */
 export function earthquakeIdentity(eq) {
   return identityFromId(eq) || identityFromBucket(eq);
 }
 
-export function mergeEarthquakeFeeds(usgsEvents = [], nrcanEvents = [], nowMs = Date.now()) {
+function earthquakeStableKey(eq) {
+  return [
+    String(eq?.id || ''),
+    String(eq?.occurredAt || ''),
+    String(eq?.magnitude || ''),
+    String(eq?.location?.latitude || ''),
+    String(eq?.location?.longitude || ''),
+  ].join(':');
+}
+
+function sortEarthquakes(events) {
+  return [...events].sort((a, b) => (
+    (Number(b?.occurredAt) || 0) - (Number(a?.occurredAt) || 0)
+    || earthquakeStableKey(a).localeCompare(earthquakeStableKey(b))
+  ));
+}
+
+function uniquePublishableById(events, nowMs, claimedIds) {
   const out = [];
-  const seenIds = new Set();
-  const seenBuckets = new Set();
-
-  const consider = (eq) => {
-    if (!isPublishableEarthquake(eq, nowMs)) return;
+  for (const eq of sortEarthquakes(events)) {
+    if (!isPublishableEarthquake(eq, nowMs)) continue;
     const idKey = identityFromId(eq);
-    const bucketKey = identityFromBucket(eq);
-    if (idKey && seenIds.has(idKey)) return;
-    if (bucketKey && seenBuckets.has(bucketKey)) return;
-    if (idKey) seenIds.add(idKey);
-    if (bucketKey) seenBuckets.add(bucketKey);
+    if (idKey && claimedIds.has(idKey)) continue;
+    if (idKey) claimedIds.add(idKey);
     out.push(eq);
-  };
-
-  for (const eq of usgsEvents) consider(eq);
-  for (const eq of nrcanEvents) consider(eq);
+  }
   return out;
+}
+
+function haversineDistanceKm(a, b) {
+  const latA = a?.location?.latitude;
+  const lonA = a?.location?.longitude;
+  const latB = b?.location?.latitude;
+  const lonB = b?.location?.longitude;
+  if (![latA, lonA, latB, lonB].every(Number.isFinite)) return Number.POSITIVE_INFINITY;
+  const toRadians = Math.PI / 180;
+  const deltaLat = (latB - latA) * toRadians;
+  const deltaLon = (lonB - lonA) * toRadians;
+  const sinLat = Math.sin(deltaLat / 2);
+  const sinLon = Math.sin(deltaLon / 2);
+  const h = sinLat * sinLat
+    + Math.cos(latA * toRadians) * Math.cos(latB * toRadians) * sinLon * sinLon;
+  return 2 * 6371.0088 * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+function isCrossAgencyMatch(usgs, nrcan) {
+  const timeDelta = Math.abs(usgs.occurredAt - nrcan.occurredAt);
+  const magnitudeDelta = Math.abs(usgs.magnitude - nrcan.magnitude);
+  return timeDelta <= EARTHQUAKE_DEDUP_TIME_MS
+    && magnitudeDelta <= EARTHQUAKE_DEDUP_MAGNITUDE + 1e-9
+    && haversineDistanceKm(usgs, nrcan) <= EARTHQUAKE_DEDUP_DISTANCE_KM;
+}
+
+export function mergeEarthquakeFeeds(usgsEvents = [], nrcanEvents = [], nowMs = Date.now()) {
+  const claimedIds = new Set();
+  const usgs = uniquePublishableById(usgsEvents, nowMs, claimedIds);
+  const nrcan = uniquePublishableById(nrcanEvents, nowMs, claimedIds);
+  const usgsCandidates = usgs.map(() => []);
+  const nrcanCandidates = nrcan.map(() => []);
+
+  for (let usgsIndex = 0; usgsIndex < usgs.length; usgsIndex += 1) {
+    for (let nrcanIndex = 0; nrcanIndex < nrcan.length; nrcanIndex += 1) {
+      if (!isCrossAgencyMatch(usgs[usgsIndex], nrcan[nrcanIndex])) continue;
+      usgsCandidates[usgsIndex].push(nrcanIndex);
+      nrcanCandidates[nrcanIndex].push(usgsIndex);
+    }
+  }
+
+  const duplicateNrcan = new Set();
+  for (let usgsIndex = 0; usgsIndex < usgsCandidates.length; usgsIndex += 1) {
+    const candidates = usgsCandidates[usgsIndex];
+    if (candidates.length !== 1) continue;
+    const nrcanIndex = candidates[0];
+    if (nrcanCandidates[nrcanIndex].length === 1) duplicateNrcan.add(nrcanIndex);
+  }
+
+  return [
+    ...usgs,
+    ...nrcan.filter((_eq, index) => !duplicateNrcan.has(index)),
+  ];
 }
 
 export async function fetchMergedEarthquakes({ fetchUsgs, fetchNrcan, nowMs = Date.now() }) {

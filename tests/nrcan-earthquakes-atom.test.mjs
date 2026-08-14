@@ -164,6 +164,66 @@ describe('dedup identity', () => {
     assert.notEqual(earthquakeIdentity(a), earthquakeIdentity(b));
     assert.equal(mergeEarthquakeFeeds([], [a, b], MERGE_NOW).length, 2);
   });
+
+  it('matches cross-agency events across old rounding boundaries with inclusive tolerances', () => {
+    const usgs = usgsEq({
+      id: 'us-boundary',
+      occurredAt: Date.parse('2026-08-13T09:54:29Z'),
+      magnitude: 4.54,
+      location: { latitude: 49.524, longitude: -129.4835 },
+    });
+    const nrcan = nrcanEq({
+      id: `${NRCAN_ID_PREFIX}boundary`,
+      occurredAt: Date.parse('2026-08-13T09:54:31Z'),
+      magnitude: 4.56,
+      location: { latitude: 49.526, longitude: -129.4835 },
+    });
+
+    assert.deepEqual(mergeEarthquakeFeeds([usgs], [nrcan], MERGE_NOW).map((eq) => eq.id), ['us-boundary']);
+  });
+
+  it('retains cross-agency events just outside time, magnitude, or distance tolerance', () => {
+    const base = usgsEq({ id: 'us-base', occurredAt: MERGE_NOW - 120_000, magnitude: 4.6, location: { latitude: 0, longitude: 0 } });
+    const cases = [
+      nrcanEq({ id: `${NRCAN_ID_PREFIX}time`, occurredAt: base.occurredAt + 60_001, magnitude: 4.6, location: { latitude: 0, longitude: 0 } }),
+      nrcanEq({ id: `${NRCAN_ID_PREFIX}magnitude`, occurredAt: base.occurredAt, magnitude: 4.700_001, location: { latitude: 0, longitude: 0 } }),
+      nrcanEq({ id: `${NRCAN_ID_PREFIX}distance`, occurredAt: base.occurredAt, magnitude: 4.6, location: { latitude: 0, longitude: 0.09 } }),
+    ];
+
+    for (const candidate of cases) {
+      assert.equal(mergeEarthquakeFeeds([base], [candidate], MERGE_NOW).length, 2, candidate.id);
+    }
+  });
+
+  it('treats the 60-second, 0.1-magnitude, and 10-kilometre limits as inclusive', () => {
+    const longitudeAtTenKm = (10 / 6371.0088) * (180 / Math.PI);
+    const usgs = usgsEq({
+      id: 'us-inclusive',
+      occurredAt: MERGE_NOW - 120_000,
+      magnitude: 4.6,
+      location: { latitude: 0, longitude: 0 },
+    });
+    const nrcan = nrcanEq({
+      id: `${NRCAN_ID_PREFIX}inclusive`,
+      occurredAt: usgs.occurredAt + 60_000,
+      magnitude: 4.7,
+      location: { latitude: 0, longitude: longitudeAtTenKm },
+    });
+
+    assert.deepEqual(mergeEarthquakeFeeds([usgs], [nrcan], MERGE_NOW).map((eq) => eq.id), ['us-inclusive']);
+  });
+
+  it('does not tolerance-dedup same-agency or ambiguous cross-agency swarms', () => {
+    const usgsA = usgsEq({ id: 'us-a' });
+    const usgsB = usgsEq({ id: 'us-b', occurredAt: usgsA.occurredAt + 1_000 });
+    assert.equal(mergeEarthquakeFeeds([usgsA, usgsB], [], MERGE_NOW).length, 2);
+
+    const nrcanA = nrcanEq({ id: `${NRCAN_ID_PREFIX}a` });
+    const nrcanB = nrcanEq({ id: `${NRCAN_ID_PREFIX}b`, occurredAt: nrcanA.occurredAt + 1_000 });
+    const expected = ['us-a', `${NRCAN_ID_PREFIX}b`, `${NRCAN_ID_PREFIX}a`];
+    assert.deepEqual(mergeEarthquakeFeeds([usgsA], [nrcanA, nrcanB], MERGE_NOW).map((eq) => eq.id), expected);
+    assert.deepEqual(mergeEarthquakeFeeds([usgsA], [nrcanB, nrcanA], MERGE_NOW).map((eq) => eq.id), expected);
+  });
 });
 
 describe('publish filter: industry-related + M4.5 week window', () => {
