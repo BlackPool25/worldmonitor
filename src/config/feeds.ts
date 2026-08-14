@@ -83,9 +83,9 @@ export const FULL_FEEDS: Record<string, Feed[]> = {
     { name: 'CBC News', url: rss('https://www.cbc.ca/webfeed/rss/rss-world') },
     { name: 'Globe and Mail', url: rss('https://www.theglobeandmail.com/arc/outboundfeeds/rss/category/canada/?outputType=xml') },
     { name: 'Global News', url: rss('https://globalnews.ca/feed/') },
-    // Canada depth pack (#6604/#6605). CBC stays default-on; Toronto Star
-    // joins the EN default-on national floor (floors.CA = 2). Remaining names
-    // are catalog opt-in. FR sources are locale-boosted only.
+    // Canada depth pack (#6604/#6605). CBC stays default-on; CTV News and
+    // Toronto Star join the EN default-on national floor (floors.CA = 3).
+    // Remaining names are catalog opt-in. FR sources are locale-boosted only.
     { name: 'Toronto Star', url: rss('https://www.thestar.com/search/?f=rss&t=article&c=news/canada') },
     { name: 'National Post', url: rss('https://nationalpost.com/feed/') },
     { name: 'Financial Post', url: rss('https://financialpost.com/feed/') },
@@ -1263,7 +1263,7 @@ export const CANADA_ARCTIC_OPT_IN_SOURCES = [
  * Globe/Global stay only in CANADA_ARCTIC_OPT_IN_SOURCES — do not duplicate.
  * Persisted denylist profiles must insert these on first boot after the pack
  * lands — otherwise newly cataloged names are implicitly enabled for every
- * returner. Toronto Star stays out so default-on can enable it. National Post is opt-in.
+ * returner. Toronto Star and CTV News stay out so default-on can enable them. National Post is opt-in.
  */
 export const CANADA_DEPTH_OPT_IN_SOURCES = [
   'National Post',
@@ -1345,6 +1345,7 @@ export const REGIONAL_FEED_ROLLOUT_STAGES = [
     // francophone, and regional names after the #5960 trio.
     introducedNames: [
       'Toronto Star',
+      'CTV News',
       ...CANADA_DEPTH_OPT_IN_SOURCES,
     ],
     protectedNames: [

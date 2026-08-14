@@ -1113,6 +1113,23 @@ describe('feed catalog drift', () => {
     }
   });
 
+  it('puts CTV News on the Canada depth introducedNames stage, not the frozen CBC #5960 stage (#6605)', () => {
+    const stages = feeds.REGIONAL_FEED_ROLLOUT_STAGES;
+    const cbcStage = stages.find((s) => s.introducedNames.includes('CBC News'));
+    const depthStage = stages.find((s) => s.introducedNames.includes('Toronto Star'));
+    assert.ok(cbcStage, 'frozen #5960 CBC stage must exist');
+    assert.ok(depthStage, 'Canada depth stage must exist');
+    assert.equal(
+      cbcStage.introducedNames.includes('CTV News'),
+      false,
+      'CTV News must not rewrite the frozen #5960 CBC stage',
+    );
+    assert.ok(
+      depthStage.introducedNames.includes('CTV News'),
+      'CTV News must be on the Canada depth introducedNames list next to Toronto Star',
+    );
+  });
+
   it('catalogs ≥1 Nordic beyond Sweden and EN-reachable High North sources (#5960)', () => {
     const europe = feeds.FEEDS.europe ?? [];
     const byName = new Map(europe.map((f) => [f.name, f]));
