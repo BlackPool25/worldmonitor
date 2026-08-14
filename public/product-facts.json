@@ -164,11 +164,11 @@
     "mcpTools": 63,
     "locales": 28,
     "variants": 6,
-    "mapLayers": 56,
+    "mapLayers": 57,
     "panelImplementations": 109,
     "feedDefinitions": 658,
-    "freshnessTrackedSourceGroups": 35,
-    "sourceAttributionHosts": 547,
-    "sourceAttributionProviders": 545
+    "freshnessTrackedSourceGroups": 36,
+    "sourceAttributionHosts": 548,
+    "sourceAttributionProviders": 546
   }
 }
