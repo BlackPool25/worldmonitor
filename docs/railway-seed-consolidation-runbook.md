@@ -90,6 +90,75 @@ back only the current bounded batch when any of these is true:
    evidence is missing, truncated, timed out, or contradictory. Unknown means
    stop; there is no baseline or “warn and continue” path.
 
+#### Temporary native-autodeploy batch tool
+
+`scripts/configure-railway-native-autodeploy.mjs` is the trusted-operator U2
+cutover utility. It is temporary and must be deleted in U6 after the bounded
+rollback window. It is not a workflow, must not receive a repository secret,
+and has no GitHub, recovery-controller, dispatch, lease, or deployment
+authority.
+
+Run a whole-cohort preview first. Preview is the default and never calls
+`railway environment edit`:
+
+```bash
+node scripts/configure-railway-native-autodeploy.mjs \
+  --project-id <world-monitor-project-id> \
+  --environment production \
+  --json
+```
+
+Before every mutation, separately prove the protected-main, disabled legacy
+flags, no-active-legacy-run, no-control-lease, no-pending-approval, and clean
+deployment-state gates above. The utility deliberately has no credentials for
+those systems. It independently resolves the explicit Railway project and
+environment, pins every subsequent read and edit to that resolved environment
+ID, runs the live watch/config audit, requires every repository
+source to be `koala73/worldmonitor` on `main`, and rejects duplicate, unknown,
+malformed, or oversized selections.
+
+Preview a named batch before applying it. An apply or rollback requires one to
+five repeated `--service` flags:
+
+```bash
+node scripts/configure-railway-native-autodeploy.mjs \
+  --project-id <world-monitor-project-id> \
+  --environment production \
+  --service <service-one> \
+  --service <service-two> \
+  --json
+
+node scripts/configure-railway-native-autodeploy.mjs \
+  --project-id <world-monitor-project-id> \
+  --environment production \
+  --service <service-one> \
+  --service <service-two> \
+  --apply \
+  --json
+```
+
+`--apply` writes only `source.checkSuites=false` for selected services that are
+currently `true` or missing. `--rollback` writes the exact inverse,
+`source.checkSuites=true`, and accepts only selected services currently proven
+`false`. The tool freezes the full config again immediately before the edit,
+polls bounded readback, and fails on drift observed during any poll—even if a
+later poll would look clean. Any non-converged selected value, changed
+unselected service, or selected field change outside `source.checkSuites` is a
+hard failure.
+
+If `railway environment edit` reports an error, the tool still performs the
+same bounded exact readback because Railway can commit before a CLI timeout or
+disconnect. Verified convergence is accepted. An unproven result returns an
+ambiguous-outcome error: run preview and repeat every preflight gate before any
+retry; never replay the mutation blindly.
+
+Run one operator and one batch at a time; never overlap apply and rollback.
+Mutation is forbidden from CI and GitHub Actions. Use only an authenticated
+Railway CLI session or exactly one explicitly supplied short-lived
+`RAILWAY_TOKEN` or `RAILWAY_API_TOKEN` in the trusted shell. The sanitized
+summary contains service names, IDs, and before/after states only; it never
+prints environment-variable names or values.
+
 ### Watch paths are a live contract, and an accurate one
 
 Railway stores watch paths in each service's environment configuration, not in
