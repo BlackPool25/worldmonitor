@@ -120,6 +120,23 @@ describe('ignoreErrors filters', () => {
       'Generic first-party load-failure messages must NOT be ignored',
     );
   });
+
+  // WORLDMONITOR-ZC: Kaspersky-style content script double-injected, redeclaring
+  // its own top-level `SENDER` const. Cannot come from our bundle — esbuild fails
+  // the build on a duplicate top-level declaration.
+  it('suppresses the extension double-injection SENDER redeclaration', () => {
+    assert.ok(
+      isIgnored("Identifier 'SENDER' has already been declared"),
+      'SENDER duplicate-declaration must be ignored',
+    );
+  });
+
+  it('does NOT suppress a duplicate-declaration for an unlisted identifier', () => {
+    assert.ok(
+      !isIgnored("Identifier 'mapLayers' has already been declared"),
+      'Only the enumerated extension identifiers may be ignored',
+    );
+  });
 });
 
 // ─── P2: firstPartyFile regex covers all Vite chunk patterns ─────────────
