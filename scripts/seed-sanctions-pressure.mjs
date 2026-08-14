@@ -613,7 +613,7 @@ async function fetchSanctionsPressure() {
     sdnCount: ofacResults[0]?.entries.length ?? 0,
     consolidatedCount: ofacResults[1]?.entries.length ?? 0,
     semaCount,
-    semaError: semaError || null,
+    ...(semaError ? { semaError } : {}),
     newEntryCount,
     vesselCount,
     aircraftCount,

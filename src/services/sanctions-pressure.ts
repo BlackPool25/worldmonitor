@@ -136,11 +136,6 @@ function toProgram(raw: ProtoProgramPressure): ProgramSanctionsPressure {
 }
 
 
-function readSemaError(response: ListSanctionsPressureResponse): string | null {
-  const extra = response as ListSanctionsPressureResponse & { semaError?: unknown };
-  return typeof extra.semaError === 'string' && extra.semaError ? extra.semaError : null;
-}
-
 function toResult(response: ListSanctionsPressureResponse): SanctionsPressureResult {
   return {
     fetchedAt: parseEpoch(response.fetchedAt as string | number | undefined) || new Date(),
@@ -148,8 +143,8 @@ function toResult(response: ListSanctionsPressureResponse): SanctionsPressureRes
     totalCount: response.totalCount ?? 0,
     sdnCount: response.sdnCount ?? 0,
     consolidatedCount: response.consolidatedCount ?? 0,
-    semaCount: Number((response as ListSanctionsPressureResponse & { semaCount?: number }).semaCount) || 0,
-    semaError: readSemaError(response),
+    semaCount: Number(response.semaCount) || 0,
+    semaError: response.semaError || null,
     newEntryCount: response.newEntryCount ?? 0,
     vesselCount: response.vesselCount ?? 0,
     aircraftCount: response.aircraftCount ?? 0,
