@@ -60,15 +60,14 @@ async function fetchAlberta511() {
     userAgent: CHROME_UA,
     staggerMs: STAGGER_MS,
   });
-  const combined = [...envelope.events, ...envelope.alerts];
-  const records = stampRecords(select511Records(combined), 'alberta-511');
-  if (envelope.failedResources.length) {
-    console.warn(
-      `  Alberta 511: ${envelope.failedResources.join(', ')} failed; `
-      + `publishing ${records.length} surviving record(s)`,
-    );
+  if (!isCompleteVendor511(envelope, ALBERTA_511)) {
+    const failed = envelope.failedResources?.join(', ') || 'incomplete';
+    const err = new Error(`Alberta 511: partial poll (${failed} failed); keeping last-good`);
+    err.nonRetryable = true;
+    throw err;
   }
-  return { records };
+  const combined = [...envelope.events, ...envelope.alerts];
+  return { records: stampRecords(select511Records(combined), 'alberta-511') };
 }
 
 async function fetchProvincial511Tick() {

@@ -308,7 +308,8 @@ export function validateVendor511Envelope(envelope) {
  * succeeded. Empty success counts. Any failed resource is partial:
  * last-good must stay, and health must not flip green, until a
  * complete successor arrives. Ontario resources are event+alerts+
- * roadconditions (all three must succeed).
+ * roadconditions (all three must succeed); Alberta resources are
+ * event+alerts (roadconditions 404s and is not configured).
  *
  * @param {{ failedResources?: string[] } | null | undefined} envelope
  * @param {{ resources?: ReadonlyArray<{ resource: string }> } | null | undefined} config

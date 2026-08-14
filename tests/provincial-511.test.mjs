@@ -425,6 +425,101 @@ test('last-good complete; next poll partial → last-good unchanged, health not 
   assert.equal(tickHealthGreen, false, 'partial poll must not be a health-green successor');
 });
 
+test('Alberta partial poll must not replace last-good or flip health green', async () => {
+  // events fail, alerts empty-success — surviving [] must not be a successor
+  const eventsDownAlertsEmpty = async (url) => {
+    if (String(url).includes('/event')) return new Response('nope', { status: 503 });
+    return jsonResponse([]);
+  };
+  const partialEmpty = await fetchVendor511(ALBERTA_511, {
+    fetchFn: eventsDownAlertsEmpty,
+    staggerMs: 0,
+  });
+  assert.equal(partialEmpty.events.length, 0);
+  assert.equal(partialEmpty.alerts.length, 0);
+  assert.deepEqual(partialEmpty.failedResources, ['event']);
+  assert.equal(isCompleteVendor511(partialEmpty, ALBERTA_511), false);
+
+  // one resource errors while the other returns records
+  const eventsDownAlertsOk = async (url) => {
+    if (String(url).includes('/event')) return new Response('nope', { status: 500 });
+    return jsonResponse(ALBERTA_ALERTS_FIXTURE);
+  };
+  const partialAlerts = await fetchVendor511(ALBERTA_511, {
+    fetchFn: eventsDownAlertsOk,
+    staggerMs: 0,
+  });
+  assert.equal(partialAlerts.alerts.length, 2);
+  assert.deepEqual(partialAlerts.failedResources, ['event']);
+  assert.equal(isCompleteVendor511(partialAlerts, ALBERTA_511), false);
+
+  const alertsDownEventsOk = async (url) => {
+    if (String(url).includes('/alerts')) return new Response('nope', { status: 502 });
+    return jsonResponse([{
+      ID: 44001,
+      Latitude: 51.0447,
+      Longitude: -114.0719,
+      EventType: 'closures',
+      IsFullClosure: true,
+    }]);
+  };
+  const partialEvents = await fetchVendor511(ALBERTA_511, {
+    fetchFn: alertsDownEventsOk,
+    staggerMs: 0,
+  });
+  assert.equal(partialEvents.events.length, 1);
+  assert.deepEqual(partialEvents.failedResources, ['alerts']);
+  assert.equal(isCompleteVendor511(partialEvents, ALBERTA_511), false);
+
+  // complete successor: both configured resources succeed (empty alerts is OK).
+  // roadconditions 404s and is not in ALBERTA_511.resources.
+  const completeQuietAlerts = async (url) => {
+    assert.equal(String(url).includes('roadconditions'), false);
+    if (String(url).includes('/event')) {
+      return jsonResponse([{
+        ID: 44001,
+        Latitude: 51.0447,
+        Longitude: -114.0719,
+        EventType: 'closures',
+        IsFullClosure: true,
+      }]);
+    }
+    return jsonResponse([]);
+  };
+  const complete = await fetchVendor511(ALBERTA_511, {
+    fetchFn: completeQuietAlerts,
+    staggerMs: 0,
+  });
+  assert.equal(complete.events.length, 1);
+  assert.equal(complete.alerts.length, 0);
+  assert.deepEqual(complete.failedResources, []);
+  assert.equal(isCompleteVendor511(complete, ALBERTA_511), true);
+  assert.deepEqual(ALBERTA_511.resources.map((r) => r.resource), ['event', 'alerts']);
+
+  // Seeder maps !complete → throw → preserveAlberta (TTL only). That keeps
+  // last-good and does not write fresh seed-meta / OK_ZERO (health stays put).
+  const seeder = readFileSync(new URL('../scripts/seed-provincial-511.mjs', import.meta.url), 'utf8');
+  assert.match(seeder, /isCompleteVendor511\(envelope, ALBERTA_511\)/);
+  assert.match(seeder, /partial poll \(\$\{failed\} failed\); keeping last-good/);
+  assert.match(seeder, /preserving last-good \(fetch failed this tick\)/);
+  assert.match(seeder, /extendExistingTtl\(\[ALBERTA_KEY, ALBERTA_META_KEY\]/);
+  assert.doesNotMatch(seeder, /publishing \$\{records\.length\} surviving/);
+  assert.equal(seeder.includes('writeExtraKey(ALBERTA_KEY') && seeder.includes('writeSeedMeta(ALBERTA_KEY'), true);
+  const fetchAlberta = seeder.slice(seeder.indexOf('async function fetchAlberta511'), seeder.indexOf('async function fetchProvincial511Tick'));
+  const publishAlberta = seeder.slice(seeder.indexOf('async function publishAlbertaFromTick'));
+  assert.match(fetchAlberta, /if \(!isCompleteVendor511\(envelope, ALBERTA_511\)\)/);
+  assert.match(fetchAlberta, /new Error\(`Alberta 511: partial poll/);
+  assert.match(fetchAlberta, /nonRetryable = true/);
+  assert.match(fetchAlberta, /throw err/);
+  assert.match(publishAlberta, /if \(!data \|\| data\._albertaFailed\)/);
+  assert.match(publishAlberta, /await preserveAlberta\(\)/);
+  assert.ok(
+    publishAlberta.indexOf('await preserveAlberta()')
+    < publishAlberta.indexOf('await publishAlbertaEnvelope'),
+    'partial/failed ticks must preserve last-good before any envelope write',
+  );
+});
+
 test('BC Open511 host is rejected and does not use this /api/v2/get client', async () => {
   let called = false;
   const fetchFn = async () => {
