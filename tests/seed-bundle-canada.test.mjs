@@ -123,3 +123,76 @@ test('is registered as planned, so it never enters the live audit unprovisioned'
   assert.equal(Object.hasOwn(entry, 'watchPatterns'), false);
   assert.equal(Object.hasOwn(entry, 'cronSchedule'), false);
 });
+
+// A member's cadence is not just a cost knob: the Redis TTL and the health
+// staleness budget are both sized AGAINST it. Moving the interval without moving
+// them breaks the layer two ways, and neither is visible in this file alone —
+// #6711 set Toronto to 2h while its seeder still carried a 90min TTL and its
+// probe a 45min budget, so the key expired 30min before every write and a
+// perfectly healthy publisher read STALE_SEED forever.
+//
+// tests/seed-ttl-outlives-health-staleness.test.mjs compares TTL to staleness
+// and passed throughout, because it never sees the interval. This is the check
+// that does.
+function resolveTtlSeconds(script) {
+  const seederPath = join(root, 'scripts', script);
+  const seederSrc = readFileSync(seederPath, 'utf8');
+  const m = /ttlSeconds:\s*([A-Za-z_]\w*|\d+)/.exec(seederSrc);
+  assert.ok(m, `${script} must declare ttlSeconds, or this guard silently skips it`);
+  const expr = m[1];
+  const local = resolveExpr(seederSrc, expr);
+  if (local != null) return local;
+  // Imported constant: follow the import to its defining module rather than
+  // skipping, or the members that share a TTL constant go unchecked.
+  const imp = new RegExp(
+    `import\\s*\\{[^}]*\\b${expr}\\b[^}]*\\}\\s*from\\s*'(\\.[^']+)'`,
+  ).exec(seederSrc);
+  assert.ok(imp, `${script}: cannot resolve ttlSeconds identifier ${expr}`);
+  const fromSrc = readFileSync(join(dirname(seederPath), imp[1]), 'utf8');
+  const resolved = resolveExpr(fromSrc, expr);
+  assert.ok(Number.isFinite(resolved), `${script}: ${expr} did not resolve to a number`);
+  return resolved;
+}
+
+test('every member’s TTL and health staleness budget cover its bundle interval', () => {
+  const health = readFileSync(join(root, 'api/health.js'), 'utf8');
+  let checked = 0;
+
+  for (const s of sections) {
+    const intervalMs = resolveExpr(src, s.intervalMsExpr);
+    assert.ok(Number.isFinite(intervalMs) && intervalMs > 0, `${s.label} must declare an intervalMs`);
+
+    // A TTL at or below the interval means the canonical key expires before the
+    // next write lands, so the layer is blank for the gap on every cycle.
+    const ttlSeconds = resolveTtlSeconds(s.script);
+    assert.ok(
+      ttlSeconds * 1000 > intervalMs,
+      `${s.label}: TTL ${ttlSeconds}s does not outlive its ${intervalMs / 60000}min interval — `
+        + 'the canonical key expires before the next write and the layer goes blank',
+    );
+
+    // A staleness budget below the interval means a healthy publisher is
+    // reported STALE_SEED permanently, because normal data age reaches the
+    // interval just before each write.
+    // The section parser exposes only label/script/intervals, so read the
+    // member's seed-meta key straight out of the bundle source.
+    const keyMatch = new RegExp(
+      `label:\\s*'${s.label}'[^}]*?seedMetaKey:\\s*'([^']+)'`,
+    ).exec(src);
+    assert.ok(keyMatch, `${s.label}: bundle section must declare a seedMetaKey`);
+    const seedMetaKey = keyMatch[1];
+    const probe = new RegExp(
+      `key:\\s*'${seedMetaKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}',\\s*\\n?\\s*maxStaleMin:\\s*(\\d+)`,
+    ).exec(health);
+    assert.ok(probe, `${s.label}: no api/health.js probe found for ${seedMetaKey}`);
+    const maxStaleMin = Number(probe[1]);
+    assert.ok(
+      maxStaleMin * 60_000 >= intervalMs,
+      `${s.label}: maxStaleMin ${maxStaleMin}min is below its ${intervalMs / 60000}min interval — `
+        + 'a healthy publisher would read STALE_SEED permanently',
+    );
+    checked += 1;
+  }
+
+  assert.equal(checked, 6, 'all six members must be checked, or this guard is partly vacuous');
+});
