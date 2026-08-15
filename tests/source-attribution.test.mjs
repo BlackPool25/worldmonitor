@@ -97,11 +97,11 @@ test('source inventory has complete metadata and matches the generated catalog',
   // Hardcoded on purpose: comparing these against docs/generated/stats.json
   // makes the gate agree with itself, because both sides come from the same
   // generator — a regeneration moves the expectation in lockstep with the value
-  // and the assert can never fail. 548/546/667 on main (Ontario 511 landed in
-  // #6663) + 511.alberta.ca from this PR.
-  assert.equal(stats.activeHosts, 549);
-  assert.equal(stats.providerCount, 547);
-  assert.equal(stats.observedHosts, 668);
+  // and the assert can never fail. 549/547/668 on main (Ontario 511 in #6663,
+  // Alberta 511 in #6666) + secure.toronto.ca from this PR.
+  assert.equal(stats.activeHosts, 550);
+  assert.equal(stats.providerCount, 548);
+  assert.equal(stats.observedHosts, 669);
   assert.ok(stats.reviewNeeded > 0, 'terms-review rows must remain visible until a license audit is complete');
 });
 

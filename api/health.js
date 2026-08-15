@@ -1354,9 +1354,11 @@ const MISSING_DATA_IS_FAILURE_KEYS = new Set([
   // so they never refresh metadata alone. Without this, an expired or evicted
   // canonical key alongside a still-refreshing seed-meta classified OK: the map
   // layer goes blank and nothing pages. Same reasoning as `outages`.
-  // albertaRoads is written by the same seeder on the same publish path.
+  // albertaRoads is written by the same seeder on the same publish path;
+  // torontoRoads is a different seeder under the same publish contract.
   'canadaRoads',
   'albertaRoads',
+  'torontoRoads',
 ]);
 
 // Keys where a present payload with meta recordCount=0 is valid, but the data
