@@ -20,31 +20,30 @@ import {
 import type { MapLayers } from '../src/types/index.ts';
 
 const searchManagerSrc = readFileSync(new URL('../src/app/search-manager.ts', import.meta.url), 'utf8');
+const searchSelectionSrc = readFileSync(
+  new URL('../src/app/search-selection-dispatcher.ts', import.meta.url),
+  'utf8',
+);
 const commandTier = { premium: false };
 
-function extractHandleCommand(): new () => { ctx: any; handleCommand(command: { id: string }): boolean | Promise<boolean> } {
+function extractSelectionDispatcher(): new (bindings: any) => {
+  handleCommand(command: { id: string }): boolean | Promise<boolean>;
+} {
   const sourceFile = ts.createSourceFile(
-    'search-manager.ts',
-    searchManagerSrc,
+    'search-selection-dispatcher.ts',
+    searchSelectionSrc,
     ts.ScriptTarget.Latest,
     true,
     ts.ScriptKind.TS,
   );
-  const manager = sourceFile.statements.find((statement): statement is ts.ClassDeclaration => (
-    ts.isClassDeclaration(statement) && statement.name?.text === 'SearchManager'
+  const dispatcher = sourceFile.statements.find((statement): statement is ts.ClassDeclaration => (
+    ts.isClassDeclaration(statement) && statement.name?.text === 'SearchSelectionDispatcher'
   ));
-  const handleCommand = manager?.members.find((member): member is ts.MethodDeclaration => (
-    ts.isMethodDeclaration(member)
-    && ts.isIdentifier(member.name)
-    && member.name.text === 'handleCommand'
-  ));
-  assert.ok(handleCommand, 'SearchManager.handleCommand must remain in the source');
-  const method = handleCommand.getText(sourceFile).replace(/^private\s+/, '');
-  const js = ts.transpileModule(`class SearchManagerHarness { ${method} }`, {
+  assert.ok(dispatcher, 'SearchSelectionDispatcher must remain in the source');
+  const js = ts.transpileModule(dispatcher.getText(sourceFile).replace(/^export\s+/, ''), {
     compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None },
   }).outputText;
   return new Function(
-    'SITE_VARIANT',
     'STORAGE_KEYS',
     'getAllowedLayerKeys',
     'isLayerExecutable',
@@ -52,13 +51,11 @@ function extractHandleCommand(): new () => { ctx: any; handleCommand(command: { 
     'isLayerCommandAllowed',
     'LAYER_PRESETS',
     'LAYER_KEY_MAP',
-    'hasPremiumAccess',
-    'getAuthState',
-    'saveToStorage',
-    'setTheme',
-    `${js}\nreturn SearchManagerHarness;`,
+    'TIER1_COUNTRIES',
+    'CURATED_COUNTRIES',
+    'getCountryBbox',
+    `${js}\nreturn SearchSelectionDispatcher;`,
   )(
-    'full',
     { mapLayers: 'mapLayers' },
     () => new Set(['resilienceScore', 'conflicts']),
     isLayerExecutable,
@@ -66,14 +63,15 @@ function extractHandleCommand(): new () => { ctx: any; handleCommand(command: { 
     isLayerCommandAllowed,
     { all: ['conflicts'] },
     {},
-    () => commandTier.premium,
-    () => ({}),
-    () => {},
-    () => {},
-  ) as new () => { ctx: any; handleCommand(command: { id: string }): boolean | Promise<boolean> };
+    {},
+    {},
+    () => null,
+  ) as new (bindings: any) => {
+    handleCommand(command: { id: string }): boolean | Promise<boolean>;
+  };
 }
 
-const SearchManagerHarness = extractHandleCommand();
+const SearchSelectionHarness = extractSelectionDispatcher();
 
 function extractLayerExecutableCallback(): (context: { ctx: any }, layerKey: string) => boolean {
   const marker = 'this.ctx.searchModal.setLayerExecutableFn((layerKey) => {';
@@ -130,11 +128,23 @@ function makeCommandHarness({
       setLayers: () => { calls.setLayers++; },
     },
   };
-  const manager = new SearchManagerHarness();
-  manager.ctx = ctx;
-  // The extracted production method receives the same entitlement dependency
-  // as SearchManager, but this closure lets each harness model a tier directly.
-  const command = (id: string) => manager.handleCommand({ id });
+  const dispatcher = new SearchSelectionHarness({
+    ctx,
+    getVariant: () => 'full',
+    hasPremiumAccess: () => commandTier.premium,
+    openCountryBriefByCode: () => true,
+    enablePanel: () => true,
+    trackSearchResultSelected: () => {},
+    trackCountrySelected: () => {},
+    runWithAgentAnalyticsSuppressed: (callback: () => unknown) => callback(),
+    suppressNextAgentPanelView: () => {},
+    resolveExecutableNewsPanel: () => null,
+    saveToStorage: () => {},
+    setTheme: () => {},
+    setTimeout,
+    clearTimeout,
+  });
+  const command = (id: string) => dispatcher.handleCommand({ id });
   return { ctx, calls, command };
 }
 

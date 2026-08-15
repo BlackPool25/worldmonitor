@@ -1,18 +1,12 @@
 import type { AppContext, AppModule } from '@/app/app-context';
 import type { SearchResult } from '@/components/search-types';
-import {
-  searchMatchIdentity,
-  type SearchMatch,
-} from '@/components/search-types';
-import type { SearchScope } from '@/components/search-scope';
+import type { SearchMatch } from '@/components/search-types';
 import type { NewsItem, MapLayers, MilitaryBase, MilitaryFlight } from '@/types';
-import type { MapView, TimeRange } from '@/components/MapContainer';
 import type { Command } from '@/config/commands';
 import { SearchModal } from '@/components/SearchModal';
 import type { CIIPanel } from '@/components/CIIPanel';
 import {
   SITE_VARIANT,
-  STORAGE_KEYS,
   ALL_PANELS,
   FREE_MAX_PANELS,
   countFreePanelCapUsage,
@@ -30,7 +24,6 @@ import type { MapVariant } from '@/config/map-layer-definitions';
 import { LAYER_PRESETS, LAYER_KEY_MAP } from '@/config/commands';
 import { TIER1_COUNTRIES } from '@/services/country-instability';
 import { getCachedCountryScores } from '@/services/cached-risk-scores';
-import { CURATED_COUNTRIES } from '@/config/countries';
 import { getCountryBbox } from '@/services/country-geometry';
 import { INTEL_HOTSPOTS, CONFLICT_ZONES } from '@/config/geo';
 import { getCachedMilitaryBases, preloadMilitaryBases } from '@/services/military-base-config';
@@ -59,22 +52,13 @@ import {
   runWithAgentAnalyticsSuppressed,
   suppressNextAgentPanelView,
 } from '@/services/agent-analytics-privacy';
-import { OpaqueResultCache } from '@/services/opaque-result-cache';
+import { SearchSelectionDispatcher } from '@/app/search-selection-dispatcher';
+import { WebMcpSearchController } from '@/app/webmcp-search-controller';
 import type {
-  DashboardSearchDescriptor,
   DashboardSearchOpenResult,
   DashboardSearchResponse,
   DashboardSearchScope,
 } from '@/services/webmcp';
-import {
-  DASHBOARD_SEARCH_OUTPUT_TARGET_CHARS,
-  DASHBOARD_SEARCH_SUBTITLE_MAX_CHARS,
-  DASHBOARD_SEARCH_TITLE_MAX_CHARS,
-  DASHBOARD_SEARCH_TYPE_MAX_CHARS,
-} from '@/services/webmcp';
-
-const SEARCH_RESULT_CACHE_MAX_ENTRIES = 64;
-const SEARCH_RESULT_CACHE_TTL_MS = 2 * 60 * 1000;
 const FLIGHT_SEARCH_SOURCE_TTL_MS = 2 * 60 * 1000;
 
 interface FlightSearchItem {
@@ -97,16 +81,6 @@ const LAYER_PRESET_PRIMARY_LAYERS: Record<string, (keyof MapLayers)[]> = {
   intel: ['conflicts', 'hotspots', 'protests', 'ucdpEvents', 'displacement'],
   minimal: ['conflicts', 'hotspots'],
 };
-
-interface IssuedSearchResult {
-  query: string;
-  scope: DashboardSearchScope;
-  identity: string;
-  indexRevision: number;
-  authContext: string;
-  securityEpoch: number;
-  variant: string;
-}
 
 export interface SearchManagerCallbacks {
   openCountryBriefByCode: (
@@ -211,28 +185,68 @@ export class SearchManager implements AppModule {
 
   private ctx: AppContext;
   private callbacks: SearchManagerCallbacks;
-  private highlightTimers = new WeakMap<Element, ReturnType<typeof setTimeout>>();
-  private securityEpoch = 0;
-  private authUnsubscribe: (() => void) | null = null;
-  private entitlementUnsubscribe: (() => void) | null = null;
-  private runtimeConfigUnsubscribe: (() => void) | null = null;
-  private widgetAccessUnsubscribe: (() => void) | null = null;
+  private readonly searchSelection: SearchSelectionDispatcher;
+  private readonly webMcpSearch: WebMcpSearchController;
   private destroyed = false;
   private flightSourceExpiresAt = 0;
   private flightSearchItems: FlightSearchItem[] = [];
   private latestAdsb: PositionSample[] = [];
   private latestMilitary: MilitaryFlight[] = [];
   private latestAdsbUpdatedAt = 0;
-  private lastPremiumAccess = false;
   private searchIndexReady: Promise<void> = Promise.resolve();
-  private readonly resultCache = new OpaqueResultCache<IssuedSearchResult>({
-    maxEntries: SEARCH_RESULT_CACHE_MAX_ENTRIES,
-    ttlMs: SEARCH_RESULT_CACHE_TTL_MS,
-  });
 
   constructor(ctx: AppContext, callbacks: SearchManagerCallbacks) {
     this.ctx = ctx;
     this.callbacks = callbacks;
+    this.searchSelection = new SearchSelectionDispatcher({
+      ctx,
+      getVariant: () => SITE_VARIANT,
+      hasPremiumAccess: () => hasPremiumAccess(getAuthState()),
+      openCountryBriefByCode: (...args) => this.callbacks.openCountryBriefByCode(...args),
+      enablePanel: (...args) => this.callbacks.enablePanel(...args),
+      trackSearchResultSelected,
+      trackCountrySelected,
+      runWithAgentAnalyticsSuppressed,
+      suppressNextAgentPanelView,
+      resolveExecutableNewsPanel: (link) => this.resolveExecutableNewsPanel(link),
+      saveToStorage,
+      setTheme,
+      setTimeout,
+      clearTimeout,
+    });
+    this.webMcpSearch = new WebMcpSearchController({
+      waitForIndexReady: () => this.waitForSearchIndexReady(),
+      isDestroyed: () => this.destroyed,
+      refreshIndex: () => this.updateSearchIndex({ updateVisibleMetrics: false }),
+      getModal: () => this.ctx.searchModal,
+      hasPremiumAccess: () => hasPremiumAccess(getAuthState()),
+      fetchLiveFlight: (callsign) => this.fetchAndPublishLiveFlight(callsign),
+      getAuthContext: () => {
+        const auth = getAuthState();
+        return `${auth.user ? 'signed-in' : 'anonymous'}:${auth.isPending ? 'pending' : 'settled'}:${hasPremiumAccess(auth) ? 'premium' : 'free'}`;
+      },
+      getVariant: () => SITE_VARIANT,
+      isMatchExecutable: (match) => this.isSearchMatchExecutable(match),
+      selectMatch: (match) => this.searchSelection.selectProgrammaticMatch(match),
+      subscribeAuth: subscribeAuthState,
+      subscribeEntitlement: onEntitlementChange,
+      subscribeRuntimeConfig,
+      subscribeWidgetAccess,
+      onPremiumAccessChanged: (premium, premiumRestored) => {
+        if (!premium) {
+          this.flightSearchItems = [];
+          this.flightSourceExpiresAt = 0;
+          this.ctx.searchModal?.registerSource('flight', []);
+        } else if (premiumRestored) {
+          this.updateFlightSource(
+            this.latestAdsb,
+            this.latestMilitary,
+            this.latestAdsbUpdatedAt,
+          );
+          this.ctx.searchModal?.refreshSearch();
+        }
+      },
+    });
   }
 
   init(): void {
@@ -247,20 +261,13 @@ export class SearchManager implements AppModule {
 
   destroy(): void {
     this.destroyed = true;
-    this.authUnsubscribe?.();
-    this.authUnsubscribe = null;
-    this.entitlementUnsubscribe?.();
-    this.entitlementUnsubscribe = null;
-    this.runtimeConfigUnsubscribe?.();
-    this.runtimeConfigUnsubscribe = null;
-    this.widgetAccessUnsubscribe?.();
-    this.widgetAccessUnsubscribe = null;
+    this.webMcpSearch.destroy();
+    this.searchSelection.destroy();
     this.flightSearchItems = [];
     this.flightSourceExpiresAt = 0;
     this.latestAdsb = [];
     this.latestMilitary = [];
     this.latestAdsbUpdatedAt = 0;
-    this.resultCache.clear();
   }
 
   private setupSearchModal(): void {
@@ -443,8 +450,8 @@ export class SearchManager implements AppModule {
     });
     this.ctx.searchModal.setCommandVisibleFn((command) => this.isModalCommandVisible(command));
     this.ctx.searchModal.setResultVisibleFn((result) => this.isSearchResultVisible(result));
-    this.ctx.searchModal.setOnSelect((result) => this.handleSearchResult(result));
-    this.ctx.searchModal.setOnCommand((cmd) => this.handleCommand(cmd));
+    this.ctx.searchModal.setOnSelect((result) => this.searchSelection.handleSearchResult(result));
+    this.ctx.searchModal.setOnCommand((cmd) => this.searchSelection.handleCommand(cmd));
     // Always wire flight search; check pro status reactively inside the callback
     // so mid-session sign-ins get the feature without a page reload.
     this.ctx.searchModal.setOnFlightSearch((callsign) => {
@@ -530,239 +537,18 @@ export class SearchManager implements AppModule {
     scope: DashboardSearchScope,
     limit: number,
   ): Promise<DashboardSearchResponse> {
-    await this.waitForSearchIndexReady();
-    if (this.destroyed) throw new Error('Search manager destroyed');
-    this.updateSearchIndex({ updateVisibleMetrics: false });
-    const modal = this.ctx.searchModal;
-    if (!modal) throw new Error('Search index is not initialised');
-
-    let searchResult = modal.search(query, scope as SearchScope);
-    if (
-      searchResult.flightCallsign
-      && searchResult.orderedMatches.length === 0
-      && hasPremiumAccess(getAuthState())
-    ) {
-      // CMD+K offers a bounded live callsign fallback when the viewport index
-      // has no match. Keep the agent path on the same read-only behavior.
-      try {
-        await this.fetchAndPublishLiveFlight(searchResult.flightCallsign);
-        if (this.destroyed) throw new Error('Search manager destroyed');
-        this.updateSearchIndex({ updateVisibleMetrics: false });
-        searchResult = modal.search(query, scope as SearchScope);
-      } catch (error) {
-        if (this.destroyed) throw error;
-        // A live lookup failure is a normal empty-search outcome, not a tool
-        // failure or a reason to expose a synthetic result.
-      }
-    }
-    const matches = searchResult.orderedMatches;
-    const candidates = matches.slice(0, limit).map((match) => ({
-      match,
-      descriptor: {
-        type: this.searchMatchType(match).slice(0, DASHBOARD_SEARCH_TYPE_MAX_CHARS),
-        title: this.searchMatchTitle(match).slice(0, DASHBOARD_SEARCH_TITLE_MAX_CHARS),
-        ...(this.searchMatchSubtitle(match) ? {
-          subtitle: this.searchMatchSubtitle(match)!.slice(
-            0,
-            DASHBOARD_SEARCH_SUBTITLE_MAX_CHARS,
-          ),
-        } : {}),
-        executable: this.isSearchMatchExecutable(match),
-      },
-    }));
-    const accepted: typeof candidates = [];
-    for (const candidate of candidates) {
-      const projectedResults = [...accepted, candidate].map(({ descriptor }) => ({
-        key: `sr_${'0'.repeat(32)}`,
-        ...descriptor,
-      }));
-      if (JSON.stringify({
-        queryLength: query.length,
-        results: projectedResults,
-        resultCount: projectedResults.length,
-        // false is one character longer than true, so it safely reserves the
-        // larger envelope regardless of whether the final result is complete.
-        truncated: false,
-      }).length > DASHBOARD_SEARCH_OUTPUT_TARGET_CHARS) break;
-      accepted.push(candidate);
-    }
-    const authContext = this.getSearchAuthContext();
-    const results: DashboardSearchDescriptor[] = accepted.map(({ match, descriptor }) => ({
-      key: this.resultCache.issue({
-        query,
-        scope,
-        identity: searchMatchIdentity(match),
-        indexRevision: modal.getSearchIndexRevision(),
-        authContext,
-        securityEpoch: this.securityEpoch,
-        variant: SITE_VARIANT,
-      }),
-      ...descriptor,
-    }));
-
-    return {
-      queryLength: query.length,
-      results,
-      resultCount: results.length,
-      truncated: matches.length > results.length,
-    };
+    return this.webMcpSearch.search(query, scope, limit);
   }
 
   public async openSearchResult(
     resultKey: string,
     waitForMapReady?: () => Promise<void>,
   ): Promise<DashboardSearchOpenResult> {
-    if (this.destroyed) {
-      return { ok: false, status: 'denied', reason: 'invalid_or_expired_key' };
-    }
-    const issued = this.resultCache.get(resultKey);
-    if (!issued) {
-      return { ok: false, status: 'denied', reason: 'invalid_or_expired_key' };
-    }
-    // Keys are single-use capabilities. Delete before any validation or side
-    // effect so re-entrant or replayed calls fail closed.
-    this.resultCache.delete(resultKey);
-
-    if (
-      issued.variant !== SITE_VARIANT
-      || issued.authContext !== this.getSearchAuthContext()
-      || issued.securityEpoch !== this.securityEpoch
-    ) {
-      return { ok: false, status: 'denied', reason: 'search_state_changed' };
-    }
-
-    this.updateSearchIndex({ updateVisibleMetrics: false });
-    const modal = this.ctx.searchModal;
-    if (!modal) return { ok: false, status: 'denied', reason: 'search_state_changed' };
-    let liveMatch = modal.search(issued.query, issued.scope as SearchScope).orderedMatches
-      .find((match) => searchMatchIdentity(match) === issued.identity);
-    if (!liveMatch) {
-      return { ok: false, status: 'denied', reason: 'result_no_longer_available' };
-    }
-    if (issued.indexRevision !== modal.getSearchIndexRevision()) {
-      return { ok: false, status: 'denied', reason: 'search_state_changed' };
-    }
-    // A descriptor that is already non-executable must fail before renderer
-    // readiness is requested. In particular, an opaque key must not become a
-    // way to wake the deferred map renderer for a result that policy rejects.
-    if (!this.isSearchMatchExecutable(liveMatch)) {
-      return { ok: false, status: 'denied', reason: 'result_no_longer_executable' };
-    }
-    if (this.searchMatchRequiresMapRenderer(liveMatch) && waitForMapReady) {
-      await waitForMapReady();
-      if (this.destroyed) {
-        return { ok: false, status: 'denied', reason: 'search_state_changed' };
-      }
-      if (
-        issued.variant !== SITE_VARIANT
-        || issued.authContext !== this.getSearchAuthContext()
-        || issued.securityEpoch !== this.securityEpoch
-      ) {
-        return { ok: false, status: 'denied', reason: 'search_state_changed' };
-      }
-      this.updateSearchIndex({ updateVisibleMetrics: false });
-      liveMatch = this.ctx.searchModal
-        ?.search(issued.query, issued.scope as SearchScope).orderedMatches
-        .find((match) => searchMatchIdentity(match) === issued.identity);
-      if (!liveMatch) {
-        return { ok: false, status: 'denied', reason: 'result_no_longer_available' };
-      }
-      if (issued.indexRevision !== this.ctx.searchModal?.getSearchIndexRevision()) {
-        return { ok: false, status: 'denied', reason: 'search_state_changed' };
-      }
-    }
-    if (!this.isSearchMatchExecutable(liveMatch)) {
-      return { ok: false, status: 'denied', reason: 'result_no_longer_executable' };
-    }
-
-    if (this.destroyed) {
-      return { ok: false, status: 'denied', reason: 'search_state_changed' };
-    }
-    this.ctx.searchModal?.closeForProgrammaticSelection();
-    if (!(await this.selectSearchMatch(liveMatch))) {
-      return { ok: false, status: 'denied', reason: 'result_no_longer_executable' };
-    }
-    return { ok: true, status: 'opened', type: this.searchMatchType(liveMatch) };
-  }
-
-  private async selectSearchMatch(match: SearchMatch): Promise<boolean> {
-    return await runWithAgentAnalyticsSuppressed(() => {
-      const options = { trackDetailedAnalytics: false };
-      if (match.kind === 'command') {
-        return this.handleCommand(match.command, options);
-      }
-      return this.handleSearchResult(match.result, options);
-    });
-  }
-
-  private searchMatchType(match: SearchMatch): string {
-    return match.kind === 'command' ? 'command' : match.result.type;
-  }
-
-  private searchMatchTitle(match: SearchMatch): string {
-    return match.kind === 'command' ? match.title : match.result.title;
-  }
-
-  private searchMatchSubtitle(match: SearchMatch): string | undefined {
-    return match.kind === 'command' ? match.subtitle : match.result.subtitle;
-  }
-
-  private searchMatchRequiresMapRenderer(match: SearchMatch): boolean {
-    if (match.kind === 'result') {
-      return !['country', 'news', 'market', 'prediction'].includes(match.result.type);
-    }
-    const [category = '', action = ''] = match.command.id.split(':', 2);
-    return ['nav', 'country-map', 'layer', 'layers', 'time'].includes(category)
-      || (category === 'view' && ['resilience', 'route-explorer'].includes(action));
-  }
-
-  private getSearchAuthContext(): string {
-    const auth = getAuthState();
-    // The cache needs a live-state sanity check, not account identity. Auth
-    // listeners rotate securityEpoch on every emission, including A -> B and
-    // A -> signed-out -> A, so never retain a user ID alongside query text.
-    return `${auth.user ? 'signed-in' : 'anonymous'}:${auth.isPending ? 'pending' : 'settled'}:${hasPremiumAccess(auth) ? 'premium' : 'free'}`;
+    return this.webMcpSearch.open(resultKey, waitForMapReady);
   }
 
   private observeSecurityContext(): void {
-    if (
-      this.authUnsubscribe
-      || this.entitlementUnsubscribe
-      || this.runtimeConfigUnsubscribe
-      || this.widgetAccessUnsubscribe
-    ) return;
-    this.lastPremiumAccess = hasPremiumAccess(getAuthState());
-    const invalidate = (): void => {
-      this.securityEpoch += 1;
-      this.resultCache.clear();
-      const premium = hasPremiumAccess(getAuthState());
-      const premiumRestored = !this.lastPremiumAccess && premium;
-      this.lastPremiumAccess = premium;
-      if (!premium) {
-        this.flightSearchItems = [];
-        this.flightSourceExpiresAt = 0;
-        this.ctx.searchModal?.registerSource('flight', []);
-      } else if (premiumRestored) {
-        this.updateFlightSource(
-          this.latestAdsb,
-          this.latestMilitary,
-          this.latestAdsbUpdatedAt,
-        );
-        this.ctx.searchModal?.refreshSearch();
-      }
-    };
-    let subscribingAuth = true;
-    this.authUnsubscribe = subscribeAuthState(() => {
-      if (!subscribingAuth) invalidate();
-    });
-    subscribingAuth = false;
-    let subscribingEntitlements = true;
-    this.entitlementUnsubscribe = onEntitlementChange(() => {
-      if (!subscribingEntitlements) invalidate();
-    });
-    subscribingEntitlements = false;
-    this.runtimeConfigUnsubscribe = subscribeRuntimeConfig(invalidate);
-    this.widgetAccessUnsubscribe = subscribeWidgetAccess(invalidate);
+    this.webMcpSearch.observeSecurityContext();
   }
 
   private isSearchMatchExecutable(match: SearchMatch): boolean {
@@ -975,456 +761,6 @@ export class SearchManager implements AppModule {
       }
       default: return null;
     }
-  }
-
-  private handleSearchResult(
-    result: SearchResult,
-    options: { trackDetailedAnalytics?: boolean } = {},
-  ): boolean | Promise<boolean> {
-    const trackDetailedAnalytics = options.trackDetailedAnalytics !== false;
-    trackSearchResultSelected(result.type, {
-      includeAttribution: trackDetailedAnalytics,
-    });
-    switch (result.type) {
-      case 'news': {
-        const item = result.data as NewsItem;
-        const target = this.resolveExecutableNewsPanel(item.link);
-        if (!target) return false;
-        const [targetPanelId, targetPanel] = target;
-        this.scrollToPanel(targetPanelId, trackDetailedAnalytics);
-        setTimeout(() => targetPanel.scrollToNewsItem(item.link), 300);
-        break;
-      }
-      case 'hotspot': {
-        const hotspot = result.data as typeof INTEL_HOTSPOTS[0];
-        this.ctx.map?.setView('global');
-        setTimeout(() => { this.ctx.map?.triggerHotspotClick(hotspot.id); }, 300);
-        break;
-      }
-      case 'conflict': {
-        const conflict = result.data as typeof CONFLICT_ZONES[0];
-        this.ctx.map?.setView('global');
-        setTimeout(() => { this.ctx.map?.triggerConflictClick(conflict.id); }, 300);
-        break;
-      }
-      case 'market': {
-        this.scrollToPanel('markets', trackDetailedAnalytics);
-        break;
-      }
-      case 'prediction': {
-        this.scrollToPanel('polymarket', trackDetailedAnalytics);
-        break;
-      }
-      case 'base': {
-        const base = result.data as MilitaryBase;
-        this.ctx.map?.setView('global');
-        setTimeout(() => { this.ctx.map?.triggerBaseClick(base.id); }, 300);
-        break;
-      }
-      case 'pipeline': {
-        const pipeline = result.data as typeof PIPELINES[0];
-        this.ctx.map?.setView('global');
-        this.ctx.map?.enableLayer('pipelines');
-        this.ctx.mapLayers.pipelines = true;
-        setTimeout(() => { this.ctx.map?.triggerPipelineClick(pipeline.id); }, 300);
-        break;
-      }
-      case 'cable': {
-        const cable = result.data as typeof UNDERSEA_CABLES[0];
-        this.ctx.map?.setView('global');
-        this.ctx.map?.enableLayer('cables');
-        this.ctx.mapLayers.cables = true;
-        setTimeout(() => { this.ctx.map?.triggerCableClick(cable.id); }, 300);
-        break;
-      }
-      case 'datacenter': {
-        const dc = result.data as typeof AI_DATA_CENTERS[0];
-        this.ctx.map?.setView('global');
-        this.ctx.map?.enableLayer('datacenters');
-        this.ctx.mapLayers.datacenters = true;
-        setTimeout(() => { this.ctx.map?.triggerDatacenterClick(dc.id); }, 300);
-        break;
-      }
-      case 'nuclear': {
-        const nuc = result.data as typeof NUCLEAR_FACILITIES[0];
-        this.ctx.map?.setView('global');
-        this.ctx.map?.enableLayer('nuclear');
-        this.ctx.mapLayers.nuclear = true;
-        setTimeout(() => { this.ctx.map?.triggerNuclearClick(nuc.id); }, 300);
-        break;
-      }
-      case 'irradiator': {
-        const irr = result.data as typeof GAMMA_IRRADIATORS[0];
-        this.ctx.map?.setView('global');
-        this.ctx.map?.enableLayer('irradiators');
-        this.ctx.mapLayers.irradiators = true;
-        setTimeout(() => { this.ctx.map?.triggerIrradiatorClick(irr.id); }, 300);
-        break;
-      }
-      case 'earthquake':
-      case 'outage':
-        this.ctx.map?.setView('global');
-        break;
-      case 'techcompany': {
-        const company = result.data as typeof TECH_COMPANIES[0];
-        this.ctx.map?.setView('global');
-        this.ctx.map?.enableLayer('techHQs');
-        this.ctx.mapLayers.techHQs = true;
-        setTimeout(() => { this.ctx.map?.setCenter(company.lat, company.lon, 4); }, 300);
-        break;
-      }
-      case 'ailab': {
-        const lab = result.data as typeof AI_RESEARCH_LABS[0];
-        this.ctx.map?.setView('global');
-        setTimeout(() => { this.ctx.map?.setCenter(lab.lat, lab.lon, 4); }, 300);
-        break;
-      }
-      case 'startup': {
-        const ecosystem = result.data as typeof STARTUP_ECOSYSTEMS[0];
-        this.ctx.map?.setView('global');
-        this.ctx.map?.enableLayer('startupHubs');
-        this.ctx.mapLayers.startupHubs = true;
-        setTimeout(() => { this.ctx.map?.setCenter(ecosystem.lat, ecosystem.lon, 4); }, 300);
-        break;
-      }
-      case 'techevent': {
-        const event = result.data as { lat: number; lng: number };
-        this.ctx.map?.setView('global');
-        this.ctx.map?.enableLayer('techEvents');
-        this.ctx.mapLayers.techEvents = true;
-        setTimeout(() => { this.ctx.map?.setCenter(event.lat, event.lng, 5); }, 300);
-        break;
-      }
-      case 'techhq': {
-        const hq = result.data as typeof TECH_HQS[0];
-        this.ctx.map?.setView('global');
-        this.ctx.map?.enableLayer('techHQs');
-        this.ctx.mapLayers.techHQs = true;
-        setTimeout(() => { this.ctx.map?.setCenter(hq.lat, hq.lon, 4); }, 300);
-        break;
-      }
-      case 'accelerator': {
-        const acc = result.data as typeof ACCELERATORS[0];
-        this.ctx.map?.setView('global');
-        this.ctx.map?.enableLayer('accelerators');
-        this.ctx.mapLayers.accelerators = true;
-        setTimeout(() => { this.ctx.map?.setCenter(acc.lat, acc.lon, 4); }, 300);
-        break;
-      }
-      case 'exchange': {
-        const exchange = result.data as typeof STOCK_EXCHANGES[0];
-        this.ctx.map?.setView('global');
-        this.ctx.map?.enableLayer('stockExchanges');
-        this.ctx.mapLayers.stockExchanges = true;
-        setTimeout(() => { this.ctx.map?.setCenter(exchange.lat, exchange.lon, 4); }, 300);
-        break;
-      }
-      case 'financialcenter': {
-        const fc = result.data as typeof FINANCIAL_CENTERS[0];
-        this.ctx.map?.setView('global');
-        this.ctx.map?.enableLayer('financialCenters');
-        this.ctx.mapLayers.financialCenters = true;
-        setTimeout(() => { this.ctx.map?.setCenter(fc.lat, fc.lon, 4); }, 300);
-        break;
-      }
-      case 'centralbank': {
-        const bank = result.data as typeof CENTRAL_BANKS[0];
-        this.ctx.map?.setView('global');
-        this.ctx.map?.enableLayer('centralBanks');
-        this.ctx.mapLayers.centralBanks = true;
-        setTimeout(() => { this.ctx.map?.setCenter(bank.lat, bank.lon, 4); }, 300);
-        break;
-      }
-      case 'commodityhub': {
-        const hub = result.data as typeof COMMODITY_HUBS[0];
-        this.ctx.map?.setView('global');
-        this.ctx.map?.enableLayer('commodityHubs');
-        this.ctx.mapLayers.commodityHubs = true;
-        setTimeout(() => { this.ctx.map?.setCenter(hub.lat, hub.lon, 4); }, 300);
-        break;
-      }
-      case 'country': {
-        const { code, name } = result.data as { code: string; name: string };
-        if (trackDetailedAnalytics) trackCountrySelected(code, name, 'search');
-        return this.callbacks.openCountryBriefByCode(code, name, {
-          trackDetailedAnalytics,
-        });
-      }
-      case 'flight': {
-        const { lat, lon, layer } = result.data as { kind: string; lat: number; lon: number; layer: keyof MapLayers };
-        this.ctx.map?.enableLayer(layer);
-        this.ctx.mapLayers[layer] = true;
-        setTimeout(() => { this.ctx.map?.setCenter(lat, lon, 9); }, 300);
-        break;
-      }
-    }
-    return true;
-  }
-
-  private handleCommand(
-    cmd: Command,
-    options: { trackDetailedAnalytics?: boolean } = {},
-  ): boolean | Promise<boolean> {
-    const trackDetailedAnalytics = options.trackDetailedAnalytics !== false;
-    const colonIdx = cmd.id.indexOf(':');
-    if (colonIdx === -1) return false;
-    const category = cmd.id.slice(0, colonIdx);
-    const action = cmd.id.slice(colonIdx + 1);
-
-    switch (category) {
-      case 'nav':
-        this.ctx.map?.setView(action as MapView);
-        {
-          const sel = document.getElementById('regionSelect') as HTMLSelectElement;
-          if (sel) sel.value = action;
-        }
-        break;
-
-      case 'layers': {
-        const allowed = getAllowedLayerKeys((SITE_VARIANT || 'full') as MapVariant);
-        // Preset paths (`layers:all`, `layers:infra`, …) also need the
-        // renderer-kind gate that per-layer toggles go through. Without
-        // it, a user in globe mode or on the SVG fallback can run
-        // `layers:infra` and silently flip deck-only layers on — those
-        // layers set to `true` in state but produce no rendered output,
-        // and since the picker hides them under the current renderer the
-        // user has no way to toggle them back off without switching
-        // modes. Codex P2 on PR #3366.
-        // Premium entitlement is also required for locked layers (#6045).
-        const kind = this.ctx.map?.isGlobeMode?.()
-          ? 'globe'
-          : (this.ctx.map?.isDeckGLActive?.() ? 'deck' : 'svg');
-        const premium = hasPremiumAccess(getAuthState());
-        const executable = (k: keyof MapLayers): boolean =>
-          allowed.has(k)
-          && isLayerExecutable(k, kind)
-          && isLayerEntitled(k, premium);
-        if (action === 'all') {
-          for (const key of Object.keys(this.ctx.mapLayers)) {
-            this.ctx.mapLayers[key as keyof MapLayers] = executable(key as keyof MapLayers);
-          }
-        } else if (action === 'none') {
-          for (const key of Object.keys(this.ctx.mapLayers))
-            this.ctx.mapLayers[key as keyof MapLayers] = false;
-        } else {
-          const preset = LAYER_PRESETS[action];
-          if (preset) {
-            for (const key of Object.keys(this.ctx.mapLayers))
-              this.ctx.mapLayers[key as keyof MapLayers] = false;
-            for (const layer of preset) {
-              if (executable(layer)) this.ctx.mapLayers[layer] = true;
-            }
-          }
-        }
-        saveToStorage(STORAGE_KEYS.mapLayers, this.ctx.mapLayers);
-        this.ctx.map?.setLayers(this.ctx.mapLayers);
-        break;
-      }
-
-      case 'layer': {
-        const layerKey = (LAYER_KEY_MAP[action] || action) as keyof MapLayers;
-        if (!(layerKey in this.ctx.mapLayers)) return false;
-        const variantAllowed = getAllowedLayerKeys((SITE_VARIANT || 'full') as MapVariant);
-        if (!variantAllowed.has(layerKey)) return false;
-        // Renderer / DeckGL gate. Mirrors the filter applied in SearchModal
-        // so direct activation paths (keyboard-accelerator, programmatic
-        // dispatch, etc.) don't flip a layer on that can't render.
-        const kind = this.ctx.map?.isGlobeMode?.()
-          ? 'globe'
-          : (this.ctx.map?.isDeckGLActive?.() ? 'deck' : 'svg');
-        const currentValue = this.ctx.mapLayers[layerKey];
-        // Locked premium layers: free users may turn them OFF (heal stuck
-        // state) but must not turn them ON (#6045).
-        if (!isLayerCommandAllowed(
-          layerKey,
-          currentValue,
-          kind,
-          hasPremiumAccess(getAuthState()),
-        )) return false;
-        let newValue = !currentValue;
-        if (newValue && layerKey === 'resilienceScore' && !this.ctx.map?.isDeckGLActive?.()) {
-          newValue = false;
-        }
-        this.ctx.mapLayers[layerKey] = newValue;
-        saveToStorage(STORAGE_KEYS.mapLayers, this.ctx.mapLayers);
-        if (newValue) {
-          this.ctx.map?.enableLayer(layerKey);
-        } else {
-          this.ctx.map?.setLayers(this.ctx.mapLayers);
-        }
-        break;
-      }
-
-      case 'panel': {
-        // CMD+K can now surface disabled-but-available panels (Add affordance).
-        // Enable first so the element exists, then scroll once it renders.
-        // An optional `@<tab>` suffix deep-links to a specific tab within the
-        // panel (e.g. `consumer-prices@world` → global inflation view).
-        const [panelId, subTab] = action.split('@');
-        if (!panelId) break;
-        const cfg = this.ctx.panelSettings[panelId];
-        if (cfg && !cfg.enabled) {
-          if (this.callbacks.enablePanel(panelId, {
-            trackDetailedAnalytics,
-          })) {
-            this.scrollToPanelWhenReady(panelId, 12, trackDetailedAnalytics);
-            if (subTab) this.dispatchPanelTab(panelId, subTab);
-            break;
-          }
-          return false;
-        }
-        this.scrollToPanel(panelId, trackDetailedAnalytics);
-        if (subTab) this.dispatchPanelTab(panelId, subTab);
-        break;
-      }
-
-      case 'view':
-        if (action === 'dark' || action === 'light') {
-          setTheme(action);
-        } else if (action === 'fullscreen') {
-          if (document.fullscreenElement) {
-            try { void document.exitFullscreen()?.catch(() => {}); } catch {}
-          } else {
-            const el = document.documentElement as HTMLElement & { webkitRequestFullscreen?: () => void };
-            if (el.requestFullscreen) {
-              try { void el.requestFullscreen()?.catch(() => {}); } catch {}
-            } else if (el.webkitRequestFullscreen) {
-              try { el.webkitRequestFullscreen(); } catch {}
-            }
-          }
-        } else if (action === 'settings') {
-          this.ctx.unifiedSettings?.open();
-        } else if (action === 'refresh') {
-          window.location.reload();
-        } else if (action === 'resilience') {
-          // view:resilience is a dedicated shortcut for resilienceScore.
-          // Same entitlement gate as layer:resilienceScore (#6045).
-          const layerKey = 'resilienceScore' as keyof MapLayers;
-          const variantAllowed = getAllowedLayerKeys((SITE_VARIANT || 'full') as MapVariant);
-          if (!variantAllowed.has(layerKey)) break;
-          const currentValue = this.ctx.mapLayers[layerKey];
-          const kind = this.ctx.map?.isGlobeMode?.()
-            ? 'globe'
-            : (this.ctx.map?.isDeckGLActive?.() ? 'deck' : 'svg');
-          if (!isLayerCommandAllowed(
-            layerKey,
-            currentValue,
-            kind,
-            hasPremiumAccess(getAuthState()),
-          )) break;
-          let newValue = !currentValue;
-          if (newValue && !this.ctx.map?.isDeckGLActive?.()) newValue = false;
-          this.ctx.mapLayers[layerKey] = newValue;
-          saveToStorage(STORAGE_KEYS.mapLayers, this.ctx.mapLayers);
-          if (newValue) {
-            this.ctx.map?.enableLayer(layerKey);
-          } else {
-            this.ctx.map?.setLayers(this.ctx.mapLayers);
-          }
-        } else if (action === 'route-explorer') {
-          void import('@/components/RouteExplorer/RouteExplorer').then((m) => {
-            const explorer = m.getRouteExplorer();
-            explorer.setMap(this.ctx.map);
-            explorer.open();
-          });
-        }
-        break;
-
-      case 'time':
-        this.ctx.map?.setTimeRange(action as TimeRange);
-        break;
-
-      case 'country': {
-        const name = TIER1_COUNTRIES[action]
-          || CURATED_COUNTRIES[action]?.name
-          || new Intl.DisplayNames(['en'], { type: 'region' }).of(action)
-          || action;
-        if (trackDetailedAnalytics) trackCountrySelected(action, name, 'command');
-        return this.callbacks.openCountryBriefByCode(action, name, {
-          trackDetailedAnalytics,
-        });
-      }
-
-      case 'country-map': {
-        const bbox = getCountryBbox(action);
-        if (bbox) {
-          const [minLon, minLat, maxLon, maxLat] = bbox;
-          const lat = (minLat + maxLat) / 2;
-          const lon = (minLon + maxLon) / 2;
-          const span = Math.max(maxLat - minLat, maxLon - minLon);
-          const zoom = span > 40 ? 3 : span > 15 ? 4 : span > 5 ? 5 : 6;
-          this.ctx.map?.setView('global');
-          setTimeout(() => { this.ctx.map?.setCenter(lat, lon, zoom); }, 300);
-        }
-        break;
-      }
-    }
-    return true;
-  }
-
-  /**
-   * Scrolls to a panel that may have just been enabled. Async-mounted panels
-   * (e.g. deduction, regional-intelligence mount via dynamic import) aren't in
-   * the DOM on the next tick, so retry over ~1s before giving up. The panel is
-   * already enabled regardless — only the scroll is best-effort.
-   */
-  private scrollToPanelWhenReady(
-    panelId: string,
-    attemptsLeft = 12,
-    trackDetailedAnalytics = true,
-  ): void {
-    if (!trackDetailedAnalytics) suppressNextAgentPanelView(panelId);
-    if (document.querySelector(`[data-panel="${panelId}"]`)) {
-      this.scrollToPanel(panelId, trackDetailedAnalytics);
-      return;
-    }
-    if (attemptsLeft <= 0) return;
-    setTimeout(
-      () => this.scrollToPanelWhenReady(panelId, attemptsLeft - 1, trackDetailedAnalytics),
-      80,
-    );
-  }
-
-  /**
-   * Deep-links to a tab inside a panel by dispatching the panel's open-tab
-   * event once it's mounted. Deferred-shell placeholders carry the same
-   * data-panel attribute but no listener — only the REAL panel element (shell
-   * excluded via data-deferred-panel) proves the constructor has run, so we
-   * retry until the shell is replaced in place. The scroll helpers above
-   * intentionally still match shells: a shell occupies the panel's slot, and
-   * scrolling to it is what brings it into the IntersectionObserver margin
-   * that triggers the mount.
-   */
-  private dispatchPanelTab(panelId: string, tab: string, attemptsLeft = 12): void {
-    // Currently only Consumer Prices exposes a tab deep-link contract.
-    if (panelId !== 'consumer-prices') return;
-    if (document.querySelector(`[data-panel="${panelId}"]:not([data-deferred-panel])`)) {
-      window.dispatchEvent(new CustomEvent('wm-consumer-prices-open-tab', { detail: { tab } }));
-      return;
-    }
-    if (attemptsLeft <= 0) return;
-    setTimeout(() => this.dispatchPanelTab(panelId, tab, attemptsLeft - 1), 80);
-  }
-
-  private scrollToPanel(panelId: string, trackDetailedAnalytics = true): void {
-    if (!trackDetailedAnalytics) suppressNextAgentPanelView(panelId);
-    const panel = document.querySelector(`[data-panel="${panelId}"]`);
-    if (panel) {
-      panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      this.applyHighlight(panel);
-    }
-  }
-
-  private applyHighlight(el: Element): void {
-    const prev = this.highlightTimers.get(el);
-    if (prev) clearTimeout(prev);
-    el.classList.remove('search-highlight');
-    void (el as HTMLElement).offsetWidth;
-    el.classList.add('search-highlight');
-    this.highlightTimers.set(el, setTimeout(() => {
-      el.classList.remove('search-highlight');
-      this.highlightTimers.delete(el);
-    }, 3100));
   }
 
   updateFlightSource(

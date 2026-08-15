@@ -49,6 +49,31 @@ const managerClassJs = ts.transpileModule(managerClassSource, {
   },
 }).outputText;
 
+function extractClassJs(path: string, className: string): string {
+  const moduleSource = readFileSync(new URL(path, import.meta.url), 'utf8');
+  const parsed = ts.createSourceFile(path, moduleSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const declaration = parsed.statements.find((statement): statement is ts.ClassDeclaration => (
+    ts.isClassDeclaration(statement) && statement.name?.text === className
+  ));
+  assert.ok(declaration, `${className} must remain in ${path}`);
+  return ts.transpileModule(declaration.getText(parsed).replace(/^export\s+/, ''), {
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ES2022,
+      useDefineForClassFields: true,
+    },
+  }).outputText;
+}
+
+const selectionDispatcherClassJs = extractClassJs(
+  '../src/app/search-selection-dispatcher.ts',
+  'SearchSelectionDispatcher',
+);
+const webMcpSearchControllerClassJs = extractClassJs(
+  '../src/app/webmcp-search-controller.ts',
+  'WebMcpSearchController',
+);
+
 interface Runtime {
   auth: { user?: { id: string; role?: string } };
   premium: boolean;
@@ -61,6 +86,9 @@ interface Runtime {
   runtimeConfigListeners: Set<() => void>;
   widgetAccessListeners: Set<() => void>;
   liveFlightQueries: string[];
+  deferTimers: boolean;
+  nextTimerId: number;
+  pendingTimers: Map<number, () => void>;
 }
 
 interface ModalDouble {
@@ -222,10 +250,15 @@ function createHarness(variant: Variant, runtime: Runtime): new (ctx: any, callb
     () => null,
     (key: string) => key,
     (callback: () => void) => {
-      callback();
-      return 0;
+      if (!runtime.deferTimers) {
+        queueMicrotask(callback);
+        return 0;
+      }
+      const timer = runtime.nextTimerId++;
+      runtime.pendingTimers.set(timer, callback);
+      return timer;
     },
-    () => {},
+    (timer: number) => { runtime.pendingTimers.delete(timer); },
     (request: { callsign?: string }) => {
       runtime.liveFlightQueries.push(request.callsign ?? '');
       return Promise.resolve([{
@@ -244,7 +277,7 @@ function createHarness(variant: Variant, runtime: Runtime): new (ctx: any, callb
   // eslint-disable-next-line no-new-func
   return new Function(
     ...dependencyNames,
-    `${managerClassJs}\nreturn SearchManager;`,
+    `${selectionDispatcherClassJs}\n${webMcpSearchControllerClassJs}\n${managerClassJs}\nreturn SearchManager;`,
   )(...dependencyValues) as new (ctx: any, callbacks: any) => any;
 }
 
@@ -294,6 +327,9 @@ function makeScenario(
     runtimeConfigListeners: new Set(),
     widgetAccessListeners: new Set(),
     liveFlightQueries: [],
+    deferTimers: false,
+    nextTimerId: 1,
+    pendingTimers: new Map(),
   };
   const calls: Scenario['calls'] = {
     views: [],
@@ -391,9 +427,9 @@ function makeScenario(
     state.updateCount += 1;
     state.onUpdate?.(state.updateCount);
   };
-  manager.scrollToPanel = (panelId: string) => calls.scrolledPanels.push(panelId);
-  manager.scrollToPanelWhenReady = (panelId: string) => calls.scrolledPanels.push(panelId);
-  manager.dispatchPanelTab = () => {};
+  manager.searchSelection.scrollToPanel = (panelId: string) => calls.scrolledPanels.push(panelId);
+  manager.searchSelection.scrollToPanelWhenReady = (panelId: string) => calls.scrolledPanels.push(panelId);
+  manager.searchSelection.dispatchPanelTab = () => {};
   manager.destroyed = false;
 
   return { manager, runtime, modal, ctx, calls, state };
@@ -405,6 +441,14 @@ async function searchThenOpen(scenario: Scenario, index = 0) {
   assert.ok(descriptor, `expected search result at index ${index}`);
   const opened = await scenario.manager.openSearchResult(descriptor.key, async () => {});
   return { response, descriptor, opened };
+}
+
+function flushTimers(runtime: Runtime): void {
+  while (runtime.pendingTimers.size > 0) {
+    const callbacks = [...runtime.pendingTimers.values()];
+    runtime.pendingTimers.clear();
+    for (const callback of callbacks) callback();
+  }
 }
 
 describe('SearchManager programmatic dashboard search (#6212)', () => {
@@ -428,6 +472,51 @@ describe('SearchManager programmatic dashboard search (#6212)', () => {
     });
     assert.equal(scenario.calls.countryBriefs.length, 1, 'replay must not repeat selection');
     assert.equal(scenario.modal.openCalls, 0, 'programmatic search must not open CMD+K');
+  });
+
+  it('cancels delayed work from an earlier programmatic selection', async () => {
+    const scenario = makeScenario([
+      resultMatch('hotspot', 'old-hotspot', 'Old hotspot', { id: 'old-hotspot' }),
+      resultMatch('country', 'CA', 'Canada', { code: 'CA', name: 'Canada' }),
+    ]);
+    scenario.runtime.deferTimers = true;
+    const response = await scenario.manager.searchDashboard('needle', 'all', 10);
+
+    assert.deepEqual(
+      await scenario.manager.openSearchResult(response.results[0].key),
+      { ok: true, status: 'opened', type: 'hotspot' },
+    );
+    assert.equal(scenario.runtime.pendingTimers.size, 1);
+    assert.deepEqual(
+      await scenario.manager.openSearchResult(response.results[1].key),
+      { ok: true, status: 'opened', type: 'country' },
+    );
+
+    flushTimers(scenario.runtime);
+    assert.deepEqual(scenario.calls.hotspotIds, []);
+    assert.deepEqual(scenario.calls.countryBriefs, [[
+      'CA',
+      'Canada',
+      { trackDetailedAnalytics: false },
+    ]]);
+  });
+
+  it('cancels delayed programmatic selection work on destroy', async () => {
+    const scenario = makeScenario([
+      resultMatch('hotspot', 'stale-hotspot', 'Stale hotspot', { id: 'stale-hotspot' }),
+    ]);
+    scenario.runtime.deferTimers = true;
+    const response = await scenario.manager.searchDashboard('needle', 'all', 10);
+
+    assert.deepEqual(
+      await scenario.manager.openSearchResult(response.results[0].key),
+      { ok: true, status: 'opened', type: 'hotspot' },
+    );
+    assert.equal(scenario.runtime.pendingTimers.size, 1);
+    scenario.manager.destroy();
+    flushTimers(scenario.runtime);
+
+    assert.deepEqual(scenario.calls.hotspotIds, []);
   });
 
   it('re-resolves a refreshed target and dispatches its fresh non-indexed payload', async () => {
@@ -541,7 +630,7 @@ describe('SearchManager programmatic dashboard search (#6212)', () => {
     const pendingAgentOpen = scenario.manager.openSearchResult(key);
     assert.equal(scenario.calls.countryBriefs.length, 1, 'agent selection should be awaiting presentation');
 
-    assert.equal(scenario.manager.handleSearchResult(humanMatch.result), true);
+    assert.equal(scenario.manager.searchSelection.handleSearchResult(humanMatch.result), true);
     assert.deepEqual(scenario.runtime.detailedCountryAnalytics, [[
       'CA',
       'Canada',
