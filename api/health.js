@@ -1370,6 +1370,7 @@ const MISSING_DATA_IS_FAILURE_KEYS = new Set([
   'canadaRoads',
   'albertaRoads',
   'torontoRoads',
+  'bcOpen511',
 ]);
 
 // Keys where a present payload with meta recordCount=0 is valid, but the data
