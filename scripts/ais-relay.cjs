@@ -26,6 +26,12 @@ const v8 = require('v8');
 const { WebSocketServer, WebSocket } = require('ws');
 const { parseProxyConfig, resolveProxyString, resolveProxyStringForAttempt } = require('./_proxy-utils.cjs');
 const {
+  GROQ_DEFAULT_MODEL,
+  OPENROUTER_FREE_BACKUP_MODEL,
+  OPENROUTER_FREE_PRIMARY_MODEL,
+  OPENROUTER_PROVIDER_ROUTING,
+} = require('./lib/llm-model-policy.cjs');
+const {
   YahooQuoteSummaryClient,
   buildSectorSeedMeta,
   buildSectorValuationCoverage,
@@ -3682,9 +3688,8 @@ function classifyCacheKey(title) {
 }
 
 // LLM provider fallback chain — mirrors seed-insights.mjs LLM_PROVIDERS
-// Order: ollama → openrouter → groq (canonical chain since #4944, mirrors
-// server/_shared/llm.ts: DeepSeek V4 Flash primary with reasoning disabled,
-// groq llama-3.3-70b-versatile as the free-tier/outage fallback).
+// Order mirrors server/_shared/llm.ts: paid OpenRouter, two fixed free
+// OpenRouter variants, then Groq.
 const CLASSIFY_LLM_PROVIDERS = [
   {
     name: 'ollama',
@@ -3706,14 +3711,32 @@ const CLASSIFY_LLM_PROVIDERS = [
     apiUrl: 'https://openrouter.ai/api/v1/chat/completions',
     model: 'deepseek/deepseek-v4-flash',
     headers: (key) => ({ Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', 'HTTP-Referer': 'https://worldmonitor.app', 'X-Title': 'World Monitor', 'User-Agent': CHROME_UA }),
-    extraBody: { reasoning: { enabled: false } },
+    extraBody: { reasoning: { enabled: false }, provider: OPENROUTER_PROVIDER_ROUTING },
+    timeout: 30000,
+  },
+  {
+    name: 'openrouter-free',
+    envKey: 'OPENROUTER_API_KEY',
+    apiUrl: 'https://openrouter.ai/api/v1/chat/completions',
+    model: OPENROUTER_FREE_PRIMARY_MODEL,
+    headers: (key) => ({ Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', 'HTTP-Referer': 'https://worldmonitor.app', 'X-Title': 'World Monitor', 'User-Agent': CHROME_UA }),
+    extraBody: { reasoning: { enabled: false }, provider: OPENROUTER_PROVIDER_ROUTING },
+    timeout: 30000,
+  },
+  {
+    name: 'openrouter-free-backup',
+    envKey: 'OPENROUTER_API_KEY',
+    apiUrl: 'https://openrouter.ai/api/v1/chat/completions',
+    model: OPENROUTER_FREE_BACKUP_MODEL,
+    headers: (key) => ({ Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', 'HTTP-Referer': 'https://worldmonitor.app', 'X-Title': 'World Monitor', 'User-Agent': CHROME_UA }),
+    extraBody: { reasoning: { enabled: false }, provider: OPENROUTER_PROVIDER_ROUTING },
     timeout: 30000,
   },
   {
     name: 'groq',
     envKey: 'GROQ_API_KEY',
     apiUrl: 'https://api.groq.com/openai/v1/chat/completions',
-    model: 'llama-3.3-70b-versatile',
+    model: GROQ_DEFAULT_MODEL,
     headers: (key) => ({ Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', 'User-Agent': CHROME_UA }),
     timeout: 30000,
   },
