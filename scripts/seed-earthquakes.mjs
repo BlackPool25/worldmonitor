@@ -11,6 +11,7 @@ import { loadEnvFile, CHROME_UA, runSeed } from './_seed-utils.mjs';
 import {
   EARTHQUAKES_MAX_CONTENT_AGE_MIN,
   NRCAN_ATOM_URL,
+  earthquakesAfterPublish,
   earthquakesContentMeta,
   earthquakesPublishTransform,
   fetchMergedEarthquakes,
@@ -100,6 +101,7 @@ async function fetchEarthquakes() {
   };
 }
 
+
 function validate(data) {
   return Array.isArray(data?.earthquakes) && data.earthquakes.length >= 1;
 }
@@ -118,6 +120,7 @@ runSeed('seismology', 'earthquakes', CANONICAL_KEY, fetchEarthquakes, {
   contentMeta: earthquakesContentMeta,
   maxContentAgeMin: EARTHQUAKES_MAX_CONTENT_AGE_MIN,
   publishTransform: earthquakesPublishTransform,
+  afterPublish: earthquakesAfterPublish,
 }).catch((err) => {
   const _cause = err.cause ? ` (cause: ${err.cause.message || err.cause.code || err.cause})` : ''; console.error('FATAL:', (err.message || err) + _cause);
   process.exit(1);

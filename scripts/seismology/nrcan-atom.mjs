@@ -400,8 +400,24 @@ export async function fetchMergedEarthquakes({ fetchUsgs, fetchNrcan, nowMs = Da
 
   const usgsEvents = usgsOk ? (usgsResult.value.earthquakes || []) : [];
   const nrcanEvents = nrcanOk ? (nrcanResult.value.earthquakes || []) : [];
+  // A failed upstream must be REPORTED, not merely omitted. earthquakesContentMeta
+  // takes min() over the upstreams that answered, which catches a FROZEN NRCan —
+  // its stale newestAt drags the minimum down — but not a FAILED one, whose null
+  // is filtered out and leaves USGS's fresh timestamp as the answer. An NRCan
+  // outage therefore published a fresh, healthy, USGS-only result with every
+  // Canadian event silently absent. Callers use _failedSources to degrade.
+  const failedSources = [];
+  if (!usgsOk) failedSources.push('usgs');
+  if (!nrcanOk) failedSources.push('nrcan');
   return {
     earthquakes: mergeEarthquakeFeeds(usgsEvents, nrcanEvents, nowMs),
+    _failedSources: failedSources,
+    _failureDetail: failedSources.length
+      ? [
+        usgsOk ? null : `usgs: ${usgsResult.reason?.message || usgsResult.reason}`,
+        nrcanOk ? null : `nrcan: ${nrcanResult.reason?.message || nrcanResult.reason}`,
+      ].filter(Boolean).join('; ')
+      : '',
     _usgsNewestAt: usgsOk ? (usgsResult.value.newestAt ?? null) : null,
     _usgsOldestAt: usgsOk ? (usgsResult.value.oldestAt ?? null) : null,
     _nrcanNewestAt: nrcanOk ? (nrcanResult.value.newestAt ?? null) : null,
@@ -433,4 +449,39 @@ export function earthquakesContentMeta(data, nowMs = Date.now()) {
 
 export function earthquakesPublishTransform(data) {
   return { earthquakes: Array.isArray(data?.earthquakes) ? data.earthquakes : [] };
+}
+
+/**
+ * Publishing a single-upstream result is right — one feed beats none — but it
+ * must not read OK.
+ *
+ * earthquakesContentMeta above takes min() over the upstreams that ANSWERED.
+ * That catches a FROZEN NRCan, whose stale newestAt drags the minimum down, but
+ * not a FAILED one: its null is filtered out and USGS's fresh timestamp becomes
+ * the answer. An NRCan outage therefore passed the staleness gate AND the
+ * content-age gate while every Canadian event was missing — indistinguishable
+ * from a quiet week in Canada.
+ *
+ * Lives here rather than in the seeder for two reasons: it is pure, and
+ * importing seed-earthquakes.mjs executes runSeed() at module scope, so a test
+ * could not reach it there.
+ *
+ * Must be wired as runSeed's `afterPublish`. That is the only path into
+ * seed-meta — runSeed writes the metadata itself and merges only
+ * `freshnessMetaPatch`. Returning these fields from the fetch function is inert:
+ * publishTransform strips them and nothing reads them.
+ */
+export function earthquakesAfterPublish(data) {
+  const failed = Array.isArray(data?._failedSources) ? data._failedSources : [];
+  if (!failed.length) return undefined;
+  console.warn(
+    `[earthquakes] DEGRADED — upstream(s) failed: ${data?._failureDetail || failed.join(', ')}`,
+  );
+  return {
+    freshnessMetaPatch: {
+      sourceState: 'degraded',
+      errorCode: 'EARTHQUAKE_UPSTREAM_INCOMPLETE',
+      skipReason: `upstream-failed:${failed.join('+')}`,
+    },
+  };
 }

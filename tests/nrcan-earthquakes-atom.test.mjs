@@ -14,6 +14,7 @@ import {
   NrcanAtomParseError,
   USGS_MIN_MAGNITUDE,
   earthquakeIdentity,
+  earthquakesAfterPublish,
   earthquakesContentMeta,
   fetchApprovedAtom,
   fetchMergedEarthquakes,
@@ -294,6 +295,63 @@ describe('independent upstreams and content-age min()', () => {
     assert.equal(usgsOnly.earthquakes.length, 1);
     assert.equal(usgsOnly.earthquakes[0].source, 'usgs');
     assert.equal(usgsOnly._nrcanNewestAt, null);
+
+    // Publishing the survivor is correct; reporting it as a COMPLETE result is
+    // not. Each single-upstream result must name the upstream it lost.
+    assert.deepEqual(nrcanOnly._failedSources, ['usgs']);
+    assert.deepEqual(usgsOnly._failedSources, ['nrcan']);
+    assert.match(usgsOnly._failureDetail, /nrcan: .*bad atom/);
+  });
+
+  it('reports no failed sources when both upstreams answer', () => {
+    // The negative case: without it _failedSources could be hardcoded non-empty
+    // and every assertion above would still pass.
+    return fetchMergedEarthquakes({
+      fetchUsgs: async () => ({ earthquakes: [usgsEq()], newestAt: 200, oldestAt: 20 }),
+      fetchNrcan: async () => ({ earthquakes: [nrcanEq()], newestAt: 100, oldestAt: 50 }),
+      nowMs: MERGE_NOW,
+    }).then((both) => {
+      assert.deepEqual(both._failedSources, []);
+      assert.equal(both._failureDetail, '');
+    });
+  });
+
+  it('degrades seed-meta when an upstream is missing, because content-age cannot', async () => {
+    // THE BUG THIS CLOSES. earthquakesContentMeta takes min() over the upstreams
+    // that answered, so a FROZEN NRCan is caught but a FAILED one is not: its
+    // null is filtered out and USGS's fresh timestamp survives as the minimum.
+    // Both gates therefore pass while every Canadian event is missing.
+    const usgsOnly = await fetchMergedEarthquakes({
+      fetchUsgs: async () => ({ earthquakes: [usgsEq()], newestAt: MERGE_NOW, oldestAt: MERGE_NOW - 1000 }),
+      fetchNrcan: async () => { throw new Error('NRCan 503'); },
+      nowMs: MERGE_NOW,
+    });
+
+    // Content-age still looks perfectly fresh — this is the hole, asserted.
+    const meta = earthquakesContentMeta(usgsOnly, MERGE_NOW);
+    assert.equal(meta.newestItemAt, MERGE_NOW, 'a failed upstream leaves content-age fresh');
+
+    // So the degradation has to come from somewhere else: the afterPublish patch.
+    const patch = earthquakesAfterPublish(usgsOnly);
+    assert.equal(patch.freshnessMetaPatch.sourceState, 'degraded');
+    assert.equal(patch.freshnessMetaPatch.errorCode, 'EARTHQUAKE_UPSTREAM_INCOMPLETE');
+    assert.match(patch.freshnessMetaPatch.skipReason, /nrcan/);
+
+    // And a complete run must NOT be patched, or every run reads degraded and
+    // the signal is worthless.
+    const both = await fetchMergedEarthquakes({
+      fetchUsgs: async () => ({ earthquakes: [usgsEq()], newestAt: MERGE_NOW, oldestAt: 20 }),
+      fetchNrcan: async () => ({ earthquakes: [nrcanEq()], newestAt: MERGE_NOW, oldestAt: 50 }),
+      nowMs: MERGE_NOW,
+    });
+    assert.equal(earthquakesAfterPublish(both), undefined);
+  });
+
+  it('wires afterPublish into runSeed, or the patch never reaches seed-meta', () => {
+    // runSeed writes seed-meta itself and merges only afterPublish's
+    // freshnessMetaPatch. A hook that exists but is not registered is inert.
+    const seeder = readFileSync(new URL('../scripts/seed-earthquakes.mjs', import.meta.url), 'utf8');
+    assert.match(seeder, /afterPublish:\s*earthquakesAfterPublish/);
   });
 
   it('throws when every upstream fails', async () => {
