@@ -25,13 +25,18 @@ const QUIET_META_ONLY_KEYS = [
   'ddosAttacks',
   'trafficAnomalies',
   'weatherAlerts',
-  'canadaRoads',
   'newsThreatSummary',
 ];
 
 const AUDITED_PRESENT_PAYLOAD_KEYS = [
   'cableHealth',
   'notamClosures',
+  // canadaRoads does NOT refresh metadata only on quiet cycles: the seeder
+  // publishes an explicit {records: []} envelope on every successful tick
+  // (zeroIsValid -> OK_ZERO -> canonical written). So fresh metadata plus a
+  // vanished payload is a real publish failure, not a quiet period — the same
+  // reasoning api/health.js already applies to `outages`.
+  'canadaRoads',
 ];
 
 function classifyMissing(name, meta) {

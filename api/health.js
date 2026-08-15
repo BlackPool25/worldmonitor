@@ -1327,6 +1327,12 @@ const MISSING_DATA_IS_FAILURE_KEYS = new Set([
   'forecastsBootstrap',
   'positiveGeoEvents',
   'crossStraitActivityBootstrap',
+  // The Canada road seeders publish an explicit {records: []} envelope on every
+  // successful tick (zeroIsValid -> contractState OK_ZERO -> canonical written),
+  // so they never refresh metadata alone. Without this, an expired or evicted
+  // canonical key alongside a still-refreshing seed-meta classified OK: the map
+  // layer goes blank and nothing pages. Same reasoning as `outages`.
+  'canadaRoads',
 ]);
 
 // Keys where a present payload with meta recordCount=0 is valid, but the data
