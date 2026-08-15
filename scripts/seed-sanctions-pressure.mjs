@@ -8,7 +8,7 @@ import sax from 'sax';
 
 import { loadEnvFile, runSeed, verifySeedKey, writeExtraKeyWithMeta } from './_seed-utils.mjs';
 import { fetchOfacSourceResponse } from './_sanctions-source.mjs';
-import { SANCTIONS_MAX_CONTENT_AGE_MIN, SANCTIONS_SOURCE_VERSION, ingestSemaEntries, mergeSanctionEntries, ofacRegistrationToIdentifier, sanctionsListContentMeta, sanctionsSemaHealthMeta } from './_sema-sanctions.mjs';
+import { SANCTIONS_MAX_CONTENT_AGE_MIN, SANCTIONS_SOURCE_VERSION, SEMA_SOURCE, ingestSemaEntries, mergeSanctionEntries, ofacRegistrationToIdentifier, sanctionsListContentMeta, sanctionsSemaHealthMeta } from './_sema-sanctions.mjs';
 
 loadEnvFile(import.meta.url);
 
@@ -560,8 +560,35 @@ async function fetchSanctionsPressure() {
   semaEntries = sema.records;
   semaPublishedAt = sema.publishedAtMs || 0;
   semaError = sema.error;
+  let semaCarriedForward = 0;
   if (semaError) {
     console.warn(`  SEMA fetch failed: ${semaError}`);
+    // CARRY THE LAST-GOOD CANADIAN COHORT FORWARD. A SEMA outage used to delete
+    // every Canadian designation from the published list: the run still
+    // SUCCEEDS on OFAC, so the canonical key is overwritten with an OFAC-only
+    // merge and preserveKeys (which only fires when the whole seed fails) never
+    // engages. sanctionsSemaHealthMeta made the failure visible, but visibility
+    // does not put the entries back — a transient 500 at GAC silently dropped
+    // real sanctions data from the product until SEMA recovered.
+    //
+    // Re-using last-good is safe in the direction that matters: a stale Canadian
+    // designation is a listing that MIGHT have been lifted, whereas a deleted one
+    // is a listing that IS enforced but invisible. sourceState stays 'error' via
+    // the afterPublish patch, so nothing here claims the data is fresh.
+    try {
+      const previous = await verifySeedKey(CANONICAL_KEY);
+      const previousEntries = Array.isArray(previous?.entries) ? previous.entries : [];
+      const carried = previousEntries.filter(
+        (entry) => Array.isArray(entry?.sourceLists) && entry.sourceLists.includes(SEMA_SOURCE),
+      );
+      if (carried.length) {
+        semaEntries = carried;
+        semaCarriedForward = carried.length;
+        console.warn(`  SEMA: carrying ${carried.length} last-good Canadian entries forward`);
+      }
+    } catch (err) {
+      console.warn(`  SEMA: last-good carry-forward failed: ${err?.message || err}`);
+    }
   } else {
     console.log(`  SEMA: ${semaEntries.length} entries, publishedAt=${semaPublishedAt || 'unknown'}`);
   }
