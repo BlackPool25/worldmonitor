@@ -7,10 +7,14 @@ describe('OpenSky legacy proxy product boundary', () => {
   const originalFetch = globalThis.fetch;
   const originalRelayUrl = process.env.WS_RELAY_URL;
   const originalValidKeys = process.env.WORLDMONITOR_VALID_KEYS;
+  const originalProductKey = process.env.WORLDMONITOR_API_KEY;
+  const originalLocalMode = process.env.LOCAL_API_MODE;
 
   beforeEach(() => {
     process.env.WS_RELAY_URL = 'https://relay.test';
     process.env.WORLDMONITOR_VALID_KEYS = 'desktop-product-key';
+    process.env.WORLDMONITOR_API_KEY = 'desktop-product-key';
+    process.env.LOCAL_API_MODE = 'tauri-sidecar';
   });
 
   afterEach(() => {
@@ -19,9 +23,13 @@ describe('OpenSky legacy proxy product boundary', () => {
     else process.env.WS_RELAY_URL = originalRelayUrl;
     if (originalValidKeys == null) delete process.env.WORLDMONITOR_VALID_KEYS;
     else process.env.WORLDMONITOR_VALID_KEYS = originalValidKeys;
+    if (originalProductKey == null) delete process.env.WORLDMONITOR_API_KEY;
+    else process.env.WORLDMONITOR_API_KEY = originalProductKey;
+    if (originalLocalMode == null) delete process.env.LOCAL_API_MODE;
+    else process.env.LOCAL_API_MODE = originalLocalMode;
   });
 
-  it('does not expose the proxy to browser sessions or API clients', async () => {
+  it('requires both a product transport and its enterprise credential', async () => {
     let upstreamCalls = 0;
     globalThis.fetch = async () => {
       upstreamCalls += 1;
@@ -31,9 +39,17 @@ describe('OpenSky legacy proxy product boundary', () => {
     for (const headers of [
       { 'X-WorldMonitor-Key': 'wms_browser-session' },
       { 'X-Api-Key': 'desktop-product-key' },
+      { Origin: 'https://worldmonitor.app', 'X-WorldMonitor-Key': 'wms_browser-session' },
+      { Origin: 'tauri://localhost' },
+      { Origin: 'tauri://localhost', 'X-WorldMonitor-Key': 'wrong-key' },
+      { Origin: 'tauri://localhost', 'X-WorldMonitor-Key': 'wms_browser-session' },
+      { Origin: 'http://127.0.0.1:43127' },
+      { Origin: 'http://127.0.0.1:43127', 'X-WorldMonitor-Key': 'wrong-key' },
     ]) {
       const response = await handler(new Request('https://worldmonitor.app/api/opensky', { headers }));
       assert.equal(response.status, 404);
+      assert.equal(response.headers.get('Cache-Control'), 'private, no-store');
+      assert.equal(response.headers.get('CDN-Cache-Control'), 'no-store');
     }
     assert.equal(upstreamCalls, 0);
   });
@@ -57,5 +73,30 @@ describe('OpenSky legacy proxy product boundary', () => {
     assert.equal(response.status, 200);
     assert.equal(upstreamUrl, 'https://relay.test/opensky?icao24=abc123');
     assert.deepEqual(await response.json(), { states: [['abc123']] });
+    assert.equal(response.headers.get('Cache-Control'), 'private, no-store');
+    assert.equal(response.headers.get('CDN-Cache-Control'), 'no-store');
+    assert.doesNotMatch(response.headers.get('Cache-Control') || '', /public|s-maxage/i);
+  });
+
+  it('accepts the sidecar-rewritten local and cloud product hops', async () => {
+    let upstreamCalls = 0;
+    globalThis.fetch = async () => {
+      upstreamCalls += 1;
+      return new Response(JSON.stringify({ states: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    };
+
+    for (const headers of [
+      { Origin: 'http://127.0.0.1:43127', 'X-WorldMonitor-Key': 'desktop-product-key' },
+      { Origin: 'https://worldmonitor.app', 'X-WorldMonitor-Key': 'desktop-product-key' },
+    ]) {
+      const response = await handler(new Request('https://worldmonitor.app/api/opensky', { headers }));
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get('Cache-Control'), 'private, no-store');
+      assert.equal(response.headers.get('CDN-Cache-Control'), 'no-store');
+    }
+    assert.equal(upstreamCalls, 2);
   });
 });

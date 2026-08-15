@@ -11,7 +11,10 @@ import { isMilitaryCallsign, isMilitaryHex, detectAircraftType, UPSTREAM_TIMEOUT
 import { cachedFetchJson, getRawJson, readCachedJson, setCachedJson } from '../../../_shared/redis';
 import { markNoCacheResponse } from '../../../_shared/response-headers';
 import { getRelayBaseUrl, getRelayHeaders } from '../../../_shared/relay';
-import { isOpenSkyProvider, requiresRedistributableProviders } from '../../../_shared/provider-redistribution';
+import {
+  hasRedistributableProviderAttribution,
+  requiresRedistributableProviders,
+} from '../../../_shared/provider-redistribution';
 
 const REDIS_CACHE_KEY = 'military:flights:v1';
 const REDIS_CACHE_TTL = 600; // 10 min — reduce upstream API pressure
@@ -154,10 +157,12 @@ function paginateResponseForCaller(
     return paginateResponse(flights, clusters, bounds, req);
   }
 
-  const redistributableFlights = flights.filter((flight) => !isOpenSkyProvider(flight.source));
+  const redistributableFlights = flights.filter((flight) =>
+    hasRedistributableProviderAttribution(flight.source));
   const redistributableClusters = (clusters ?? [])
     .map((cluster) => {
-      const clusterFlights = (cluster.flights ?? []).filter((flight) => !isOpenSkyProvider(flight.source));
+      const clusterFlights = (cluster.flights ?? []).filter((flight) =>
+        hasRedistributableProviderAttribution(flight.source));
       return { ...cluster, flights: clusterFlights, flightCount: clusterFlights.length };
     })
     .filter((cluster) => cluster.flightCount > 0);

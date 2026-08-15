@@ -103,10 +103,11 @@ test('source inventory has complete metadata and matches the generated catalog',
   // an unintended host-count change, only on a stale snapshot — which docs:check
   // already gates. Hardcoding is what makes an accidental source drop go red.
   // Yes, these numbers go stale; that is the tripwire working, and the fix is a
-  // conscious one-line bump. 550/548/669 on main (Ontario #6663, Alberta #6666,
-  // Toronto #6665) + api.open511.gov.bc.ca from this PR.
+  // conscious one-line bump. Current main carries 552 hosts, 550 providers,
+  // and 671 observed hosts. The OpenSky and Wingbits aliases in this PR collapse
+  // two duplicate provider identities without removing any host.
   assert.equal(stats.activeHosts, 552);
-  assert.equal(stats.providerCount, 550);
+  assert.equal(stats.providerCount, 548);
   assert.equal(stats.observedHosts, 671);
   assert.ok(stats.reviewNeeded > 0, 'terms-review rows must remain visible until a license audit is complete');
 

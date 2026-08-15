@@ -1,5 +1,5 @@
 import { CII_RISK_SCORE_CACHE_KEYS } from '../../_cii-risk-cache-keys.js';
-import { isOpenSkyProvider } from '../../../shared/provider-redistribution';
+import { hasRedistributableProviderAttribution } from '../../../shared/provider-redistribution';
 import { buildAlertDigest, buildWeeklyTrends } from '../../../shared/analysis-alert-digest';
 import {
   anomaliesToDigestInput,
@@ -608,9 +608,9 @@ export const ANALYSIS_TOOLS: ToolDef[] = [
         aircraftCount: alert.aircraftCount,
       }));
 
-      const redistributableSurgesPayload = isOpenSkyProvider(
+      const redistributableSurgesPayload = hasRedistributableProviderAttribution(
         (surgesPayload as { sourceVersion?: unknown } | null)?.sourceVersion,
-      ) ? null : surgesPayload;
+      ) ? surgesPayload : null;
       const seededSurges = Array.isArray((redistributableSurgesPayload as { surges?: unknown[] } | null)?.surges)
         ? ((redistributableSurgesPayload as { surges: unknown[] }).surges as Array<Record<string, unknown>>)
         : [];

@@ -1466,6 +1466,42 @@ describe('theater posture caching behavior', { concurrency: 1 }, () => {
     }
   });
 
+  it('fails closed for an unattributed posture requested by an API caller', async () => {
+    const { module, cleanup } = await importTheaterPosture();
+    const restoreEnv = withEnv({
+      UPSTASH_REDIS_REST_URL: 'https://redis.test',
+      UPSTASH_REDIS_REST_TOKEN: 'token',
+    });
+    const originalFetch = globalThis.fetch;
+    const unattributedData = {
+      theaters: [{ theater: 'unknown-provider', postureLevel: 'elevated', activeFlights: 3 }],
+    };
+
+    globalThis.fetch = async (url) => {
+      const raw = String(url);
+      if (raw.includes('/get/')) {
+        const key = decodeURIComponent(raw.split('/get/').pop() || '');
+        return jsonResponse({
+          result: key === 'theater-posture:sebuf:v1' ? JSON.stringify(unattributedData) : undefined,
+        });
+      }
+      return jsonResponse({}, false);
+    };
+
+    try {
+      const result = await module.getTheaterPosture({
+        request: new Request('https://worldmonitor.app/api/military/v1/get-theater-posture', {
+          headers: { 'X-WorldMonitor-Key': 'wm_commercial-api-key' },
+        }),
+      }, {});
+      assert.deepEqual(result, { theaters: [] });
+    } finally {
+      cleanup();
+      globalThis.fetch = originalFetch;
+      restoreEnv();
+    }
+  });
+
   it('falls back to stale/backup when both upstreams are down', async () => {
     const { module, cleanup } = await importTheaterPosture();
     const restoreEnv = withEnv({
@@ -2312,6 +2348,7 @@ describe('military flights bbox behavior', { concurrency: 1 }, () => {
                 { id: 'open-1', hexCode: 'OPEN01', callsign: 'RCH101', lat: 20.2, lon: 10.2, sourceMeta: { source: 'opensky-auth' } },
                 { id: 'wing-1', hexCode: 'WING01', callsign: 'RCH102', lat: 20.3, lon: 10.3, sourceMeta: { source: 'wingbits' } },
                 { id: 'adsb-1', hexCode: 'ADSB01', callsign: 'RCH103', lat: 20.4, lon: 10.4, sourceMeta: { source: 'adsb.lol' } },
+                { id: 'unknown-1', hexCode: 'UNKNOWN01', callsign: 'RCH104', lat: 20.5, lon: 10.5 },
               ],
               coverage: 'global',
               fetchedAt: Date.now(),
@@ -2335,6 +2372,56 @@ describe('military flights bbox behavior', { concurrency: 1 }, () => {
       assert.deepEqual(result.flights.map((flight) => flight.source), ['wingbits', 'adsb.lol']);
       assert.deepEqual(result.pagination, { nextCursor: '', totalCount: 2 });
       assert.match(redisKeys[0], /:redistributable$/, 'API results must not share a cache entry with the product fallback policy');
+    } finally {
+      cleanup();
+      globalThis.fetch = originalFetch;
+      restoreEnv();
+    }
+  });
+
+  it('fails closed for unattributed flights inside cached API clusters', async () => {
+    const { module, cleanup } = await importListMilitaryFlights();
+    const restoreEnv = withEnv({
+      UPSTASH_REDIS_REST_URL: 'https://redis.test',
+      UPSTASH_REDIS_REST_TOKEN: 'token',
+      VERCEL_ENV: undefined,
+      VERCEL_GIT_COMMIT_SHA: undefined,
+    });
+    const originalFetch = globalThis.fetch;
+    const wingbits = { ...cachedMilitaryFlight('wing-cached', 20.2, 10.2), source: 'wingbits' };
+    const unattributed = { ...cachedMilitaryFlight('unknown-cached', 20.3, 10.3), source: '' };
+
+    globalThis.fetch = async (url) => {
+      const raw = String(url);
+      if (raw.includes('/get/')) {
+        const key = decodeURIComponent(raw.split('/get/')[1] || '');
+        if (key.endsWith(':redistributable')) {
+          return jsonResponse({
+            result: JSON.stringify({
+              flights: [wingbits, unattributed],
+              clusters: [
+                { id: 'mixed', flightCount: 2, flights: [wingbits, unattributed] },
+                { id: 'unknown-only', flightCount: 1, flights: [unattributed] },
+              ],
+            }),
+          });
+        }
+        return jsonResponse({ result: null });
+      }
+      throw new Error(`Unexpected fetch URL: ${raw}`);
+    };
+
+    try {
+      const result = await module.listMilitaryFlights({
+        request: new Request('https://wm.test/api/military/v1/list-military-flights', {
+          headers: { 'X-WorldMonitor-Key': 'wm_customer-key' },
+        }),
+      }, seededRequest);
+
+      assert.deepEqual(result.flights.map((flight) => flight.id), ['wing-cached']);
+      assert.deepEqual(result.clusters.map((cluster) => cluster.id), ['mixed']);
+      assert.equal(result.clusters[0].flightCount, 1);
+      assert.deepEqual(result.clusters[0].flights.map((flight) => flight.id), ['wing-cached']);
     } finally {
       cleanup();
       globalThis.fetch = originalFetch;

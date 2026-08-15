@@ -7144,6 +7144,9 @@
           "path": "api/og-story.js"
         },
         {
+          "path": "api/opensky.js"
+        },
+        {
           "path": "api/referral/me.ts"
         },
         {
