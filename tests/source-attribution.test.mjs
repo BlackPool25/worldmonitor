@@ -108,11 +108,16 @@ test('source inventory has complete metadata and matches the generated catalog',
   // OpenSky and Wingbits aliases collapsed in #6717 without removing a host.
   // Main carries 553/549/672 once VIA Rail (#6615) landed. This PR adds
   // gtfsrt.ttc.ca: +1 host, +1 provider, +1 observed.
-  // Main carries 554/550/673. This PR adds the CWFIS national WFS host and the
-  // BC Wildfire Service host: +2 hosts, +2 providers, +2 observed.
-  assert.equal(stats.activeHosts, 556);
-  assert.equal(stats.providerCount, 552);
-  assert.equal(stats.observedHosts, 675);
+  // Main carries 554/550/673. This PR adds www.bankofcanada.ca and
+  // www150.statcan.gc.ca: +2 hosts, +2 providers, +2 observed.
+  // Main carries 556/552/675 after BoC/StatCan (#6670). This PR adds
+  // api.weather.gc.ca (ECCC GeoMet): +1 host, +1 provider, +1 observed.
+  // Main carries 557/553/676 after ECCC (#6662). This PR adds the CWFIS national
+  // WFS host and the BC Wildfire Service host (#6668 merged into this branch):
+  // +2 hosts, +2 providers, +2 observed.
+  assert.equal(stats.activeHosts, 559);
+  assert.equal(stats.providerCount, 555);
+  assert.equal(stats.observedHosts, 678);
   assert.ok(stats.reviewNeeded > 0, 'terms-review rows must remain visible until a license audit is complete');
 
   const byHost = new Map(manifest.entries.map((entry) => [entry.host, entry]));

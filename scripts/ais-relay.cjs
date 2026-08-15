@@ -693,6 +693,11 @@ function deriveWeatherCoalesceKey(vtec) {
   return `nws:${m[1]}.${m[2]}.${m[3]}.${m[4]}`;
 }
 
+function nwsVtec(p) {
+  const vtec = Array.isArray(p?.parameters?.VTEC) ? p.parameters.VTEC[0] : undefined;
+  return vtec;
+}
+
 async function publishNotificationEvent({ eventType, payload, severity, variant, dedupTtl = 1800 }) {
   try {
     // Include variant in dedup key so each variant can independently publish the same title
@@ -4896,7 +4901,9 @@ function startCableHealthWarmPingLoop() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Weather Alerts Seed — NWS API → Redis every 15 min
+// Weather Alerts Seed — NWS + ECCC → weather:alerts:v1 every 15 min
+// Path A (ECCC direct) down-payment on WMO SWIC (#6271). Same key, not a
+// second weather pipeline. Mapping/merge live in _weather-alert-select.mjs.
 // ─────────────────────────────────────────────────────────────
 const WEATHER_SEED_INTERVAL_MS = 15 * 60 * 1000; // 15 min
 const WEATHER_REDIS_KEY = 'weather:alerts:v1';
@@ -4908,77 +4915,140 @@ async function seedWeatherAlerts() {
   weatherSeedInFlight = true;
   const t0 = Date.now();
   try {
-    // Resolved BEFORE the fetch, and fatal for this cycle. Resolving it after
-    // the envelopeWrite/seed-meta writes would put the failure downstream of the
-    // freshness signal: Redis would hold fresh alerts and seed-meta would report
-    // a current fetchedAt while 100% of weather_alert notifications silently
-    // stopped, with health.js/seed-health.js/cache-tools.ts all still green.
-    // Failing here instead leaves seed-meta unwritten, so STALE_SEED fires.
-    const weatherAlertSelect = await weatherAlertSelectPromise;
-    if (!weatherAlertSelect) {
-      throw new Error('_weather-alert-select.mjs unavailable — check its COPY entry in Dockerfile.relay');
-    }
-    const { weatherAlertNotifyLocation, extractCoordinates, extractRings, calculateCentroid } = weatherAlertSelect;
-    const weatherUrl = 'https://api.weather.gov/alerts/active';
-    let data;
-    try {
-      const resp = await fetch(weatherUrl, {
-        headers: { Accept: 'application/geo+json', 'User-Agent': CHROME_UA },
-        signal: AbortSignal.timeout(15_000),
+    const {
+      ECCC_MAX_BYTES,
+      NWS_ALERTS_URL,
+      NWS_HOST,
+      WEATHER_ALERTS_SOURCE_VERSION,
+      fetchApprovedWeatherJson,
+      fetchEcccAlertFeatures,
+      mergeAlertSources,
+      rankEligibleAlerts,
+      requireAlertFeatures,
+      selectEcccAlerts,
+      // Used at the notification-publish step below. The ECCC rewrite of this
+      // block dropped it from the destructure while the call site stayed, which
+      // is a ReferenceError on every weather_alert publish.
+      weatherAlertNotifyLocation,
+    } = (await weatherAlertSelectPromise) || (() => {
+      throw new Error('weather alert select module unavailable');
+    })();
+
+    const fetchNwsFeatures = async () => {
+      const weatherUrl = NWS_ALERTS_URL;
+      try {
+        const data = await fetchApprovedWeatherJson(weatherUrl, {
+          allowedHosts: [NWS_HOST],
+          maxBytes: ECCC_MAX_BYTES,
+          userAgent: CHROME_UA,
+          fetchFn: fetch,
+        });
+        return requireAlertFeatures(data);
+      } catch (directErr) {
+        if (!PROXY_URL) throw directErr;
+        console.warn(`[Weather] NWS direct failed (${directErr.message}) — retrying via proxy`);
+        const { proxyFetch } = require('./_proxy-utils.cjs');
+        const proxy = { ...parseProxyUrl(PROXY_URL), tls: true };
+        const result = await proxyFetch(weatherUrl, proxy, { accept: 'application/geo+json', headers: { 'User-Agent': CHROME_UA }, timeoutMs: 15_000 });
+        if (!result.ok) throw new Error(`HTTP ${result.status}`);
+        return requireAlertFeatures(JSON.parse(result.buffer.toString('utf8')));
+      }
+    };
+
+    // A PARTIAL ECCC fetch is rejected here on purpose. This writer purges —
+    // it always overwrites so ended alerts clear — which is only correct when
+    // the source answered in full. Publishing `issued` without `continued`
+    // would DELETE every ongoing Canadian warning from the live key. Rejecting
+    // routes it into the same carry-forward path as a total ECCC outage below,
+    // which keeps the last-good Canadian slice until a complete fetch returns.
+    const fetchEcccFeatures = async () => {
+      const result = await fetchEcccAlertFeatures({
+        fetchFn: fetch,
+        userAgent: CHROME_UA,
+        maxBytes: ECCC_MAX_BYTES,
       });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      data = await resp.json();
-    } catch (directErr) {
-      if (!PROXY_URL) { console.warn(`[Weather] Seed failed: ${directErr.message}`); return; }
-      console.warn(`[Weather] Direct failed (${directErr.message}) — retrying via proxy`);
-      const { proxyFetch } = require('./_proxy-utils.cjs');
-      const proxy = { ...parseProxyUrl(PROXY_URL), tls: true };
-      const result = await proxyFetch(weatherUrl, proxy, { accept: 'application/geo+json', headers: { 'User-Agent': CHROME_UA }, timeoutMs: 15_000 });
-      if (!result.ok) { console.warn(`[Weather] Proxy also failed: HTTP ${result.status}`); return; }
-      data = JSON.parse(result.buffer.toString('utf8'));
+      if (result.partial) {
+        throw new Error(
+          `ECCC partial fetch — status ${result.failedStatuses.join(', ')} failed: ${result.failureDetail}`,
+        );
+      }
+      return result.features;
+    };
+
+    const [nwsResult, ecccResult] = await Promise.allSettled([
+      fetchNwsFeatures(),
+      fetchEcccFeatures(),
+    ]);
+    if (nwsResult.status === 'rejected') {
+      console.warn(`[Weather] NWS fetch failed: ${nwsResult.reason?.message || nwsResult.reason}`);
     }
-    const features = data.features || [];
-    const alerts = features
-      .filter((f) => f?.properties?.severity !== 'Unknown')
-      .slice(0, 50)
-      .map((f) => {
-        const p = f.properties;
-        // Geometry math comes from _weather-alert-select.mjs, the same module
-        // that consumes these fields in weatherAlertNotifyLocation below. This
-        // used to be a hand-written duplicate of extractCoordinates/
-        // calculateCentroid; the two copies had already drifted, and nothing
-        // tested this one, so a rename or an axis swap here would have silently
-        // emptied or transposed every published location.
-        const coords = extractCoordinates(f.geometry);
-        const centroid = calculateCentroid(coords);
-        // Only carried for genuinely multi-part alerts — for the single-polygon
-        // majority this would just duplicate `coordinates` in the cached
-        // envelope, and weatherAlertNotifyLocation falls back to it anyway.
-        const rings = extractRings(f.geometry);
-        // Slot B: NWS VTEC string. NWS wraps VTEC in an array under
-        // properties.parameters.VTEC; pick the first entry (most alerts have one;
-        // multi-VTEC alerts use the primary). Used to derive a coalesce family key
-        // so adjacent-zone alerts for the same logical event collapse at the
-        // publisher and at the per-user dedup.
-        const vtec = Array.isArray(p?.parameters?.VTEC) ? p.parameters.VTEC[0] : undefined;
-        return {
-          id: f.id || '', event: p.event || '', severity: p.severity || 'Unknown',
-          headline: p.headline || '', description: (p.description || '').slice(0, 500),
-          areaDesc: p.areaDesc || '', onset: p.onset || '', expires: p.expires || '',
-          coordinates: coords, ...(rings.length > 1 ? { rings } : {}), centroid, vtec,
-        };
-      });
-    if (alerts.length === 0) {
-      // NWS responded successfully but has no active alerts — valid quiet state.
-      // Still bump seed-meta so health.js knows the loop ran (avoids false STALE_SEED).
-      await upstashSet('seed-meta:weather:alerts', { fetchedAt: Date.now(), recordCount: 0 }, 604800);
-      console.log('[Weather] No active alerts — seed-meta refreshed, existing data preserved');
+    if (ecccResult.status === 'rejected') {
+      console.warn(`[Weather] ECCC fetch failed: ${ecccResult.reason?.message || ecccResult.reason}`);
+    }
+    if (nwsResult.status === 'rejected' && ecccResult.status === 'rejected') {
+      console.warn('[Weather] Seed failed: both NWS and ECCC fetches failed');
       return;
     }
+
+    const nwsFeatures = nwsResult.status === 'fulfilled' ? nwsResult.value : [];
+    const nwsAlerts = nwsResult.status === 'fulfilled'
+      ? rankEligibleAlerts(nwsFeatures).map((alert) => {
+          const feature = nwsFeatures.find((f) => (f.id || '') === alert.id);
+          const p = feature?.properties || {};
+          const vtec = nwsVtec(p);
+          return vtec ? { ...alert, vtec } : alert;
+        })
+      : [];
+    const ecccAlerts = ecccResult.status === 'fulfilled' ? selectEcccAlerts(ecccResult.value) : [];
+
+    // One source failing must not erase the other's coverage. The #6607 purge
+    // semantics — always overwrite so ended alerts clear — are only correct when
+    // BOTH sources actually answered. When one is down we carry its previous
+    // slice forward, so an NWS outage can no longer wipe every US alert off the
+    // map for the duration of the outage.
+    let carriedNws = [];
+    let carriedEccc = [];
+    if (nwsResult.status === 'rejected' || ecccResult.status === 'rejected') {
+      const prev = await envelopeRead(WEATHER_REDIS_KEY, () => null);
+      const prevAlerts = Array.isArray(prev?.alerts) ? prev.alerts : [];
+      if (nwsResult.status === 'rejected') carriedNws = prevAlerts.filter((a) => a?.source !== 'eccc');
+      if (ecccResult.status === 'rejected') carriedEccc = prevAlerts.filter((a) => a?.source === 'eccc');
+      if (carriedNws.length || carriedEccc.length) {
+        console.warn(`[Weather] carrying last-good forward (nws=${carriedNws.length} eccc=${carriedEccc.length})`);
+      }
+    }
+
+    const alerts = mergeAlertSources({
+      nws: nwsResult.status === 'fulfilled' ? nwsAlerts : carriedNws,
+      eccc: ecccResult.status === 'fulfilled' ? ecccAlerts : carriedEccc,
+    });
+
+    // Always write the merged active set (#6607 purge). Do not skip overwrite
+    // when a live source returns 0 — that would leave ended CA alerts cached.
     const payload = { alerts };
-    const ok1 = await envelopeWrite(WEATHER_REDIS_KEY, payload, WEATHER_CACHE_TTL, { recordCount: alerts.length, sourceVersion: 'nws-weather' });
-    const ok2 = await upstashSet('seed-meta:weather:alerts', { fetchedAt: Date.now(), recordCount: alerts.length }, 604800);
-    console.log(`[Weather] Seeded ${alerts.length} alerts (redis: ${ok1 && ok2 ? 'OK' : 'PARTIAL'}) in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+    const ok1 = await envelopeWrite(WEATHER_REDIS_KEY, payload, WEATHER_CACHE_TTL, {
+      recordCount: alerts.length,
+      sourceVersion: WEATHER_ALERTS_SOURCE_VERSION,
+      zeroOk: true,
+    });
+    // A permanently dead source must be visible to /api/health. Without a
+    // sourceState the seed-meta stays fresh forever and the outage is invisible.
+    const failedSources = [
+      nwsResult.status === 'rejected' ? 'nws' : null,
+      ecccResult.status === 'rejected' ? 'eccc' : null,
+    ].filter(Boolean);
+    const ok2 = await upstashSet('seed-meta:weather:alerts', {
+      fetchedAt: Date.now(),
+      recordCount: alerts.length,
+      ...(failedSources.length > 0
+        ? {
+          sourceState: 'degraded',
+          errorCode: failedSources.includes('nws') ? 'NWS_SOURCE_FAILED' : 'ECCC_SOURCE_FAILED',
+          failedSources,
+        }
+        : { sourceState: 'ok' }),
+    }, 604800);
+    console.log(`[Weather] Seeded ${alerts.length} alerts (nws=${nwsAlerts.length} eccc=${ecccAlerts.length}, redis: ${ok1 && ok2 ? 'OK' : 'PARTIAL'}) in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
     const highSeverityAlerts = alerts.filter(a => a.severity === 'Extreme' || a.severity === 'Severe');
     // Pick up to 3 DISTINCT event families before publishing. The naive
     // `slice(0, 3)` would silently lose distinct families: if the first 3 raw
@@ -4992,8 +5062,8 @@ async function seedWeatherAlerts() {
     const distinctFamilyAlerts = [];
     for (const a of highSeverityAlerts) {
       // Family key: prefer VTEC-derived coalesce key; fall back to a stable
-      // identity from the alert (NWS feature.id, then headline/event) so
-      // VTEC-less alerts still deduplicate against themselves.
+      // identity from the alert so VTEC-less / ECCC alerts still deduplicate
+      // against themselves.
       const familyKey = deriveWeatherCoalesceKey(a.vtec)
         ?? `nws:fallback:${a.id || a.headline || a.event || ''}`;
       if (seenFamilyKeys.has(familyKey)) continue;
@@ -5005,14 +5075,14 @@ async function seedWeatherAlerts() {
       // Slot B: derive a coalesceKey from the NWS VTEC string (when present)
       // so adjacent-zone bulletins for the same logical event collapse to one
       // notification per user. Falls back to title-based dedup when VTEC is
-      // absent (rare advisory types or missing parameters).
+      // absent (ECCC, rare advisory types, or missing parameters).
       const coalesceKey = deriveWeatherCoalesceKey(a.vtec);
       publishNotificationEvent({
         eventType: 'weather_alert',
         payload: {
           title: a.headline || a.event || 'Weather alert',
-          source: 'NWS',
-          countryCode: 'US',
+          source: a.source === 'eccc' ? 'ECCC' : 'NWS',
+          countryCode: a.countryCode || (a.source === 'eccc' ? 'CA' : 'US'),
           ...(coalesceKey ? { coalesceKey } : {}),
           ...weatherAlertNotifyLocation(a),
         },
