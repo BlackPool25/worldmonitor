@@ -75,6 +75,7 @@ function fakeRailwayCli({ repoRoot: fixtureRoot, headSha, previousSha }) {
     return {
       serviceId: service.id,
       source: { repo: repository, image: null },
+      activeDeployments: deployments(service),
       rootDirectory,
       watchPatterns: entry?.watchPatterns ?? [],
       dockerfilePath: entry?.dockerfile ?? null,
@@ -155,10 +156,20 @@ function fakeRailwayCli({ repoRoot: fixtureRoot, headSha, previousSha }) {
       writeJson({
         data: {
           deployments: {
-            pageInfo: { hasNextPage: false, endCursor: null },
-            edges: manifest.services.flatMap((service) => (
-              deployments(service).map((node) => ({ node }))
-            )),
+            // The fleet event stream deliberately has no running deployment.
+            // A healthy probe must use serviceInstance.activeDeployments as
+            // its running baseline, stop after this page crosses head time,
+            // and avoid every per-service deployment-list fallback.
+            pageInfo: { hasNextPage: true, endCursor: 'older-events' },
+            edges: manifest.services.map((service) => ({
+              node: {
+                id: `skipped-${service.id}`,
+                serviceId: service.id,
+                status: 'SKIPPED',
+                createdAt: '2000-01-01T00:00:00.000Z',
+                meta: { commitHash: previousSha },
+              },
+            })),
           },
         },
       });
@@ -166,11 +177,7 @@ function fakeRailwayCli({ repoRoot: fixtureRoot, headSha, previousSha }) {
       fail('unexpected Railway GraphQL document');
     }
   } else if (args[0] === 'deployment' && args[1] === 'list') {
-    if (requireProject()) {
-      const service = servicesById.get(argument('--service'));
-      if (!service) fail(`unknown deployment service ${argument('--service')}`);
-      else writeJson(deployments(service));
-    }
+    fail(`unexpected per-service deployment fallback: ${JSON.stringify(args)}`);
   } else {
     fail(`unexpected Railway CLI arguments: ${JSON.stringify(args)}`);
   }
@@ -330,6 +337,10 @@ describe('Railway Deploy Drift workflow', () => {
         `healthy deploy drift failed\nstdout:\n${healthyDrift.stdout}\nstderr:\n${healthyDrift.stderr}`,
       );
       assert.match(healthyDrift.stdout, /Every service this repository deploys is running/);
+      assert.match(
+        healthyDrift.stderr,
+        /Read 80 service histories in 1 fleet page\(s\) \(80 records\), 0 direct fallback\(s\)\./,
+      );
 
       const projectedConfigDrift = executeWorkflowShell(audit.run, fixture, {
         mode: 'config-drift',

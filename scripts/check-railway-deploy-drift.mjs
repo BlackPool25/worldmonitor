@@ -829,8 +829,15 @@ async function main() {
     projectId,
     environmentId,
     concurrency,
+    includeActiveDeployments: true,
     deadlineAt: deepPassDeadlineAt,
   })).services;
+  const initialDeploymentsByService = new Map(
+    Object.entries(liveById).map(([serviceId, config]) => [
+      serviceId,
+      config.activeDeployments,
+    ]),
+  );
   const changedPathsSince = createChangedPathsReader(headSha, { git: runGit });
   const changedPathsIn = createCommitPathsReader({ git: runGit });
 
@@ -850,7 +857,10 @@ async function main() {
     window,
     concurrency,
     notBefore: headCommittedAt,
-    accumulatorFactory: createFleetAccumulator,
+    accumulatorFactory: (args) => createFleetAccumulator({
+      ...args,
+      initialDeploymentsByService,
+    }),
     onRoute: (route) => {
       // stderr, not stdout: --json must remain one parseable document, and a
       // human progress line in front of it breaks every machine consumer.

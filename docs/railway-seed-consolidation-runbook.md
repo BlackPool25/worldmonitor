@@ -578,6 +578,16 @@ configuration, or classify deployments.
 node scripts/check-railway-deploy-drift.mjs        # add --json for the machine-readable form
 ```
 
+The deployment check does not rediscover the live image by scanning through
+days of skipped pushes. The same Viewer-safe service projection supplies each
+service's `activeDeployments` as the running baseline. A fleet-wide deployment
+stream then reads only far enough to cross the frozen comparison commit's
+timestamp, which preserves newer `SKIPPED`, `FAILED`, and in-flight evidence.
+Only a service with no active running source, or one whose source changes while
+the two read-only snapshots are taken, falls back to a direct history read. If
+the recent stream cannot cross the comparison timestamp, the check still fails
+closed; it does not turn a capped or rate-limited read into health.
+
 The watch-path filter is one way a merge fails to reach production; a GitHub
 integration that stopped delivering (#6064) and a build that failed after the
 merge landed are others. This check is deliberately agnostic about which. For
