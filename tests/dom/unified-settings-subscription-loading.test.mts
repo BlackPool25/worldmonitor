@@ -13,14 +13,16 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { initTestI18n } from './helpers/i18n.mts';
 import type { UnifiedSettingsConfig } from '@/components/UnifiedSettings';
 import type { AuthSession } from '@/services/auth-state';
+import type { SubscriptionInfo } from '@/services/billing';
 
 const session: AuthSession = {
   user: { id: 'A', name: 'Owner A', email: 'owner@example.com', role: 'pro' },
   isPending: false,
 };
 
-/** Flipped per case; read lazily by the billing mock below. */
+/** Both flipped per case; read lazily by the billing mock below. */
 let subscriptionLoaded = false;
+let mockSubscription: SubscriptionInfo | null = null;
 
 const storageValues = new Map<string, string>();
 const storage: Storage = {
@@ -94,7 +96,7 @@ vi.mock('@/config/variant', () => ({
 }));
 
 vi.mock('@/services/billing', () => ({
-  getSubscription: () => null,
+  getSubscription: () => mockSubscription,
   isSubscriptionLoaded: () => subscriptionLoaded,
   onSubscriptionChange: () => () => {},
   openBillingPortal: async () => ({ outcome: 'no-customer' as const }),
@@ -166,6 +168,7 @@ beforeEach(() => {
 afterEach(() => {
   settings?.destroy();
   subscriptionLoaded = false;
+  mockSubscription = null;
   vi.unstubAllGlobals();
   document.body.replaceChildren();
 });
@@ -183,5 +186,23 @@ describe('UnifiedSettings subscription loaded-vs-absent (#6772)', () => {
     const html = (settings as unknown as SettingsInternals).renderUpgradeSection();
     expect(html).toContain('Billing is managed by your plan owner');
     expect(html).not.toContain('Checking your plan');
+  });
+
+  it('shows the active plan and Manage Billing when the watch settles to a present subscription', () => {
+    // The guard is scoped to `sub === null`: a settled owner WITH a subscription
+    // must reach the active render (and its Manage Billing CTA), never pending
+    // or invitee copy. Guards against a future widening that drops `sub === null`.
+    subscriptionLoaded = true;
+    mockSubscription = {
+      planKey: 'pro_monthly',
+      displayName: 'Pro',
+      status: 'active',
+      currentPeriodEnd: Date.now() + 1e9,
+      renewalVerificationState: null,
+    };
+    const html = (settings as unknown as SettingsInternals).renderUpgradeSection();
+    expect(html).toContain('Manage Billing');
+    expect(html).not.toContain('Checking your plan');
+    expect(html).not.toContain('managed by your plan owner');
   });
 });

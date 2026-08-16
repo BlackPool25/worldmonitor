@@ -78,7 +78,6 @@ vi.mock('@/services/entitlements', async (importOriginal) => {
 });
 vi.mock('@/services/billing', () => ({
   getSubscription: () => null,
-  isSubscriptionLoaded: () => true,
   onSubscriptionChange: () => () => {},
 }));
 vi.mock('@/services/billing-state', () => ({
