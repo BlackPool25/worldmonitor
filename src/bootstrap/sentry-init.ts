@@ -257,7 +257,7 @@ function buildSentryInitOptions(): Parameters<SentryNs['init']>[0] {
       /Can't find variable: caches/,
       /crypto\.randomUUID is not a function/,
       /ucapi is not defined/,
-      /Identifier '(?:script|reportPage|element|Shop|change_ua|originalPrompt)' has already been declared/, // change_ua: User-Agent-changer browser extension injecting same script twice — WORLDMONITOR-2D (88 events / 26 users). originalPrompt: extension hooking window.prompt double-injected — WORLDMONITOR-TE (not in our bundle; build would fail on a duplicate top-level const)
+      /Identifier '(?:script|reportPage|element|Shop|change_ua|originalPrompt|SENDER)' has already been declared/, // change_ua: User-Agent-changer browser extension injecting same script twice — WORLDMONITOR-2D (88 events / 26 users). originalPrompt: extension hooking window.prompt double-injected — WORLDMONITOR-TE. SENDER: Kaspersky-style content-script double-injection — WORLDMONITOR-ZC (not in our bundle; build would fail on a duplicate top-level const)
       /getAttribute is not a function.*getAttribute\("role"\)/,
       /SCDynimacBridge/,
       /errTimes is not defined/,
@@ -333,6 +333,22 @@ function buildSentryInitOptions(): Parameters<SentryNs['init']>[0] {
       /Unexpected identifier 'm'/, // Foreign script injection on Opera; pre-compiled bundle can't parse-fail at runtime (WORLDMONITOR-NT)
       /PlayerControlsInterface\.\w+ is not a function/, // Android Chrome WebView native bridge injection (Bilibili/UC/QQ-style host) — never emitted by our code (WORLDMONITOR-P2)
       /github\.com\/styled-components\/styled-components\/blob/, // styled-components runtime error (errors.md#N URL); we don't depend on styled-components, so it can only be a browser extension (Grammarly et al.) injecting its own bundle — WORLDMONITOR-SE
+      // The Umami tracker's beacon POST failed at the network layer and the
+      // tracker (third-party, served from abacus.worldmonitor.app) leaked its
+      // own rejection. A dropped analytics beacon is invisible to the user and
+      // unactionable — same disposition as the host-suffixed
+      // `Failed to fetch (abacus.worldmonitor.app)` already covered by
+      // THIRD_PARTY_FETCH_HOST_ALLOWLIST above; this is the bare-message variant
+      // that carries no host to match on (WORLDMONITOR-Z6/ZG, #6746).
+      //
+      // This belongs in ignoreErrors, not the stack-gated beforeSend block,
+      // precisely BECAUSE the string is ours: `CollectorTransportError` is
+      // constructed at exactly one line (analytics-collector-transport.ts) for
+      // exactly one condition, so the match has no blind spot to trade away.
+      // The rule that keeps generic runtime/network phrasings out of this array
+      // exists because they can also come from our own minified bundle and would
+      // hide real bugs — an exact marker we mint ourselves is the opposite case.
+      /^(?:CollectorTransportError: )?Umami collector beacon transport rejected\b/,
     ],
     beforeSend(event) {
       const msg = event.exception?.values?.[0]?.value ?? '';
@@ -618,6 +634,54 @@ function buildSentryInitOptions(): Parameters<SentryNs['init']>[0] {
       // the ''-only tolerance shipped and Z6 kept firing from builds that
       // contained it. '' stays admitted (other SDK paths/versions may omit the
       // stamp); both are bounded by the same fetch-free-chunk invariant.
+      // The FIFTH escape is not a build-rename at all — it is an extra frame from
+      // OUTSIDE the page. WORLDMONITOR-Z6 kept firing after the '?' tolerance
+      // shipped, carrying a stack identical to the one above plus a tab-suspender
+      // extension's `freeze-controller.js` above DebugBear's collector (the
+      // extension aborts in-flight fetches when it freezes a background tab).
+      // `nonInfraFrames` drops only `<anonymous>`, `[native code]`, and
+      // `sentry-*.js`, so an extension frame stays in the set, matches neither
+      // predicate, and one frame defeats the `.every()` — the same single-frame
+      // failure mode as the nameless hop, arriving from a different direction.
+      // An extension frame can never be OUR caller (that is precisely what the
+      // two extension gates above already assume), and this gate still requires a
+      // collector frame plus a fetch-free trampoline for every remaining frame, so
+      // admitting it cannot hide a first-party fetch — a real caller alongside the
+      // extension still surfaces, which the regression tests assert.
+      // SUPERSEDED for new builds, RETAINED for old ones (#6746). The collector
+      // now rejects with a named `CollectorTransportError` that ignoreErrors
+      // matches exactly, so this stack-shape heuristic is no longer how the
+      // class is identified going forward. It stays because a browser running a
+      // cached pre-#6746 bundle still emits the bare `Failed to fetch`, and
+      // those sessions keep their coverage until the bundle ages out.
+      //
+      // DO NOT widen the chunk allowlist below to close a new escape of this
+      // class — that is the sixth-round trap. The allowlist is safe only while
+      // every chunk it names is caller-free, and Rollup re-partitions freely:
+      // `analytics-*.js` already carries `runtime.ts`, the interceptor every API
+      // request passes through. Adding it would suppress genuine
+      // api.worldmonitor.app outages. Fix new escapes at the source, the way
+      // CollectorTransportError does. `tests/debugbear-trampoline-chunks.test.mjs`
+      // now checks the built chunks, not just their namesake source files.
+      const isExtensionFrameFile = (file: string) =>
+        /^(?:chrome|moz|safari(?:-web)?)-extension:\/\//.test(file);
+      // On the chunk allowlist below (#6746): `panel-storage` is retained but is
+      // NO LONGER EMITTED as a chunk — the current build folds that module into
+      // `font-settings-*.js` and `analytics-*.js` — so that arm now matches only
+      // bundles cached from before the repartition. It still covers them
+      // (WORLDMONITOR-VC), which is why it is not deleted, but it cannot be
+      // verified against a current artifact and is therefore declared in
+      // KNOWN_ABSENT_CHUNKS in tests/debugbear-trampoline-chunks.test.mjs rather
+      // than silently trusted. `widget-store` is the arm still checked against a
+      // real built chunk.
+      //
+      // DO NOT add a chunk here to close a new escape of this class — that is
+      // the sixth-round trap. The allowlist is safe only while every chunk it
+      // names is caller-free, and Rollup repartitions freely: `analytics-*.js`
+      // already carries `runtime.ts`, the interceptor every API request passes
+      // through, so admitting it would suppress genuine api.worldmonitor.app
+      // outages. Fix new escapes at the source, the way CollectorTransportError
+      // does in analytics-collector-transport.ts.
       const isTrampolineFrameFunction = (fn: string) =>
         /^(?:\w{1,3}\.)?(?:window\.)?fetch$/.test(fn) || /^\w{1,2}$/.test(fn)
         || fn === '' || fn === '?';
@@ -626,7 +690,11 @@ function buildSentryInitOptions(): Parameters<SentryNs['init']>[0] {
           && nonInfraFrames.every(f =>
             isDebugBearRumScriptFrame(f.filename ?? '')
             || (/\/assets\/(?:panel-storage|widget-store)-[A-Za-z0-9_-]+\.js/.test(f.filename ?? '')
-              && isTrampolineFrameFunction(f.function ?? '')))) {
+              && isTrampolineFrameFunction(f.function ?? ''))
+            // Kept last so the trampoline predicate stays adjacent to the chunk
+            // allowlist it is bound to — tests/debugbear-trampoline-chunks.test.mjs
+            // asserts that coupling by source locality.
+            || isExtensionFrameFile(f.filename ?? ''))) {
         return null;
       }
       // Suppress Sentry SDK DOM breadcrumb null-access on document.activeElement/contains.

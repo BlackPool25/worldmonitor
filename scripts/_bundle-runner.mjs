@@ -43,6 +43,13 @@ export const MIN = 60_000;
 export const HOUR = 3_600_000;
 export const DAY = 86_400_000;
 export const WEEK = 604_800_000;
+// 7d TTL outlives the 48h (2× daily) static-ref health gate so a late tick
+// reports STALE_SEED while the heartbeat is still readable, not EMPTY.
+export const BUNDLE_HEARTBEAT_TTL_SECONDS = 7 * 24 * 60 * 60;
+
+export function bundleHeartbeatKey(label) {
+  return `bundle:heartbeat:${label}`;
+}
 
 loadEnvFile(import.meta.url);
 
@@ -66,6 +73,52 @@ async function readRedisKey(key) {
     return body.result ? JSON.parse(body.result) : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Record that the scheduler actually started this container.
+ *
+ * Member seed-meta only advances when a section runs. Daily crons with
+ * weekly/monthly members therefore look healthy across many missed ticks
+ * (#6691). This heartbeat is written on every tick, including skip-all.
+ * Missing Redis must not crash the bundle — writeSeedMeta exits(1).
+ */
+async function writeBundleHeartbeat(label) {
+  if (!REDIS_URL || !REDIS_TOKEN) return false;
+  const fetchedAt = Date.now();
+  const meta = { fetchedAt, recordCount: 1, lastBundleRunAt: fetchedAt };
+  try {
+    const resp = await fetch(REDIS_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${REDIS_TOKEN}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'worldmonitor-bundle-runner/1.0',
+      },
+      body: JSON.stringify([
+        'SET',
+        bundleHeartbeatKey(label),
+        JSON.stringify(meta),
+        'EX',
+        BUNDLE_HEARTBEAT_TTL_SECONDS,
+      ]),
+      signal: AbortSignal.timeout(REDIS_READ_TIMEOUT_MS),
+    });
+    if (!resp.ok) {
+      console.warn(`[Bundle:${label}] tick heartbeat write failed: HTTP ${resp.status}`);
+      return false;
+    }
+    const body = await resp.json().catch(() => null);
+    if (!body || typeof body !== 'object' || body.result !== 'OK') {
+      const detail = body && typeof body === 'object' && body.error ? body.error : 'missing OK result';
+      console.warn(`[Bundle:${label}] tick heartbeat write failed: ${detail}`);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn(`[Bundle:${label}] tick heartbeat write failed: ${err instanceof Error ? err.message : err}`);
+    return false;
   }
 }
 
@@ -288,6 +341,22 @@ function spawnSeed(scriptPath, { timeoutMs, label, bundleStartedAtMs }) {
  * }>} sections
  * @param {{ maxBundleMs?: number }} [opts]
  */
+/**
+ * Env var carrying the per-member kill switch for a bundle, e.g.
+ * WM_BUNDLE_CANADA_DISABLED_MEMBERS. Per bundle, so disabling a member of one
+ * cannot silently disable a same-named member of another.
+ */
+export function bundleDisableEnvVar(label) {
+  return `WM_BUNDLE_${String(label).toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_DISABLED_MEMBERS`;
+}
+
+/** Section labels disabled for `label`, parsed from the env. */
+export function disabledMembersFromEnv(label, env = process.env) {
+  const raw = env[bundleDisableEnvVar(label)];
+  if (typeof raw !== 'string' || raw.trim() === '') return new Set();
+  return new Set(raw.split(',').map((name) => name.trim()).filter(Boolean));
+}
+
 export async function runBundle(label, sections, opts = {}) {
   const missingEnvBySection = new Map();
   for (const section of sections) {
@@ -392,13 +461,55 @@ export async function runBundle(label, sections, opts = {}) {
     );
   }
 
+  // PER-MEMBER KILL SWITCH. A bundle collapses N services into one, which also
+  // collapses N deploy controls into one: before this, taking a single
+  // misbehaving member out of rotation meant editing the section list and
+  // redeploying the whole bundle, stopping its siblings too.
+  //
+  // Fail-closed on the control itself: an unrecognised label is a CONFIGURATION
+  // ERROR, not an ignored string. A typo'd kill switch that silently disables
+  // nothing is the worst outcome here — an operator believes a source is off
+  // while it keeps running.
+  const disabledMembers = disabledMembersFromEnv(label);
+  const knownLabels = new Set(sections.map((section) => section.label));
+  const unknownDisabled = [...disabledMembers].filter((name) => !knownLabels.has(name));
+  if (unknownDisabled.length > 0) {
+    throw new Error(
+      `[Bundle:${label}] ${bundleDisableEnvVar(label)} names unknown section(s): ${unknownDisabled.join(', ')}. `
+      + `Known sections: ${[...knownLabels].join(', ')}. `
+      + 'Refusing to start: a kill switch that matches nothing would report success while the source it names keeps running.',
+    );
+  }
+
   const t0 = Date.now();
   const budgetLabel = Number.isFinite(maxBundleMs) ? `, budget ${Math.round(maxBundleMs / 1000)}s` : '';
   console.log(`[Bundle:${label}] Starting (${sections.length} sections${budgetLabel})`);
+  if (disabledMembers.size > 0) {
+    console.warn(
+      `[Bundle:${label}] ${disabledMembers.size} member(s) disabled by ${bundleDisableEnvVar(label)}: `
+      + `${[...disabledMembers].join(', ')} — their seed-meta will age out and health will report them stale, which is intended.`,
+    );
+  }
+  // Write before any section so a skip-all tick still proves the scheduler fired.
+  const wroteHeartbeat = await writeBundleHeartbeat(label);
+  if (wroteHeartbeat) {
+    console.log(`[Bundle:${label}] tick heartbeat ${bundleHeartbeatKey(label)}`);
+  }
 
   let ran = 0, skipped = 0, deferred = 0, failed = 0, gracefulFailed = 0;
 
+  let disabled = 0;
   for (const section of sections) {
+    if (disabledMembers.has(section.label)) {
+      // Counted and logged, never silent. A disabled member stops writing
+      // seed-meta, so /api/health ages it into STALE_SEED on its own — the
+      // source disappearing from the product stays visible rather than being
+      // suppressed along with the fetch.
+      console.warn(`  [${section.label}] DISABLED by ${bundleDisableEnvVar(label)} — not run this tick`);
+      console.warn(`[Bundle:${label}] section=${section.label} status=DISABLED reason=kill-switch`);
+      disabled++;
+      continue;
+    }
     const missingEnv = missingEnvBySection.get(section.label);
     if (missingEnv) {
       const reason = `missing required environment configuration: ${missingEnv.join(', ')}`;
@@ -476,7 +587,11 @@ export async function runBundle(label, sections, opts = {}) {
   }
 
   const totalSec = ((Date.now() - t0) / 1000).toFixed(1);
-  console.log(`[Bundle:${label}] Finished in ${totalSec}s, ran:${ran} skipped:${skipped} deferred:${deferred} failed:${failed} graceful:${gracefulFailed}`);
+  // `disabled:` is appended ONLY when non-zero. This line is the documented
+  // observability contract for bundle ticks — tools key off it — so the shape
+  // stays byte-identical when no kill switch is set.
+  const disabledField = disabled > 0 ? ` disabled:${disabled}` : '';
+  console.log(`[Bundle:${label}] Finished in ${totalSec}s, ran:${ran} skipped:${skipped} deferred:${deferred}${disabledField} failed:${failed} graceful:${gracefulFailed}`);
   // A tick that completed no section while deferring a due one accomplished
   // nothing AND shed work. Deferral only pays for itself if the deferred
   // section runs on a later tick, so this state repeating is a stalled

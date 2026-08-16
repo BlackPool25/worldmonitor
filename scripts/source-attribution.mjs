@@ -64,7 +64,64 @@ const SOURCE_HINT_RE = /\b(?:fetch\w*|new\s+URL|axios|rss|feed|statusPage|endpoi
 // hosts without treating every ordinary string literal as an upstream source.
 const DECLARATION_RE = /\b(?:const|let|var)\s+[A-Z][A-Z0-9_]*\s*=\s*$/;
 
+const licensedPublisherFeed = (provider) => ({
+  provider,
+  license: 'Licensed publisher content; redistribution governed by the World Monitor agreement',
+  attribution: `Credit ${provider} and link to the original item.`,
+  status: 'reviewed',
+});
+
 const PROVIDER_OVERRIDES = {
+  'auth.opensky-network.org': { provider: 'opensky-network.org' },
+  'opensky-network.org': { provider: 'opensky-network.org' },
+  'customer-api.wingbits.com': { provider: 'wingbits.com' },
+  'ecs-api.wingbits.com': { provider: 'wingbits.com' },
+  'moxie.foxbusiness.com': licensedPublisherFeed('Fox Business'),
+  'www.wired.com': licensedPublisherFeed('Wired'),
+  'www.businessinsider.com': licensedPublisherFeed('Business Insider'),
+  'www.handelsblatt.com': licensedPublisherFeed('Handelsblatt'),
+  'www.welt.de': licensedPublisherFeed('Welt'),
+  'www.telegraph.co.uk': licensedPublisherFeed('The Telegraph'),
+  'www.globenewswire.com': licensedPublisherFeed('GlobeNewswire'),
+  'feed.businesswire.com': licensedPublisherFeed('Business Wire'),
+  'chainwire.org': licensedPublisherFeed('Chainwire'),
+  'www.interfax.ru': licensedPublisherFeed('Interfax'),
+  'ustr.gov': {
+    provider: 'Office of the U.S. Trade Representative',
+    license: 'U.S. government public information; site and document-specific notices apply',
+    attribution: 'Office of the U.S. Trade Representative; link to the original release.',
+    status: 'reviewed',
+  },
+  '511on.ca': {
+    provider: 'Ontario 511',
+    license: 'Ontario 511 API terms; Government of Ontario data; attribution required',
+    attribution: 'Ontario 511 (Ministry of Transportation). https://511on.ca/',
+    status: 'terms-review',
+  },
+  '511.alberta.ca': {
+    provider: 'Alberta 511',
+    license: 'Alberta 511 terms (https://511.alberta.ca/about/about): non-commercial/educational reproduction allowed; commercial reproduction needs written permission from Alberta Transportation and Economic Corridors. https://511.alberta.ca/help/terms returned 404.',
+    attribution: 'Alberta 511 (Alberta Transportation and Economic Corridors). https://511.alberta.ca/',
+    status: 'terms-review',
+  },
+  'secure.toronto.ca': {
+    provider: 'City of Toronto Open Data',
+    license: 'CKAN package_show for road-restrictions: license_id=notspecified, license_title="License not specified" (https://ckan0.cf.opendata.inter.prod-toronto.ca/api/3/action/package_show?id=road-restrictions). Portal dataset page chrome links OGL-Toronto but is not data-bound to this dataset.',
+    attribution: 'City of Toronto, Road Restrictions. https://open.toronto.ca/dataset/road-restrictions/',
+    status: 'terms-review',
+  },
+  'api.open511.gov.bc.ca': {
+    provider: 'BC Open511',
+    license: 'Open Government Licence - British Columbia (OGL-BC). Confirmed on https://api.open511.gov.bc.ca/help. API Terms of Use for OGL-BC information also apply.',
+    attribution: 'DriveBC Open511 (Province of British Columbia). Licensed under OGL-BC. https://api.open511.gov.bc.ca/help',
+    status: 'reviewed',
+  },
+  'www.alberta.ca': {
+    provider: 'Alberta Emergency Alert',
+    license: 'Alberta.ca terms of use. Open Government Licence - Alberta exists on the open.alberta.ca licence page but is not bound to the AEA Atom feed on a live dataset page (the alberta-emergency-alert.aspx page has no OGL statement).',
+    attribution: 'Alberta Emergency Alert, Government of Alberta. https://www.alberta.ca/alberta-emergency-alert.aspx',
+    status: 'terms-review',
+  },
   'api.elections.kalshi.com': {
     provider: 'Kalshi',
     license: 'Kalshi API terms; commercial-use and redistribution terms require review',
@@ -106,6 +163,24 @@ const PROVIDER_OVERRIDES = {
     license: 'U.S. government public-domain mineral statistics (USGS MCS data release)',
     attribution: 'U.S. Geological Survey Mineral Commodity Summaries; link to the ScienceBase data release (https://doi.org/10.5066/P1WKQ63T).',
     status: 'reviewed',
+  },
+  'geoserver.cwfif.nrcan.gc.ca': {
+    provider: 'CWFIS / CWFIF (NRCan)',
+    license: 'Open Government Licence - Canada; redistribution granted (copy, modify, publish, distribute, including commercial use) with attribution',
+    attribution: 'Canadian Forest Service. Canadian Wildland Fire Information System (CWFIS), Natural Resources Canada, Canadian Forest Service, Northern Forestry Centre, Edmonton, Alberta. https://cwfis.cfs.nrcan.gc.ca. Contains information licensed under the Open Government Licence – Canada (https://open.canada.ca/en/open-government-licence-canada). Evidence: https://cwfis.cfs.nrcan.gc.ca/downloads/licence.txt',
+    status: 'reviewed',
+  },
+  'openmaps.gov.bc.ca': {
+    provider: 'BC Wildfire Service (OpenMaps)',
+    license: 'Open Government Licence - British Columbia; redistribution granted (copy, modify, publish, distribute, including commercial use) with attribution',
+    attribution: 'Contains information licensed under the Open Government Licence – British Columbia. BC Wildfire Service, Current Fire Locations (PROT_CURRENT_FIRE_PNTS_SP), Government of British Columbia. https://catalogue.data.gov.bc.ca/dataset/bc-wildfire-fire-locations-current. Evidence: https://www2.gov.bc.ca/gov/content/data/policy-standards/data-policies/open-data/open-government-licence-bc and https://open.canada.ca/data/en/dataset/2790e3f7-6395-4230-8545-04efb5a18800',
+    status: 'reviewed',
+  },
+  'www.earthquakescanada.nrcan.gc.ca': {
+    provider: 'Earthquakes Canada (NRCan)',
+    license: 'Earthquakes Canada citation terms; live Atom redistribution not explicitly granted (historical catalogues on the Open Government Portal are OGL-Canada)',
+    attribution: 'Natural Resources Canada, Earthquakes Canada; link to https://www.earthquakescanada.nrcan.gc.ca/index-en.php?tpl_region=canada. Event-metadata citation: https://www.earthquakescanada.nrcan.gc.ca/cite-en.php',
+    status: 'terms-review',
   },
   'ogcapi.bgs.ac.uk': {
     provider: 'British Geological Survey World Mineral Statistics',
@@ -203,6 +278,12 @@ const PROVIDER_OVERRIDES = {
     attribution: 'Global Energy Monitor; link to the dataset page.',
     status: 'reviewed',
   },
+  'gtfsrt.ttc.ca': {
+    provider: 'Toronto Transit Commission (TTC) GTFS-RT',
+    license: 'CKAN package_show for ttc-gtfs-realtime-gtfs-rt: license_id=notspecified, isopen=false (https://ckan0.cf.opendata.inter.prod-toronto.ca/api/3/action/package_show?id=ttc-gtfs-realtime-gtfs-rt). Portal dataset page chrome links OGL-Toronto but is not data-bound to this dataset.',
+    attribution: 'Toronto Transit Commission GTFS-RT service alerts. https://gtfsrt.ttc.ca and https://open.toronto.ca/dataset/ttc-gtfs-realtime-gtfs-rt/. Portal HTML cites OGL-Toronto; CKAN does not.',
+    status: 'terms-review',
+  },
   'www.tenders.gov.au': {
     provider: 'AusTender',
     license: 'Australian Government data and feed terms',
@@ -237,6 +318,12 @@ const PROVIDER_OVERRIDES = {
     provider: 'OpenSanctions',
     license: 'OpenSanctions terms; dataset-specific license varies by source',
     attribution: 'OpenSanctions; link to the matching entity/dataset.',
+    status: 'terms-review',
+  },
+  'www.international.gc.ca': {
+    provider: 'Global Affairs Canada (SEMA consolidated sanctions)',
+    license: 'Government of Canada website terms; no explicit redistribution licence on the SEMA XML. Canada.ca terms restrict commercial reproduction unless otherwise specified. The Open Government Licence page on this host covers international-assistance open data sets, not this sanctions list.',
+    attribution: 'Global Affairs Canada, Consolidated Canadian Autonomous Sanctions List; link to https://www.international.gc.ca/world-monde/international_relations-relations_internationales/sanctions/consolidated-consolide.aspx?lang=eng',
     status: 'terms-review',
   },
   'earth-search.aws.element84.com': {
@@ -280,6 +367,18 @@ const PROVIDER_OVERRIDES = {
     license: 'Barchart terms; redistribution requires review',
     attribution: 'Barchart; link to the source quote or page.',
     status: 'terms-review',
+  },
+  'www.bankofcanada.ca': {
+    provider: 'Bank of Canada',
+    license: 'Bank of Canada Terms of Use — permission to freely use, copy, distribute and transmit website content with attribution (https://www.bankofcanada.ca/terms/)',
+    attribution: 'Bank of Canada Valet API; link to https://www.bankofcanada.ca/valet/ and the Terms of Use at https://www.bankofcanada.ca/terms/.',
+    status: 'reviewed',
+  },
+  'www150.statcan.gc.ca': {
+    provider: 'Statistics Canada',
+    license: 'Statistics Canada Open Licence (Open Government Licence — Canada); use, reproduce, publish, freely distribute or sell with attribution (https://www.statcan.gc.ca/en/terms-conditions/open-licence)',
+    attribution: 'Statistics Canada. Web Data Service. https://www.statcan.gc.ca/en/developers/wds/user-guide',
+    status: 'reviewed',
   },
   'api.reliefweb.int': {
     provider: 'ReliefWeb (UN OCHA)',
@@ -479,15 +578,62 @@ const PROVIDER_OVERRIDES = {
     attribution: 'Excluded from the provider count: namespace reference, not an ingested source.',
     status: 'excluded',
   },
+  'api.weather.gc.ca': {
+    provider: 'Environment and Climate Change Canada (ECCC)',
+    license: 'ECCC Data Server End-use Licence; Government of Canada open data',
+    attribution: 'Environment and Climate Change Canada (ECCC) weather alerts via MSC GeoMet (https://api.weather.gc.ca/).',
+    status: 'reviewed',
+  },
   'www.w3.org': {
     provider: 'W3C schema reference',
     license: 'Excluded: schema/standards reference',
     attribution: 'Excluded from the provider count: standards reference, not an ingested source.',
     status: 'excluded',
   },
+  'tsimobile.viarail.ca': {
+    provider: 'VIA Rail Tracker (unofficial)',
+    license: 'VIA Rail Site Terms prohibit commercial use of the Site (https://www.viarail.ca/en/terms-and-conditions). Developer Resources publish GTFS only under Open Government Licence – Canada v2 (https://www.viarail.ca/en/developer-resources); that OGL grant does not cover tsimobile.viarail.ca unofficial live JSON. Terms require review.',
+    attribution: 'VIA Rail Canada; unofficial live train JSON at tsimobile.viarail.ca. Not the Developer Resources GTFS feed; OGL does not apply to this host. Best-effort only.',
+    status: 'terms-review',
+  },
 };
 
 const LOGICAL_ENTRIES = [
+  {
+    ...licensedPublisherFeed('Interfax'),
+    host: 'interfax.com',
+    kind: 'feed',
+    observed: true,
+    attribution: 'Credit Interfax and link to the original Interfax English item; Google News is the acquisition transport.',
+  },
+  {
+    ...licensedPublisherFeed('PR Newswire'),
+    host: 'prnewswire.com',
+    kind: 'feed',
+    observed: true,
+    attribution: 'Credit PR Newswire and link to the original release; Google News is the acquisition transport.',
+  },
+  {
+    ...licensedPublisherFeed('Coinbase'),
+    host: 'coinbase.com',
+    kind: 'feed',
+    observed: true,
+    attribution: 'Credit Coinbase and link to the original blog post; Google News is the acquisition transport.',
+  },
+  {
+    ...licensedPublisherFeed('Binance'),
+    host: 'binance.com',
+    kind: 'feed',
+    observed: true,
+    attribution: 'Credit Binance and link to the original announcement; Google News is the acquisition transport.',
+  },
+  {
+    ...licensedPublisherFeed('Jin10'),
+    host: 'jin10.com',
+    kind: 'feed',
+    observed: true,
+    attribution: 'Credit Jin10 and link to the original item; Google News is the acquisition transport.',
+  },
   {
     provider: 'Fintraffic Digitraffic',
     host: 'not-currently-wired',

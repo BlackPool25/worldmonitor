@@ -1,6 +1,6 @@
 {
   "_generated": "scripts/docs-stats.mjs — do not edit by hand; run `npm run docs:stats`",
-  "layerDefinitions": 56,
+  "layerDefinitions": 58,
   "lockedLayerDefinitions": 1,
   "lockedLayerKeys": [
     "resilienceScore"
@@ -8,16 +8,16 @@
   "tier1Countries": 31,
   "rankableUniverseCountries": 196,
   "variantLayers": {
-    "full": 37,
+    "full": 39,
     "tech": 13,
-    "finance": 17,
+    "finance": 19,
     "happy": 6,
-    "commodity": 18,
-    "energy": 18
+    "commodity": 20,
+    "energy": 20
   },
   "variantCount": 6,
   "componentTopLevelTsFiles": 186,
-  "serviceTopLevelEntries": 233,
+  "serviceTopLevelEntries": 237,
   "apiEndpointEntries": 91,
   "panelClasses": 109,
   "protoFiles": 298,
@@ -81,6 +81,7 @@
     "publish-go.yml",
     "publish-python.yml",
     "publish-ruby.yml",
+    "railway-deploy-drift.yml",
     "railway-deploy-trigger-watchdog.yml",
     "railway-deploy-trigger.yml",
     "railway-reconcile-manual-recovery.yml",
@@ -91,20 +92,20 @@
     "typecheck.yml",
     "umami-storage-monitor.yml"
   ],
-  "workflowCount": 33,
-  "freshnessSources": 35,
+  "workflowCount": 34,
+  "freshnessSources": 39,
   "freshnessRequiredForRisk": 2,
-  "feedDefinitions": 651,
+  "feedDefinitions": 677,
   "sourceAttribution": {
-    "activeHosts": 553,
-    "structuredHosts": 296,
-    "feedHosts": 285,
+    "activeHosts": 578,
+    "structuredHosts": 310,
+    "feedHosts": 296,
     "operationalStatusHosts": 30,
-    "providerCount": 551,
-    "observedHosts": 672,
-    "reviewNeeded": 535
+    "providerCount": 574,
+    "observedHosts": 697,
+    "reviewNeeded": 543
   },
-  "sourceAttributionHosts": 553,
+  "sourceAttributionHosts": 578,
   "airportCount": 115,
   "stockExchangeCount": 29,
   "centralBankInstitutionCount": 14,
@@ -175,7 +176,7 @@
         "uriConst": "NATURAL_DISASTERS_UI_URI",
         "uri": "ui://worldmonitor/natural-disasters.html",
         "name": "Natural Disasters (interactive)",
-        "description": "Interactive in-conversation app shell for get_natural_disasters: groups recent earthquakes (USGS magnitude, place, time) and active wildfires (NASA FIRMS). Linked from the get_natural_disasters tool via _meta.ui.resourceUri; an MCP-Apps host renders it inline and streams the tool result in via postMessage. Static, data-free template — public and quota-exempt.",
+        "description": "Interactive in-conversation app shell for get_natural_disasters: groups recent M4.5+ earthquakes (USGS and Earthquakes Canada / NRCan: magnitude, place, time, source) and active wildfires (NASA FIRMS). Linked from the get_natural_disasters tool via _meta.ui.resourceUri; an MCP-Apps host renders it inline and streams the tool result in via postMessage. Static, data-free template — public and quota-exempt.",
         "tool": "get_natural_disasters"
       },
       {
@@ -306,8 +307,8 @@
     "nonCacheable": "no-store"
   },
   "healthProbedKeys": {
-    "bootstrap": 109,
-    "standalone": 153,
-    "total": 262
+    "bootstrap": 114,
+    "standalone": 158,
+    "total": 272
   }
 }
