@@ -449,13 +449,19 @@ describe('health freshness ingestion', () => {
           weatherAlerts: { status: 'CHINA_UNAVAILABLE', records: 5, seedAgeMin: 1, maxStaleMin: 45 },
           // Server-warn degradation: fresh age but must render 'stale'.
           gdeltIntel: { status: 'COVERAGE_DEGRADED', records: 10, seedAgeMin: 1, maxStaleMin: 420 },
+          // Server-ok: an intentionally-blocked source is NOT a degradation and
+          // must still render 'fresh' at a fresh age (guards a future edit from
+          // folding it in with the warn statuses next to it).
+          cyberThreats: { status: 'SOURCE_BLOCKED', records: 8, seedAgeMin: 1, maxStaleMin: 240 },
         },
       }),
     });
 
-    // Before #6780 both rendered 'fresh' (green): CHINA_UNAVAILABLE was not an
-    // error predicate and COVERAGE_DEGRADED was not in the fresh-age stale set.
+    // Before #6780 the first two rendered 'fresh' (green): CHINA_UNAVAILABLE was
+    // not an error predicate and COVERAGE_DEGRADED was not in the fresh-age stale
+    // set. SOURCE_BLOCKED must stay fresh in both the old and new behavior.
     assert.equal(dataFreshness.getSource('weather')?.status, 'error');
     assert.equal(dataFreshness.getSource('gdelt')?.status, 'stale');
+    assert.equal(dataFreshness.getSource('cyber_threats')?.status, 'fresh');
   });
 });
