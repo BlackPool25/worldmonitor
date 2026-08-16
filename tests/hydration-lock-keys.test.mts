@@ -40,6 +40,14 @@ describe('hydration lock keys (#6770)', () => {
     assert.match(dataLoader, /runGuarded\(\s*'radiationWatch'/, "radiation hydration must lock 'radiationWatch'");
     assert.doesNotMatch(dataLoader, /runGuarded\(\s*'firms'/, "'firms' inFlight key diverges from the 'fires' layer key");
     assert.doesNotMatch(dataLoader, /runGuarded\(\s*'radiation'\s*,/, "'radiation' inFlight key diverges from 'radiationWatch'");
+    // The firms REFRESH is the third guard-less-loadFirmsData call site; it must
+    // lock the same 'fires' key or a hydration/refresh overlap double-fetches.
+    assert.match(
+      app,
+      /name: 'fires', fn: \(\) => this\.dataLoader\.loadFirmsData\(\)/,
+      "firms refresh must lock 'fires' (matches hydration + layer toggle)",
+    );
+    assert.doesNotMatch(app, /'firms'/, "no refresh/registration may lock the divergent 'firms' key");
   });
 
   it('locks the stock refreshes under the same inFlight key the loader uses', () => {
