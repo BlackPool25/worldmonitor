@@ -22,7 +22,7 @@ afterEach(() => {
 
 describe('waitForSidecarReady (#6779)', () => {
   it('probes /api/sidecar-health (not /api/service-status) and returns true on 200', async () => {
-    const fetchMock = vi.fn(async () => new Response('{"status":"ok"}', { status: 200 }));
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL) => new Response('{"status":"ok"}', { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
     const ready = await waitForSidecarReady(1000);
