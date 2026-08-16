@@ -2829,6 +2829,7 @@
     "moreEvents": "daha fazla olay",
     "monitoring": "Izleme",
     "viewUSGS": "USGS'de Goruntule",
+    "viewNRCan": "Earthquakes Canada'de Goruntule",
     "expired": "Suresi Dolmus",
     "timeAgo": {
       "s": "{{count}}sn once",

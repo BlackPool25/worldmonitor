@@ -2829,6 +2829,7 @@
     "moreEvents": "เหตุการณ์เพิ่มเติม",
     "monitoring": "กำลังเฝ้าระวัง",
     "viewUSGS": "ดูบน USGS",
+    "viewNRCan": "ดูบน Earthquakes Canada",
     "expired": "หมดอายุ",
     "timeAgo": {
       "s": "{{count}}s ago",

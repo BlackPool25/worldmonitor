@@ -2829,6 +2829,7 @@
     "moreEvents": "sự kiện khác",
     "monitoring": "Giám sát",
     "viewUSGS": "Xem trên USGS",
+    "viewNRCan": "Xem trên Earthquakes Canada",
     "expired": "Đã hết hạn",
     "timeAgo": {
       "s": "{{count}}s trước",

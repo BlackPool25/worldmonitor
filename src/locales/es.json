@@ -2838,6 +2838,7 @@
     "moreEvents": "más eventos",
     "monitoring": "Monitoreo",
     "viewUSGS": "Ver en USGS",
+    "viewNRCan": "Ver en Earthquakes Canada",
     "expired": "Expirado",
     "timeAgo": {
       "s": "{{count}}s atrás",

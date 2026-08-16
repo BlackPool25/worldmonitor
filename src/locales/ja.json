@@ -2829,6 +2829,7 @@
     "moreEvents": "件の追加イベント",
     "monitoring": "監視中",
     "viewUSGS": "USGSで表示",
+    "viewNRCan": "Earthquakes Canadaで表示",
     "expired": "期限切れ",
     "timeAgo": {
       "s": "{{count}}秒前",

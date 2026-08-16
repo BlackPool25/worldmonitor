@@ -3107,6 +3107,7 @@
     "moreEvents": "više događaja",
     "monitoring": "Praćenje",
     "viewUSGS": "Pogledaj na USGS",
+    "viewNRCan": "Pogledaj na Earthquakes Canada",
     "expired": "Isteklo",
     "timeAgo": {
       "s": "prije {{count}}s",

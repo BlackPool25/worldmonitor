@@ -231,7 +231,7 @@ Page Load → parallel fetch ─┬─ /api/bootstrap?tier=fast  (s-maxage=1200)
 
 | 种子脚本 | 数据来源 | 更新频率 | 引导键 |
 | --- | --- | --- | --- |
-| `seed-earthquakes` | USGS M4.5+ | 5 分钟 | `seismology:earthquakes:v1` |
+| `seed-earthquakes` | USGS M4.5+ 与加拿大地震（NRCan）Atom | 5 分钟 | `seismology:earthquakes:v1` |
 | `seed-market-quotes` | Yahoo Finance（错峰批量） | 5 分钟 | `market:stocks-bootstrap:v1` |
 | `seed-commodity-quotes` | Yahoo Finance（WTI、Brent、金属） | 5 分钟 | `market:commodities-bootstrap:v1` |
 | `seed-crypto-quotes` | CoinGecko（BTC、ETH、SOL、XRP+） | 5 分钟 | `market:crypto:v1` |
