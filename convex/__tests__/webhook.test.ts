@@ -289,6 +289,113 @@ describe("webhook processWebhookEvent", () => {
     expect(subs[0].status).toBe("active");
   });
 
+  test("subscription.active reactivation clears leftover cancelledAt/onHoldAt (#6769)", async () => {
+    const t = convexTest(schema, modules);
+    await seedProductPlan(t, "pdt_test_pro", "pro_monthly", "Pro Monthly");
+
+    // A sub that was cancelled (and had earlier been on hold) still carries the
+    // episode stamps. Reactivation must wipe them so downstream classifiers —
+    // esp. the refund-alert `already-cancelled` short-circuit — don't read a
+    // stale cancellation as current.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("subscriptions", {
+        userId: "test-user-001",
+        dodoSubscriptionId: "sub_test_001",
+        dodoProductId: "pdt_test_pro",
+        planKey: "pro_monthly",
+        status: "cancelled",
+        currentPeriodStart: BASE_TIMESTAMP - 86400000,
+        currentPeriodEnd: BASE_TIMESTAMP,
+        cancelledAt: BASE_TIMESTAMP - 3600000,
+        onHoldAt: BASE_TIMESTAMP - 7200000,
+        rawPayload: {},
+        updatedAt: BASE_TIMESTAMP - 86400000,
+      });
+    });
+
+    await processEvent(
+      t,
+      "wh_reactivate_clear_stamps",
+      "subscription.active",
+      makeSubscriptionPayload(),
+      BASE_TIMESTAMP,
+    );
+
+    const subs = await t.run(async (ctx) => ctx.db.query("subscriptions").collect());
+    expect(subs).toHaveLength(1);
+    expect(subs[0].status).toBe("active");
+    expect(subs[0].cancelledAt).toBeUndefined();
+    expect(subs[0].onHoldAt).toBeUndefined();
+  });
+
+  test("full refund after reactivation still fires the refund-alert (#6769 — stale cancelledAt no longer silences it)", async () => {
+    const t = convexTest(schema, modules);
+    await seedProductPlan(t, "pdt_test_pro", "pro_monthly", "Pro Monthly");
+
+    // Cancelled sub carrying a stale cancelledAt stamp.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("subscriptions", {
+        userId: "test-user-001",
+        dodoSubscriptionId: "sub_test_001",
+        dodoProductId: "pdt_test_pro",
+        planKey: "pro_monthly",
+        status: "cancelled",
+        currentPeriodStart: BASE_TIMESTAMP - 86400000,
+        currentPeriodEnd: BASE_TIMESTAMP,
+        cancelledAt: BASE_TIMESTAMP - 3600000,
+        rawPayload: {},
+        updatedAt: BASE_TIMESTAMP - 86400000,
+      });
+    });
+
+    // Reactivate. The activation payload carries the recurring price so the
+    // refund-alert can classify a full refund — reactivation overwrites
+    // rawPayload, so the price must ride on THIS event.
+    await processEvent(
+      t,
+      "wh_reactivate_before_refund",
+      "subscription.active",
+      makeSubscriptionPayload({ recurring_pre_tax_amount: 1999 }),
+      BASE_TIMESTAMP,
+    );
+
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    // Full refund on the now-active sub. Before the fix the leftover
+    // cancelledAt short-circuited classifyRefundAlert to `already-cancelled`
+    // and no alert fired.
+    await processEvent(
+      t,
+      "wh_full_refund_after_reactivate",
+      "refund.succeeded",
+      {
+        type: "refund.succeeded",
+        business_id: "biz_test",
+        timestamp: "2026-03-21T10:05:00Z",
+        data: {
+          payload_type: "Refund",
+          payment_id: "pay_refund_001",
+          subscription_id: "sub_test_001",
+          total_amount: 1999,
+          currency: "USD",
+          customer: {
+            customer_id: "cust_test_001",
+            email: "test@example.com",
+            name: "Test User",
+          },
+          metadata: { wm_user_id: "test-user-001" },
+        },
+      },
+      BASE_TIMESTAMP + 300000,
+    );
+
+    const refundAlerts = errorSpy.mock.calls
+      .map((call) => String(call[0]))
+      .filter((msg) => msg.includes("[refund-alert]"));
+    expect(refundAlerts).toHaveLength(1);
+    expect(refundAlerts[0]).toContain("full refund without prior cancellation");
+  });
+
   test("subscription.active reactivation sends a welcome-back email", async () => {
     vi.useFakeTimers();
     process.env.RESEND_API_KEY = "re_test";
