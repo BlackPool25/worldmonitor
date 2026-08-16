@@ -3121,7 +3121,10 @@ export class App {
 
     if (SITE_VARIANT === 'finance') {
       this.refreshScheduler.scheduleRefresh(
-        'stock-analysis',
+        // inFlight lock key matches the hydration loader's runGuarded key so
+        // boot and refresh one-flight each other (loadStockAnalysis has no
+        // internal guard). The panel/viewport key stays kebab below (#6770).
+        'stockAnalysis',
         () => this.dataLoader.loadStockAnalysis(),
         REFRESH_INTERVALS.stockAnalysis,
         () => hasPremiumAccess() && this.isPanelNearViewport('stock-analysis'),
@@ -3133,7 +3136,9 @@ export class App {
         () => hasPremiumAccess() && this.isPanelNearViewport('daily-market-brief'),
       );
       this.refreshScheduler.scheduleRefresh(
-        'stock-backtest',
+        // inFlight lock key matches the hydration loader's runGuarded key
+        // (loadStockBacktest has no internal guard); panel key stays kebab (#6770).
+        'stockBacktest',
         () => this.dataLoader.loadStockBacktest(),
         REFRESH_INTERVALS.stockBacktest,
         () => hasPremiumAccess() && this.isPanelNearViewport('stock-backtest'),
