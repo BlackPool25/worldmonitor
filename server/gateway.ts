@@ -2004,13 +2004,16 @@ export function createDomainGateway(
 
       const rpcName = pathname.split('/').pop() ?? '';
       const envOverride = process.env[`CACHE_TIER_OVERRIDE_${rpcName.replace(/-/g, '_').toUpperCase()}`] as CacheTier | undefined;
-      // The route's own declared tier (an env override wins over the map). A
-      // route declared no-store is a hard freshness/privacy floor: the audience
-      // overwrite below must never upgrade it to a browser-cacheable tier just
-      // because the caller presented a cookie or key (#6771).
-      const declaredTier = (envOverride && envOverride in TIER_HEADERS ? envOverride : null) ?? RPC_CACHE_TIER[pathname];
+      const mapTier = RPC_CACHE_TIER[pathname];
+      // The route's own declared tier (an env override wins over the map for
+      // normal tiers). A route declared no-store is a hard freshness/privacy
+      // floor: the audience overwrite below must never upgrade it to a
+      // browser-cacheable tier for a credentialed caller — and a map-declared
+      // no-store (account-private company-monitoring reads, live feeds) is not
+      // even an env override may downgrade (#6771).
+      const declaredTier = (envOverride && envOverride in TIER_HEADERS ? envOverride : null) ?? mapTier;
 
-      if (mergedHeaders.get('X-No-Cache') || noStoreReason || declaredTier === 'no-store') {
+      if (mergedHeaders.get('X-No-Cache') || noStoreReason || declaredTier === 'no-store' || mapTier === 'no-store') {
         mergedHeaders.set('Cache-Control', 'no-store');
         mergedHeaders.delete('CDN-Cache-Control');
         mergedHeaders.delete('Vercel-CDN-Cache-Control');
@@ -2026,9 +2029,13 @@ export function createDomainGateway(
         // A credentialed non-public response must never be stored by a shared
         // cache, even at a browser tier — mark it private so only the caller's
         // own browser retains it. Vary is Origin-only, so without this a shared
-        // proxy could serve one principal's body to another (#6771).
-        // (live-browser is already private; no-store is handled above.)
-        const cacheControl = hasCredentialedNonPublicGet && !TIER_HEADERS[tier].includes('private')
+        // proxy could serve one principal's body to another (#6771). Covers the
+        // standard credential headers and premium/internal-MCP callers (whose
+        // HMAC auth headers are not in hasCredentialBearingHeader but still
+        // carry per-principal bodies). (live-browser is already private;
+        // no-store handled above; anonymous public routes keep their CDN tier.)
+        const isPrivateResponse = hasCredentialedNonPublicGet || (isPremium && !isPublicNoAuthRpc);
+        const cacheControl = isPrivateResponse && !TIER_HEADERS[tier].includes('private')
           ? `private, ${TIER_HEADERS[tier]}`
           : TIER_HEADERS[tier];
         mergedHeaders.set('Cache-Control', cacheControl);

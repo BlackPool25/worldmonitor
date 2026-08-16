@@ -90,7 +90,9 @@ describe('gateway no-store floor + credentialed privacy (#6771)', () => {
   });
 
   test('a credentialed non-public GET is marked private and not shared-cacheable', async () => {
-    const path = '/api/aviation/v1/list-airport-flights'; // not declared no-store -> medium -> slow-browser for a credentialed caller
+    // list-airport-flights is declared 'static', but a credentialed non-public
+    // GET is forced to slow-browser by the audience overwrite regardless.
+    const path = '/api/aviation/v1/list-airport-flights';
     const res = await gatewayFor(path, { flights: [{ id: 1 }], totalAvailable: 1, source: 'relay' })(
       credentialedRequest(path),
       ctx,
@@ -103,5 +105,36 @@ describe('gateway no-store floor + credentialed privacy (#6771)', () => {
     expect(cacheControl).toContain('max-age=300');
     // Credentialed responses are never handed to the Vercel edge cache.
     expect(res.headers.get('CDN-Cache-Control')).toBeNull();
+  });
+
+  test('an anonymous request to a public route is NOT marked private (no over-broadening)', async () => {
+    // Public no-auth route, no credential -> the private gate must not fire, so
+    // shared/CDN caching of public data is preserved.
+    const path = '/api/natural/v1/list-natural-events';
+    const res = await createDomainGateway([
+      { method: 'GET', path, handler: healthyHandler({ events: [{ id: 1 }] }) },
+    ])(
+      new Request(`https://worldmonitor.app${path}?_debug=1`, {
+        headers: { origin: 'https://worldmonitor.app', 'cf-connecting-ip': '203.0.113.7' },
+      }),
+      ctx,
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Cache-Control') ?? '').not.toContain('private');
+  });
+
+  test('a map-declared no-store route stays no-store even under a CACHE_TIER_OVERRIDE (#6771)', async () => {
+    // An operator env override must not be able to downgrade an account-private
+    // no-store route to a browser-cacheable tier.
+    process.env.CACHE_TIER_OVERRIDE_GET_COMPANY_COVERAGE = 'slow-browser';
+    try {
+      const path = '/api/company-monitoring/v1/get-company-coverage'; // RPC_CACHE_TIER: 'no-store'
+      const res = await gatewayFor(path, { coverage: [{ id: 1 }] })(credentialedRequest(path), ctx);
+      expect(res.headers.get('Cache-Control')).toBe('no-store');
+      expect(res.headers.get('X-Cache-Tier')).toBe('no-store');
+    } finally {
+      delete process.env.CACHE_TIER_OVERRIDE_GET_COMPANY_COVERAGE;
+    }
   });
 });
