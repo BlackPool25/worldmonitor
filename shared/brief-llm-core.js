@@ -339,7 +339,9 @@ const TITLE_PREFIX_STOP = new Set([
 
 // Joiner words — lowercase tokens that bridge proper-noun sequences.
 // "Democratic Republic of Congo" is ONE sequence, not three.
-const PROPER_NOUN_JOINER = new Set(['of', 'the', 'and', 'for', 'de', 'du', 'der', 'van', 'el', 'al']);
+// Coordinating "and"/"And"/"AND" is grammar, not a joiner — it ends the
+// current sequence so "Ukraine and Russia" is two names.
+const PROPER_NOUN_JOINER = new Set(['of', 'the', 'for', 'de', 'du', 'der', 'van', 'el', 'al']);
 
 // Acronym ↔ expansion table (bidirectional). When summary contains
 // either form and headline contains the other, treated as equivalent.
@@ -598,6 +600,21 @@ function extractProperNounSequencesWithMeta(text) {
       }
       const atSentenceStart = firstToken;
       firstToken = false;
+
+      // Coordinating and is a sequence break, not a joiner and not a name.
+      // Title-case "And" would otherwise append as a name token; all-caps
+      // "AND" would match isAllCapsAcronym and glue the same way.
+      if (token.toLowerCase() === 'and') {
+        if (current.length > 0) {
+          sequences.push({ tokens: current, sentenceInitial: currentStartedSentence, allCaps: currentAllCaps, firstSentence: currentFirstSentence });
+          current = [];
+          currentStartedSentence = false;
+          currentAllCaps = false;
+          currentFirstSentence = false;
+        }
+        bridgeBuffer = [];
+        continue;
+      }
 
       if (isJoiner) {
         if (current.length > 0) bridgeBuffer.push(token.toLowerCase());
