@@ -1853,10 +1853,15 @@ export class App {
       initAisStream();
     }
 
-    // Wait for sidecar readiness on desktop so bootstrap hits a live server
+    // Wait for sidecar readiness on desktop so bootstrap hits a live server.
+    // Consume the result: a sidecar that never answered its own health probe
+    // should leave a signal rather than being silently treated as ready (#6779).
     if (isDesktopRuntime()) {
-      await waitForSidecarReady(3000);
-      markLcpDebug('wm:boot:sidecar-ready');
+      const sidecarReady = await waitForSidecarReady(3000);
+      markLcpDebug(sidecarReady ? 'wm:boot:sidecar-ready' : 'wm:boot:sidecar-not-ready');
+      if (!sidecarReady) {
+        console.warn('[boot] Local sidecar did not report ready within 3s; bootstrap may fall back to cloud.');
+      }
     }
 
     // Anonymous browser session token (issue #3541). Server's validateApiKey
