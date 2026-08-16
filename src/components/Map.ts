@@ -60,11 +60,10 @@ import type { ScenarioVisualState } from '@/config/scenario-templates';
 import { setTrustedHtml, trustedHtml } from '@/utils/dom-utils';
 import {
   getLayerExplanation,
-  getLayersForVariant,
   hasCuratedLayerExplanation,
   isSunsetLayer,
+  LAYER_REGISTRY,
   resolveLayerLabel,
-  type MapVariant,
 } from '@/config/map-layer-definitions';
 import { renderLayerExplanationCard } from '@/utils/layer-explanation-card';
 import {
@@ -478,7 +477,10 @@ export class MapComponent {
   private getLayerControlLabel(layer: keyof MapLayers): string {
     if (layer === 'sanctions') return t('components.deckgl.layerHelp.labels.sanctions');
 
-    const def = getLayersForVariant((SITE_VARIANT || 'full') as MapVariant, 'flat').find(item => item.key === layer);
+    // Labels are renderer-independent, so resolve straight from the registry.
+    // (The old `getLayersForVariant(v, 'flat')` lookup dropped ciiChoropleth
+    // once it stopped being an SVG layer, regressing its label to the raw key.)
+    const def = LAYER_REGISTRY[layer];
     return def ? resolveLayerLabel(def, t) : String(layer);
   }
 
@@ -498,7 +500,8 @@ export class MapComponent {
       // storageFacilities + fuelShortages are also DeckGL-only — this file has no
       // SVG render path for them (see grep for existing 'pipelines' render at :1100).
       // Adding them here would surface a toggle that produces zero output. They're
-      // already restricted to ['flat'] in LAYER_REGISTRY to hide from globe mode too.
+      // already restricted to renderers: ['deck'] in LAYER_REGISTRY, which keeps
+      // them out of the globe picker too.
       'ais', 'flights', 'gpsJamming',                      // transport/interference
       'natural', 'weather',                               // natural
       'economic',                                         // economic
