@@ -97,15 +97,15 @@
   "freshnessRequiredForRisk": 2,
   "feedDefinitions": 658,
   "sourceAttribution": {
-    "activeHosts": 560,
-    "structuredHosts": 309,
+    "activeHosts": 561,
+    "structuredHosts": 310,
     "feedHosts": 279,
     "operationalStatusHosts": 30,
-    "providerCount": 556,
-    "observedHosts": 679,
-    "reviewNeeded": 525
+    "providerCount": 557,
+    "observedHosts": 680,
+    "reviewNeeded": 526
   },
-  "sourceAttributionHosts": 560,
+  "sourceAttributionHosts": 561,
   "airportCount": 115,
   "stockExchangeCount": 29,
   "centralBankInstitutionCount": 14,

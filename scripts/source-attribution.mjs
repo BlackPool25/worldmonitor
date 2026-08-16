@@ -320,6 +320,12 @@ const PROVIDER_OVERRIDES = {
     attribution: 'OpenSanctions; link to the matching entity/dataset.',
     status: 'terms-review',
   },
+  'www.international.gc.ca': {
+    provider: 'Global Affairs Canada (SEMA consolidated sanctions)',
+    license: 'Government of Canada website terms; no explicit redistribution licence on the SEMA XML. Canada.ca terms restrict commercial reproduction unless otherwise specified. The Open Government Licence page on this host covers international-assistance open data sets, not this sanctions list.',
+    attribution: 'Global Affairs Canada, Consolidated Canadian Autonomous Sanctions List; link to https://www.international.gc.ca/world-monde/international_relations-relations_internationales/sanctions/consolidated-consolide.aspx?lang=eng',
+    status: 'terms-review',
+  },
   'earth-search.aws.element84.com': {
     provider: 'Element84 Earth Search STAC',
     license: 'AWS Open Data and dataset-specific collection licenses',

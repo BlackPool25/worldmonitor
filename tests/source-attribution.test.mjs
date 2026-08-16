@@ -114,12 +114,14 @@ test('source inventory has complete metadata and matches the generated catalog',
   // api.weather.gc.ca (ECCC GeoMet): +1 host, +1 provider, +1 observed.
   // Main carries 557/553/676 after ECCC (#6662). This PR adds
   // www.earthquakescanada.nrcan.gc.ca: +1 host, +1 provider, +1 observed.
-  // Main carries 558/554/677 after NRCan earthquakes (#6671). This PR adds the
-  // CWFIS national WFS host and the BC Wildfire Service host (#6668 merged into
-  // this branch): +2 hosts, +2 providers, +2 observed.
-  assert.equal(stats.activeHosts, 560);
-  assert.equal(stats.providerCount, 556);
-  assert.equal(stats.observedHosts, 679);
+  // Main carries 558/554/677 after NRCan earthquakes (#6671). This PR adds
+  // www.international.gc.ca (GAC SEMA): +1 host, +1 provider, +1 observed.
+  // Main carries 559/555/678 after SEMA (#6673). This PR adds the CWFIS national
+  // WFS host and the BC Wildfire Service host (#6668 merged into this branch):
+  // +2 hosts, +2 providers, +2 observed.
+  assert.equal(stats.activeHosts, 561);
+  assert.equal(stats.providerCount, 557);
+  assert.equal(stats.observedHosts, 680);
   assert.ok(stats.reviewNeeded > 0, 'terms-review rows must remain visible until a license audit is complete');
 
   const byHost = new Map(manifest.entries.map((entry) => [entry.host, entry]));
