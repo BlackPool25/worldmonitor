@@ -2867,6 +2867,7 @@
     "moreEvents": "ещё событий",
     "monitoring": "Мониторинг",
     "viewUSGS": "Смотреть на USGS",
+    "viewNRCan": "Смотреть на Earthquakes Canada",
     "expired": "Истёк",
     "timeAgo": {
       "s": "{{count}}с назад",

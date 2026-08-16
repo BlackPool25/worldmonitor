@@ -2532,6 +2532,7 @@
     "moreEvents": "meer gebeurtenissen",
     "monitoring": "Toezicht",
     "viewUSGS": "Bekijk op USGS",
+    "viewNRCan": "Bekijk op Earthquakes Canada",
     "expired": "Verlopen",
     "timeAgo": {
       "s": "{{count}}s geleden",

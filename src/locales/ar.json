@@ -2895,6 +2895,7 @@
     "moreEvents": "أحداث إضافية",
     "monitoring": "مراقبة",
     "viewUSGS": "عرض على USGS",
+    "viewNRCan": "عرض على Earthquakes Canada",
     "expired": "منتهي الصلاحية",
     "timeAgo": {
       "s": "{{count}}ث مضت",

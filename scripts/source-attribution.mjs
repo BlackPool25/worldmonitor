@@ -164,6 +164,12 @@ const PROVIDER_OVERRIDES = {
     attribution: 'U.S. Geological Survey Mineral Commodity Summaries; link to the ScienceBase data release (https://doi.org/10.5066/P1WKQ63T).',
     status: 'reviewed',
   },
+  'www.earthquakescanada.nrcan.gc.ca': {
+    provider: 'Earthquakes Canada (NRCan)',
+    license: 'Earthquakes Canada citation terms; live Atom redistribution not explicitly granted (historical catalogues on the Open Government Portal are OGL-Canada)',
+    attribution: 'Natural Resources Canada, Earthquakes Canada; link to https://www.earthquakescanada.nrcan.gc.ca/index-en.php?tpl_region=canada. Event-metadata citation: https://www.earthquakescanada.nrcan.gc.ca/cite-en.php',
+    status: 'terms-review',
+  },
   'ogcapi.bgs.ac.uk': {
     provider: 'British Geological Survey World Mineral Statistics',
     license: 'BGS mineral statistics terms; attribution required; redistribution restricted',

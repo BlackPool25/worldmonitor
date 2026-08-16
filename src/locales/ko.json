@@ -2831,6 +2831,7 @@
     "moreEvents": "추가 사건",
     "monitoring": "감시 중",
     "viewUSGS": "USGS에서 보기",
+    "viewNRCan": "Earthquakes Canada에서 보기",
     "expired": "만료됨",
     "timeAgo": {
       "s": "{{count}}s 전",

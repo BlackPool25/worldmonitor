@@ -2831,6 +2831,7 @@
     "moreEvents": "περισσότερα συμβάντα",
     "monitoring": "Παρακολούθηση",
     "viewUSGS": "Προβολή στο USGS",
+    "viewNRCan": "Προβολή στο Earthquakes Canada",
     "expired": "Έληξε",
     "timeAgo": {
       "s": "{{count}}δ πριν",

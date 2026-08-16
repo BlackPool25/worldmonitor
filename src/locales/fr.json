@@ -2840,6 +2840,7 @@
     "moreEvents": "autres événements",
     "monitoring": "Surveillance",
     "viewUSGS": "Voir sur USGS",
+    "viewNRCan": "Voir sur Earthquakes Canada",
     "expired": "Expiré",
     "timeAgo": {
       "s": "il y a {{count}} s",

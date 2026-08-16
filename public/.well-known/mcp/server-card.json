@@ -50,7 +50,7 @@
     },
     {
       "name": "get_natural_disasters",
-      "description": "Recent earthquakes (USGS), active wildfires (NASA FIRMS), and natural hazard events. Includes magnitude, location, and threat severity."
+      "description": "Recent M4.5+ earthquakes (USGS and Earthquakes Canada / NRCan), active wildfires (NASA FIRMS), and natural hazard events. Includes magnitude, location, source, and threat severity."
     },
     {
       "name": "get_military_posture",
