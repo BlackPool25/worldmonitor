@@ -86,6 +86,7 @@ interface Runtime {
   runtimeConfigListeners: Set<() => void>;
   widgetAccessListeners: Set<() => void>;
   liveFlightQueries: string[];
+  liveFlightError: Error | null;
   deferTimers: boolean;
   nextTimerId: number;
   pendingTimers: Map<number, () => void>;
@@ -261,6 +262,7 @@ function createHarness(variant: Variant, runtime: Runtime): new (ctx: any, callb
     (timer: number) => { runtime.pendingTimers.delete(timer); },
     (request: { callsign?: string }) => {
       runtime.liveFlightQueries.push(request.callsign ?? '');
+      if (runtime.liveFlightError) return Promise.reject(runtime.liveFlightError);
       return Promise.resolve([{
         icao24: 'abc123',
         callsign: request.callsign ?? 'AB123',
@@ -327,6 +329,7 @@ function makeScenario(
     runtimeConfigListeners: new Set(),
     widgetAccessListeners: new Set(),
     liveFlightQueries: [],
+    liveFlightError: null,
     deferTimers: false,
     nextTimerId: 1,
     pendingTimers: new Map(),
@@ -862,6 +865,28 @@ describe('SearchManager programmatic dashboard search (#6212)', () => {
     assert.deepEqual(scenario.calls.centers, [[3, 4, 9]]);
   });
 
+  it('denies tech-event centering after a globe switch', async () => {
+    const scenario = makeScenario([
+      resultMatch(
+        'techevent',
+        'event-1',
+        'Needle tech event',
+        { id: 'event-1', lat: 37.8, lng: -122.4 },
+      ),
+    ], 'tech');
+    const response = await scenario.manager.searchDashboard('needle', 'all', 10);
+    assert.equal(response.results[0]?.executable, true);
+
+    scenario.state.globe = true;
+    assert.deepEqual(await scenario.manager.openSearchResult(response.results[0].key), {
+      ok: false,
+      status: 'denied',
+      reason: 'result_no_longer_executable',
+    });
+    assert.deepEqual(scenario.calls.layers, []);
+    assert.deepEqual(scenario.calls.centers, []);
+  });
+
   it('denies globe time commands that only mutate hidden renderer state', async () => {
     const scenario = makeScenario([
       commandMatch('time:24h', 'actions', 'Last 24 hours'),
@@ -1149,6 +1174,84 @@ describe('SearchManager programmatic dashboard search (#6212)', () => {
     );
     assert.match(flightSearchWiring, /if \(!hasPremiumAccess\(getAuthState\(\)\)\) return;/);
     assert.doesNotMatch(flightSearchWiring, /if \(!isProUser\(\)/);
+  });
+
+  it('merges a live callsign hit without dropping viewport or military flights', async () => {
+    const scenario = makeScenario([]);
+    const now = Date.now();
+    scenario.manager.updateFlightSource([
+      {
+        icao24: 'stale123',
+        callsign: 'LIVE1',
+        lat: 10,
+        lon: 11,
+        altitudeFt: 20_000,
+        groundSpeedKts: 300,
+        observedAt: now,
+        onGround: false,
+      },
+      {
+        icao24: 'keep123',
+        callsign: 'KEEP1',
+        lat: 12,
+        lon: 13,
+        altitudeFt: 25_000,
+        groundSpeedKts: 350,
+        observedAt: now,
+        onGround: false,
+      },
+    ], [{
+      id: 'military-1',
+      callsign: 'MIL1',
+      hexCode: 'mil123',
+      aircraftType: 'fighter',
+      lat: 14,
+      lon: 15,
+      altitude: 30_000,
+      onGround: false,
+      lastSeen: new Date(now),
+    }], now);
+
+    await scenario.manager.fetchAndPublishLiveFlight('LIVE1');
+
+    assert.deepEqual(scenario.runtime.liveFlightQueries, ['LIVE1']);
+    assert.deepEqual(
+      scenario.modal.matches.map((match) => match.kind === 'result'
+        ? [match.result.id, match.result.data.kind]
+        : null),
+      [
+        ['keep123', 'adsb'],
+        ['abc123', 'adsb'],
+        ['mil123', 'military'],
+      ],
+    );
+  });
+
+  it('keeps the current flight index when optional live enrichment fails', async () => {
+    const scenario = makeScenario([]);
+    const now = Date.now();
+    scenario.manager.updateFlightSource([], [{
+      id: 'military-1',
+      callsign: 'MIL1',
+      hexCode: 'mil123',
+      aircraftType: 'fighter',
+      lat: 14,
+      lon: 15,
+      altitude: 30_000,
+      onGround: false,
+      lastSeen: new Date(now),
+    }], now);
+    scenario.runtime.liveFlightError = new Error('lookup failed');
+
+    scenario.manager.handleLiveFlightSearch('FAIL1');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.deepEqual(
+      scenario.modal.matches.map((match) => match.kind === 'result' ? match.result.id : null),
+      ['mil123'],
+    );
+    assert.equal(scenario.modal.clearedSources.includes('flight'), false);
   });
 
   it('uses the same premium policy for panel entitlement and free-cap bypass', () => {

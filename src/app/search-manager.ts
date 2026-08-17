@@ -455,20 +455,40 @@ export class SearchManager implements AppModule {
     // Always wire flight search; check pro status reactively inside the callback
     // so mid-session sign-ins get the feature without a page reload.
     this.ctx.searchModal.setOnFlightSearch((callsign) => {
-      if (!hasPremiumAccess(getAuthState())) return;
-      void this.fetchAndPublishLiveFlight(callsign)
-        .then(() => {
-          if (!this.destroyed) this.ctx.searchModal?.refreshSearch();
-        })
-        .catch(() => {
-          if (this.destroyed) return;
-          this.flightSearchItems = [];
-          this.flightSourceExpiresAt = 0;
-          this.ctx.searchModal?.registerSource('flight', []);
-          this.ctx.searchModal?.refreshSearch();
-        });
+      this.handleLiveFlightSearch(callsign);
     });
 
+  }
+
+  private handleLiveFlightSearch(callsign: string): void {
+    if (!hasPremiumAccess(getAuthState())) return;
+    void this.fetchAndPublishLiveFlight(callsign)
+      .then(() => {
+        if (!this.destroyed) this.ctx.searchModal?.refreshSearch();
+      })
+      .catch(() => {
+        // Callsign lookup is optional enrichment. Keep the current viewport
+        // ADS-B and military index intact when that single request fails.
+      });
+  }
+
+  private static adsbIdentities(position: PositionSample): string[] {
+    return [position.icao24, position.callsign]
+      .map((value) => value.trim().toUpperCase())
+      .filter(Boolean);
+  }
+
+  private mergeLiveAdsb(
+    current: PositionSample[],
+    live: PositionSample[],
+  ): PositionSample[] {
+    const liveIdentities = new Set(live.flatMap(SearchManager.adsbIdentities));
+    return [
+      ...current.filter((position) => (
+        !SearchManager.adsbIdentities(position).some((id) => liveIdentities.has(id))
+      )),
+      ...live,
+    ];
   }
 
   private async fetchAndPublishLiveFlight(callsign: string): Promise<void> {
@@ -483,7 +503,11 @@ export class SearchManager implements AppModule {
         seen.set(key, p);
       }
     }
-    this.updateFlightSource([...seen.values()], [], Date.now());
+    this.updateFlightSource(
+      this.mergeLiveAdsb(this.latestAdsb, [...seen.values()]),
+      this.latestMilitary,
+      Date.now(),
+    );
   }
 
   private async registerBaseSearchSource(): Promise<void> {
@@ -695,7 +719,7 @@ export class SearchManager implements AppModule {
         requiredLayer === 'flights'
         || [
           'hotspot', 'conflict', 'base', 'pipeline', 'cable', 'datacenter', 'nuclear', 'irradiator',
-          'techcompany', 'ailab', 'startup', 'techhq', 'accelerator',
+          'techcompany', 'ailab', 'startup', 'techevent', 'techhq', 'accelerator',
           'exchange', 'financialcenter', 'centralbank', 'commodityhub',
         ]
           .includes(result.type)

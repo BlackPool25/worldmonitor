@@ -704,6 +704,31 @@ describe('webmcp.ts: native tool execution and telemetry', () => {
       assert.equal(serialized.includes(sensitive), false, sensitive);
     }
   });
+
+  it('restricts telemetry only for search tools', async () => {
+    const attributedEvents = [];
+    const restrictedEvents = [];
+    const tools = buildWebMcpTools(
+      createBindings(),
+      (event, data) => attributedEvents.push({ event, data }),
+      (event, data) => restrictedEvents.push({ event, data }),
+    );
+
+    await tools.find((tool) => tool.name === 'openSearch').execute({});
+    await tools.find((tool) => tool.name === 'search_dashboard')
+      .execute({ query: 'needle' });
+    await tools.find((tool) => tool.name === 'open_search_result')
+      .execute({ resultKey: `sr_${'a'.repeat(32)}` });
+
+    assert.deepEqual(attributedEvents, [{
+      event: 'webmcp-tool-invoked',
+      data: { tool: 'openSearch', outcome: 'success' },
+    }]);
+    assert.deepEqual(
+      restrictedEvents.map(({ data }) => data.tool),
+      ['search_dashboard', 'open_search_result'],
+    );
+  });
 });
 
 describe('webmcp.ts: promise registration lifecycle', () => {

@@ -26,7 +26,7 @@
 // Register synchronously from App.ts (no dynamic import, no init-phase
 // awaits) so the probe finds the tools before it gives up.
 
-import { trackPrivacyRestricted, type UmamiEvent } from './analytics';
+import { track, trackPrivacyRestricted, type UmamiEvent } from './analytics';
 import {
   DASHBOARD_MAP_MAX_LATITUDE,
   DASHBOARD_MAP_VIEWS,
@@ -401,7 +401,10 @@ async function applyDashboardAction(
 
 export function buildWebMcpTools(
   app: WebMcpAppBindings,
-  trackEvent: WebMcpAnalytics = trackPrivacyRestricted,
+  trackEvent: WebMcpAnalytics = track,
+  searchTrackEvent: WebMcpAnalytics = trackEvent === track
+    ? trackPrivacyRestricted
+    : trackEvent,
 ): DashboardWebMcpTool[] {
   return [
     {
@@ -644,7 +647,7 @@ export function buildWebMcpTools(
           scope as DashboardSearchScope,
           Number(limit),
         ));
-      }, trackEvent, (args, value) => {
+      }, searchTrackEvent, (args, value) => {
         const result = value as DashboardSearchResponse;
         return {
           queryLength: typeof args.query === 'string' ? args.query.trim().length : 0,
@@ -688,7 +691,7 @@ export function buildWebMcpTools(
           });
         }
         return boundSearchOpenResult(await app.openSearchResult(resultKey));
-      }, trackEvent),
+      }, searchTrackEvent),
     },
   ];
 }
@@ -782,8 +785,9 @@ export function registerWebMcpTools(
 
   const runtimeWindow = runtime.window
     ?? (typeof window === 'undefined' ? null : window);
-  const trackEvent = runtime.track ?? trackPrivacyRestricted;
-  const tools = buildWebMcpTools(app, trackEvent);
+  const trackEvent = runtime.track ?? track;
+  const searchTrackEvent = runtime.track ?? trackPrivacyRestricted;
+  const tools = buildWebMcpTools(app, trackEvent, searchTrackEvent);
   const controller = new AbortController();
   let registrationStarted = false;
 
