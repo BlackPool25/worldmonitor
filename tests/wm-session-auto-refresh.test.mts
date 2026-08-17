@@ -2028,6 +2028,11 @@ describe('wm-session route-scoped recovery failures (#5674)', () => {
 // Exceptions the module sent via Sentry's captureException, most recent last.
 // Reset by every captureSink() call.
 let capturedExceptions: unknown[] = [];
+// Breadcrumbs the module added, most recent last. Reset by every captureSink()
+// call. The breadcrumb carries the same route/reason/mint_cause fields as the
+// event and is the only record that survives when the capture itself is
+// suppressed, so it needs its own assertions rather than being discarded.
+let capturedCrumbs: Array<{ message?: string; data?: Record<string, string> }> = [];
 
 // Shared Sentry sink for the dead-session capture tests.
 //
@@ -2039,6 +2044,7 @@ let capturedExceptions: unknown[] = [];
 function captureSink(onCapture?: () => void) {
   const captures: Array<{ msg: string; ctx: { level?: string; tags?: Record<string, string> } }> = [];
   capturedExceptions = [];
+  capturedCrumbs = [];
   mod.__setWmSessionSentryEnqueueForTests(((fn: (s: unknown) => void) => {
     fn({
       captureMessage: (msg: string, ctx: { level?: string; tags?: Record<string, string> }) => {
@@ -2046,7 +2052,9 @@ function captureSink(onCapture?: () => void) {
         onCapture?.();
       },
       captureException: (err: unknown) => { capturedExceptions.push(err); },
-      addBreadcrumb: () => {},
+      addBreadcrumb: (crumb: { message?: string; data?: Record<string, string> }) => {
+        capturedCrumbs.push(crumb);
+      },
     });
   }) as Parameters<typeof mod.__setWmSessionSentryEnqueueForTests>[0]);
   return captures;
@@ -2714,6 +2722,11 @@ describe('wm-session mint cause provenance (#6804)', () => {
       'none',
       'a route denial has no mint cause, and saying so is not the same as saying nothing',
     );
+    // The breadcrumb carries the same fields for the same reason, and is what
+    // survives when a later capture is suppressed. Locked separately: the tag
+    // and the crumb were changed in lockstep, so one assertion cannot hold both.
+    const crumb = capturedCrumbs.filter((c) => c.message === 'wm-session recovery failed').at(-1);
+    assert.equal(crumb?.data?.mint_cause, 'none', 'the breadcrumb states it too');
   });
 
   it('keeps cookie_not_persisted as its own verdict rather than a causeless mint_failed', async () => {
@@ -2852,5 +2865,46 @@ describe('wm-session mint cause provenance (#6804)', () => {
     assert.equal(await mod.establishWmKeySession({ proKey: 'legacy-pro-key' }), false);
     assert.equal(mod.isWmSessionDead(), false, 'a refused key mint is not a blackout');
     assert.deepEqual(mod.getStruckRoutes(), [], 'and it strikes no route');
+  });
+
+  it('names the mint cause when a burst blackout is tipped by a cookie-less replay', async () => {
+    // The modal WORLDMONITOR-WG shape: a dashboard boot burst plus a flaky
+    // transport. The leader's mint fails, records strike #1 and stops below
+    // quorum; the follower then replays with NO cookie (none was ever minted),
+    // so its 401 is guaranteed rather than evidential, and IT tips the quorum —
+    // with a retry_401 verdict that carries no cause of its own.
+    //
+    // The episode was caused entirely by failed mints, so tagging it
+    // `mint_cause: none` would assert something false and send triage looking
+    // at a bystander panel for a cookie problem that does not exist. `none` is
+    // a positive claim now, and it has to be earned.
+    memoryStorage.clear();
+    const captures = captureSink();
+
+    currentFetchHandler = (input) => {
+      const url = urlOf(input);
+      if (url.includes('/api/wm-session')) return Promise.reject(new TypeError('Failed to fetch'));
+      return Promise.resolve(new Response('unauthorized', { status: 401 }));
+    };
+
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    try {
+      await Promise.all([
+        wrappedFetch('https://api.worldmonitor.app/api/infrastructure/v1/get-cable-health'),
+        wrappedFetch('https://api.worldmonitor.app/api/economic/v1/get-bls-series'),
+      ]);
+      assert.equal(mod.isWmSessionDead(), true, 'the burst does black out');
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    const dead = captures.filter((c) => c.ctx.tags?.kind === 'wm_session_dead');
+    assert.equal(dead.length, 1, 'exactly one capture per degraded episode');
+    assert.equal(
+      dead[0].ctx.tags?.mint_cause,
+      'network',
+      'every mint in this episode failed at the transport level — the tag must say so',
+    );
   });
 });

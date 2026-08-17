@@ -113,12 +113,23 @@ let sentryEnqueue: typeof enqueueSentryCall = enqueueSentryCall;
 //    siblings. Cleared only by expiry, by its own route succeeding, by the
 //    global cooldown, or by a key-bound session replacing the identity.
 const routeStrikes = new Map<string, number>();
-// 2. Corroboration evidence — bounded route TAG -> when it failed. Keyed by the
-//    TAG so two ids of one dynamic endpoint cannot masquerade as two
-//    independent routes and fake a quorum. Any successful credentialed response
-//    clears it: a 200 proves the cookie is being delivered, which is precisely
-//    the counter-evidence the #5674 diagnosis rested on.
-const recentRouteFailures = new Map<string, number>();
+// 2. Corroboration evidence — bounded route TAG -> when it failed and, when the
+//    failure was a mint rather than a route denial, why. Keyed by the TAG so two
+//    ids of one dynamic endpoint cannot masquerade as two independent routes and
+//    fake a quorum. Any successful credentialed response clears it: a 200 proves
+//    the cookie is being delivered, which is precisely the counter-evidence the
+//    #5674 diagnosis rested on.
+//
+//    The cause rides the evidence because the verdict that TIPS a quorum is
+//    usually not the one carrying the diagnosis. In the modal WORLDMONITOR-WG
+//    burst the leader's mint fails (cause `network`, one strike, below quorum)
+//    and a follower's replay tips it — with a causeless retry_401, because the
+//    follower replays with no cookie, none ever having been minted. Reading the
+//    tipping verdict alone would tag an all-mints-failed episode `none` and send
+//    triage hunting a cookie problem on a bystander panel. Bounded by
+//    SESSION_DEAD_CORROBORATION_MS and voided by any success, so this is
+//    episode-scoped evidence, not the ambient last-value state #6804 removed.
+const recentRouteFailures = new Map<string, { at: number; cause: MintFailureCause | null }>();
 
 // Sentry tags must stay low-cardinality. Interceptor traffic only ever targets
 // our own /api/ surface, but dynamic segments (`/api/v2/shipping/webhooks/
@@ -211,7 +222,7 @@ function isRouteStruck(rawPath: string): boolean {
  * the returned count only sees failures from the last
  * SESSION_DEAD_CORROBORATION_MS.
  */
-function recordRouteStrike(rawPath: string): number {
+function recordRouteStrike(rawPath: string, cause: MintFailureCause | null): number {
   const now = Date.now();
   for (const [struck, until] of routeStrikes) {
     if (until <= now) routeStrikes.delete(struck);
@@ -219,11 +230,29 @@ function recordRouteStrike(rawPath: string): number {
   routeStrikes.set(rawPath, now + SESSION_DEAD_ROUTE_STRIKE_TTL_MS);
 
   const corroborationFloor = now - SESSION_DEAD_CORROBORATION_MS;
-  for (const [tag, at] of recentRouteFailures) {
-    if (at <= corroborationFloor) recentRouteFailures.delete(tag);
+  for (const [tag, seen] of recentRouteFailures) {
+    if (seen.at <= corroborationFloor) recentRouteFailures.delete(tag);
   }
-  recentRouteFailures.set(toRouteTag(rawPath), now);
+  recentRouteFailures.set(toRouteTag(rawPath), { at: now, cause });
   return recentRouteFailures.size;
+}
+
+/**
+ * The mint cause to report for an episode the quorum just tipped.
+ *
+ * The tipping verdict frequently has no cause of its own — a retry_401 never
+ * does — while the evidence that put the quorum within one strike often does.
+ * Prefer the tipping verdict's own cause, then the most recent mint cause still
+ * inside the corroboration window, so `none` keeps meaning "no mint failed in
+ * this episode" rather than "the last verdict happened not to be a mint".
+ */
+function episodeMintCause(tippingCause: MintFailureCause | null): MintFailureCause | null {
+  if (tippingCause) return tippingCause;
+  let latest: { at: number; cause: MintFailureCause | null } | null = null;
+  for (const seen of recentRouteFailures.values()) {
+    if (seen.cause && (latest === null || seen.at > latest.at)) latest = seen;
+  }
+  return latest?.cause ?? null;
 }
 
 /**
@@ -415,8 +444,8 @@ function noteRecoveryFailure(verdict: RecoveryVerdict, rawPath: string): void {
   // retry, and a single client-side blip is not evidence that the session is
   // unusable — production shows the server minting normally for everyone else
   // at that moment (WORLDMONITOR-WG).
-  if (recordRouteStrike(rawPath) >= SESSION_DEAD_ROUTE_QUORUM) {
-    markWmSessionDead(verdict.reason, rawPath, cause);
+  if (recordRouteStrike(rawPath, cause) >= SESSION_DEAD_ROUTE_QUORUM) {
+    markWmSessionDead(verdict.reason, rawPath, episodeMintCause(cause));
     return;
   }
   // Below quorum, a transport mint failure gets no captureMessage. WG is the
