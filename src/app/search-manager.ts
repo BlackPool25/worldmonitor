@@ -20,7 +20,7 @@ import {
   isLayerExecutable,
   isLayerEntitled,
 } from '@/config/map-layer-definitions';
-import type { MapVariant } from '@/config/map-layer-definitions';
+import type { MapVariant, RendererKind } from '@/config/map-layer-definitions';
 import { LAYER_PRESETS, LAYER_KEY_MAP } from '@/config/commands';
 import { TIER1_COUNTRIES } from '@/services/country-instability';
 import { getCachedCountryScores } from '@/services/cached-risk-scores';
@@ -650,12 +650,13 @@ export class SearchManager implements AppModule {
     if (!(key in this.ctx.mapLayers)) return false;
     const allowed = getAllowedLayerKeys((SITE_VARIANT || 'full') as MapVariant);
     if (!allowed.has(key)) return false;
-    const renderer: MapRenderer = this.ctx.map?.isGlobeMode?.() ? 'globe' : 'flat';
+    const renderer: RendererKind = this.ctx.map?.isGlobeMode?.()
+      ? 'globe'
+      : (this.ctx.map?.isDeckGLActive?.() ? 'deck' : 'svg');
     return isLayerCommandAllowed(
       key,
       this.ctx.mapLayers[key],
       renderer,
-      this.ctx.map?.isDeckGLActive?.() ?? false,
       hasPremiumAccess(getAuthState()),
     );
   }
@@ -726,11 +727,12 @@ export class SearchManager implements AppModule {
   private isEntityLayerExecutable(layer: keyof MapLayers): boolean {
     const allowed = getAllowedLayerKeys((SITE_VARIANT || 'full') as MapVariant);
     if (!allowed.has(layer)) return false;
-    const renderer: MapRenderer = this.ctx.map?.isGlobeMode?.() ? 'globe' : 'flat';
+    const renderer: RendererKind = this.ctx.map?.isGlobeMode?.()
+      ? 'globe'
+      : (this.ctx.map?.isDeckGLActive?.() ? 'deck' : 'svg');
     return isLayerExecutable(
       layer,
       renderer,
-      this.ctx.map?.isDeckGLActive?.() ?? false,
     ) && isLayerEntitled(layer, hasPremiumAccess(getAuthState()));
   }
 

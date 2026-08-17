@@ -10,8 +10,8 @@ import {
   isLayerCommandAllowed,
   isLayerEntitled,
   isLayerExecutable,
-  type MapRenderer,
   type MapVariant,
+  type RendererKind,
 } from '@/config/map-layer-definitions';
 import { TIER1_COUNTRIES } from '@/services/country-instability';
 import { CURATED_COUNTRIES } from '@/config/countries';
@@ -297,10 +297,11 @@ export class SearchSelectionDispatcher {
       }
       case 'layers': {
         const allowed = getAllowedLayerKeys(this.variant());
-        const renderer: MapRenderer = ctx.map?.isGlobeMode?.() ? 'globe' : 'flat';
-        const deckGL = ctx.map?.isDeckGLActive?.() ?? false;
+        const renderer: RendererKind = ctx.map?.isGlobeMode?.()
+          ? 'globe'
+          : (ctx.map?.isDeckGLActive?.() ? 'deck' : 'svg');
         const executable = (key: keyof MapLayers): boolean => allowed.has(key)
-          && isLayerExecutable(key, renderer, deckGL)
+          && isLayerExecutable(key, renderer)
           && isLayerEntitled(key, this.bindings.hasPremiumAccess());
         if (action === 'all') {
           for (const key of Object.keys(ctx.mapLayers)) {
@@ -322,10 +323,12 @@ export class SearchSelectionDispatcher {
       case 'layer': {
         const layer = (LAYER_KEY_MAP[action] || action) as keyof MapLayers;
         if (!(layer in ctx.mapLayers) || !getAllowedLayerKeys(this.variant()).has(layer)) return false;
-        const renderer: MapRenderer = ctx.map?.isGlobeMode?.() ? 'globe' : 'flat';
+        const renderer: RendererKind = ctx.map?.isGlobeMode?.()
+          ? 'globe'
+          : (ctx.map?.isDeckGLActive?.() ? 'deck' : 'svg');
         const deckGL = ctx.map?.isDeckGLActive?.() ?? false;
         const current = ctx.mapLayers[layer];
-        if (!isLayerCommandAllowed(layer, current, renderer, deckGL, this.bindings.hasPremiumAccess())) {
+        if (!isLayerCommandAllowed(layer, current, renderer, this.bindings.hasPremiumAccess())) {
           return false;
         }
         let next = !current;
@@ -372,9 +375,11 @@ export class SearchSelectionDispatcher {
           const layer = 'resilienceScore' as keyof MapLayers;
           if (!getAllowedLayerKeys(this.variant()).has(layer)) return false;
           const current = ctx.mapLayers[layer];
-          const renderer: MapRenderer = ctx.map?.isGlobeMode?.() ? 'globe' : 'flat';
+          const renderer: RendererKind = ctx.map?.isGlobeMode?.()
+            ? 'globe'
+            : (ctx.map?.isDeckGLActive?.() ? 'deck' : 'svg');
           const deckGL = ctx.map?.isDeckGLActive?.() ?? false;
-          if (!isLayerCommandAllowed(layer, current, renderer, deckGL, this.bindings.hasPremiumAccess())) {
+          if (!isLayerCommandAllowed(layer, current, renderer, this.bindings.hasPremiumAccess())) {
             return false;
           }
           let next = !current;
