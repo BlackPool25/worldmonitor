@@ -210,6 +210,7 @@ export const VARIANT_FEEDS: Record<string, Record<string, ServerFeed[]>> = {
       { name: 'WAFA English', url: gn('site:english.wafa.ps when:7d') },
       { name: 'Naharnet Lebanon', url: 'https://www.naharnet.com/tags/lebanon/en/feed.atom' },
       { name: "L'Orient Today", url: gn('site:lorientlejour.com Lebanon when:7d') },
+      { name: 'Annahar', url: gnLocale('site:annahar.com/lebanon when:7d', 'ar', 'LB', 'LB:ar'), lang: 'ar', strategicDefault: true },
       { name: 'Libya Herald', url: 'https://libyaherald.com/rss.xml' },
       { name: 'Egypt Independent', url: 'https://www.egyptindependent.com/feed/' },
       { name: 'Mada Masr', url: gn('site:madamasr.com when:30d') },

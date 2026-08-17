@@ -147,10 +147,11 @@ describe('sources catalog origin countries', () => {
     assert.equal(sourceOriginLabel('QA'), 'Qatar');
   });
 
-  it('classifies every crisis-desk publisher added by #6813-#6830', () => {
+  it('classifies every crisis-desk publisher added by #6813-#6830 and the Annahar follow-up', () => {
     const expectedOrigins = new Map([
       ['actuniger.com', 'NE'],
       ['airinfoagadez.com', 'NE'],
+      ['annahar.com', 'LB'],
       ['amu.tv', 'AF'],
       ['ayibopost.com', 'HT'],
       ['dhakatribune.com', 'BD'],
@@ -706,6 +707,11 @@ describe('crawlable corpus generator', () => {
         sourcesPage,
         /data-provider="L&#39;Orient Today"[\s\S]*?lorientlejour\.com/,
         "sources page must list L'Orient Today under its own host",
+      );
+      assert.match(
+        sourcesPage,
+        /data-provider="Annahar"[\s\S]*?annahar\.com/,
+        'sources page must list Annahar under its own host',
       );
       assert.match(
         sourcesPage,

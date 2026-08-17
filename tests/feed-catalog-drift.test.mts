@@ -125,6 +125,7 @@ const EASTERN_FLANK_FEEDS = {
 
 const STRATEGIC_DEFAULTS = [
   'ActuNiger',
+  'Annahar',
   'Hurriyet',
   'Polsat News',
   'Studio Tamani',
@@ -166,6 +167,7 @@ const CRISIS_DESK_PACK = {
   'Pajhwok Afghan News': { category: 'asia', countries: ['AF'], url: 'https://news.google.com/rss/search?q=site%3Apajhwok.com%20Afghanistan%20when%3A7d&hl=en-US&gl=US&ceid=US:en', role: 'opt-in' },
   'Naharnet Lebanon': { category: 'middleeast', countries: ['LB'], url: 'https://www.naharnet.com/tags/lebanon/en/feed.atom', role: 'en-default' },
   "L'Orient Today": { category: 'middleeast', countries: ['LB'], url: 'https://news.google.com/rss/search?q=site%3Alorientlejour.com%20Lebanon%20when%3A7d&hl=en-US&gl=US&ceid=US:en', role: 'opt-in' },
+  Annahar: { category: 'middleeast', countries: ['LB'], url: 'https://news.google.com/rss/search?q=site%3Aannahar.com%2Flebanon%20when%3A7d&hl=ar&gl=LB&ceid=LB:ar', lang: 'ar', strategicDefault: true, role: 'strategic-default' },
   'Studio Tamani': { category: 'africa', countries: ['ML'], url: 'https://www.studiotamani.org/feed/', lang: 'fr', strategicDefault: true, role: 'strategic-default' },
   'leFaso.net': { category: 'africa', countries: ['BF'], url: 'https://lefaso.net/spip.php?page=backend', lang: 'fr', strategicDefault: true, role: 'strategic-default' },
   ActuNiger: { category: 'africa', countries: ['NE'], url: 'https://news.google.com/rss/search?q=site%3Aactuniger.com%20Niger%20when%3A7d&hl=fr&gl=FR&ceid=FR:fr', lang: 'fr', strategicDefault: true, role: 'strategic-default' },
@@ -793,7 +795,7 @@ describe('feed catalog drift', () => {
     }
   });
 
-  it('locks the independently reviewed crisis-desk route, language, and activation matrix (#6813-#6830)', () => {
+  it('locks the independently reviewed crisis-desk route, language, and activation matrix (#6813-#6830 plus Annahar)', () => {
     const enabled = feeds.getAllDefaultEnabledSources();
     const disabledEn = new Set(feeds.computeDefaultDisabledSources('en'));
     const clientByName = new Map(

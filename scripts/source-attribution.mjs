@@ -160,6 +160,7 @@ const PROVIDER_OVERRIDES = {
   'pajhwok.com': publisherMetadataFeed('Pajhwok Afghan News'),
   'www.naharnet.com': publisherMetadataFeed('Naharnet Lebanon'),
   'lorientlejour.com': publisherMetadataFeed("L'Orient Today"),
+  'annahar.com': publisherMetadataFeed('Annahar'),
   'www.studiotamani.org': publisherMetadataFeed('Studio Tamani'),
   'lefaso.net': publisherMetadataFeed('leFaso.net'),
   'actuniger.com': publisherMetadataFeed('ActuNiger'),
@@ -699,9 +700,9 @@ const PROVIDER_OVERRIDES = {
 // a provider-bearing override a separate, explicit lifecycle event instead of
 // something `--write` can silently normalize into the manifest.
 export const PROVIDER_IDENTITY_REVIEW = Object.freeze({
-  sha256: '69c3fa808e80592086ebdba220adf79f27546a97a0b7d1971c30b1e7b1bc61cd',
-  reason: 'Baseline the reviewed identities, including site-scoped publishers that use Google News URLs and the crisis-desk publishers selected in issues #6813-#6830.',
-  reviewReference: 'PR #6662; PR #6670; PR #6736; PR #6840; issues #6813-#6830',
+  sha256: '3db97f816c6db828199ee88b1ac1a8f0130a03d52cd784e42d04ad9acd031201',
+  reason: 'Add Annahar as a reviewed Lebanon publisher identity while retaining the prior site-scoped and crisis-desk identities.',
+  reviewReference: 'PR #6662; PR #6670; PR #6736; PR #6840; issues #6813-#6830; Annahar Lebanon follow-up',
 });
 
 export function providerIdentityDigest(providerOverrides = PROVIDER_OVERRIDES) {

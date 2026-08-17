@@ -70,6 +70,7 @@ const HOST_ORIGINS = Object.freeze({
   'a16z.com': 'US',
   'actuniger.com': 'NE',
   'angellist.com': 'US',
+  'annahar.com': 'LB',
   'apnews.com': 'US',
   'arabianbusiness.com': 'AE',
   'arabnews.com': 'SA',

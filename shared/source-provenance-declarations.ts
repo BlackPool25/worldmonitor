@@ -47,6 +47,7 @@ export const CONFIGURED_SOURCE_PROVENANCE_DECLARATIONS: Readonly<
   "Amar Ujala": { risk: 'unknown', type: 'reviewed' },
   "Amu TV": { risk: 'reviewed', type: 'reviewed' },
   "AngelList News": { risk: 'unknown', type: 'unknown' },
+  "Annahar": { risk: 'reviewed', type: 'reviewed' },
   "ANSA": { risk: 'unknown', type: 'reviewed' },
   "Anthropic News": { risk: 'unknown', type: 'unknown' },
   "AP Mexico": { risk: 'unknown', type: 'unknown' },
