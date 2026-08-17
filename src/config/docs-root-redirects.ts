@@ -16,6 +16,7 @@ const VERCEL_OWNED_DOC_PATHS = new Set([
   '/contact',
   '/pricing',
   '/privacy',
+  '/sandbox',
   '/support',
   '/terms',
 ]);

@@ -67,6 +67,32 @@ describe('rootless Mintlify route canonicalization', () => {
     }
   });
 
+  it('defers SPA-reserved first segments that also appear in the docs map', () => {
+    const catchAll = vercelConfig.rewrites.find((rewrite) => (
+      rewrite.destination === '/dashboard.html' && rewrite.source.includes('(?!')
+    ));
+    assert.ok(catchAll, 'expected the SPA catch-all rewrite');
+    const lookaheadStart = catchAll.source.indexOf('(?!');
+    const lookaheadEnd = catchAll.source.lastIndexOf(').*)');
+    assert.ok(lookaheadStart >= 0 && lookaheadEnd > lookaheadStart, 'expected a negative-lookahead catch-all');
+    const reservedRoots = catchAll.source
+      .slice(lookaheadStart + 3, lookaheadEnd)
+      .split('|')
+      .filter((token) => /^[a-z][a-z0-9-]*$/.test(token))
+      .map((token) => `/${token}`);
+
+    assert.ok(reservedRoots.includes('/sandbox'), 'SPA catch-all must still reserve sandbox');
+    assert.ok(ROOTLESS_DOC_REDIRECTS.has('/sandbox'), 'docs still publishes sandbox; owned-path must keep deferring it');
+
+    for (const path of reservedRoots.filter((root) => ROOTLESS_DOC_REDIRECTS.has(root))) {
+      assert.equal(
+        getRootlessDocsDestination(path),
+        null,
+        `${path} is reserved by the SPA catch-all and must not 308 to /docs`
+      );
+    }
+  });
+
   it('redirects registered root and nested docs routes on every host', () => {
     for (const [host, path, expected] of [
       ['www.worldmonitor.app', '/api-brief', 'https://www.worldmonitor.app/docs/api-brief'],
@@ -85,12 +111,13 @@ describe('rootless Mintlify route canonicalization', () => {
   });
 
   it('does not intercept product routes, unknown routes, or non-read methods', () => {
-    for (const path of ['/pricing', '/changelog', '/country-intel']) {
+    for (const path of ['/pricing', '/changelog', '/country-intel', '/sandbox', '/sandbox/', '/sandbox/index.json']) {
       assert.equal(
         middleware(new Request(`https://www.worldmonitor.app${path}`, {
           headers: { host: 'www.worldmonitor.app', 'user-agent': 'Googlebot' },
         })),
-        undefined
+        undefined,
+        `${path} must keep the product sandbox/Vercel contract`
       );
     }
     assert.equal(
