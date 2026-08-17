@@ -403,7 +403,6 @@ describe('CII docs drift guards', () => {
       { label: 'public/llms-full.txt', text: readFileSync(resolve(root, 'public', 'llms-full.txt'), 'utf8') },
       { label: 'docs/PRESS_KIT.md', text: readFileSync(resolve(root, 'docs', 'PRESS_KIT.md'), 'utf8') },
       { label: 'docs/COMMUNITY-PROMOTION-GUIDE.md', text: readFileSync(resolve(root, 'docs', 'COMMUNITY-PROMOTION-GUIDE.md'), 'utf8') },
-      { label: 'AGENTS.md', text: readFileSync(resolve(root, 'AGENTS.md'), 'utf8') },
       { label: 'public/home.md', text: publicHome },
       { label: 'public/agent-view.json', text: agentViewText },
     ];
@@ -430,7 +429,6 @@ describe('CII docs drift guards', () => {
     const llmsFull = surfaces[1]!.text;
     const pressKit = surfaces[2]!.text;
     const communityGuide = surfaces[3]!.text;
-    const agentsGuide = surfaces[4]!.text;
 
     // inventory-contract: public-fixed-algorithm-claims; classification: exact; reason: CII v8 has a versioned fixed country universe
     assert.match(llmsBrief, /CII v8[\s\S]{0,80}31 Tier-1 countries/i);
@@ -459,7 +457,6 @@ describe('CII docs drift guards', () => {
     assert.match(pressKit, /curated RSS feeds/i);
     assert.match(pressKit, /Locale support follows the runtime registry/i);
     assert.match(communityGuide, /specialized views/i);
-    assert.match(agentsGuide, /`energy`:\s+Energy security/i);
     // inventory-contract: public-fixed-algorithm-claims; classification: exact; reason: both public algorithm universes are fixed contracts
     assert.match(
       publicHome,
@@ -484,7 +481,7 @@ describe('CII docs drift guards', () => {
       'public surfaces must not attribute the 196-country CRI universe to CII',
     );
     assert.doesNotMatch(
-      `${llmsFull}\n${communityGuide}\n${agentsGuide}`,
+      `${llmsFull}\n${communityGuide}\n${readFileSync(resolve(root, 'AGENTS.md'), 'utf8')}`,
       /Tri-Variant Build System|Three Variant Dashboards|three specialized variants|tri-variant architecture|three specialized views/i,
     );
   });

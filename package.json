@@ -19,6 +19,8 @@
     "lint:unicode:staged": "node scripts/check-unicode-safety.mjs --staged",
     "security:local-env-dumps": "node scripts/check-local-secret-dumps.mjs",
     "security:vite-env-secrets": "node scripts/check-vite-env-secrets.mjs",
+    "agent:preflight": "node scripts/agent-preflight.mjs",
+    "agent:pr-snapshot": "node scripts/agent-pr-snapshot.mjs",
     "worktree:bootstrap": "node scripts/bootstrap-worktree.mjs",
     "worktree:bootstrap:test-only": "node scripts/bootstrap-worktree.mjs --ignore-scripts",
     "worktree:env": "node scripts/bootstrap-worktree.mjs --skip-install",
