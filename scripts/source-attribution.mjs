@@ -2,8 +2,8 @@
 /**
  * Source attribution inventory.
  *
- * The runtime source tree is the authority for which upstream hosts are
- * fetched.  The committed manifest supplies the human-facing provider name,
+ * The runtime source tree is the authority for which source hosts are used.
+ * The committed manifest supplies the human-facing provider name,
  * license posture, and required credit for each discovered host.  Keeping the
  * discovery pass deliberately lexical makes this gate runnable in a bare Node
  * checkout (and prevents a credentials-dependent import graph from becoming a
@@ -84,6 +84,12 @@ const publisherMetadataFeed = (provider) => ({
  * become a provider rename or regroup.
  */
 export const PROVIDER_IDENTITY_GROUPS = Object.freeze({
+  interfax: Object.freeze({
+    provider: 'Interfax',
+    memberHosts: Object.freeze(['interfax.com', 'www.interfax.ru']),
+    reason: 'The English publisher host and the direct feed host belong to one Interfax provider identity.',
+    reviewReference: 'PR #6840 follow-up',
+  }),
   'opensky-network': Object.freeze({
     provider: 'opensky-network.org',
     memberHosts: Object.freeze(['auth.opensky-network.org', 'opensky-network.org']),
@@ -136,7 +142,12 @@ const PROVIDER_OVERRIDES = {
   'www.globenewswire.com': licensedPublisherFeed('GlobeNewswire'),
   'feed.businesswire.com': licensedPublisherFeed('Business Wire'),
   'chainwire.org': licensedPublisherFeed('Chainwire'),
-  'www.interfax.ru': licensedPublisherFeed('Interfax'),
+  'www.interfax.ru': { ...licensedPublisherFeed('Interfax'), identityGroup: 'interfax' },
+  'interfax.com': { ...licensedPublisherFeed('Interfax'), identityGroup: 'interfax' },
+  'prnewswire.com': licensedPublisherFeed('PR Newswire'),
+  'coinbase.com': licensedPublisherFeed('Coinbase'),
+  'binance.com': licensedPublisherFeed('Binance'),
+  'jin10.com': licensedPublisherFeed('Jin10'),
   'yemenonline.info': publisherMetadataFeed('Yemen Online'),
   'sanaacenter.org': publisherMetadataFeed("Sana'a Center"),
   'syriadirect.org': publisherMetadataFeed('Syria Direct'),
@@ -688,9 +699,9 @@ const PROVIDER_OVERRIDES = {
 // a provider-bearing override a separate, explicit lifecycle event instead of
 // something `--write` can silently normalize into the manifest.
 export const PROVIDER_IDENTITY_REVIEW = Object.freeze({
-  sha256: 'b5bd66bab2b7416bbac6acf28732b84a1553a5757bda4e34b37cbc424b91d316',
-  reason: 'Baseline the reviewed identities, including the validated crisis-desk publishers selected in issues #6813-#6830.',
-  reviewReference: 'PR #6662; PR #6670; PR #6736; issues #6813-#6830',
+  sha256: '69c3fa808e80592086ebdba220adf79f27546a97a0b7d1971c30b1e7b1bc61cd',
+  reason: 'Baseline the reviewed identities, including site-scoped publishers that use Google News URLs and the crisis-desk publishers selected in issues #6813-#6830.',
+  reviewReference: 'PR #6662; PR #6670; PR #6736; PR #6840; issues #6813-#6830',
 });
 
 export function providerIdentityDigest(providerOverrides = PROVIDER_OVERRIDES) {
@@ -702,41 +713,6 @@ export function providerIdentityDigest(providerOverrides = PROVIDER_OVERRIDES) {
 }
 
 const LOGICAL_ENTRIES = [
-  {
-    ...licensedPublisherFeed('Interfax'),
-    host: 'interfax.com',
-    kind: 'feed',
-    observed: true,
-    attribution: 'Credit Interfax and link to the original Interfax English item; Google News is the acquisition transport.',
-  },
-  {
-    ...licensedPublisherFeed('PR Newswire'),
-    host: 'prnewswire.com',
-    kind: 'feed',
-    observed: true,
-    attribution: 'Credit PR Newswire and link to the original release; Google News is the acquisition transport.',
-  },
-  {
-    ...licensedPublisherFeed('Coinbase'),
-    host: 'coinbase.com',
-    kind: 'feed',
-    observed: true,
-    attribution: 'Credit Coinbase and link to the original blog post; Google News is the acquisition transport.',
-  },
-  {
-    ...licensedPublisherFeed('Binance'),
-    host: 'binance.com',
-    kind: 'feed',
-    observed: true,
-    attribution: 'Credit Binance and link to the original announcement; Google News is the acquisition transport.',
-  },
-  {
-    ...licensedPublisherFeed('Jin10'),
-    host: 'jin10.com',
-    kind: 'feed',
-    observed: true,
-    attribution: 'Credit Jin10 and link to the original item; Google News is the acquisition transport.',
-  },
   {
     provider: 'Fintraffic Digitraffic',
     host: 'not-currently-wired',
@@ -845,6 +821,21 @@ function hostFromUrl(raw) {
   return host;
 }
 
+function googleNewsPublisherHosts(query) {
+  let decoded;
+  try {
+    decoded = decodeURIComponent(String(query || '').replaceAll('+', ' '));
+  } catch {
+    decoded = String(query || '').replaceAll('+', ' ');
+  }
+  const hosts = new Set();
+  for (const match of decoded.matchAll(/\bsite:([a-z0-9.-]+)(?:\/[^\s"'`)]+)?/gi)) {
+    const host = hostFromUrl(`https://${match[1]}`);
+    if (host) hosts.add(host);
+  }
+  return [...hosts];
+}
+
 export function scanUpstreamHosts(rootDir = ROOT) {
   const hosts = new Map();
   // References are recorded per file, never per line. A line number is not part
@@ -896,6 +887,31 @@ export function scanUpstreamHosts(rootDir = ROOT) {
           ? 'feed'
           : 'structured';
       recordHost(host, kind, relativePath);
+      if (host === 'news.google.com' && FEED_FILES.has(relativePath)) {
+        let query = '';
+        try {
+          query = new URL(match[0]).searchParams.get('q') || '';
+        } catch {
+          // The ordinary host remains accounted even if a malformed query
+          // cannot yield a publisher identity.
+        }
+        for (const publisherHost of googleNewsPublisherHosts(query)) {
+          recordHost(publisherHost, 'feed', relativePath);
+        }
+      }
+    }
+    if (FEED_FILES.has(relativePath)) {
+      // Server feed mirrors build Google News URLs through gn()/gnLocale().
+      // Count a site-scoped publisher under its own host as well as counting
+      // the Google News URL literal above under news.google.com.
+      for (const match of source.matchAll(/\bgn(?:Locale)?\(\s*(["'`])([\s\S]*?)\1/g)) {
+        const lineStart = source.lastIndexOf('\n', match.index ?? 0) + 1;
+        const beforeMatch = source.slice(lineStart, match.index ?? 0);
+        if (beforeMatch.includes('//')) continue;
+        for (const publisherHost of googleNewsPublisherHosts(match[2])) {
+          recordHost(publisherHost, 'feed', relativePath);
+        }
+      }
     }
   }
   for (const dynamic of DYNAMIC_HOSTS) {
@@ -1079,6 +1095,7 @@ export function buildManifest(
       });
   }
   const logicalEntries = [...LOGICAL_ENTRIES, ...(previous.logicalEntries || [])]
+    .filter((entry) => !observedHosts.has(entry.host))
     .filter((entry, index, all) => all.findIndex((candidate) => candidate.provider === entry.provider && candidate.host === entry.host) === index)
     .sort((a, b) => a.provider.localeCompare(b.provider));
   return { version: 1, entries: entries.sort((a, b) => a.host.localeCompare(b.host)), logicalEntries };
@@ -1328,9 +1345,10 @@ export function renderAttributionSection(inventory, manifest) {
     return `| ${markdownCell(entry.provider)} (${markdownCell(entry.host)}) | ${markdownCell(surface)} — ${markdownCell(sourceRef)} | ${markdownCell(entry.license)} | ${markdownCell(entry.attribution)} | ${markdownCell(entry.status)} |`;
   });
   return [
-    '## Observed Upstream Inventory',
+    '## Observed Source Inventory',
+    '',
     BEGIN_MARKER,
-    `This generated inventory covers **${stats.activeHosts} active upstream hosts** representing **${stats.providerCount} active providers** (**${stats.structuredHosts} structured/API**, **${stats.feedHosts} feed**, and **${stats.operationalStatusHosts} operational-status** hosts). It is derived from URL literals in \`scripts/\`, \`server/\`, \`api/\`, and \`src/\`; the manifest records a license posture and the credit required for every observed host. ${stats.reviewNeeded} entries remain marked \`terms-review\` and should be confirmed before a redistribution or commercial-use claim.`,
+    `This generated inventory covers **${stats.activeHosts} active source hosts** representing **${stats.providerCount} active providers** (**${stats.structuredHosts} structured/API**, **${stats.feedHosts} feed**, and **${stats.operationalStatusHosts} operational-status** hosts). It is derived from source declarations in \`scripts/\`, \`server/\`, \`api/\`, and \`src/\`; the manifest records a license posture and the credit required for every observed host. ${stats.reviewNeeded} entries remain marked \`terms-review\` and should be confirmed before a redistribution or commercial-use claim.`,
     '',
     '| Provider | Observed surface | License posture | Required attribution or exclusion reason | Status |',
     '| --- | --- | --- | --- | --- |',
@@ -1345,7 +1363,7 @@ function escapeRegExp(value) {
 
 function inventoryMarkerPattern(leadingNewline) {
   return new RegExp(
-    `${leadingNewline ? '\\n' : ''}## (?:Audited|Observed) Upstream Inventory\\n` +
+    `${leadingNewline ? '\\n' : ''}## (?:Audited|Observed) (?:Upstream|Source) Inventory\\n+` +
       `${escapeRegExp(BEGIN_MARKER)}[\\s\\S]*?${escapeRegExp(END_MARKER)}`,
   );
 }

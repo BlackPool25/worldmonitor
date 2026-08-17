@@ -147,18 +147,29 @@ describe('sources catalog origin countries', () => {
     assert.equal(sourceOriginLabel('QA'), 'Qatar');
   });
 
-  it('classifies every direct crisis-desk publisher added by #6813-#6830', () => {
+  it('classifies every crisis-desk publisher added by #6813-#6830', () => {
     const expectedOrigins = new Map([
+      ['actuniger.com', 'NE'],
       ['airinfoagadez.com', 'NE'],
       ['amu.tv', 'AF'],
+      ['ayibopost.com', 'HT'],
+      ['dhakatribune.com', 'BD'],
       ['efectococuyo.com', 'VE'],
+      ['english.enabbaladi.net', 'SY'],
+      ['english.wafa.ps', 'PS'],
       ['havanatimes.org', 'CU'],
       ['lefaso.net', 'BF'],
       ['libyaherald.com', 'LY'],
+      ['lorientlejour.com', 'LB'],
+      ['madamasr.com', 'EG'],
       ['nation.africa', 'KE'],
+      ['pajhwok.com', 'AF'],
       ['sanaacenter.org', 'YE'],
       ['syriadirect.org', 'SY'],
       ['tchadinfos.com', 'TD'],
+      ['thedailystar.net', 'BD'],
+      ['theguardianpostcameroon.com', 'CM'],
+      ['yemenonline.info', 'YE'],
       ['www.14ymedio.com', 'CU'],
       ['www.972mag.com', 'IL'],
       ['www.alwihdainfo.com', 'TD'],
@@ -667,7 +678,7 @@ describe('crawlable corpus generator', () => {
       );
       assert.match(
         sourcesPage,
-        new RegExp(`${activeProviderNames.size} active providers across ${activeAttributionEntries.length} observed upstream hosts`),
+        new RegExp(`${activeProviderNames.size} active providers across ${activeAttributionEntries.length} observed source hosts`),
         'sources page must label provider and host counts as different inventory layers',
       );
       assert.match(sourcesPage, /id="source-search"/);
@@ -690,6 +701,21 @@ describe('crawlable corpus generator', () => {
         new Set(renderedProviders.map(decodeHtmlAttribute)),
         activeProviderNames,
         'sources page must render the exact active provider set from the attribution manifest',
+      );
+      assert.match(
+        sourcesPage,
+        /data-provider="L&#39;Orient Today"[\s\S]*?lorientlejour\.com/,
+        "sources page must list L'Orient Today under its own host",
+      );
+      assert.match(
+        sourcesPage,
+        /data-provider="news\.google\.com"[\s\S]*?<h3>Google News<\/h3>[\s\S]*?news\.google\.com/,
+        'sources page must list Google News as its own provider',
+      );
+      assert.doesNotMatch(
+        sourcesPage,
+        /via Google News|acquisition transport/i,
+        'the public catalog must not expose feed transport mechanics',
       );
       const renderedDomains = [...sourcesPage.matchAll(/data-source-domain="([^"]+)"/g)]
         .map((match) => match[1]);

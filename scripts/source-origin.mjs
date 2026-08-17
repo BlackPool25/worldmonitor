@@ -63,6 +63,91 @@ const INTERNATIONAL_HOST_SUFFIXES = [
 // Host → ISO 3166-1 alpha-2, 'EU', or null (international).
 // Only hosts that cannot be inferred from a real ccTLD or government suffix.
 const HOST_ORIGINS = Object.freeze({
+  // Editorial hosts used by site-scoped news searches. These are catalogued
+  // as publishers in their own right; the shared search endpoint is a
+  // separate provider.
+  '36kr.com': 'CN',
+  'a16z.com': 'US',
+  'actuniger.com': 'NE',
+  'angellist.com': 'US',
+  'apnews.com': 'US',
+  'arabianbusiness.com': 'AE',
+  'arabnews.com': 'SA',
+  'arctictoday.com': 'US',
+  'armenpress.am': 'AM',
+  'armscontrol.org': 'US',
+  'asia.nikkei.com': 'JP',
+  'ayibopost.com': 'HT',
+  'bangkokpost.com': 'TH',
+  'bellingcat.com': 'NL',
+  'bihus.info': 'UA',
+  'binance.com': null,
+  'bloomberg.com': 'US',
+  'carnegieendowment.org': 'US',
+  'chathamhouse.org': 'GB',
+  'citinewsroom.com': 'GH',
+  'cnas.org': 'US',
+  'cnn.com': 'US',
+  'coinbase.com': 'US',
+  'cp24.com': 'CA',
+  'dhakatribune.com': 'BD',
+  'dlnews.com': 'GB',
+  'dw.com': 'DE',
+  'eff.org': 'US',
+  'english.alarabiya.net': 'SA',
+  'english.enabbaladi.net': 'SY',
+  'euractiv.com': 'BE',
+  'euromaidanpress.com': 'UA',
+  'fas.org': 'US',
+  'fxempire.com': 'IL',
+  'geo.tv': 'PK',
+  'gmfus.org': 'US',
+  'haaretz.com': 'IL',
+  'hiiraan.com': 'CA',
+  'interfax.com': 'RU',
+  'investing.com': 'IL',
+  'iranintl.com': 'GB',
+  'janes.com': 'GB',
+  'jin10.com': 'CN',
+  'kitco.com': 'CA',
+  'kyivindependent.com': 'UA',
+  'lorientlejour.com': 'LB',
+  'lowyinstitute.org': 'AU',
+  'madamasr.com': 'EG',
+  'marketwatch.com': 'US',
+  'messari.io': 'US',
+  'mining-journal.com': 'GB',
+  'miningweekly.com': 'ZA',
+  'montrealgazette.com': 'CA',
+  'nti.org': 'US',
+  'oecd.org': null,
+  'oglobo.globo.com': 'BR',
+  'pajhwok.com': 'AF',
+  'prnewswire.com': 'US',
+  'renaissancecapital.com': 'US',
+  'reuters.com': 'GB',
+  'rferl.org': 'US',
+  'rudaw.net': 'IQ',
+  'rusi.org': 'GB',
+  'slidstvo.info': 'UA',
+  'spglobal.com': 'US',
+  'suspilne.media': 'UA',
+  'taipeitimes.com': 'TW',
+  'tass.com': 'RU',
+  'theblock.co': 'US',
+  'thebulletin.org': 'US',
+  'thedailystar.net': 'BD',
+  'theguardianpostcameroon.com': 'CM',
+  'theinformation.com': 'US',
+  'thejakartapost.com': 'ID',
+  'thenextweb.com': 'NL',
+  'ukrinform.net': 'UA',
+  'understandingwar.org': 'US',
+  'wilsoncenter.org': 'US',
+  'wublockchain.com': 'CN',
+  'xinhuanet.com': 'CN',
+  'yemenonline.info': 'YE',
+  'zerkalo.io': 'BY',
   'acleddata.com': 'US',
   'adsb.lol': 'NL',
   'api.adsb.lol': 'NL',
@@ -519,7 +604,10 @@ export function inferOriginFromHost(host) {
   if (lower.endsWith('.gov.il') || lower.endsWith('.co.il')) return 'IL';
   if (lower.endsWith('.co.kr') || lower.endsWith('.go.kr')) return 'KR';
   if (lower.endsWith('.com.tr')) return 'TR';
-  if (INTERNATIONAL_HOST_SUFFIXES.some((suffix) => lower.endsWith(suffix)) || lower.endsWith('.int')) {
+  if (
+    INTERNATIONAL_HOST_SUFFIXES.some((suffix) => lower === suffix.slice(1) || lower.endsWith(suffix))
+    || lower.endsWith('.int')
+  ) {
     return null;
   }
 
@@ -534,6 +622,8 @@ export function inferOriginFromHost(host) {
 export function resolveHostOrigin(host) {
   const lower = normalizeHost(host);
   if (hasOwn(HOST_ORIGINS, lower)) return HOST_ORIGINS[lower];
+  const wwwAlias = lower.startsWith('www.') ? lower.slice(4) : `www.${lower}`;
+  if (hasOwn(HOST_ORIGINS, wwwAlias)) return HOST_ORIGINS[wwwAlias];
   return inferOriginFromHost(lower);
 }
 

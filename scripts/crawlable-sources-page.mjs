@@ -253,6 +253,53 @@ const SOURCE_NAME_OVERRIDES = new Map([
   ['nasstatus.faa.gov', 'Federal Aviation Administration (FAA)'],
   ['news.crunchbase.com', 'Crunchbase News'],
   ['news.google.com', 'Google News'],
+  ['apnews.com', 'AP News'],
+  ['arabianbusiness.com', 'Arabian Business'],
+  ['arabnews.com', 'Arab News'],
+  ['arctictoday.com', 'Arctic Today'],
+  ['armscontrol.org', 'Arms Control Association'],
+  ['asianews.it', 'AsiaNews'],
+  ['bangkokpost.com', 'Bangkok Post'],
+  ['bihus.info', 'Bihus.Info'],
+  ['citinewsroom.com', 'Citi Newsroom'],
+  ['cp24.com', 'CP24'],
+  ['ctvnews.ca', 'CTV News'],
+  ['dlnews.com', 'DL News'],
+  ['euromaidanpress.com', 'Euromaidan Press'],
+  ['focustaiwan.tw', 'Focus Taiwan'],
+  ['gmfus.org', 'German Marshall Fund'],
+  ['hiiraan.com', 'Hiiraan Online'],
+  ['hirado.hu', 'Híradó'],
+  ['iranintl.com', 'Iran International'],
+  ['iseas.edu.sg', 'ISEAS – Yusof Ishak Institute'],
+  ['iss.europa.eu', 'EU Institute for Security Studies'],
+  ['justice.gov', 'U.S. Department of Justice'],
+  ['kyivindependent.com', 'Kyiv Independent'],
+  ['lowyinstitute.org', 'Lowy Institute'],
+  ['marketwatch.com', 'MarketWatch'],
+  ['miningweekly.com', 'Mining Weekly'],
+  ['montrealgazette.com', 'Montreal Gazette'],
+  ['oglobo.globo.com', 'O Globo'],
+  ['pravda.com.ua', 'Ukrainska Pravda'],
+  ['rferl.org', 'RFE/RL'],
+  ['rieti.go.jp', 'RIETI'],
+  ['spglobal.com', 'S&P Global'],
+  ['state.gov', 'U.S. Department of State'],
+  ['taipeitimes.com', 'Taipei Times'],
+  ['taiwannews.com.tw', 'Taiwan News'],
+  ['theblock.co', 'The Block'],
+  ['thebulletin.org', 'Bulletin of the Atomic Scientists'],
+  ['theinformation.com', 'The Information'],
+  ['thejakartapost.com', 'The Jakarta Post'],
+  ['thenextweb.com', 'The Next Web'],
+  ['thestar.com.my', 'The Star (Malaysia)'],
+  ['understandingwar.org', 'Institute for the Study of War'],
+  ['unhcr.org', 'UNHCR'],
+  ['whitehouse.gov', 'The White House'],
+  ['wilsoncenter.org', 'Wilson Center'],
+  ['wublockchain.com', 'Wu Blockchain'],
+  ['xinhuanet.com', 'Xinhua'],
+  ['zn.ua', 'ZN.UA'],
   ['news.mit.edu', 'MIT News'],
   ['news.un.org', 'UN News'],
   ['news.usni.org', 'USNI News'],
@@ -511,7 +558,9 @@ const MULTI_LABEL_PUBLIC_SUFFIXES = new Set([
 function hostnameBrandToken(host) {
   const labels = host.toLowerCase().split('.');
   const suffix = labels.slice(-2).join('.');
-  const offset = MULTI_LABEL_PUBLIC_SUFFIXES.has(suffix) ? 3 : 2;
+  const countrySecondLevel = labels.at(-1)?.length === 2
+    && /^(?:ac|co|com|edu|gov|net|org)$/.test(labels.at(-2) || '');
+  const offset = MULTI_LABEL_PUBLIC_SUFFIXES.has(suffix) || countrySecondLevel ? 3 : 2;
   return labels.at(-offset) || labels[0] || host;
 }
 
@@ -596,7 +645,7 @@ export function buildSourceCatalog(entries) {
 export function renderSourcesIndex({ sourceStats, sourceCatalog, baseUrl, lastmod, helpers }) {
   const { absoluteUrl, breadcrumbLd, escapeHtml, pageDocument, withUtmSource } = helpers;
   const path = '/sources/';
-  const description = `Explore ${sourceStats.providerCount} active providers and ${sourceStats.activeHosts} upstream hosts across World Monitor's global intelligence, markets, energy, cyber, aviation, climate and news coverage.`;
+  const description = `Explore ${sourceStats.providerCount} active providers and ${sourceStats.activeHosts} source hosts across World Monitor's global intelligence, markets, energy, cyber, aviation, climate and news coverage.`;
   // Query precedes the fragment — withUtmSource() would append after the
   // anchor and push the query into the fragment, so build these by hand.
   const docsHref = (anchor) => `/docs/data-sources?utm_source=seo-sources${anchor ? `#${anchor}` : ''}`;
@@ -660,7 +709,7 @@ export function renderSourcesIndex({ sourceStats, sourceCatalog, baseUrl, lastmo
         <div class="hero-copy">
           <p class="eyebrow"><span></span> Live provider inventory</p>
           <h1>See every source behind World Monitor.</h1>
-          <p class="lede">The map is only as useful as the signals behind it. World Monitor combines ${sourceStats.providerCount} active providers across ${sourceStats.activeHosts} observed upstream hosts spanning news, conflict, markets, military, climate, aviation, infrastructure and technology — with every provider listed below.</p>
+          <p class="lede">The map is only as useful as the signals behind it. World Monitor combines ${sourceStats.providerCount} active providers across ${sourceStats.activeHosts} observed source hosts spanning news, conflict, markets, military, climate, aviation, infrastructure and technology — with every provider listed below.</p>
           <div class="hero-actions">
             <a class="cta" href="#catalog">Browse all ${sourceStats.providerCount} providers <span aria-hidden="true">↓</span></a>
             <a class="secondary-cta" href="${withUtmSource('/dashboard', 'sources-hero')}">Open the live dashboard <span aria-hidden="true">→</span></a>
@@ -672,7 +721,7 @@ export function renderSourcesIndex({ sourceStats, sourceCatalog, baseUrl, lastmo
           <div class="console-map" aria-hidden="true"><span class="orbit one"></span><span class="orbit two"></span><span class="pulse p1"></span><span class="pulse p2"></span><span class="pulse p3"></span><span class="pulse p4"></span><span class="pulse p5"></span></div>
           <div class="console-stats">
             <span><strong>${sourceStats.providerCount}</strong><small>active providers</small></span>
-            <span><strong>${sourceStats.activeHosts}</strong><small>upstream hosts</small></span>
+            <span><strong>${sourceStats.activeHosts}</strong><small>source hosts</small></span>
             <span><strong>${SOURCE_DOMAINS.length}</strong><small>signal domains</small></span>
           </div>
           <p><span></span> Inventory reconciled with the URLs used by the codebase</p>
@@ -680,7 +729,7 @@ export function renderSourcesIndex({ sourceStats, sourceCatalog, baseUrl, lastmo
       </section>
       <section class="proof-rail" aria-label="Source types">
         <span><strong>${sourceStats.providerCount}</strong><small>Active providers</small></span>
-        <span><strong>${sourceStats.activeHosts}</strong><small>Upstream hosts</small></span>
+        <span><strong>${sourceStats.activeHosts}</strong><small>Source hosts</small></span>
         <span><strong>${sourceStats.structuredHosts}</strong><small>Structured endpoints</small></span>
         <span><strong>${sourceStats.feedHosts}</strong><small>News &amp; OSINT feeds</small></span>
       </section>

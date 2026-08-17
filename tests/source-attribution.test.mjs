@@ -127,6 +127,46 @@ test('source inventory has complete metadata and matches the generated catalog',
   assert.equal(byHost.get('ecs-api.wingbits.com')?.provider, 'wingbits.com');
 });
 
+test('Google News site feeds account for both the editorial host and Google News', () => {
+  const inventory = scanUpstreamHosts(rootDir);
+  const byHost = new Map(inventory.map((entry) => [entry.host, entry]));
+
+  const googleNews = byHost.get('news.google.com');
+  assert.ok(googleNews, 'Google News must remain an accounted transport host');
+
+  const lorientToday = byHost.get('lorientlejour.com');
+  assert.ok(lorientToday, "L'Orient Today must be accounted under lorientlejour.com");
+  assert.ok(
+    lorientToday.references.some((reference) => reference.path === 'src/config/feeds.ts'),
+    "L'Orient Today must retain its client feed reference",
+  );
+  assert.ok(
+    lorientToday.references.some((reference) => reference.path === 'server/worldmonitor/news/v1/_feeds.ts'),
+    "L'Orient Today must retain its server feed reference",
+  );
+
+  const serverFeeds = readFileSync(
+    join(rootDir, 'server/worldmonitor/news/v1/_feeds.ts'),
+    'utf8',
+  );
+  const configuredPublisherHosts = new Set();
+  for (const rawLine of serverFeeds.split('\n')) {
+    const line = rawLine.trim();
+    if (line.startsWith('//') || !line.includes('site:')) continue;
+    for (const match of line.matchAll(/\bsite:([a-z0-9.-]+)/gi)) {
+      configuredPublisherHosts.add(match[1].toLowerCase());
+    }
+  }
+  const missingHosts = [...configuredPublisherHosts]
+    .filter((host) => !byHost.has(host))
+    .sort();
+  assert.deepEqual(
+    missingHosts,
+    [],
+    'every site-scoped publisher must be accounted under its own configured host',
+  );
+});
+
 test('provider identity groups declare complete reviewed multi-host membership', () => {
   const manifest = loadManifest(rootDir);
   assert.deepEqual(validateProviderIdentityGroups(manifest), []);
