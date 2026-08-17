@@ -61,6 +61,7 @@ import { setTrustedHtml, trustedHtml } from '@/utils/dom-utils';
 import {
   getLayerExplanation,
   hasCuratedLayerExplanation,
+  isLayerExecutable,
   isSunsetLayer,
   LAYER_REGISTRY,
   resolveLayerLabel,
@@ -506,7 +507,7 @@ export class MapComponent {
       'natural', 'weather',                               // natural
       'economic',                                         // economic
       'waterways',                                        // labels
-      'ciiChoropleth',                                    // CII heat-map (DeckGL only, shown as disabled toggle)
+      'ciiChoropleth',                                    // Candidate only; SVG capability filter below omits it.
     ];
     const techLayers: (keyof MapLayers)[] = [
       'cables', 'datacenters', 'outages',                // tech infrastructure
@@ -539,13 +540,13 @@ export class MapComponent {
       'weather', 'fires',                     // operational risk
       'economic',                             // infrastructure context
     ];
-    // Filter sunset layers (e.g. iranAttacks) so the SVG/mobile picker matches
-    // getLayersForVariant / DeckGL — otherwise a dead raw-key toggle wastes a slot (#6046).
+    // Filter sunset and renderer-incompatible layers so the SVG/mobile picker
+    // cannot expose a toggle whose layer has no SVG paint path.
     const layers = (SITE_VARIANT === 'tech' ? techLayers
                  : SITE_VARIANT === 'finance' ? financeLayers
                  : SITE_VARIANT === 'happy' ? happyLayers
                  : SITE_VARIANT === 'energy' ? energyLayers
-                 : fullLayers).filter((key) => !isSunsetLayer(key));
+                 : fullLayers).filter((key) => !isSunsetLayer(key) && isLayerExecutable(key, 'svg'));
     const MAX_SVG_LAYERS = 9;
     const enforceLayerLimit = () => {
       const allBtns = Array.from(toggles.querySelectorAll<HTMLButtonElement>('.layer-toggle'));
