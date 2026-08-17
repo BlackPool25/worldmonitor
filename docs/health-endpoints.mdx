@@ -60,6 +60,10 @@ Primary health endpoint. Checks all Redis-backed data keys and seed freshness me
 
 With `?compact=1`, the `checks` object is replaced by `problems` containing only non-OK keys.
 
+### Bundle tick heartbeats
+
+`_bundle-runner.mjs` writes `bundle:heartbeat:<label>` on every container start, including skip-all ticks. Member seed-meta cannot see a daily cron that never fires when its sections are weekly or monthly. `/api/health` probes `staticRefBundleTick` (`bundle:heartbeat:static-ref`) and, as of #6806, the two 1-section siblings `armsSuppliersBundleTick` and `militaryBasesBundleTick`. A 48h silence is `STALE_SEED`. Missing keys before the first tick are `EMPTY` under an expiring acknowledgement, not a page-out.
+
 ### Consumer-price source coverage
 
 The consumer-prices-core service exposes `GET /wm/consumer-prices/v1/coverage?market=ae` (the service API key is required). Its response includes attempted, completed, failed, and validator-rejected page counts for the market and each active retailer. `status` is `healthy`, `partial`, or `degraded`; a partial result remains publishable, while a rejected observation is never admitted merely to improve the coverage count. The publisher writes the same snapshot to `consumer-prices:coverage:<market>` and includes its aggregate completion ratio in `seed-meta`, so `/api/health` can distinguish a fresh partial run from a stopped producer.

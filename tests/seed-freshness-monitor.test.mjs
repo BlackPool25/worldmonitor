@@ -577,11 +577,34 @@ describe('scheduled seed freshness monitor', () => {
         !issues.includes(5771),
         'recovered chinaCoverage degradation must not remain acknowledged',
       );
-      assert.equal(
-        new Set(issues).size,
-        issues.length,
-        'each acknowledged degradation needs its OWN tracking issue, not one shared number',
-      );
+      // Distinct issue numbers is the cheapest offline proxy for "somebody
+      // actually filed these". #6806 is the one allowed repeat: it owns both
+      // new 1-section bundle-tick probes as a single add-then-remove cutover.
+      const namesByIssue = new Map();
+      for (const entry of committed.acknowledged) {
+        const names = namesByIssue.get(entry.issue) ?? [];
+        names.push(entry.name);
+        namesByIssue.set(entry.issue, names);
+      }
+      const allowedSharedIssues = new Map([
+        [6806, ['armsSuppliersBundleTick', 'militaryBasesBundleTick']],
+      ]);
+      for (const [issue, names] of namesByIssue) {
+        const allowed = allowedSharedIssues.get(issue);
+        if (allowed) {
+          assert.deepEqual(
+            [...names].sort(),
+            [...allowed].sort(),
+            `#${issue} may only cover the documented #6806 bundle-tick pair`,
+          );
+          continue;
+        }
+        assert.equal(
+          names.length,
+          1,
+          `issue #${issue} is shared by ${names.join(', ')} — each acknowledged degradation needs its OWN tracking issue`,
+        );
+      }
       for (const entry of committed.acknowledged) {
         assert.doesNotMatch(
           entry.reason,
