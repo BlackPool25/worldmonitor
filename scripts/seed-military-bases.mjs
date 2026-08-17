@@ -378,6 +378,63 @@ export async function backfillSeedMetaFromActiveVersion(url, token, prefix, opts
   return { version, fetchedAt, recordCount };
 }
 
+function isRedisTransportError(err) {
+  if (!(err instanceof Error)) return false;
+  const message = err.message;
+  return (
+    message.startsWith('Redis command ')
+    || message.startsWith('Pipeline ')
+    || message.includes(' failed after ')
+  );
+}
+
+function isActiveVersionCasConflict(err) {
+  return err instanceof Error && err.message.startsWith('Active version changed during validation');
+}
+
+/**
+ * Cheap missing-marker repair. Returns `repaired` only when seed-meta was
+ * rewritten from a live active version; every other action means `main()`
+ * should continue into the file/R2 reseed path.
+ *
+ * A validate/data-shape failure on the published pointer must not abort the
+ * section: that used to fall through to a rewrite, and exiting 1 here would
+ * leave seed-meta absent so every later tick retries the same dead repair.
+ * A compare-and-swap miss means another writer already published — rethrow.
+ * Redis transport errors also rethrow; a 1,000-round-trip reseed would fail
+ * the same way.
+ */
+export async function maybeRepairMissingSeedMeta(url, token, prefix, { force = false } = {}) {
+  if (force) return { action: 'skipped-force' };
+
+  const seedMetaKey = `${prefix}seed-meta:military:bases`;
+  const existingSeedMeta = await commandRequest(url, token, ['GET', seedMetaKey]);
+  if (existingSeedMeta != null && existingSeedMeta !== '') {
+    return { action: 'skipped-present' };
+  }
+
+  const activeVersion = await commandRequest(url, token, [
+    'GET',
+    `${prefix}military:bases:active`,
+  ]);
+  if (!activeVersion) {
+    return { action: 'fallthrough-no-active' };
+  }
+
+  console.log(`${seedMetaKey} is missing while an active version (${activeVersion}) is published.`);
+  console.log('Restoring the freshness marker without reseeding...');
+  try {
+    const repaired = await backfillSeedMetaFromActiveVersion(url, token, prefix, { deep: false });
+    return { action: 'repaired', ...repaired };
+  } catch (err) {
+    if (isActiveVersionCasConflict(err) || isRedisTransportError(err)) throw err;
+    console.warn(
+      `Shallow repair failed (${err instanceof Error ? err.message : err}); falling through to reseed.`,
+    );
+    return { action: 'fallthrough-invalid-active' };
+  }
+}
+
 async function cleanupOldVersion(url, token, prefix, newVersion) {
   const activeKey = `${prefix}military:bases:active`;
   const getResult = await pipelineRequest(url, token, [['GET', activeKey]]);
@@ -417,35 +474,13 @@ async function main() {
   // size `timeoutMs` in seed-bundle-static-ref.mjs against it (#6806).
   const runStartedAt = Date.now();
 
-  // Repair the freshness marker before doing any reseed work (#6806).
-  //
-  // `seed-meta:military:bases` is this section's only freshness signal, so while
-  // it is absent `_bundle-runner.mjs` marks the section due on every daily tick
-  // rather than every 30 days. A full reseed is ~1,000 Redis round trips (251
-  // GEOADD + 251 HSET + ~500 validation pipelines, ~4 minutes). It fits the
-  // section's slot — that is what the 400s sizing buys — but re-entering it on
-  // every tick when a 3-call repair suffices is what starved the bundle.
-  // Restoring the marker from the already-published version is a handful of
-  // calls.
-  //
-  // Returning here costs at most one tick of reseed latency: the restored marker
-  // carries the ACTIVE version's own timestamp, so if that data really is past
-  // its interval the very next tick sees it as due and reseeds normally.
-  const seedMetaKey = `${prefix}seed-meta:military:bases`;
-  const existingSeedMeta = force
-    ? 'skipped'
-    : await commandRequest(redisUrl, redisToken, ['GET', seedMetaKey]);
-  if (existingSeedMeta == null || existingSeedMeta === '') {
-    const activeVersion = await commandRequest(redisUrl, redisToken, [
-      'GET',
-      `${prefix}military:bases:active`,
-    ]);
-    if (activeVersion) {
-      console.log(`${seedMetaKey} is missing while an active version (${activeVersion}) is published.`);
-      console.log('Restoring the freshness marker without reseeding...');
-      await backfillSeedMetaFromActiveVersion(redisUrl, redisToken, prefix, { deep: false });
-      return;
-    }
+  // Missing seed-meta with a live active version: restore the marker and stop.
+  // `--force`, a present marker, no active pointer, or a broken active corpus
+  // all fall through to the file/R2 reseed. A successful repair costs at most
+  // one tick if the restored timestamp is already past the 30-day interval.
+  const repair = await maybeRepairMissingSeedMeta(redisUrl, redisToken, prefix, { force });
+  if (repair.action === 'repaired') {
+    return;
   }
 
   const volumePath = '/data/military-bases-final.json';

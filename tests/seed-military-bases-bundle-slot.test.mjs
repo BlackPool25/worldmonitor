@@ -25,6 +25,7 @@ import {
   GRACE_PERIOD_MS,
   atomicSwitch,
   backfillSeedMetaFromActiveVersion,
+  maybeRepairMissingSeedMeta,
   parseArgs,
 } from '../scripts/seed-military-bases.mjs';
 
@@ -70,10 +71,9 @@ test('the post-publish grace cannot grow back into a whole-budget reservation', 
   assert.ok(GRACE_PERIOD_MS > 0, 'some grace must remain so in-flight readers are not cut off');
 });
 
-test('--force bypasses the repair short-circuit so a manual reseed is still reachable', () => {
-  // The repair path returns early when seed-meta is absent, which is right for
-  // the cron but wrong for an operator who ran the seeder BECAUSE the marker is
-  // missing and wants the data rewritten.
+test('parseArgs recognizes --force forms', () => {
+  // CLI contract only — the main-gate bypass is covered by
+  // maybeRepairMissingSeedMeta({ force: true }) below.
   const argv = process.argv;
   try {
     process.argv = ['node', 'seed-military-bases.mjs'];
@@ -148,6 +148,11 @@ test('a missing seed-meta is repaired without a full revalidation of every recor
   assert.equal(repaired.version, VERSION);
   assert.equal(repaired.recordCount, RECORDS);
 
+  const payload = seedMetaWritePayload(stub.calls);
+  assert.equal(payload.sourceVersion, VERSION);
+  assert.equal(payload.recordCount, RECORDS);
+  assert.equal(payload.fetchedAt, Number(VERSION));
+
   const zrangeCalls = stub.calls.filter(
     (c) => c.path === '/pipeline' && c.body.some(([cmd]) => cmd === 'ZRANGE'),
   );
@@ -161,4 +166,140 @@ test('a missing seed-meta is repaired without a full revalidation of every recor
     stub.calls.length <= 4,
     `shallow repair issued ${stub.calls.length} Redis calls; it must stay a handful`,
   );
+});
+
+function seedMetaWritePayload(calls) {
+  const evalCall = calls.find((c) => Array.isArray(c.body) && c.body[0] === 'EVAL');
+  assert.ok(evalCall, 'repair must write seed-meta through EVAL');
+  return JSON.parse(evalCall.body.at(-1));
+}
+
+function militaryRedisHandler({
+  seedMeta = null,
+  active = VERSION,
+  geoCount = RECORDS,
+  metaCount = RECORDS,
+  evalResult = [1, VERSION],
+} = {}) {
+  return (path, body) => {
+    if (path === '/') {
+      const [cmd, key] = body;
+      if (cmd === 'GET' && String(key).endsWith('seed-meta:military:bases')) {
+        return { result: seedMeta };
+      }
+      if (cmd === 'GET' && String(key).endsWith('military:bases:active')) {
+        return { result: active };
+      }
+      if (cmd === 'EVAL') return { result: evalResult };
+      return { result: null };
+    }
+    if (path === '/pipeline') {
+      return body.map(([cmd]) => {
+        if (cmd === 'GET') return { result: active };
+        if (cmd === 'ZCARD') return { result: geoCount };
+        if (cmd === 'HLEN') return { result: metaCount };
+        return { result: null };
+      });
+    }
+    return { result: null };
+  };
+}
+
+test('missing seed-meta with a live active version repairs cheaply and stops', async () => {
+  const stub = stubRedis(militaryRedisHandler());
+  let result;
+  try {
+    result = await maybeRepairMissingSeedMeta(URL_BASE, TOKEN, '', { force: false });
+  } finally {
+    stub.restore();
+  }
+
+  assert.equal(result.action, 'repaired');
+  assert.equal(result.version, VERSION);
+  assert.equal(result.recordCount, RECORDS);
+
+  const geoAdds = stub.calls.filter(
+    (c) => Array.isArray(c.body) && (c.body[0] === 'GEOADD' || c.body.some?.((row) => row?.[0] === 'GEOADD')),
+  );
+  assert.equal(geoAdds.length, 0, 'repair must not enter the GEOADD reseed path');
+
+  const payload = seedMetaWritePayload(stub.calls);
+  assert.equal(payload.sourceVersion, VERSION);
+  assert.equal(payload.recordCount, RECORDS);
+  assert.equal(payload.fetchedAt, Number(VERSION));
+});
+
+test('--force skips the missing-marker repair so a manual reseed can proceed', async () => {
+  const stub = stubRedis(() => {
+    throw new Error('fetch must not run when force is set');
+  });
+  let result;
+  try {
+    result = await maybeRepairMissingSeedMeta(URL_BASE, TOKEN, '', { force: true });
+  } finally {
+    stub.restore();
+  }
+  assert.equal(result.action, 'skipped-force');
+  assert.equal(stub.calls.length, 0);
+});
+
+test('present seed-meta skips repair', async () => {
+  const stub = stubRedis(militaryRedisHandler({
+    seedMeta: JSON.stringify({ fetchedAt: Number(VERSION), recordCount: RECORDS, sourceVersion: VERSION }),
+  }));
+  let result;
+  try {
+    result = await maybeRepairMissingSeedMeta(URL_BASE, TOKEN, '', { force: false });
+  } finally {
+    stub.restore();
+  }
+  assert.equal(result.action, 'skipped-present');
+  assert.equal(
+    stub.calls.filter((c) => Array.isArray(c.body) && c.body[0] === 'EVAL').length,
+    0,
+    'must not rewrite seed-meta when the marker is already present',
+  );
+});
+
+test('missing seed-meta and no active version falls through to reseed', async () => {
+  const stub = stubRedis(militaryRedisHandler({ active: null }));
+  let result;
+  try {
+    result = await maybeRepairMissingSeedMeta(URL_BASE, TOKEN, '', { force: false });
+  } finally {
+    stub.restore();
+  }
+  assert.equal(result.action, 'fallthrough-no-active');
+  assert.equal(
+    stub.calls.filter((c) => Array.isArray(c.body) && c.body[0] === 'EVAL').length,
+    0,
+  );
+});
+
+test('a broken active corpus falls through to reseed instead of crashing the section', async () => {
+  const stub = stubRedis(militaryRedisHandler({ geoCount: RECORDS, metaCount: 1 }));
+  let result;
+  try {
+    result = await maybeRepairMissingSeedMeta(URL_BASE, TOKEN, '', { force: false });
+  } finally {
+    stub.restore();
+  }
+  assert.equal(result.action, 'fallthrough-invalid-active');
+  assert.equal(
+    stub.calls.filter((c) => Array.isArray(c.body) && c.body[0] === 'EVAL').length,
+    0,
+    'must not stamp seed-meta from a count-mismatched corpus',
+  );
+});
+
+test('CAS conflict during repair is rethrown', async () => {
+  const stub = stubRedis(militaryRedisHandler({ evalResult: [0, '999'] }));
+  try {
+    await assert.rejects(
+      () => maybeRepairMissingSeedMeta(URL_BASE, TOKEN, '', { force: false }),
+      /Active version changed during validation/,
+    );
+  } finally {
+    stub.restore();
+  }
 });
