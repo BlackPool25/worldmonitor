@@ -1861,10 +1861,15 @@ export class App {
       initAisStream();
     }
 
-    // Wait for sidecar readiness on desktop so bootstrap hits a live server
+    // Wait for sidecar readiness on desktop so bootstrap hits a live server.
+    // Consume the result: a sidecar that never answered its own health probe
+    // should leave a signal rather than being silently treated as ready (#6779).
     if (isDesktopRuntime()) {
-      await waitForSidecarReady(3000);
-      markLcpDebug('wm:boot:sidecar-ready');
+      const sidecarReady = await waitForSidecarReady(3000);
+      markLcpDebug(sidecarReady ? 'wm:boot:sidecar-ready' : 'wm:boot:sidecar-not-ready');
+      if (!sidecarReady) {
+        console.warn('[boot] Local sidecar did not report ready within 3s; bootstrap may fall back to cloud.');
+      }
     }
 
     // Anonymous browser session token (issue #3541). Server's validateApiKey
@@ -1876,7 +1881,16 @@ export class App {
     if (!isDesktopRuntime()) {
       window.addEventListener(WM_SESSION_DEGRADED_EVENT, this.handleWmSessionDegraded);
       installWmSessionFetchInterceptor();
-      await ensureWmSession();
+      // Guarded like every other call site (the interceptor's own, and both
+      // periodic-refresh handlers). ensureWmSession() genuinely rejects on the
+      // old WebView / Smart-TV engines this module targets — `new
+      // AbortController()` and the timeout setTimeout sit outside mintSession's
+      // try — and init() has no try/catch, so a bare await would abort boot
+      // here: no bootstrap hydration, no auth, no UI. main.ts catches that with
+      // `.catch(console.error)`, so it would not even reach Sentry. Session
+      // establishment is best-effort at this point; the refresh-on-401 layer is
+      // the safety net.
+      await ensureWmSession().catch(() => false);
       markLcpDebug('wm:boot:session-ready');
     }
 
