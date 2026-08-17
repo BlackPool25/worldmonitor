@@ -1,5 +1,29 @@
 import { monthIndex, monthPeriodEnd } from './jodi-demand-change.mjs';
 
+/**
+ * Milliseconds for a clock supplied as either a `Date` or epoch ms, or null
+ * when it is neither usable.
+ *
+ * Both shapes reach this module. Callers inside the seeders pass a `Date`;
+ * runSeed's content-age hook passes `startMs`, a number
+ * (`contentMeta(data, startMs)`, scripts/_seed-utils.mjs). Accepting only
+ * `instanceof Date` made `jodiDatasetContentMeta` return null for every
+ * runSeed-driven call, and api/health.js reads a null newestItemAt as
+ * STALE_CONTENT — so jodiGas and lngVulnerability were permanently stale
+ * regardless of how current the file was (#6799).
+ *
+ * Still fail-closed for a genuinely unusable clock (NaN, null, a string): the
+ * caller cannot date a file without knowing "now", and guessing would let a
+ * mis-stamped row vouch for freshness.
+ */
+function clockMs(now) {
+  if (now instanceof Date) {
+    const ms = now.getTime();
+    return Number.isFinite(ms) ? ms : null;
+  }
+  return typeof now === 'number' && Number.isFinite(now) ? now : null;
+}
+
 export const MAX_JODI_CONTENT_AGE_MONTHS = 6;
 
 /**
@@ -57,9 +81,11 @@ export function assessChinaJodiCoverage(records, now, hasMeasurements) {
   }
 
   const sourceMonth = monthIndex(china.dataMonth);
-  const currentMonth = now instanceof Date && Number.isFinite(now.getTime())
-    ? now.getUTCFullYear() * 12 + now.getUTCMonth()
-    : null;
+  const nowForMonth = clockMs(now);
+  const nowDate = nowForMonth === null ? null : new Date(nowForMonth);
+  const currentMonth = nowDate === null
+    ? null
+    : nowDate.getUTCFullYear() * 12 + nowDate.getUTCMonth();
   if (sourceMonth == null || currentMonth == null || sourceMonth > currentMonth) {
     return { ok: false, reason: 'china-invalid-month', dataMonth: china.dataMonth ?? null, ageMonths: null };
   }
@@ -123,7 +149,7 @@ export function jodiDatasetContentMeta(
   minCountries = MIN_JODI_CONTENT_AGE_COUNTRIES,
 ) {
   if (!Array.isArray(records)) return null;
-  const nowMs = now instanceof Date && Number.isFinite(now.getTime()) ? now.getTime() : null;
+  const nowMs = clockMs(now);
   if (nowMs === null) return null;
 
   /** @type {Map<number, number>} */
