@@ -1,6 +1,9 @@
 import docsConfigJson from '../../docs/docs.json';
+import { WEB_APP_ORIGIN } from './web-origin';
 
-const DOCS_ORIGIN = 'https://www.worldmonitor.app';
+const docsOrigin = new URL(WEB_APP_ORIGIN);
+docsOrigin.hostname = `www.${docsOrigin.hostname}`;
+const DOCS_ORIGIN = docsOrigin.origin;
 
 type DocsConfigLike = {
   navigation?: unknown;
