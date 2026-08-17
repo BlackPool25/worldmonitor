@@ -9,6 +9,7 @@ import {
   CPI_VECTOR_ID,
   LFS_UNEMPLOYMENT_VECTOR_ID,
   STATCAN_WDS_HOST,
+  STATCAN_MAX_CONTENT_AGE_MIN,
   WDS_VECTORS_URL,
   buildStatcanPayload,
   changedCubeListUrl,
@@ -30,6 +31,7 @@ import {
   CPI_PRODUCT_ID,
   LFS_PRODUCT_ID,
 } from '../scripts/lib/statcan-wds.mjs';
+import { DAY_MIN } from '../scripts/_content-age-helpers.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const changedDoc = JSON.parse(readFileSync(resolve(here, 'fixtures/statcan-wds/changed-cube-list.json'), 'utf8'));
@@ -359,29 +361,57 @@ test('StatCan scored freshness is invariant across UTC, Toronto, and Dubai proce
   ]);
 });
 
-test('StatCan EMPTY waiver is the real 08:00 UTC cron tick and owns #6676', () => {
+test('the StatCan and BoC EMPTY waivers are retired, and the 08:00 cron stays documented', () => {
+  // Was: pinned both waivers' exact anchors, to prove they used the real 08:00
+  // UTC tick rather than a mistaken 13:00 one. Both probes now publish, so the
+  // monitor reports them as "no longer reported; remove it" and #6799 pruned
+  // them. A waiver that outlives its problem is a suppression with nothing to
+  // suppress, and would silently absorb the next real outage.
+  //
+  // What still has to hold: neither is re-suppressed, and the 08:00 cron the
+  // anchors were derived from is still documented — the wrong-tick bug is only
+  // avoidable while the runbook says what the tick actually is.
   const baseline = JSON.parse(readFileSync(resolve(here, '../scripts/seed-freshness-baseline.json'), 'utf8'));
   const healthSrc = readFileSync(resolve(here, '../api/health.js'), 'utf8');
   const runbook = readFileSync(resolve(here, '../docs/railway-seed-consolidation-runbook.md'), 'utf8');
-  const statcan = baseline.acknowledged.find((row) => row.name === 'statcanWds');
-  const boc = baseline.acknowledged.find((row) => row.name === 'bocValet');
-  assert.equal(statcan.issue, 6676);
-  assert.equal(boc.issue, 6616);
-  assert.equal(statcan.expiresAt, '2026-08-16T08:00:00.000Z');
-  assert.equal(statcan.cutover.firstScheduledRunAt, '2026-08-16T08:00:00.000Z');
-  assert.equal(statcan.cutover.activatedAt, '2026-08-15T08:00:00.000Z');
-  assert.equal(boc.expiresAt, '2026-08-15T08:00:00.000Z');
-  assert.equal(boc.cutover.firstScheduledRunAt, '2026-08-15T08:00:00.000Z');
-  assert.equal(boc.cutover.activatedAt, '2026-08-14T08:00:00.000Z');
-  assert.match(boc.expiresAt, /T08:00:00\.000Z$/);
-  assert.match(statcan.expiresAt, /T08:00:00\.000Z$/);
-  assert.doesNotMatch(statcan.expiresAt, /T13:00/);
-  assert.doesNotMatch(statcan.cutover.firstScheduledRunAt, /T13:00/);
-  assert.doesNotMatch(statcan.reason, /13:00/);
-  assert.doesNotMatch(boc.expiresAt, /T13:00/);
-  assert.doesNotMatch(boc.reason, /13:00/);
+
+  for (const name of ['statcanWds', 'bocValet']) {
+    assert.equal(
+      baseline.acknowledged.some((row) => row.name === name),
+      false,
+      `${name} publishes again; do not suppress a future recurrence`,
+    );
+  }
+
+  // The 13:00 anchor was never a real cron. Keep it out of every surface.
   assert.doesNotMatch(healthSrc, /2026-08-16T13:00/);
+  for (const row of baseline.acknowledged) {
+    assert.doesNotMatch(row.expiresAt ?? '', /T13:00/, `${row.name} must not anchor on a 13:00 tick`);
+    assert.doesNotMatch(row.reason ?? '', /13:00/, `${row.name} must not cite a 13:00 tick`);
+  }
   assert.match(runbook, /0 8 \* \* \*[^\n]*daily 08:00 UTC/);
-  assert.match(statcan.reason, /0 8 \* \* \*/);
-  assert.match(boc.reason, /0 8 \* \* \*/);
+});
+
+test('STATCAN_MAX_CONTENT_AGE_MIN clears the ~79-day content-age peak and is wired into the seeder', () => {
+  // WDS refPer is the FIRST of the reference month, so a monthly series'
+  // newest observation start-dates a month before the data exists: June CPI
+  // carries refPer 2026-06-01 while July CPI releases ~2026-08-19, a ~79-day
+  // natural peak. The budget must clear that peak.
+  //
+  // Unlike its two siblings in #6831 — China (tests/china-macro-production-
+  // registration.test.mts) and CISS (tests/ciss-stale-threshold-consistency
+  // .test.mjs) both pin their budgets — nothing else asserts this value or its
+  // wiring. The generic seeder-content-age-coverage net skips StatCan because
+  // www150.statcan.gc.ca is not one of its FREEZE_PRONE_MARKER hosts, so a
+  // wrong value or a dropped maxContentAgeMin wiring would ship unnoticed.
+  assert.equal(STATCAN_MAX_CONTENT_AGE_MIN, 90 * DAY_MIN);
+  assert.ok(
+    STATCAN_MAX_CONTENT_AGE_MIN > 79 * DAY_MIN,
+    'budget must exceed the ~79-day content-age peak',
+  );
+  assert.match(
+    seederSrc,
+    /maxContentAgeMin:\s*STATCAN_MAX_CONTENT_AGE_MIN/,
+    'seed-statcan-wds.mjs must wire the content-age budget from the shared constant',
+  );
 });
