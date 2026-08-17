@@ -671,4 +671,17 @@ describe('coordinating and is grammar in the composer (AE2, AE4, AE7)', () => {
     assert.equal(out.rejection, null);
     assert.ok(out.brief);
   });
+
+  it('rejects a repeated-name entity grounded by only one cited surname', () => {
+    const topStories = [
+      story('Prime Minister Boris Johnson halted talks'),
+    ];
+    const out = compose(
+      'Johnson and Johnson halted vaccine production [1]',
+      topStories,
+      [{ n: 1, text: 'Prime Minister Boris Johnson halted talks' }],
+    );
+    assert.equal(out.brief, null);
+    assert.equal(out.rejection, BRIEF_REJECTIONS.LEAD_PROPER_NOUN);
+  });
 });

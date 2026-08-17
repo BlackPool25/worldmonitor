@@ -816,4 +816,45 @@ describe('coordinating and is grammar, not a name joiner', () => {
     const summary = 'Tehran struck another ship.';
     assert.equal(validateNoHallucinatedProperNouns(summary, headline).ok, false);
   });
+
+  it('preserves the SEC acronym expansion across and in both directions', () => {
+    assert.equal(
+      validateNoHallucinatedProperNouns(
+        'SEC announced enforcement.',
+        'Securities and Exchange Commission announced enforcement.',
+      ).ok,
+      true,
+    );
+    assert.equal(
+      validateNoHallucinatedProperNouns(
+        'Securities and Exchange Commission announced enforcement.',
+        'SEC announced enforcement.',
+      ).ok,
+      true,
+    );
+  });
+
+  it('does not ground Johnson and Johnson from one Johnson occurrence', () => {
+    assert.equal(
+      validateNoHallucinatedProperNouns(
+        'Johnson and Johnson halted vaccine production.',
+        'Prime Minister Boris Johnson halted talks.',
+      ).ok,
+      false,
+    );
+    assert.equal(
+      validateNoHallucinatedProperNouns(
+        'Johnson and Johnson halted vaccine production.',
+        'Johnson and Johnson halted vaccine production.',
+      ).ok,
+      true,
+    );
+    assert.equal(
+      validateNoHallucinatedProperNouns(
+        'Bank of America and Bank of America announced a merger.',
+        'Bank of America announced a merger.',
+      ).ok,
+      false,
+    );
+  });
 });
