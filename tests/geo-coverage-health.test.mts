@@ -36,6 +36,10 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** Strategic floors the epic pins — must stay in policy so CI cannot go green by emptying floors. */
 const STRATEGIC_FLOOR_ISO2 = ['UA', 'PL', 'TW', 'PK', 'CA'] as const;
+const CRISIS_FLOOR_ISO2 = [
+  'YE', 'SY', 'PS', 'HT', 'AF', 'LB', 'ML', 'BF', 'NE',
+  'VE', 'CU', 'LY', 'EG', 'BD', 'KE', 'CM', 'TD', 'CF',
+] as const;
 const STRATEGIC_FLOOR_MIN = 1;
 
 /**
@@ -155,6 +159,24 @@ const EXPECTED_REQUIRED_SOURCE_GEOGRAPHY = new Map<string, readonly string[]>([
   ['Ynetnews', ['IL']],
   ['Zerkalo', ['BY']],
   ['Ziarul de Gardă', ['MD']],
+  ['Sanaa Center', ['YE']],
+  ['Syria Direct', ['SY']],
+  ['972 Magazine', ['PS']],
+  ['Haiti Libre', ['HT']],
+  ['Amu TV', ['AF']],
+  ["L'Orient Today", ['LB']],
+  ['Studio Tamani', ['ML']],
+  ['Lefaso.net', ['BF']],
+  ['ActuNiger', ['NE']],
+  ['Caracas Chronicles', ['VE']],
+  ['14ymedio', ['CU']],
+  ['Libya Herald', ['LY']],
+  ['Mada Masr', ['EG']],
+  ['The Daily Star', ['BD']],
+  ['Nation Africa', ['KE']],
+  ['Journal du Cameroun', ['CM']],
+  ['Alwihda Info', ['TD']],
+  ['Radio Ndeke Luka', ['CF']],
 ]);
 
 let inputs: Awaited<ReturnType<typeof loadGeoCoverageInputs>>;
@@ -272,6 +294,17 @@ describe('geographic coverage health (#5957)', () => {
     const { violations } = evaluateGeoCoverage(rows);
     assert.equal(rows[0].status, 'FLOOR-BREACH');
     assert.equal(violations.length, 1);
+  });
+
+  it('pins crisis-floor countries at ≥1 in policy (#6812)', () => {
+    const floors = inputs.policy.floors ?? {};
+    for (const iso2 of CRISIS_FLOOR_ISO2) {
+      const floor = floors[iso2] ?? 0;
+      assert.ok(
+        floor >= 1,
+        `policy.floors must pin crisis-floor ${iso2} >= 1 (got ${floor})`,
+      );
+    }
   });
 
   it('pins strategic floors UA/PL/TW/PK/CA at ≥1 in policy (not just live counts)', () => {

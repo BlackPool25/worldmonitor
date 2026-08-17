@@ -307,6 +307,13 @@ export const FULL_FEEDS: Record<string, Feed[]> = {
     { name: 'Asharq Business', url: rss('https://asharqbusiness.com/rss.xml') },
     { name: 'Asharq News', url: rss('https://asharq.com/snapchat/rss.xml'), lang: 'ar' },
     { name: 'Rudaw', url: rss('https://news.google.com/rss/search?q=site:rudaw.net+when:7d&hl=en&gl=US&ceid=US:en') },
+    // Crisis-floor desks (#6812) — high-risk countries with zero local sources
+    { name: 'Sanaa Center', url: rss('https://news.google.com/rss/search?q=site%3Asanaacenter.org%20when%3A3d&hl=en-US&gl=US&ceid=US:en') },
+    { name: 'Syria Direct', url: rss('https://news.google.com/rss/search?q=site%3Asyriadirect.org%20when%3A3d&hl=en-US&gl=US&ceid=US:en') },
+    { name: '972 Magazine', url: rss('https://news.google.com/rss/search?q=site%3A972mag.com%20when%3A3d&hl=en-US&gl=US&ceid=US:en') },
+    { name: "L'Orient Today", url: rss('https://news.google.com/rss/search?q=site%3Atoday.lorientlejour.com%20when%3A3d&hl=en-US&gl=US&ceid=US:en') },
+    { name: 'Libya Herald', url: rss('https://news.google.com/rss/search?q=site%3Alibyaherald.com%20when%3A3d&hl=en-US&gl=US&ceid=US:en') },
+    { name: 'Mada Masr', url: rss('https://news.google.com/rss/search?q=site%3Amadamasr.com%20when%3A3d&hl=en-US&gl=US&ceid=US:en') },
   ],
   tech: [
     { name: 'Hacker News', url: rss('https://hnrss.org/frontpage') },
@@ -416,9 +423,17 @@ export const FULL_FEEDS: Record<string, Feed[]> = {
     { name: 'Le Quotidien', url: rss('https://lequotidien.sn/feed/'), lang: 'fr' },
     // Pan-African
     { name: 'RFI Afrique', url: rss('https://www.rfi.fr/en/africa/rss') },
+    // Crisis-floor desks (#6812)
+    { name: 'Studio Tamani', url: rss('https://news.google.com/rss/search?q=site%3Astudiotamani.org%20when%3A3d&hl=en-US&gl=US&ceid=US:en') },
+    { name: 'Lefaso.net', url: rss('https://news.google.com/rss/search?q=site%3Alefaso.net%20when%3A3d&hl=en-US&gl=US&ceid=US:en') },
+    { name: 'ActuNiger', url: rss('https://news.google.com/rss/search?q=site%3Aactuniger.com%20when%3A3d&hl=en-US&gl=US&ceid=US:en') },
+    { name: 'Nation Africa', url: rss('https://news.google.com/rss/search?q=site%3Anation.africa%20when%3A3d&hl=en-US&gl=US&ceid=US:en') },
+    { name: 'Journal du Cameroun', url: rss('https://news.google.com/rss/search?q=site%3Ajournalducameroun.com%20when%3A3d&hl=en-US&gl=US&ceid=US:en') },
+    { name: 'Alwihda Info', url: rss('https://news.google.com/rss/search?q=site%3Aalwihdainfo.com%20when%3A3d&hl=en-US&gl=US&ceid=US:en') },
+    { name: 'Radio Ndeke Luka', url: rss('https://news.google.com/rss/search?q=site%3Aradiondekeluka.org%20when%3A3d&hl=en-US&gl=US&ceid=US:en') },
   ],
   latam: [
-    { name: 'Latin America', url: rss('https://news.google.com/rss/search?q=(Brazil+OR+Mexico+OR+Argentina+OR+Venezuela+OR+Colombia)+when:2d&hl=en-US&gl=US&ceid=US:en') },
+    { name: 'Latin America', url: rss('https://news.google.com/rss/search?q=(Brazil+OR+Mexico+OR+Argentina+OR+Venezuela+OR+Colombia+OR+Haiti)+when:2d&hl=en-US&gl=US&ceid=US:en') },
     { name: 'BBC Latin America', url: rss('https://feeds.bbci.co.uk/news/world/latin_america/rss.xml') },
     { name: 'Reuters LatAm', url: rss('https://news.google.com/rss/search?q=site:reuters.com+(Brazil+OR+Mexico+OR+Argentina)+when:3d&hl=en-US&gl=US&ceid=US:en') },
     { name: 'Guardian Americas', url: rss('https://www.theguardian.com/world/americas/rss') },
@@ -439,6 +454,10 @@ export const FULL_FEEDS: Record<string, Feed[]> = {
     // LatAm Security
     { name: 'InSight Crime', url: rss('https://insightcrime.org/feed/') },
     { name: 'France 24 LatAm', url: rss('https://www.france24.com/en/americas/rss') },
+    // Crisis-floor desks (#6812)
+    { name: 'Haiti Libre', url: rss('https://news.google.com/rss/search?q=site%3Ahaitilibre.com%20when%3A3d&hl=en-US&gl=US&ceid=US:en') },
+    { name: 'Caracas Chronicles', url: rss('https://news.google.com/rss/search?q=site%3Acaracaschronicles.com%20when%3A3d&hl=en-US&gl=US&ceid=US:en') },
+    { name: '14ymedio', url: rss('https://news.google.com/rss/search?q=site%3A14ymedio.com%20when%3A3d&hl=en-US&gl=US&ceid=US:en') },
   ],
   asia: [
     { name: 'Asia News', url: rss('https://news.google.com/rss/search?q=(China+OR+Japan+OR+Korea+OR+India+OR+ASEAN)+when:2d&hl=en-US&gl=US&ceid=US:en') },
@@ -493,6 +512,9 @@ export const FULL_FEEDS: Record<string, Feed[]> = {
     { name: 'Rappler', url: rss('https://www.rappler.com/feed/') },
     { name: 'The Star (Malaysia)', url: rss('https://news.google.com/rss/search?q=site%3Athestar.com.my%20when%3A3d&hl=en-US&gl=US&ceid=US:en') },
     { name: 'Irrawaddy', url: rss('https://www.irrawaddy.com/feed/') },
+    // Crisis-floor desks (#6812)
+    { name: 'Amu TV', url: rss('https://news.google.com/rss/search?q=site%3Aamu.tv%20when%3A3d&hl=en-US&gl=US&ceid=US:en') },
+    { name: 'The Daily Star', url: rss('https://news.google.com/rss/search?q=site%3Athedailystar.net%20when%3A3d&hl=en-US&gl=US&ceid=US:en') },
   ],
   energy: [
     { name: 'Oil & Gas', url: rss('https://news.google.com/rss/search?q=(oil+price+OR+OPEC+OR+"natural+gas"+OR+pipeline+OR+LNG)+when:2d&hl=en-US&gl=US&ceid=US:en') },
@@ -1235,6 +1257,28 @@ const INDO_PACIFIC_EN_DEFAULT_SOURCES = [
   'Rappler',
 ] as const;
 
+/** Crisis-floor desks (#6812) — one EN default-on local per missing high-risk country. */
+export const CRISIS_FLOOR_EN_DEFAULT_SOURCES = [
+  'Sanaa Center',
+  'Syria Direct',
+  '972 Magazine',
+  'Haiti Libre',
+  'Amu TV',
+  "L'Orient Today",
+  'Studio Tamani',
+  'Lefaso.net',
+  'ActuNiger',
+  'Caracas Chronicles',
+  '14ymedio',
+  'Libya Herald',
+  'Mada Masr',
+  'The Daily Star',
+  'Nation Africa',
+  'Journal du Cameroun',
+  'Alwihda Info',
+  'Radio Ndeke Luka',
+] as const;
+
 /** Current editorial defaults introduced by the four regional feed PRs. */
 export const REGIONAL_FEED_ROLLOUT_DEFAULT_SOURCES = [
   ...EASTERN_FLANK_EN_DEFAULT_SOURCES,
@@ -1380,6 +1424,18 @@ export const REGIONAL_FEED_ROLLOUT_STAGES = [
       ...CANADA_EN_DEFAULT_SOURCES,
     ],
   },
+  {
+    // Crisis-floor desks (#6812). One EN local per remaining high-risk gap.
+    introducedNames: [
+      ...CRISIS_FLOOR_EN_DEFAULT_SOURCES,
+    ],
+    protectedNames: [
+      ...FRONTLINE_EUROPE_PROTECTED_SOURCES,
+      ...REGIONAL_FEED_ROLLOUT_DEFAULT_SOURCES,
+      ...CANADA_EN_DEFAULT_SOURCES,
+      ...CRISIS_FLOOR_EN_DEFAULT_SOURCES,
+    ],
+  },
 ] as const;
 
 /**
@@ -1391,6 +1447,7 @@ export const FREE_CAP_PROTECTED_SOURCES = [
   ...FRONTLINE_EUROPE_PROTECTED_SOURCES,
   ...REGIONAL_FEED_ROLLOUT_DEFAULT_SOURCES,
   ...CANADA_EN_DEFAULT_SOURCES,
+  ...CRISIS_FLOOR_EN_DEFAULT_SOURCES,
 ] as const;
 
 /**
@@ -1458,16 +1515,19 @@ export const DEFAULT_ENABLED_SOURCES: Record<string, string[]> = {
     ...CAUCASUS_EN_DEFAULT_SOURCES,
   ],
 
-  middleeast: ['BBC Middle East', 'Al Jazeera', 'Al Arabiya', 'Guardian ME', 'BBC Persian', 'Iran International', 'IRNA', 'Mehr News', 'Haaretz', 'Jerusalem Post', 'Ynetnews', 'Asharq News', 'The National'],
+  middleeast: ['BBC Middle East', 'Al Jazeera', 'Al Arabiya', 'Guardian ME', 'BBC Persian', 'Iran International', 'IRNA', 'Mehr News', 'Haaretz', 'Jerusalem Post', 'Ynetnews', 'Asharq News', 'The National', 'Sanaa Center', 'Syria Direct', '972 Magazine', "L'Orient Today", 'Libya Herald', 'Mada Masr'],
   africa: [
     'BBC Africa', 'News24', 'Africanews', 'Jeune Afrique', 'Africa News',
     'Premium Times', 'Channels TV', 'Sahel Crisis',
     ...AFRICA_DEPTH_EN_DEFAULT_SOURCES,
+    'Studio Tamani', 'Lefaso.net', 'ActuNiger', 'Nation Africa',
+    'Journal du Cameroun', 'Alwihda Info', 'Radio Ndeke Luka',
   ],
-  latam: ['BBC Latin America', 'Reuters LatAm', 'InSight Crime', 'Mexico News Daily', 'Clarín', 'Primicias', 'Infobae Americas', 'El Universo'],
+  latam: ['BBC Latin America', 'Reuters LatAm', 'InSight Crime', 'Mexico News Daily', 'Clarín', 'Primicias', 'Infobae Americas', 'El Universo', 'Haiti Libre', 'Caracas Chronicles', '14ymedio'],
 asia: ['BBC Asia', 'The Diplomat', 'South China Morning Post', 'Reuters Asia', 'Nikkei Asia', 'CNA', 'Asia News', 'The Hindu',
     ...CENTRAL_ASIA_EN_DEFAULT_SOURCES,
     ...INDO_PACIFIC_EN_DEFAULT_SOURCES,
+    'Amu TV', 'The Daily Star',
   ],
   tech: ['Hacker News', 'Ars Technica', 'The Verge', 'MIT Tech Review'],
   ai: ['AI News', 'VentureBeat AI', 'The Verge AI', 'MIT Tech Review', 'ArXiv AI'],

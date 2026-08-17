@@ -56,6 +56,7 @@ interface FeedsModule {
   CANADA_DEPTH_OPT_IN_SOURCES: readonly string[];
   REGIONAL_FEED_ROLLOUT_DEFAULT_SOURCES: readonly string[];
   REGIONAL_FEED_ROLLOUT_OPT_IN_SOURCES: readonly string[];
+  CRISIS_FLOOR_EN_DEFAULT_SOURCES: readonly string[];
   INTEL_SOURCES: FeedEntry[];
   SOURCE_TYPES: Record<string, string>;
   SOURCE_PROPAGANDA_RISK: Record<string, { risk: string; stateAffiliated?: string }>;
@@ -705,7 +706,7 @@ describe('feed catalog drift', () => {
   it('keeps both Eastern-flank EN defaults under the production free cap (#5952)', () => {
     assert.deepEqual(
       [...feeds.FREE_CAP_PROTECTED_SOURCES].sort(),
-      [...FRONTLINE_EUROPE, ...REGIONAL_ROLLOUT_DEFAULTS, ...feeds.CANADA_EN_DEFAULT_SOURCES].sort(),
+      [...FRONTLINE_EUROPE, ...REGIONAL_ROLLOUT_DEFAULTS, ...feeds.CANADA_EN_DEFAULT_SOURCES, ...feeds.CRISIS_FLOOR_EN_DEFAULT_SOURCES].sort(),
       'free-cap protected defaults must match the editorially protected sets',
     );
 
@@ -744,6 +745,29 @@ describe('feed catalog drift', () => {
 
     for (const name of AFRICA_DEPTH_EN_DEFAULTS) {
       assert.ok(africaDefaults.includes(name), `${name} must remain an Africa EN default`);
+    }
+  });
+
+  it('locks crisis-floor desks as EN default-on with client/server URL parity (#6812)', () => {
+    const enabled = feeds.getAllDefaultEnabledSources();
+    const disabledEn = new Set(feeds.computeDefaultDisabledSources('en'));
+    const clientByName = new Map(
+      Object.values(feeds.FEEDS ?? {}).flat().map((feed) => [feed.name, feed]),
+    );
+    const serverByName = new Map(
+      Object.values(serverFeeds.VARIANT_FEEDS.full ?? {}).flat().map((feed) => [feed.name, feed]),
+    );
+
+    assert.equal(feeds.CRISIS_FLOOR_EN_DEFAULT_SOURCES.length, 18);
+    for (const name of feeds.CRISIS_FLOOR_EN_DEFAULT_SOURCES) {
+      const client = clientByName.get(name);
+      const server = serverByName.get(name);
+      assert.ok(client, `${name} must exist in the client catalog`);
+      assert.ok(server, `${name} must exist in the server full digest catalog`);
+      assert.equal(client.url, server.url, `${name} client/server URL must match`);
+      assert.ok(!client.lang, `${name} must be EN-reachable (no lang gate)`);
+      assert.ok(enabled.has(name), `${name} must be EN default-on`);
+      assert.ok(!disabledEn.has(name), `${name} must not start disabled for a fresh EN profile`);
     }
   });
 

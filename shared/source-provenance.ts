@@ -155,6 +155,13 @@ export const SOURCE_TYPES: Record<string, SourceType> = {
   'Focus Taiwan': 'wire', 'Taipei Times': 'mainstream', 'Taiwan News': 'mainstream',
   'Dawn': 'mainstream', 'Geo News': 'mainstream',
   'Jakarta Post': 'mainstream', 'Rappler': 'mainstream', 'The Star (Malaysia)': 'mainstream', 'Irrawaddy': 'mainstream',
+  // Crisis-floor desks (#6812)
+  'Sanaa Center': 'intel', 'Syria Direct': 'mainstream', '972 Magazine': 'mainstream',
+  'Haiti Libre': 'mainstream', 'Amu TV': 'mainstream', "L'Orient Today": 'mainstream',
+  'Studio Tamani': 'mainstream', 'Lefaso.net': 'mainstream', 'ActuNiger': 'mainstream',
+  'Caracas Chronicles': 'mainstream', '14ymedio': 'mainstream', 'Libya Herald': 'mainstream',
+  'Mada Masr': 'mainstream', 'The Daily Star': 'mainstream', 'Nation Africa': 'mainstream',
+  'Journal du Cameroun': 'mainstream', 'Alwihda Info': 'mainstream', 'Radio Ndeke Luka': 'mainstream',
 };
 
 export function getSourceType(sourceName: string): SourceType {

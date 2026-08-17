@@ -202,6 +202,12 @@ export const VARIANT_FEEDS: Record<string, Record<string, ServerFeed[]>> = {
       { name: 'Oman Observer', url: 'https://www.omanobserver.om/rssFeed/1' },
       { name: 'Asharq Business', url: 'https://asharqbusiness.com/rss.xml' },
       { name: 'Rudaw', url: gn('site:rudaw.net when:7d') },
+      { name: 'Sanaa Center', url: gn('site:sanaacenter.org when:3d') },
+      { name: 'Syria Direct', url: gn('site:syriadirect.org when:3d') },
+      { name: '972 Magazine', url: gn('site:972mag.com when:3d') },
+      { name: "L'Orient Today", url: gn('site:today.lorientlejour.com when:3d') },
+      { name: 'Libya Herald', url: gn('site:libyaherald.com when:3d') },
+      { name: 'Mada Masr', url: gn('site:madamasr.com when:3d') },
     ],
     tech: [
       { name: 'Hacker News', url: 'https://hnrss.org/frontpage' },
@@ -298,6 +304,13 @@ export const VARIANT_FEEDS: Record<string, Record<string, ServerFeed[]>> = {
       { name: 'Le Quotidien', url: 'https://lequotidien.sn/feed/', lang: 'fr' },
       // Pan-African
       { name: 'RFI Afrique', url: 'https://www.rfi.fr/en/africa/rss' },
+      { name: 'Studio Tamani', url: gn('site:studiotamani.org when:3d') },
+      { name: 'Lefaso.net', url: gn('site:lefaso.net when:3d') },
+      { name: 'ActuNiger', url: gn('site:actuniger.com when:3d') },
+      { name: 'Nation Africa', url: gn('site:nation.africa when:3d') },
+      { name: 'Journal du Cameroun', url: gn('site:journalducameroun.com when:3d') },
+      { name: 'Alwihda Info', url: gn('site:alwihdainfo.com when:3d') },
+      { name: 'Radio Ndeke Luka', url: gn('site:radiondekeluka.org when:3d') },
     ],
     latam: [
       { name: 'BBC Latin America', url: 'https://feeds.bbci.co.uk/news/world/latin_america/rss.xml' },
@@ -307,6 +320,9 @@ export const VARIANT_FEEDS: Record<string, Record<string, ServerFeed[]>> = {
       { name: 'El Universo', url: 'https://www.eluniverso.com/arc/outboundfeeds/rss/category/noticias/?outputType=xml', lang: 'es' },
       { name: 'Clarín', url: 'https://www.clarin.com/rss/lo-ultimo/', lang: 'es' },
       { name: 'InSight Crime', url: 'https://insightcrime.org/feed/' },
+      { name: 'Haiti Libre', url: gn('site:haitilibre.com when:3d') },
+      { name: 'Caracas Chronicles', url: gn('site:caracaschronicles.com when:3d') },
+      { name: '14ymedio', url: gn('site:14ymedio.com when:3d') },
     ],
     asia: [
       { name: 'BBC Asia', url: 'https://feeds.bbci.co.uk/news/world/asia/rss.xml' },
@@ -353,6 +369,8 @@ export const VARIANT_FEEDS: Record<string, Record<string, ServerFeed[]>> = {
       { name: 'The Star (Malaysia)', url: gn('site:thestar.com.my when:3d') },
       { name: 'Irrawaddy', url: 'https://www.irrawaddy.com/feed/' },
       { name: 'Island Times (Palau)', url: 'https://islandtimes.org/feed/' },
+      { name: 'Amu TV', url: gn('site:amu.tv when:3d') },
+      { name: 'The Daily Star', url: gn('site:thedailystar.net when:3d') },
     ],
     energy: [
       { name: 'Oil & Gas', url: gn('(oil price OR OPEC OR "natural gas" OR pipeline OR LNG) when:2d') },

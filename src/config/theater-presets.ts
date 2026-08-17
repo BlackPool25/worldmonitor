@@ -76,6 +76,8 @@ export const THEATER_PRESETS: readonly TheaterPreset[] = [
       'Irrawaddy',
       'Dawn',
       'Geo News',
+      'Amu TV',
+      'The Daily Star',
     ],
   },
   {
@@ -93,6 +95,9 @@ export const THEATER_PRESETS: readonly TheaterPreset[] = [
       'Daily Trust',
       'ThisDay',
       'MyJoyOnline',
+      'Studio Tamani',
+      'Lefaso.net',
+      'ActuNiger',
     ],
   },
   {
@@ -128,6 +133,12 @@ export const THEATER_PRESETS: readonly TheaterPreset[] = [
       'Oman Observer',
       'Asharq Business',
       'Rudaw',
+      'Sanaa Center',
+      'Syria Direct',
+      '972 Magazine',
+      "L'Orient Today",
+      'Libya Herald',
+      'Mada Masr',
     ],
   },
 ];
