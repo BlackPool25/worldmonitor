@@ -38,6 +38,7 @@ import {
 } from '@/config/map-layer-definitions';
 import type { MapVariant } from '@/config/map-layer-definitions';
 import { getStoredMapModePreference } from '@/services/map-mode-preference';
+import { applyCanadaRoadsOptInMigration } from '@/services/canada-roads-opt-in';
 import {
   initDB,
   cleanOldSnapshots,
@@ -993,6 +994,13 @@ export class App {
       // tier is settled. Do not run while Pro status is still resolving.
       // Persist immediately so dirty storage doesn't reintroduce the layer.
       mapLayers = this.sanitizeMapLayersForTier(mapLayers);
+
+      mapLayers = applyCanadaRoadsOptInMigration(
+        mapLayers,
+        localStorage,
+        (layers) => saveToStorage(STORAGE_KEYS.mapLayers, layers),
+      );
+
       panelSettings = loadFromStorage<Record<string, PanelConfig>>(
         STORAGE_KEYS.panels,
         DEFAULT_PANELS
