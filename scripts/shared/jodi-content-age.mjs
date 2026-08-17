@@ -36,6 +36,24 @@ export const MAX_JODI_CONTENT_AGE_MONTHS = 6;
 export const MAX_JODI_CONTENT_AGE_MIN = MAX_JODI_CONTENT_AGE_MONTHS * 31 * 24 * 60;
 
 /**
+ * Gas content budget, in minutes. Separate from the oil budget above because
+ * the two files do not lag by the same amount.
+ *
+ * Measured 2026-08-16: the oil files had advanced to 2026-05 (77 days) while
+ * the gas world file's newest month was 2026-01 (197 days). Holding gas to the
+ * shared six-month figure reported a file that is behaving normally for its own
+ * publisher as STALE_CONTENT by 11 days, which is a threshold sized to the
+ * wrong dataset rather than a real staleness (#6799).
+ *
+ * 230 days rather than a figure closer to the observed 197: the gas age climbs
+ * daily until JODI publishes the next month, so a threshold set near the
+ * observed peak clears today and re-alarms on the first missed publish. 230
+ * absorbs one skipped month while still surfacing a genuine stall — the file
+ * would have to fall a further month behind its own worst observed lag.
+ */
+export const MAX_JODI_GAS_CONTENT_AGE_MIN = 230 * 24 * 60;
+
+/**
  * How many countries must report a month before it can date the whole file.
  *
  * A JODI file carries a long reporting tail — one country can sit years behind
