@@ -2794,8 +2794,11 @@ describe('wm-session mint cause provenance (#6804)', () => {
     const captures = captureSink();
     const realAbortController = globalThis.AbortController;
     const boom = new Error('AbortController is not a constructor');
-    (globalThis as unknown as { AbortController: unknown }).AbortController = function () {
-      throw boom;
+    // A class, not a function expression: `new AbortController()` needs a
+    // constructible, and an arrow would throw the engine's own TypeError
+    // instead of the sentinel the exception assertion below looks for.
+    (globalThis as unknown as { AbortController: unknown }).AbortController = class {
+      constructor() { throw boom; }
     };
 
     currentFetchHandler = () => Promise.resolve(new Response('unauthorized', { status: 401 }));
