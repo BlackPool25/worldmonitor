@@ -7,7 +7,7 @@ if [ "$VERCEL_GIT_COMMIT_REF" = "main" ] && [ -n "$VERCEL_GIT_PREVIOUS_SHA" ]; t
   git cat-file -e "$VERCEL_GIT_PREVIOUS_SHA" 2>/dev/null && {
     WEB_CHANGES=$(git diff --name-only "$VERCEL_GIT_PREVIOUS_SHA" HEAD -- \
       'src/' 'api/' 'server/' 'shared/' 'public/' 'blog-site/' 'pro-test/' 'proto/' 'convex/' \
-      'CHANGELOG.md' 'docs/snapshots/' \
+      'CHANGELOG.md' 'docs/docs.json' 'docs/snapshots/' \
       'scripts/build-crawlable-corpus.mjs' 'scripts/build-research-reports.mjs' \
       'scripts/build-sitemap.mjs' 'scripts/discover-content-corpus-pages.mjs' \
       'scripts/crawlable-live-tools.mjs' 'scripts/crawlable-sources-page.mjs' \
@@ -69,6 +69,7 @@ git diff --name-only "$COMPARE_SHA" HEAD -- \
   'proto/' \
   'convex/' \
   'CHANGELOG.md' \
+  'docs/docs.json' \
   'docs/snapshots/' \
   'scripts/build-crawlable-corpus.mjs' \
   'scripts/build-research-reports.mjs' \
