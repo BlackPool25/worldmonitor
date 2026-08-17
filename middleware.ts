@@ -1,3 +1,5 @@
+import { getRootlessDocsDestination } from './src/config/docs-root-redirects';
+
 const BOT_UA =
   /bot|crawl|spider|slurp|archiver|wget|curl\/|python-requests|scrapy|httpclient|go-http|java\/|libwww|perl|ruby|php\/|ahrefsbot|semrushbot|mj12bot|dotbot|baiduspider|yandexbot|sogou|bytespider|petalbot|gptbot|claudebot|ccbot/i;
 
@@ -171,6 +173,15 @@ export default function middleware(request: Request) {
     const dashboardUrl = new URL(request.url);
     dashboardUrl.pathname = '/dashboard';
     return Response.redirect(dashboardUrl.toString(), 308);
+  }
+
+  if (request.method === 'GET' || request.method === 'HEAD') {
+    const docsDestination = getRootlessDocsDestination(path);
+    if (docsDestination) {
+      const canonicalUrl = new URL(docsDestination);
+      canonicalUrl.search = url.search;
+      return Response.redirect(canonicalUrl.toString(), 308);
+    }
   }
 
   // Variant-aware crawlable stub for social preview bots AND AI crawlers
@@ -366,5 +377,9 @@ ${AI_CRAWLER_VARIANT_LINKS}
 }
 
 export const config = {
-  matcher: ['/', '/mcp', '/api/:path*'],
+  matcher: [
+    '/mcp',
+    '/api/:path*',
+    '/((?!api(?:/|$)|mcp(?:/|$)|.*\\.[^/]+$).*)',
+  ],
 };

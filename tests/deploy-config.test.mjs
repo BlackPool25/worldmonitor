@@ -358,6 +358,7 @@ describe('crawlable content corpus deployment contracts', () => {
     assert.ok(vercelIgnoreSource.includes("'CHANGELOG.md'"));
     assert.ok(vercelIgnoreSource.includes("'docs/snapshots/'"));
     for (const path of [
+      'docs/docs.json',
       'scripts/crawlable-sources-page.mjs',
       'scripts/source-origin.mjs',
       'scripts/source-origin.d.mts',
@@ -369,7 +370,7 @@ describe('crawlable content corpus deployment contracts', () => {
     }
   });
 
-  it('builds Vercel on main and preview for script-only inventory derivation changes', () => {
+  it('builds Vercel on main and preview for generated web-input changes', () => {
     const fixture = mkdtempSync(join(tmpdir(), 'wm-vercel-ignore-'));
     try {
       const fixtureEnv = { ...process.env };
@@ -386,6 +387,7 @@ describe('crawlable content corpus deployment contracts', () => {
       git('commit', '-qm', 'base');
 
       for (const path of [
+        'docs/docs.json',
         'scripts/crawlable-sources-page.mjs',
         'scripts/source-origin.mjs',
         'scripts/source-origin.d.mts',
