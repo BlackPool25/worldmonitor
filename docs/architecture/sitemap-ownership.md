@@ -23,8 +23,15 @@ that materially determine its content:
 - Dashboard entries use the app shell, orchestration, components, configuration,
   locales, styles, and the corresponding variant configuration.
 - Markdown and text references use the file served at the canonical URL.
-- Generated country, chokepoint, crisis, tool, and changelog entries use the
+- Generated country, chokepoint, crisis, tool, research, use-case, and changelog entries use the
   `lastmod` metadata emitted by `scripts/build-crawlable-corpus.mjs`.
+
+The `/use-cases/` family is a root crawlable corpus sibling of `/blog/`. The root
+sitemap owns the hub and child pages exactly once. Blog and docs sitemaps must
+not claim those URLs. Canonical treatment for the country-risk pilot (#6849):
+`/use-cases/monitor-country-risk/` owns the evergreen task framing;
+`/countries/` remains the live evidence surface; the blog workflow article
+remains distinct supporting editorial.
 
 Static-page dates are the latest Git commit date among the declared material
 sources. They are not file mtimes and never use build or deploy time. When a

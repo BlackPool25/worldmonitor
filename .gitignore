@@ -8,6 +8,7 @@ public/crises/
 public/tools/
 public/reference/
 public/research/
+public/use-cases/
 public/sources/
 public/crawlable-corpus.json
 # Volatile inventory metrics are derived during install/build. Stable product

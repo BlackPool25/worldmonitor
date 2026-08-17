@@ -13646,6 +13646,9 @@
           "path": "scripts/build-sitemap.mjs"
         },
         {
+          "path": "scripts/build-use-cases.mjs"
+        },
+        {
           "path": "scripts/capture-resilience-energy-v2-acceptance.mjs"
         },
         {
