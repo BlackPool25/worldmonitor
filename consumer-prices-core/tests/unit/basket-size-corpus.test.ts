@@ -73,10 +73,10 @@ describe('basket corpus vs the #6267 size rules', () => {
     const replayed = replayCorpus();
     const passed = replayed.filter((r) => r.status === 'pass');
     // Teeth for the assertion above: without this, every item could drift into
-    // `unknown` (the neutral verdict) and "nothing is rejected" would prove
-    // nothing. 101 of 119 items resolve to `pass` today; the floor sits below
-    // that so ordinary basket edits do not trip it, but a parsing regression
-    // that silently neutralises the window does.
+    // `absent`/`unverified` (non-decisive verdicts) and "nothing is rejected"
+    // would prove nothing. 101 of 119 items resolve to `pass` today; the floor
+    // sits below that so ordinary basket edits do not trip it, but a parsing
+    // regression that silently neutralises the window does.
     expect(passed.length).toBeGreaterThanOrEqual(90);
   });
 
