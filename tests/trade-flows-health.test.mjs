@@ -146,8 +146,9 @@ test('the absent-fleet alarm is not softened by any exemption list', () => {
   // the handler serves from the v1 bridge meanwhile — so it is deliberately left
   // to self-heal on the first run rather than softened.
   //
-  // The permanent empty-data softening route was considered and rejected
-  // because it would blunt the very alarm this issue added.
+  // A permanent empty-data exemption would blunt the very alarm this issue
+  // added. Runtime rollout windows are supplied explicitly by the health sweep,
+  // so this direct classifier call also proves tradeFlows has no rollout grace.
   assert.ok(!__testing__.EMPTY_DATA_OK_KEYS?.has?.('tradeFlows'),
     'a permanent empty-data exemption would blunt the absent-fleet alarm forever');
 

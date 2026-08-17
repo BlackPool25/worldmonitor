@@ -1879,10 +1879,9 @@ function classifyKey(name, redisKey, opts, ctx) {
   // takes the opposite policy on the same unknown state.
   const isOnDemand = !!opts.allowOnDemand && ON_DEMAND_KEYS.has(name)
     && ctx.activationStates?.get(name) !== true;
-  // Unlike ON_DEMAND this needs no per-registry opt-in (`allowOnDemand`): the
-  // runtime window is bounded by a deadline and revoked by a durable marker, so
-  // it cannot rot into a silent permanent exemption the way a registry-wide
-  // soften could.
+  // Unlike ON_DEMAND, runtime rollout windows need no per-registry opt-in
+  // (`allowOnDemand`): each window is bounded by a deployment-relative deadline
+  // supplied through ctx.rolloutPendingUntilMs and revoked by a durable marker.
   // Soft on an unreadable marker for the same reasons as ON_DEMAND above, plus
   // the deadline: an unknown state can delay strictness only until
   // `rolloutPendingUntil`, so it can never grant a grace that never expires.
