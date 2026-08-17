@@ -2025,20 +2025,34 @@ describe('wm-session route-scoped recovery failures (#5674)', () => {
 // two routes before it may black out the tab.
 // ---------------------------------------------------------------------------
 
-describe('wm-session mint failure cause (WORLDMONITOR-WG)', () => {
-  function captureSink() {
-    const captures: Array<{ msg: string; ctx: { level?: string; tags?: Record<string, string> } }> = [];
-    mod.__setWmSessionSentryEnqueueForTests(((fn: (s: unknown) => void) => {
-      fn({
-        captureMessage: (msg: string, ctx: { level?: string; tags?: Record<string, string> }) => {
-          captures.push({ msg, ctx });
-        },
-        addBreadcrumb: () => {},
-      });
-    }) as Parameters<typeof mod.__setWmSessionSentryEnqueueForTests>[0]);
-    return captures;
-  }
+// Exceptions the module sent via Sentry's captureException, most recent last.
+// Reset by every captureSink() call.
+let capturedExceptions: unknown[] = [];
 
+// Shared Sentry sink for the dead-session capture tests.
+//
+// `onCapture` runs SYNCHRONOUSLY inside markWmSessionDead, after it has already
+// pushed sessionDeadUntil out and before it returns. That is the one seam where
+// a test can advance the clock between one verdict and the next, which is what
+// makes "a second, redundant verdict re-armed the cooldown" observable at all —
+// both calls otherwise land on the same millisecond and extend it by zero.
+function captureSink(onCapture?: () => void) {
+  const captures: Array<{ msg: string; ctx: { level?: string; tags?: Record<string, string> } }> = [];
+  capturedExceptions = [];
+  mod.__setWmSessionSentryEnqueueForTests(((fn: (s: unknown) => void) => {
+    fn({
+      captureMessage: (msg: string, ctx: { level?: string; tags?: Record<string, string> }) => {
+        captures.push({ msg, ctx });
+        onCapture?.();
+      },
+      captureException: (err: unknown) => { capturedExceptions.push(err); },
+      addBreadcrumb: () => {},
+    });
+  }) as Parameters<typeof mod.__setWmSessionSentryEnqueueForTests>[0]);
+  return captures;
+}
+
+describe('wm-session mint failure cause (WORLDMONITOR-WG)', () => {
   function isDegraded(resp: Response): boolean {
     return resp.status === 503 && resp.headers.get('X-Wm-Session-Degraded') === '1';
   }
@@ -2544,17 +2558,6 @@ describe('wm-session cookie-persistence detection — concurrent mints', () => {
 });
 
 describe('wm-session mint cause provenance (#6804)', () => {
-  function captureSink() {
-    const captures: Array<{ ctx: { tags?: Record<string, string> } }> = [];
-    mod.__setWmSessionSentryEnqueueForTests(((fn: (s: unknown) => void) => {
-      fn({
-        addBreadcrumb: () => {},
-        captureMessage: (_m: string, ctx: { tags?: Record<string, string> }) => { captures.push({ ctx }); },
-      });
-    }) as Parameters<typeof mod.__setWmSessionSentryEnqueueForTests>[0]);
-    return captures;
-  }
-
   // A response the test releases by hand, so a request can still be in flight
   // at the exact moment an unrelated route declares the session dead. That is
   // the only way into recovery while the cooldown is already engaged — every
@@ -2717,8 +2720,20 @@ describe('wm-session mint cause provenance (#6804)', () => {
     // The mint SUCCEEDED here — the browser then refused to keep the cookie.
     // markWmSessionDead already recorded that verdict, so the recovery caller
     // must not relabel the same episode `mint_failed` on its way out.
+    //
+    // Asserting the tags alone would NOT prove that: markWmSessionDead's
+    // already-dead early return swallows a second capture, and one route cannot
+    // reach the corroboration quorum, so every tag assertion stays green with
+    // the guard removed. Two observables have teeth here and both are checked
+    // below — the cooldown must not be re-armed (the clock is advanced inside
+    // the first capture so a second verdict would land 10 minutes later), and
+    // the route whose 401 triggered recovery must not be struck by a mint that
+    // succeeded.
     memoryStorage.clear();
-    const captures = captureSink();
+    const realNow = Date.now;
+    let skewMs = 0;
+    Date.now = () => realNow.call(Date) + skewMs;
+    const captures = captureSink(() => { skewMs = 10 * 60 * 1000; });
 
     currentFetchHandler = (input) => {
       const url = urlOf(input);
@@ -2738,10 +2753,25 @@ describe('wm-session mint cause provenance (#6804)', () => {
     try {
       const resp = await wrappedFetch('https://api.worldmonitor.app/api/maritime/v1/get-vessel-snapshot');
       assert.equal(resp.status, 401);
+
+      // One minute past the cooldown the cookie_not_persisted verdict earned.
+      // A relabel would have re-armed it from the skewed clock, to t+25min.
+      skewMs = 16 * 60 * 1000;
+      assert.equal(
+        mod.isWmSessionDead(),
+        false,
+        'a second, redundant verdict for the same episode must not extend the blackout',
+      );
     } finally {
       console.warn = originalWarn;
+      Date.now = realNow;
     }
 
+    assert.deepEqual(
+      mod.getStruckRoutes(),
+      [],
+      'a mint that SUCCEEDED must not strike the route whose 401 triggered recovery',
+    );
     const dead = captures.filter((c) => c.ctx.tags?.kind === 'wm_session_dead');
     assert.equal(dead.length, 1, 'one episode, one verdict');
     assert.equal(dead[0].ctx.tags?.reason, 'cookie_not_persisted');
@@ -2750,5 +2780,74 @@ describe('wm-session mint cause provenance (#6804)', () => {
       'none',
       'a mint that succeeded has no failure cause, and the tag must say so',
     );
+  });
+
+  it('reports a thrown attempt as mint_cause unknown, and does not black out on it', async () => {
+    // `new AbortController()` and the timeout setTimeout sit OUTSIDE
+    // mintSession's try — on the old WebView / Smart-TV engines the
+    // AbortSignal.timeout comment names, a throw there rejects the whole
+    // attempt. The old code read the stale (usually null) module-scoped cause,
+    // failed the transport test, and blacked out every anonymous call for 15
+    // minutes over a client-side throw. It must now take the same corroboration
+    // route a transport blip does, and say `unknown` rather than nothing.
+    memoryStorage.clear();
+    const captures = captureSink();
+    const realAbortController = globalThis.AbortController;
+    const boom = new Error('AbortController is not a constructor');
+    (globalThis as unknown as { AbortController: unknown }).AbortController = function () {
+      throw boom;
+    };
+
+    currentFetchHandler = () => Promise.resolve(new Response('unauthorized', { status: 401 }));
+
+    const originalWarn = console.warn;
+    console.warn = () => {};
+    try {
+      const first = await wrappedFetch('https://api.worldmonitor.app/api/infrastructure/v1/get-cable-health');
+      assert.equal(first.status, 401, "the server's own answer is handed back");
+      assert.equal(
+        mod.isWmSessionDead(),
+        false,
+        'one client-side throw is not a server verdict and must not black out the tab',
+      );
+      assert.deepEqual(
+        mod.getStruckRoutes(),
+        ['/api/infrastructure/v1/get-cable-health'],
+        'it still counts as evidence against its own route',
+      );
+
+      // A second distinct route inside the corroboration window is what earns
+      // the blackout — the same rule a transport failure follows.
+      await wrappedFetch('https://api.worldmonitor.app/api/economic/v1/get-bls-series');
+      assert.equal(mod.isWmSessionDead(), true, 'two corroborating routes do justify it');
+    } finally {
+      console.warn = originalWarn;
+      (globalThis as unknown as { AbortController: typeof AbortController }).AbortController = realAbortController;
+    }
+
+    const dead = captures.filter((c) => c.ctx.tags?.kind === 'wm_session_dead');
+    assert.equal(dead.length, 1, 'exactly one capture per degraded episode');
+    assert.equal(dead[0].ctx.tags?.reason, 'mint_failed');
+    assert.equal(
+      dead[0].ctx.tags?.mint_cause,
+      'unknown',
+      'a throw is a distinct cause, not a blank tag and not a server refusal',
+    );
+    assert.ok(
+      capturedExceptions.includes(boom),
+      'the exception itself must be reported — `unknown` alone tells on-call nothing',
+    );
+  });
+
+  it('leaves session state alone when a key-session mint is refused', async () => {
+    // establishWmKeySession moved from the deleted fetchNewSession wrapper to
+    // mintSession. Its failure path touches none of the identity/state resets.
+    memoryStorage.clear();
+    captureSink();
+    currentFetchHandler = () => Promise.resolve(new Response('mint unavailable', { status: 503 }));
+
+    assert.equal(await mod.establishWmKeySession({ proKey: 'legacy-pro-key' }), false);
+    assert.equal(mod.isWmSessionDead(), false, 'a refused key mint is not a blackout');
+    assert.deepEqual(mod.getStruckRoutes(), [], 'and it strikes no route');
   });
 });

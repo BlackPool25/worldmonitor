@@ -629,6 +629,21 @@ const SESSION_ATTEMPT_OK: SessionAttempt = { ok: true };
 // mintCauseIsServerVerdict), so it needs corroboration like a transport blip.
 const SESSION_ATTEMPT_THREW: SessionAttempt = { ok: false, kind: 'mint_failed', cause: 'unknown' };
 
+/**
+ * `unknown` is the one cause that says "we do not know what happened", so
+ * discarding the exception on the way to it defeats the tag this module exists
+ * to make legible. Send the throw itself; the verdict is unchanged.
+ *
+ * This is a live path, not a defensive floor: `new AbortController()` and the
+ * timeout `setTimeout` sit OUTSIDE mintSession's try (see the AbortSignal.timeout
+ * note there), and markWmSessionDead's `new CustomEvent(...)` is unguarded — all
+ * three on exactly the old WebView / Smart-TV engines that comment names.
+ */
+function reportUnknownMintThrow(error: unknown): SessionAttempt {
+  try { sentryEnqueue((s) => s.captureException(error)); } catch { /* best-effort telemetry */ }
+  return SESSION_ATTEMPT_THREW;
+}
+
 async function attemptWmSession(): Promise<SessionAttempt> {
   if (isWmSessionDead()) return { ok: false, kind: 'suppressed' };
   if (isFresh(cached)) return SESSION_ATTEMPT_OK;
@@ -1032,7 +1047,7 @@ export function installWmSessionFetchInterceptor(): void {
     // for that result instead of each multiplying the failed retry.
     if (!recoveryInFlight) {
       const recovery = (async (): Promise<Response | null> => {
-        let attempt = await attemptWmSession().catch(() => SESSION_ATTEMPT_THREW);
+        let attempt = await attemptWmSession().catch(reportUnknownMintThrow);
         // A transport failure is the one cause worth immediately re-attempting:
         // the server never answered, so a second try costs one request and may
         // simply succeed. Bounded to a single retry, and only for a transport
@@ -1041,7 +1056,7 @@ export function installWmSessionFetchInterceptor(): void {
         // is not retried either: nothing was asked, so there is nothing to ask
         // again until the cooldown lapses.
         if (!attempt.ok && attempt.kind === 'mint_failed' && mintCauseIsTransport(attempt.cause)) {
-          attempt = await attemptWmSession().catch(() => SESSION_ATTEMPT_THREW);
+          attempt = await attemptWmSession().catch(reportUnknownMintThrow);
         }
         if (!attempt.ok) {
           // Only an attempt that actually reached the mint may be reported as
