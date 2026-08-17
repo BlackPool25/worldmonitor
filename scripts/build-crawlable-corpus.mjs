@@ -15,7 +15,11 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { writeResearchSection } from './build-research-reports.mjs';
-import { USE_CASES_CONTENT_VERSION, writeUseCasesSection } from './build-use-cases.mjs';
+import {
+  USE_CASE_PAGES,
+  USE_CASES_CONTENT_VERSION,
+  writeUseCasesSection,
+} from './build-use-cases.mjs';
 import { buildSourceCatalog, renderSourcesIndex } from './crawlable-sources-page.mjs';
 import {
   activeSourceAttributionEntries,
@@ -1765,9 +1769,9 @@ function buildManifest({ data, baseUrl, changelogPageCount }) {
         routes: researchRoutes,
       },
       useCases: {
-        count: 1,
+        count: USE_CASE_PAGES.length,
         index: '/use-cases/',
-        routes: ['/use-cases/monitor-country-risk/'],
+        routes: USE_CASE_PAGES.map((page) => page.path),
       },
       sources: {
         count: 1,

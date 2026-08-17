@@ -28,10 +28,14 @@ that materially determine its content:
 
 The `/use-cases/` family is a root crawlable corpus sibling of `/blog/`. The root
 sitemap owns the hub and child pages exactly once. Blog and docs sitemaps must
-not claim those URLs. Canonical treatment for the country-risk pilot (#6849):
-`/use-cases/monitor-country-risk/` owns the evergreen task framing;
-`/countries/` remains the live evidence surface; the blog workflow article
-remains distinct supporting editorial.
+not claim those URLs. Canonical treatment for the pilot pages:
+
+- `/use-cases/monitor-country-risk/` owns the evergreen country-risk task framing;
+  `/countries/` remains the live evidence surface; the blog workflow article
+  remains distinct supporting editorial (#6849).
+- `/use-cases/verify-breaking-news/` owns the evergreen verification procedure;
+  the OSINT blog article remains dated supporting editorial with no redirect
+  (#6850).
 
 Static-page dates are the latest Git commit date among the declared material
 sources. They are not file mtimes and never use build or deploy time. When a
