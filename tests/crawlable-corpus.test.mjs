@@ -147,6 +147,38 @@ describe('sources catalog origin countries', () => {
     assert.equal(sourceOriginLabel('QA'), 'Qatar');
   });
 
+  it('classifies every direct crisis-desk publisher added by #6813-#6830', () => {
+    const expectedOrigins = new Map([
+      ['airinfoagadez.com', 'NE'],
+      ['amu.tv', 'AF'],
+      ['efectococuyo.com', 'VE'],
+      ['havanatimes.org', 'CU'],
+      ['lefaso.net', 'BF'],
+      ['libyaherald.com', 'LY'],
+      ['nation.africa', 'KE'],
+      ['sanaacenter.org', 'YE'],
+      ['syriadirect.org', 'SY'],
+      ['tchadinfos.com', 'TD'],
+      ['www.14ymedio.com', 'CU'],
+      ['www.972mag.com', 'IL'],
+      ['www.alwihdainfo.com', 'TD'],
+      ['www.caracaschronicles.com', 'VE'],
+      ['www.egyptindependent.com', 'EG'],
+      ['www.haitilibre.com', 'HT'],
+      ['www.naharnet.com', 'LB'],
+      ['www.radiondekeluka.org', 'CF'],
+      ['www.studiotamani.org', 'ML'],
+    ]);
+
+    for (const [host, country] of expectedOrigins) {
+      assert.equal(
+        resolveSourceOrigin({ provider: host, hosts: [host] }),
+        country,
+        `${host} must resolve to ${country}`,
+      );
+    }
+  });
+
   it('marks international organizations as having no national origin', () => {
     assert.equal(resolveSourceOrigin({
       provider: 'International Monetary Fund (IMF)',
