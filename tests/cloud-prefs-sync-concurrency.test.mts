@@ -14,6 +14,7 @@ const stubs: Record<string, string> = {
   '@/config/feeds': [
     "export const CANADA_ARCTIC_OPT_IN_SOURCES = ['Globe and Mail', 'Global News', 'Yle News', 'NRK', 'Aftenposten', 'DR Nyheder', 'Arctic Today'];",
     "export const CANADA_DEPTH_OPT_IN_SOURCES = [];",
+    "export const CRISIS_FLOOR_OPT_IN_SOURCES = ['WAFA English'];",
     'export const FEEDS = {};',
     'export const FRONTLINE_EUROPE_PROTECTED_SOURCES = [];',
     'export const INTEL_SOURCES = [];',
@@ -481,8 +482,8 @@ describe('cloud preference write serialization', () => {
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
     });
 
-    assert.equal(result.localSchemaVersion, 7);
-    assert.deepEqual(result.acceptedSchemaVersionsByToken['test-token'], [7, 7]);
+    assert.equal(result.localSchemaVersion, 8);
+    assert.deepEqual(result.acceptedSchemaVersionsByToken['test-token'], [8, 8]);
   });
 
   it('preserves edits made for a new account while its sign-in waits in the queue', async () => {

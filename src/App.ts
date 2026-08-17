@@ -117,6 +117,7 @@ import { applyFontScale, FONT_SCALE_STORAGE_KEY } from '@/services/font-scale-se
 import {
   CANADA_ARCTIC_OPT_IN_SOURCES,
   CANADA_DEPTH_OPT_IN_SOURCES,
+  CRISIS_FLOOR_OPT_IN_SOURCES,
   computeDefaultDisabledSources,
   computeLegacyDefaultDisabledSources,
   FEEDS,
@@ -200,6 +201,7 @@ import {
   migrateRegionalFeedRolloutDefaultsV5,
   migrateCanadaArcticOptInsV6,
   migrateCanadaDepthOptInsV7,
+  migrateCrisisDeskOptInsV8,
 } from '@/utils/cloud-prefs-migrations';
 import {
   getConvexClient,
@@ -1341,6 +1343,31 @@ export class App {
           }
         }
         localStorage.setItem(canadaDepthKey, 'done');
+      }
+      // #6813-#6830 — validated crisis desks: preserve every reviewed depth,
+      // backup, and locale-primary source as opt-in for returning profiles.
+      const crisisDeskOptInKey = 'worldmonitor-crisis-desk-optin-v1';
+      if (!localStorage.getItem(crisisDeskOptInKey)) {
+        const current = loadFromStorage<string[]>(STORAGE_KEYS.disabledFeeds, []);
+        const migrated = migrateCrisisDeskOptInsV8({
+          [STORAGE_KEYS.disabledFeeds]: JSON.stringify(current),
+        }, CRISIS_FLOOR_OPT_IN_SOURCES);
+        const rawUpdated = migrated[STORAGE_KEYS.disabledFeeds];
+        if (typeof rawUpdated === 'string') {
+          let updated: unknown;
+          try { updated = JSON.parse(rawUpdated); } catch { updated = null; }
+          if (
+            Array.isArray(updated)
+            && updated.every((name): name is string => typeof name === 'string')
+            && JSON.stringify(updated) !== JSON.stringify(current)
+          ) {
+            saveToStorage(STORAGE_KEYS.disabledFeeds, updated);
+            console.log(
+              `[App] Crisis-desk opt-ins (#6813-#6830): disabled ${updated.length - current.length} newly cataloged source(s)`,
+            );
+          }
+        }
+        localStorage.setItem(crisisDeskOptInKey, 'done');
       }
       // Locale boost: additively enable locale-matched sources (runs once per locale).
       // Reads the explicit-choice key (`wm-locale-explicit`, written by Settings →

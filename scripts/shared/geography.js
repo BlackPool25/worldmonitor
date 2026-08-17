@@ -126,7 +126,7 @@ export const REGIONS = [
     signalAliases: ['sub-saharan africa', 'subsaharan africa'],
     feedRegion: 'africa',
     mapView: 'africa',
-    keyCountries: ['NG', 'ZA', 'KE', 'ET', 'SD', 'CD', 'ML', 'BF', 'NE', 'CM', 'TD', 'CF'],
+    keyCountries: ['NG', 'ZA', 'KE', 'ET', 'SD', 'CD', 'ML', 'BF', 'NE', 'CM'],
   },
   {
     id: 'global',

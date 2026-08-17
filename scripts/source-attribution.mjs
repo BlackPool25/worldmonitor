@@ -69,6 +69,13 @@ const licensedPublisherFeed = (provider) => ({
   status: 'reviewed',
 });
 
+const publisherMetadataFeed = (provider) => ({
+  provider,
+  license: 'Publisher-provided feed or Google News link metadata; ingest is limited to headlines, summaries, timestamps, publisher credit, and link-out',
+  attribution: `Credit ${provider} and link to the original publisher item.`,
+  status: 'reviewed',
+});
+
 /**
  * A provider identity is allowed to span multiple hosts only when the grouping
  * is declared here. The stable key is for review history; the display provider
@@ -130,6 +137,36 @@ const PROVIDER_OVERRIDES = {
   'feed.businesswire.com': licensedPublisherFeed('Business Wire'),
   'chainwire.org': licensedPublisherFeed('Chainwire'),
   'www.interfax.ru': licensedPublisherFeed('Interfax'),
+  'yemenonline.info': publisherMetadataFeed('Yemen Online'),
+  'sanaacenter.org': publisherMetadataFeed("Sana'a Center"),
+  'syriadirect.org': publisherMetadataFeed('Syria Direct'),
+  'english.enabbaladi.net': publisherMetadataFeed('Enab Baladi English'),
+  'www.972mag.com': publisherMetadataFeed('+972 Magazine'),
+  'english.wafa.ps': publisherMetadataFeed('WAFA English'),
+  'www.haitilibre.com': publisherMetadataFeed('HaitiLibre English'),
+  'ayibopost.com': publisherMetadataFeed('AyiboPost'),
+  'amu.tv': publisherMetadataFeed('Amu TV'),
+  'pajhwok.com': publisherMetadataFeed('Pajhwok Afghan News'),
+  'www.naharnet.com': publisherMetadataFeed('Naharnet Lebanon'),
+  'lorientlejour.com': publisherMetadataFeed("L'Orient Today"),
+  'www.studiotamani.org': publisherMetadataFeed('Studio Tamani'),
+  'lefaso.net': publisherMetadataFeed('leFaso.net'),
+  'actuniger.com': publisherMetadataFeed('ActuNiger'),
+  'airinfoagadez.com': publisherMetadataFeed('Aïr Info'),
+  'www.caracaschronicles.com': publisherMetadataFeed('Caracas Chronicles'),
+  'efectococuyo.com': publisherMetadataFeed('Efecto Cocuyo'),
+  'havanatimes.org': publisherMetadataFeed('Havana Times'),
+  'www.14ymedio.com': publisherMetadataFeed('14ymedio'),
+  'libyaherald.com': publisherMetadataFeed('Libya Herald'),
+  'www.egyptindependent.com': publisherMetadataFeed('Egypt Independent'),
+  'madamasr.com': publisherMetadataFeed('Mada Masr'),
+  'thedailystar.net': publisherMetadataFeed('The Daily Star'),
+  'dhakatribune.com': publisherMetadataFeed('Dhaka Tribune'),
+  'nation.africa': publisherMetadataFeed('Daily Nation'),
+  'theguardianpostcameroon.com': publisherMetadataFeed('The Guardian Post'),
+  'tchadinfos.com': publisherMetadataFeed('Tchadinfos'),
+  'www.alwihdainfo.com': publisherMetadataFeed('Alwihda Info'),
+  'www.radiondekeluka.org': publisherMetadataFeed('Radio Ndeke Luka'),
   'ustr.gov': {
     provider: 'Office of the U.S. Trade Representative',
     license: 'U.S. government public information; site and document-specific notices apply',
@@ -651,9 +688,9 @@ const PROVIDER_OVERRIDES = {
 // a provider-bearing override a separate, explicit lifecycle event instead of
 // something `--write` can silently normalize into the manifest.
 export const PROVIDER_IDENTITY_REVIEW = Object.freeze({
-  sha256: '38b0b43635fdb230c9e0c6f4de8ba93b500168c4d05cef7794a556e3a7aa3e4f',
-  reason: 'Baseline the reviewed identities, including the merged ECCC, Bank of Canada, Statistics Canada, Earthquakes Canada, Global Affairs Canada, CWFIS, BC Wildfire Service, and Canadian news providers.',
-  reviewReference: 'PR #6662; PR #6670; PR #6736',
+  sha256: 'b5bd66bab2b7416bbac6acf28732b84a1553a5757bda4e34b37cbc424b91d316',
+  reason: 'Baseline the reviewed identities, including the validated crisis-desk publishers selected in issues #6813-#6830.',
+  reviewReference: 'PR #6662; PR #6670; PR #6736; issues #6813-#6830',
 });
 
 export function providerIdentityDigest(providerOverrides = PROVIDER_OVERRIDES) {

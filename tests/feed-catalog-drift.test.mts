@@ -57,6 +57,9 @@ interface FeedsModule {
   REGIONAL_FEED_ROLLOUT_DEFAULT_SOURCES: readonly string[];
   REGIONAL_FEED_ROLLOUT_OPT_IN_SOURCES: readonly string[];
   CRISIS_FLOOR_EN_DEFAULT_SOURCES: readonly string[];
+  CRISIS_FLOOR_STRATEGIC_DEFAULT_SOURCES: readonly string[];
+  CRISIS_FLOOR_OPT_IN_SOURCES: readonly string[];
+  CRISIS_DESK_ROLLOUT_SOURCES: readonly string[];
   INTEL_SOURCES: FeedEntry[];
   SOURCE_TYPES: Record<string, string>;
   SOURCE_PROPAGANDA_RISK: Record<string, { risk: string; stateAffiliated?: string }>;
@@ -121,8 +124,10 @@ const EASTERN_FLANK_FEEDS = {
 } as const;
 
 const STRATEGIC_DEFAULTS = [
+  'ActuNiger',
   'Hurriyet',
   'Polsat News',
+  'Studio Tamani',
   'Kathimerini',
   'Jeune Afrique',
   'Asahi Shimbun',
@@ -131,6 +136,7 @@ const STRATEGIC_DEFAULTS = [
   'Bangkok Post',
   'VnExpress',
   'Yonhap News',
+  'leFaso.net',
 ] as const;
 const AFRICA_DEPTH_EN_DEFAULTS = ['Hiiraan Online', 'RFI Afrique'] as const;
 const AFRICA_DEPTH_FEEDS = {
@@ -145,6 +151,39 @@ const AFRICA_DEPTH_FEEDS = {
   'Citi Newsroom': { url: 'https://news.google.com/rss/search?q=site%3Acitinewsroom.com%20when%3A7d&hl=en-US&gl=US&ceid=US:en' },
   'Le Quotidien': { url: 'https://lequotidien.sn/feed/', lang: 'fr' },
   'RFI Afrique': { url: 'https://www.rfi.fr/en/africa/rss' },
+} as const;
+
+const CRISIS_DESK_PACK = {
+  'Yemen Online': { category: 'middleeast', countries: ['YE'], url: 'https://news.google.com/rss/search?q=site%3Ayemenonline.info%20when%3A14d&hl=en-US&gl=US&ceid=US:en', role: 'en-default' },
+  "Sana'a Center": { category: 'middleeast', countries: ['YE'], url: 'https://sanaacenter.org/feed/', role: 'opt-in' },
+  'Syria Direct': { category: 'middleeast', countries: ['SY'], url: 'https://syriadirect.org/feed/', role: 'en-default' },
+  'Enab Baladi English': { category: 'middleeast', countries: ['SY'], url: 'https://news.google.com/rss/search?q=site%3Aenglish.enabbaladi.net%20when%3A14d&hl=en-US&gl=US&ceid=US:en', role: 'opt-in' },
+  '+972 Magazine': { category: 'middleeast', countries: ['IL', 'PS'], url: 'https://www.972mag.com/feed/', role: 'en-default' },
+  'WAFA English': { category: 'middleeast', countries: ['PS'], url: 'https://news.google.com/rss/search?q=site%3Aenglish.wafa.ps%20when%3A7d&hl=en-US&gl=US&ceid=US:en', role: 'opt-in' },
+  'HaitiLibre English': { category: 'latam', countries: ['HT'], url: 'https://www.haitilibre.com/rss-flash-en.php', role: 'en-default' },
+  AyiboPost: { category: 'latam', countries: ['HT'], url: 'https://news.google.com/rss/search?q=site%3Aayibopost.com%20Haiti%20when%3A14d&hl=fr&gl=FR&ceid=FR:fr', lang: 'fr', role: 'opt-in' },
+  'Amu TV': { category: 'asia', countries: ['AF'], url: 'https://amu.tv/feed/', role: 'en-default' },
+  'Pajhwok Afghan News': { category: 'asia', countries: ['AF'], url: 'https://news.google.com/rss/search?q=site%3Apajhwok.com%20Afghanistan%20when%3A7d&hl=en-US&gl=US&ceid=US:en', role: 'opt-in' },
+  'Naharnet Lebanon': { category: 'middleeast', countries: ['LB'], url: 'https://www.naharnet.com/tags/lebanon/en/feed.atom', role: 'en-default' },
+  "L'Orient Today": { category: 'middleeast', countries: ['LB'], url: 'https://news.google.com/rss/search?q=site%3Alorientlejour.com%20Lebanon%20when%3A7d&hl=en-US&gl=US&ceid=US:en', role: 'opt-in' },
+  'Studio Tamani': { category: 'africa', countries: ['ML'], url: 'https://www.studiotamani.org/feed/', lang: 'fr', strategicDefault: true, role: 'strategic-default' },
+  'leFaso.net': { category: 'africa', countries: ['BF'], url: 'https://lefaso.net/spip.php?page=backend', lang: 'fr', strategicDefault: true, role: 'strategic-default' },
+  ActuNiger: { category: 'africa', countries: ['NE'], url: 'https://news.google.com/rss/search?q=site%3Aactuniger.com%20Niger%20when%3A7d&hl=fr&gl=FR&ceid=FR:fr', lang: 'fr', strategicDefault: true, role: 'strategic-default' },
+  'Aïr Info': { category: 'africa', countries: ['NE'], url: 'https://airinfoagadez.com/feed/', lang: 'fr', role: 'opt-in' },
+  'Caracas Chronicles': { category: 'latam', countries: ['VE'], url: 'https://www.caracaschronicles.com/feed/', role: 'en-default' },
+  'Efecto Cocuyo': { category: 'latam', countries: ['VE'], url: 'https://efectococuyo.com/feed/', lang: 'es', role: 'opt-in' },
+  'Havana Times': { category: 'latam', countries: ['CU'], url: 'https://havanatimes.org/feed/', role: 'en-default' },
+  '14ymedio': { category: 'latam', countries: ['CU'], url: 'https://www.14ymedio.com/rss/', lang: 'es', role: 'opt-in' },
+  'Libya Herald': { category: 'middleeast', countries: ['LY'], url: 'https://libyaherald.com/rss.xml', role: 'en-default' },
+  'Egypt Independent': { category: 'middleeast', countries: ['EG'], url: 'https://www.egyptindependent.com/feed/', role: 'en-default' },
+  'Mada Masr': { category: 'middleeast', countries: ['EG'], url: 'https://news.google.com/rss/search?q=site%3Amadamasr.com%20when%3A30d&hl=en-US&gl=US&ceid=US:en', role: 'opt-in' },
+  'The Daily Star': { category: 'asia', countries: ['BD'], url: 'https://news.google.com/rss/search?q=site%3Athedailystar.net%20when%3A14d&hl=en-US&gl=US&ceid=US:en', role: 'en-default' },
+  'Dhaka Tribune': { category: 'asia', countries: ['BD'], url: 'https://news.google.com/rss/search?q=site%3Adhakatribune.com%20when%3A14d&hl=en-US&gl=US&ceid=US:en', role: 'opt-in' },
+  'Daily Nation': { category: 'africa', countries: ['KE'], url: 'https://nation.africa/kenya/rss.xml', role: 'en-default' },
+  'The Guardian Post': { category: 'africa', countries: ['CM'], url: 'https://news.google.com/rss/search?q=site%3Atheguardianpostcameroon.com%20when%3A30d&hl=en-US&gl=US&ceid=US:en', role: 'en-default' },
+  Tchadinfos: { category: 'africa', countries: ['TD'], url: 'https://tchadinfos.com/feed/', lang: 'fr', role: 'opt-in' },
+  'Alwihda Info': { category: 'africa', countries: ['TD'], url: 'https://www.alwihdainfo.com/rss/', lang: 'fr', role: 'opt-in' },
+  'Radio Ndeke Luka': { category: 'africa', countries: ['CF'], url: 'https://www.radiondekeluka.org/feed/', lang: 'fr', role: 'opt-in' },
 } as const;
 
 const REGIONAL_ROLLOUT_DEFAULTS = [
@@ -706,7 +745,13 @@ describe('feed catalog drift', () => {
   it('keeps both Eastern-flank EN defaults under the production free cap (#5952)', () => {
     assert.deepEqual(
       [...feeds.FREE_CAP_PROTECTED_SOURCES].sort(),
-      [...FRONTLINE_EUROPE, ...REGIONAL_ROLLOUT_DEFAULTS, ...feeds.CANADA_EN_DEFAULT_SOURCES, ...feeds.CRISIS_FLOOR_EN_DEFAULT_SOURCES].sort(),
+      [
+        ...FRONTLINE_EUROPE,
+        ...REGIONAL_ROLLOUT_DEFAULTS,
+        ...feeds.CANADA_EN_DEFAULT_SOURCES,
+        ...feeds.CRISIS_FLOOR_EN_DEFAULT_SOURCES,
+        ...feeds.CRISIS_FLOOR_STRATEGIC_DEFAULT_SOURCES,
+      ].sort(),
       'free-cap protected defaults must match the editorially protected sets',
     );
 
@@ -748,7 +793,7 @@ describe('feed catalog drift', () => {
     }
   });
 
-  it('locks crisis-floor desks as EN default-on with client/server URL parity (#6812)', () => {
+  it('locks the independently reviewed crisis-desk route, language, and activation matrix (#6813-#6830)', () => {
     const enabled = feeds.getAllDefaultEnabledSources();
     const disabledEn = new Set(feeds.computeDefaultDisabledSources('en'));
     const clientByName = new Map(
@@ -757,18 +802,56 @@ describe('feed catalog drift', () => {
     const serverByName = new Map(
       Object.values(serverFeeds.VARIANT_FEEDS.full ?? {}).flat().map((feed) => [feed.name, feed]),
     );
+    const sourceGeography = JSON.parse(
+      readFileSync(join(repoRoot, 'shared/source-geography.json'), 'utf8'),
+    ) as Record<string, string[]>;
 
-    assert.equal(feeds.CRISIS_FLOOR_EN_DEFAULT_SOURCES.length, 18);
-    for (const name of feeds.CRISIS_FLOOR_EN_DEFAULT_SOURCES) {
+    assert.deepEqual(
+      [...feeds.CRISIS_DESK_ROLLOUT_SOURCES].sort(),
+      Object.keys(CRISIS_DESK_PACK).sort(),
+      'rollout registry must match the independent selected-source matrix',
+    );
+
+    for (const [name, expected] of Object.entries(CRISIS_DESK_PACK)) {
       const client = clientByName.get(name);
       const server = serverByName.get(name);
       assert.ok(client, `${name} must exist in the client catalog`);
       assert.ok(server, `${name} must exist in the server full digest catalog`);
-      assert.equal(client.url, server.url, `${name} client/server URL must match`);
-      assert.ok(!client.lang, `${name} must be EN-reachable (no lang gate)`);
-      assert.ok(enabled.has(name), `${name} must be EN default-on`);
-      assert.ok(!disabledEn.has(name), `${name} must not start disabled for a fresh EN profile`);
+      assert.equal(client.url, expected.url, `${name} client route drifted`);
+      assert.equal(server.url, expected.url, `${name} server route drifted`);
+      assert.equal(client.lang, 'lang' in expected ? expected.lang : undefined, `${name} client language drifted`);
+      assert.equal(server.lang, 'lang' in expected ? expected.lang : undefined, `${name} server language drifted`);
+      assert.equal(client.strategicDefault, 'strategicDefault' in expected ? expected.strategicDefault : undefined, `${name} client strategic role drifted`);
+      assert.equal(server.strategicDefault, 'strategicDefault' in expected ? expected.strategicDefault : undefined, `${name} server strategic role drifted`);
+      assert.deepEqual(sourceGeography[name], [...expected.countries], `${name} country mapping drifted`);
+      assert.ok(isAllowedDomain(new URL(expected.url).hostname), `${name} route host must be RSS-allowlisted`);
+      assert.ok(feeds.SOURCE_TYPES[name], `${name} must have a reviewed source type`);
+      assert.ok(feeds.SOURCE_PROPAGANDA_RISK[name], `${name} must have a reviewed risk declaration`);
+
+      if (expected.role === 'opt-in') {
+        assert.ok(!enabled.has(name), `${name} must remain globally opt-in`);
+        assert.ok(disabledEn.has(name), `${name} must start disabled for a fresh EN profile`);
+      } else {
+        assert.ok(enabled.has(name), `${name} must be globally default-on`);
+        assert.ok(!disabledEn.has(name), `${name} must not start disabled for a fresh EN profile`);
+      }
     }
+
+    assert.deepEqual(
+      [...feeds.CRISIS_FLOOR_EN_DEFAULT_SOURCES].sort(),
+      Object.entries(CRISIS_DESK_PACK).filter(([, source]) => source.role === 'en-default').map(([name]) => name).sort(),
+    );
+    assert.deepEqual(
+      [...feeds.CRISIS_FLOOR_STRATEGIC_DEFAULT_SOURCES].sort(),
+      Object.entries(CRISIS_DESK_PACK).filter(([, source]) => source.role === 'strategic-default').map(([name]) => name).sort(),
+    );
+    assert.deepEqual(
+      [...feeds.CRISIS_FLOOR_OPT_IN_SOURCES].sort(),
+      Object.entries(CRISIS_DESK_PACK).filter(([, source]) => source.role === 'opt-in').map(([name]) => name).sort(),
+    );
+    assert.equal(feeds.SOURCE_TYPES['WAFA English'], 'gov');
+    assert.equal(feeds.SOURCE_PROPAGANDA_RISK['WAFA English']?.risk, 'high');
+    assert.equal(feeds.SOURCE_PROPAGANDA_RISK['WAFA English']?.stateAffiliated, 'Palestine');
   });
 
   it('allows every Africa-depth feed through the RSS proxy host policy (#5955)', () => {
@@ -868,7 +951,7 @@ describe('feed catalog drift', () => {
     }
   });
 
-  it('migrates dormant schema-1/2 EN rows from before #5949 through schema 7', () => {
+  it('migrates dormant schema-1/2 EN rows from before #5949 through schema 8', () => {
     const preFrontlineDefault = new Set(
       feeds.computePreRegionalFeedRolloutDefaultDisabledSources('en'),
     );
@@ -906,12 +989,13 @@ describe('feed catalog drift', () => {
       regionalRollout: { targets },
       canadaArctic: { optInSources: feeds.CANADA_ARCTIC_OPT_IN_SOURCES },
       canadaDepth: { optInSources: feeds.CANADA_DEPTH_OPT_IN_SOURCES },
+      crisisDesk: { optInSources: feeds.CRISIS_FLOOR_OPT_IN_SOURCES },
     });
     for (const fromVersion of [1, 2]) {
       const blob = {
         'worldmonitor-disabled-feeds': JSON.stringify([...preFrontlineDefault]),
       };
-      const migrated = applyMigrationChain(blob, fromVersion, 7, migrations);
+      const migrated = applyMigrationChain(blob, fromVersion, 8, migrations);
       const disabled = new Set(
         JSON.parse(migrated['worldmonitor-disabled-feeds'] as string) as string[],
       );
@@ -948,7 +1032,33 @@ describe('feed catalog drift', () => {
           `schema ${fromVersion}: ${name} must remain enabled (not stuffed into the denylist)`,
         );
       }
+      for (const name of feeds.CRISIS_FLOOR_OPT_IN_SOURCES) {
+        assert.ok(
+          disabled.has(name),
+          `schema ${fromVersion}: ${name} must be disabled after the crisis-desk migration`,
+        );
+      }
+      for (const name of [
+        ...feeds.CRISIS_FLOOR_EN_DEFAULT_SOURCES,
+        ...feeds.CRISIS_FLOOR_STRATEGIC_DEFAULT_SOURCES,
+      ]) {
+        assert.equal(
+          disabled.has(name),
+          false,
+          `schema ${fromVersion}: ${name} must remain globally enabled`,
+        );
+      }
     }
+  });
+
+  it('wires a distinct local crisis-desk migration key in App.ts', () => {
+    const appSource = readFileSync(join(repoRoot, 'src/App.ts'), 'utf8');
+    assert.match(appSource, /worldmonitor-crisis-desk-optin-v1/);
+    assert.match(
+      appSource,
+      /migrateCrisisDeskOptInsV8\([\s\S]*?CRISIS_FLOOR_OPT_IN_SOURCES\)/,
+      'the local migration must add only the reviewed opt-in cohort',
+    );
   });
 
   it('promotes locale-matched rollout sources without changing unrelated opt-ins', () => {

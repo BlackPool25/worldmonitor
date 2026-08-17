@@ -8,6 +8,7 @@ import {
   migrateRegionalFeedRolloutDefaultsV5,
   migrateCanadaArcticOptInsV6,
   migrateCanadaDepthOptInsV7,
+  migrateCrisisDeskOptInsV8,
   applyMigrationChain,
   applyMigrationChainWithSchemaVersion,
   buildMigrations,
@@ -45,6 +46,12 @@ const CANADA_DEPTH_OPT_INS = [
   'Edmonton Journal',
   'Ottawa Citizen',
   'The Province',
+] as const;
+const CRISIS_DESK_OPT_INS = [
+  "Sana'a Center",
+  'Enab Baladi English',
+  'WAFA English',
+  'AyiboPost',
 ] as const;
 
 describe('cloud-prefs schema-2 migration: re-enable fully-disabled categories', () => {
@@ -369,6 +376,7 @@ describe('cloud-prefs schema-5 migration: regional feed rollout intent', () => {
       regionalRollout: { targets },
       canadaArctic: { optInSources: CANADA_ARCTIC_OPT_INS },
       canadaDepth: { optInSources: CANADA_DEPTH_OPT_INS },
+      crisisDesk: { optInSources: CRISIS_DESK_OPT_INS },
     });
     const applied = applyMigrationChainWithSchemaVersion(
       blob,
@@ -385,7 +393,7 @@ describe('cloud-prefs schema-5 migration: regional feed rollout intent', () => {
     const independentlyApplied = applyMigrationChainWithSchemaVersion(
       blob,
       4,
-      7,
+      8,
       migrations,
       (version, data) => (
         version === 5 && isRegionalFeedRolloutMigrationAmbiguous(data, targets)
@@ -399,8 +407,13 @@ describe('cloud-prefs schema-5 migration: regional feed rollout intent', () => {
     );
     assert.deepEqual(
       JSON.parse(independentlyApplied.data['worldmonitor-disabled-feeds'] as string),
-      [...ambiguousLegacy, ...CANADA_ARCTIC_OPT_INS, ...CANADA_DEPTH_OPT_INS],
-      'schema 6/7 must still protect opt-ins while schema 5 remains retryable',
+      [
+        ...ambiguousLegacy,
+        ...CANADA_ARCTIC_OPT_INS,
+        ...CANADA_DEPTH_OPT_INS,
+        ...CRISIS_DESK_OPT_INS,
+      ],
+      'schema 6/7/8 must still protect opt-ins while schema 5 remains retryable',
     );
   });
 
@@ -509,6 +522,50 @@ describe('cloud-prefs schema-7 migration: Canada depth opt-in boundary', () => {
       assert.equal(disabled.includes(name), false, `${name} must stay absent from disabled`);
     }
     for (const name of CANADA_DEPTH_OPT_INS) {
+      assert.ok(disabled.includes(name), `${name} must be present in disabled`);
+    }
+  });
+});
+
+describe('cloud-prefs schema-8 migration: crisis-desk opt-in boundary', () => {
+  it('adds each reviewed opt-in once while preserving the existing order', () => {
+    const blob = {
+      'worldmonitor-disabled-feeds': JSON.stringify(['user-choice', "Sana'a Center"]),
+      'worldmonitor-panels': '{"keep":true}',
+    };
+    const result = migrateCrisisDeskOptInsV8(blob, CRISIS_DESK_OPT_INS);
+    assert.deepEqual(
+      JSON.parse(result['worldmonitor-disabled-feeds'] as string),
+      ['user-choice', "Sana'a Center", ...CRISIS_DESK_OPT_INS.filter((name) => name !== "Sana'a Center")],
+    );
+    assert.equal(result['worldmonitor-panels'], '{"keep":true}');
+    assert.equal(
+      migrateCrisisDeskOptInsV8(result, CRISIS_DESK_OPT_INS),
+      result,
+      'a completed migration must be idempotent and preserve object identity',
+    );
+  });
+
+  it('leaves empty, malformed, and non-string states untouched', () => {
+    for (const raw of [
+      '[]',
+      'not-json',
+      JSON.stringify(['user-choice', 42]),
+    ]) {
+      const blob = { 'worldmonitor-disabled-feeds': raw };
+      assert.equal(migrateCrisisDeskOptInsV8(blob, CRISIS_DESK_OPT_INS), blob);
+    }
+  });
+
+  it('does not insert global English or strategic defaults into the denylist', () => {
+    const blob = { 'worldmonitor-disabled-feeds': JSON.stringify(['user-choice']) };
+    const result = migrateCrisisDeskOptInsV8(blob, CRISIS_DESK_OPT_INS);
+    const disabled = JSON.parse(result['worldmonitor-disabled-feeds'] as string) as string[];
+
+    for (const name of ['Yemen Online', 'Studio Tamani']) {
+      assert.equal(disabled.includes(name), false, `${name} must stay globally enabled`);
+    }
+    for (const name of CRISIS_DESK_OPT_INS) {
       assert.ok(disabled.includes(name), `${name} must be present in disabled`);
     }
   });
@@ -634,6 +691,17 @@ describe('applyMigrationChain', () => {
     assert.deepEqual(
       JSON.parse(result['worldmonitor-disabled-feeds'] as string),
       ['user-choice', ...CANADA_DEPTH_OPT_INS],
+    );
+  });
+
+  it('integrates the crisis-desk opt-in migration as schema 8', () => {
+    const blob = { 'worldmonitor-disabled-feeds': JSON.stringify(['user-choice']) };
+    const result = applyMigrationChain(blob, 7, 8, buildMigrations({}, {
+      crisisDesk: { optInSources: CRISIS_DESK_OPT_INS },
+    }));
+    assert.deepEqual(
+      JSON.parse(result['worldmonitor-disabled-feeds'] as string),
+      ['user-choice', ...CRISIS_DESK_OPT_INS],
     );
   });
 });

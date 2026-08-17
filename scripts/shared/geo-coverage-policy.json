@@ -2,12 +2,13 @@
   "_readme": [
     "Coverage policy for the geographic health audit (#5957, epic #5948).",
     "",
-    "floors: minimum EN default-on LOCAL sources (shared/source-geography.json)",
+    "floors: minimum globally default-on LOCAL sources (shared/source-geography.json)",
+    "including explicitly approved strategicDefault non-English desks.",
     "required per strategic keyCountry. v1 floors come from the epic sequencing:",
     "UA/PL after P0 (#5949/#5950), TW/PK after P1 Indo-Pacific (#5954),",
     "and CA after the Canada source pack (#5960).",
     "",
-    "zeroDefaultOnAllowlist: keyCountries that currently have ZERO EN default-on",
+    "zeroDefaultOnAllowlist: keyCountries that currently have ZERO globally default-on",
     "local sources, with the documented reason (wires-only or locale-gated).",
     "The audit fails both ways: a country drops to zero without being listed",
     "here (new gap), or a listed country gains default-on local coverage and",
@@ -35,15 +36,12 @@
     "EG": 1,
     "BD": 1,
     "KE": 1,
-    "CM": 1,
-    "TD": 1,
-    "CF": 1
+    "CM": 1
   },
   "zeroDefaultOnAllowlist": {
     "AR": "Clarín / Infobae Americas are es locale-gated; no EN default-on local source.",
     "GB": "By design: covered via global-remit UK outlets (BBC World, Guardian World); no UK-domestic feed in catalog.",
     "IQ": "Catalog has Rudaw (Kurdistan Region of Iraq); not EN default-on.",
-    "KR": "Yonhap News / Chosun Ilbo are ko locale-boosted only; no EN default-on local.",
     "AU": "ABC News Australia / Guardian Australia in catalog; not EN default-on.",
     "CD": "Actualite.cd / Radio Okapi are fr locale-gated; no EN default-on local source.",
     "ID": "Jakarta Post in catalog; not EN default-on.",

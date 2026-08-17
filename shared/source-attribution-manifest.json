@@ -259,6 +259,23 @@
       ]
     },
     {
+      "host": "airinfoagadez.com",
+      "provider": "Aïr Info",
+      "kind": "feed",
+      "observed": true,
+      "license": "Publisher-provided feed or Google News link metadata; ingest is limited to headlines, summaries, timestamps, publisher credit, and link-out",
+      "attribution": "Credit Aïr Info and link to the original publisher item.",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
+          "path": "src/config/feeds.ts"
+        }
+      ]
+    },
+    {
       "host": "airlinegeeks.com",
       "provider": "airlinegeeks.com",
       "kind": "structured",
@@ -300,6 +317,23 @@
       "references": [
         {
           "path": "src/components/LiveNewsPanel.ts"
+        }
+      ]
+    },
+    {
+      "host": "amu.tv",
+      "provider": "Amu TV",
+      "kind": "feed",
+      "observed": true,
+      "license": "Publisher-provided feed or Google News link metadata; ingest is limited to headlines, summaries, timestamps, publisher credit, and link-out",
+      "attribution": "Credit Amu TV and link to the original publisher item.",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
+          "path": "src/config/feeds.ts"
         }
       ]
     },
@@ -2594,6 +2628,23 @@
       ]
     },
     {
+      "host": "efectococuyo.com",
+      "provider": "Efecto Cocuyo",
+      "kind": "feed",
+      "observed": true,
+      "license": "Publisher-provided feed or Google News link metadata; ingest is limited to headlines, summaries, timestamps, publisher credit, and link-out",
+      "attribution": "Credit Efecto Cocuyo and link to the original publisher item.",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
+          "path": "src/config/feeds.ts"
+        }
+      ]
+    },
+    {
       "host": "efts.sec.gov",
       "provider": "SEC EDGAR Full-Text Search",
       "kind": "structured",
@@ -3635,6 +3686,23 @@
       ]
     },
     {
+      "host": "havanatimes.org",
+      "provider": "Havana Times",
+      "kind": "feed",
+      "observed": true,
+      "license": "Publisher-provided feed or Google News link metadata; ingest is limited to headlines, summaries, timestamps, publisher credit, and link-out",
+      "attribution": "Credit Havana Times and link to the original publisher item.",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
+          "path": "src/config/feeds.ts"
+        }
+      ]
+    },
+    {
       "host": "hdr.undp.org",
       "provider": "UNDP Human Development Report",
       "kind": "structured",
@@ -4075,6 +4143,23 @@
       ]
     },
     {
+      "host": "lefaso.net",
+      "provider": "leFaso.net",
+      "kind": "feed",
+      "observed": true,
+      "license": "Publisher-provided feed or Google News link metadata; ingest is limited to headlines, summaries, timestamps, publisher credit, and link-out",
+      "attribution": "Credit leFaso.net and link to the original publisher item.",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
+          "path": "src/config/feeds.ts"
+        }
+      ]
+    },
+    {
       "host": "lequotidien.sn",
       "provider": "lequotidien.sn",
       "kind": "feed",
@@ -4082,6 +4167,23 @@
       "license": "Provider terms for this feed publisher; verify before redistribution",
       "attribution": "Credit lequotidien.sn and link to the original feed publisher.",
       "status": "terms-review",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
+          "path": "src/config/feeds.ts"
+        }
+      ]
+    },
+    {
+      "host": "libyaherald.com",
+      "provider": "Libya Herald",
+      "kind": "feed",
+      "observed": true,
+      "license": "Publisher-provided feed or Google News link metadata; ingest is limited to headlines, summaries, timestamps, publisher credit, and link-out",
+      "attribution": "Credit Libya Herald and link to the original publisher item.",
+      "status": "reviewed",
       "references": [
         {
           "path": "server/worldmonitor/news/v1/_feeds.ts"
@@ -4558,6 +4660,23 @@
         },
         {
           "path": "server/worldmonitor/aviation/v1/_shared.ts"
+        }
+      ]
+    },
+    {
+      "host": "nation.africa",
+      "provider": "Daily Nation",
+      "kind": "feed",
+      "observed": true,
+      "license": "Publisher-provided feed or Google News link metadata; ingest is limited to headlines, summaries, timestamps, publisher credit, and link-out",
+      "attribution": "Credit Daily Nation and link to the original publisher item.",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
+          "path": "src/config/feeds.ts"
         }
       ]
     },
@@ -5871,6 +5990,23 @@
       ]
     },
     {
+      "host": "sanaacenter.org",
+      "provider": "Sana'a Center",
+      "kind": "feed",
+      "observed": true,
+      "license": "Publisher-provided feed or Google News link metadata; ingest is limited to headlines, summaries, timestamps, publisher credit, and link-out",
+      "attribution": "Credit Sana'a Center and link to the original publisher item.",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
+          "path": "src/config/feeds.ts"
+        }
+      ]
+    },
+    {
       "host": "sanctionslistservice.ofac.treas.gov",
       "provider": "sanctionslistservice.ofac.treas.gov",
       "kind": "structured",
@@ -6466,6 +6602,23 @@
       ]
     },
     {
+      "host": "syriadirect.org",
+      "provider": "Syria Direct",
+      "kind": "feed",
+      "observed": true,
+      "license": "Publisher-provided feed or Google News link metadata; ingest is limited to headlines, summaries, timestamps, publisher credit, and link-out",
+      "attribution": "Credit Syria Direct and link to the original publisher item.",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
+          "path": "src/config/feeds.ts"
+        }
+      ]
+    },
+    {
       "host": "t.me",
       "provider": "t.me",
       "kind": "structured",
@@ -6507,6 +6660,23 @@
       "license": "Provider terms for this feed publisher; verify before redistribution",
       "attribution": "Credit taskandpurpose.com and link to the original feed publisher.",
       "status": "terms-review",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
+          "path": "src/config/feeds.ts"
+        }
+      ]
+    },
+    {
+      "host": "tchadinfos.com",
+      "provider": "Tchadinfos",
+      "kind": "feed",
+      "observed": true,
+      "license": "Publisher-provided feed or Google News link metadata; ingest is limited to headlines, summaries, timestamps, publisher credit, and link-out",
+      "attribution": "Credit Tchadinfos and link to the original publisher item.",
+      "status": "reviewed",
       "references": [
         {
           "path": "server/worldmonitor/news/v1/_feeds.ts"
@@ -7542,6 +7712,40 @@
       ]
     },
     {
+      "host": "www.14ymedio.com",
+      "provider": "14ymedio",
+      "kind": "feed",
+      "observed": true,
+      "license": "Publisher-provided feed or Google News link metadata; ingest is limited to headlines, summaries, timestamps, publisher credit, and link-out",
+      "attribution": "Credit 14ymedio and link to the original publisher item.",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
+          "path": "src/config/feeds.ts"
+        }
+      ]
+    },
+    {
+      "host": "www.972mag.com",
+      "provider": "+972 Magazine",
+      "kind": "feed",
+      "observed": true,
+      "license": "Publisher-provided feed or Google News link metadata; ingest is limited to headlines, summaries, timestamps, publisher credit, and link-out",
+      "attribution": "Credit +972 Magazine and link to the original publisher item.",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
+          "path": "src/config/feeds.ts"
+        }
+      ]
+    },
+    {
       "host": "www.a16z.news",
       "provider": "www.a16z.news",
       "kind": "feed+structured",
@@ -7747,6 +7951,23 @@
         },
         {
           "path": "server/worldmonitor/market/v1/_shared.ts"
+        }
+      ]
+    },
+    {
+      "host": "www.alwihdainfo.com",
+      "provider": "Alwihda Info",
+      "kind": "feed",
+      "observed": true,
+      "license": "Publisher-provided feed or Google News link metadata; ingest is limited to headlines, summaries, timestamps, publisher credit, and link-out",
+      "attribution": "Credit Alwihda Info and link to the original publisher item.",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
+          "path": "src/config/feeds.ts"
         }
       ]
     },
@@ -8001,6 +8222,23 @@
       "references": [
         {
           "path": "scripts/china-policy/adapters.mjs"
+        }
+      ]
+    },
+    {
+      "host": "www.caracaschronicles.com",
+      "provider": "Caracas Chronicles",
+      "kind": "feed",
+      "observed": true,
+      "license": "Publisher-provided feed or Google News link metadata; ingest is limited to headlines, summaries, timestamps, publisher credit, and link-out",
+      "attribution": "Credit Caracas Chronicles and link to the original publisher item.",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
+          "path": "src/config/feeds.ts"
         }
       ]
     },
@@ -8567,6 +8805,23 @@
       ]
     },
     {
+      "host": "www.egyptindependent.com",
+      "provider": "Egypt Independent",
+      "kind": "feed",
+      "observed": true,
+      "license": "Publisher-provided feed or Google News link metadata; ingest is limited to headlines, summaries, timestamps, publisher credit, and link-out",
+      "attribution": "Credit Egypt Independent and link to the original publisher item.",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
+          "path": "src/config/feeds.ts"
+        }
+      ]
+    },
+    {
       "host": "www.eia.gov",
       "provider": "www.eia.gov",
       "kind": "feed",
@@ -9055,6 +9310,23 @@
         },
         {
           "path": "scripts/seed-security-advisories.mjs"
+        },
+        {
+          "path": "src/config/feeds.ts"
+        }
+      ]
+    },
+    {
+      "host": "www.haitilibre.com",
+      "provider": "HaitiLibre English",
+      "kind": "feed",
+      "observed": true,
+      "license": "Publisher-provided feed or Google News link metadata; ingest is limited to headlines, summaries, timestamps, publisher credit, and link-out",
+      "attribution": "Credit HaitiLibre English and link to the original publisher item.",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
         },
         {
           "path": "src/config/feeds.ts"
@@ -9661,6 +9933,23 @@
       ]
     },
     {
+      "host": "www.naharnet.com",
+      "provider": "Naharnet Lebanon",
+      "kind": "feed",
+      "observed": true,
+      "license": "Publisher-provided feed or Google News link metadata; ingest is limited to headlines, summaries, timestamps, publisher credit, and link-out",
+      "attribution": "Credit Naharnet Lebanon and link to the original publisher item.",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
+          "path": "src/config/feeds.ts"
+        }
+      ]
+    },
+    {
       "host": "www.nature.com",
       "provider": "www.nature.com",
       "kind": "feed",
@@ -10035,6 +10324,23 @@
         },
         {
           "path": "src/config/variants/tech.ts"
+        }
+      ]
+    },
+    {
+      "host": "www.radiondekeluka.org",
+      "provider": "Radio Ndeke Luka",
+      "kind": "feed",
+      "observed": true,
+      "license": "Publisher-provided feed or Google News link metadata; ingest is limited to headlines, summaries, timestamps, publisher credit, and link-out",
+      "attribution": "Credit Radio Ndeke Luka and link to the original publisher item.",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
+          "path": "src/config/feeds.ts"
         }
       ]
     },
@@ -10516,6 +10822,23 @@
       "attribution": "Credit www.stimson.org and link to the original feed publisher.",
       "status": "terms-review",
       "references": [
+        {
+          "path": "src/config/feeds.ts"
+        }
+      ]
+    },
+    {
+      "host": "www.studiotamani.org",
+      "provider": "Studio Tamani",
+      "kind": "feed",
+      "observed": true,
+      "license": "Publisher-provided feed or Google News link metadata; ingest is limited to headlines, summaries, timestamps, publisher credit, and link-out",
+      "attribution": "Credit Studio Tamani and link to the original publisher item.",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
         {
           "path": "src/config/feeds.ts"
         }

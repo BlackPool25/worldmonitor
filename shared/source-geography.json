@@ -520,20 +520,39 @@
   "Montreal Gazette": [
     "CA"
   ],
-  "Sanaa Center": [
+  "Yemen Online": [
+    "YE"
+  ],
+  "Sana'a Center": [
     "YE"
   ],
   "Syria Direct": [
     "SY"
   ],
-  "972 Magazine": [
+  "Enab Baladi English": [
+    "SY"
+  ],
+  "+972 Magazine": [
+    "IL",
     "PS"
   ],
-  "Haiti Libre": [
+  "WAFA English": [
+    "PS"
+  ],
+  "HaitiLibre English": [
+    "HT"
+  ],
+  "AyiboPost": [
     "HT"
   ],
   "Amu TV": [
     "AF"
+  ],
+  "Pajhwok Afghan News": [
+    "AF"
+  ],
+  "Naharnet Lebanon": [
+    "LB"
   ],
   "L'Orient Today": [
     "LB"
@@ -541,14 +560,23 @@
   "Studio Tamani": [
     "ML"
   ],
-  "Lefaso.net": [
+  "leFaso.net": [
     "BF"
   ],
   "ActuNiger": [
     "NE"
   ],
+  "Aïr Info": [
+    "NE"
+  ],
   "Caracas Chronicles": [
     "VE"
+  ],
+  "Efecto Cocuyo": [
+    "VE"
+  ],
+  "Havana Times": [
+    "CU"
   ],
   "14ymedio": [
     "CU"
@@ -556,17 +584,26 @@
   "Libya Herald": [
     "LY"
   ],
+  "Egypt Independent": [
+    "EG"
+  ],
   "Mada Masr": [
     "EG"
   ],
   "The Daily Star": [
     "BD"
   ],
-  "Nation Africa": [
+  "Dhaka Tribune": [
+    "BD"
+  ],
+  "Daily Nation": [
     "KE"
   ],
-  "Journal du Cameroun": [
+  "The Guardian Post": [
     "CM"
+  ],
+  "Tchadinfos": [
+    "TD"
   ],
   "Alwihda Info": [
     "TD"

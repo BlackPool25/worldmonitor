@@ -194,6 +194,9 @@ export interface CloudPrefsMigrationOptions {
   canadaDepth?: {
     optInSources?: ReadonlyArray<string>;
   };
+  crisisDesk?: {
+    optInSources?: ReadonlyArray<string>;
+  };
 }
 
 export function buildMigrations(
@@ -205,6 +208,7 @@ export function buildMigrations(
   const regionalRollout = options.regionalRollout ?? {};
   const canadaArctic = options.canadaArctic ?? {};
   const canadaDepth = options.canadaDepth ?? {};
+  const crisisDesk = options.crisisDesk ?? {};
   return {
     2: (data) => migrateDisabledFeedsV2(data, feedsByCategory),
     3: (data) => migrateFrontlineEuropeDefaultsV3(
@@ -226,6 +230,7 @@ export function buildMigrations(
     ),
     6: (data) => migrateCanadaArcticOptInsV6(data, canadaArctic.optInSources ?? []),
     7: (data) => migrateCanadaDepthOptInsV7(data, canadaDepth.optInSources ?? []),
+    8: (data) => migrateCrisisDeskOptInsV8(data, crisisDesk.optInSources ?? []),
   };
 }
 
@@ -535,6 +540,41 @@ export function migrateCanadaDepthOptInsV7(
 
   console.log(
     `[prefs] schema-7 migration: disabled ${updated.length - parsed.length} Canada depth opt-in source(s)`,
+  );
+  return { ...data, 'worldmonitor-disabled-feeds': JSON.stringify(updated) };
+}
+
+/**
+ * Schema-8 migration for the validated crisis-desk pack (#6813-#6830).
+ *
+ * Only the reviewed opt-in companions are inserted into a non-empty denylist.
+ * English and strategic floor defaults remain enabled. Empty or malformed
+ * states stay untouched because they do not prove a returning profile.
+ */
+export function migrateCrisisDeskOptInsV8(
+  data: Record<string, unknown>,
+  optInSources: ReadonlyArray<string>,
+): Record<string, unknown> {
+  const raw = data['worldmonitor-disabled-feeds'];
+  if (typeof raw !== 'string') return data;
+
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { return data; }
+  if (
+    !Array.isArray(parsed)
+    || parsed.length === 0
+    || parsed.some((name) => typeof name !== 'string')
+  ) return data;
+
+  const existing = new Set(parsed);
+  const updated = [...parsed];
+  for (const name of optInSources) {
+    if (!existing.has(name)) updated.push(name);
+  }
+  if (updated.length === parsed.length) return data;
+
+  console.log(
+    `[prefs] schema-8 migration: disabled ${updated.length - parsed.length} crisis-desk opt-in source(s)`,
   );
   return { ...data, 'worldmonitor-disabled-feeds': JSON.stringify(updated) };
 }
