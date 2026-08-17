@@ -6,7 +6,6 @@
  * entry chunk. Keep pre-init queuing in `sentry-defer.ts`; keep SDK setup here.
  */
 
-import { isDebugBearRumScriptFrame } from './debugbear-rum';
 import { isIosLikeUserAgent } from './platform-ua';
 import { SENTRY_ALLOW_URLS } from './sentry-allow-urls';
 import { getSentryBuildMetadata } from './sentry-build-metadata';
@@ -388,8 +387,17 @@ function buildSentryInitOptions(): Parameters<SentryNs['init']>[0] {
       // engine-equivalent phrasing, e.g. an embedded SDK's beacon fetch —
       // WORLDMONITOR-RP). Both route through the host allowlist below, which is
       // the load-bearing safety; this match is just the shape detector.
+      // The optional `TypeError: ` prefix and optional trailing period keep this
+      // detector in step with `FETCH_FAILURE_MESSAGE` in
+      // `src/services/fetch-failure-attribution.ts`, which produces these
+      // annotated messages. The two regexes had already drifted: the module
+      // admits a period-less Gecko phrasing (`resource\.?`) that this detector
+      // required literally, so such a message was annotated and then never
+      // routed to the host allowlist — annotated but unsuppressable. Widening
+      // here is safe because it only decides whether to CONSULT the allowlist;
+      // the allowlist itself is the load-bearing safety (#6746).
       const isHostScopedFetchFailure = excType === 'TypeError'
-        && /^(?:Failed to fetch|NetworkError when attempting to fetch resource\.) \([^)]+\)$/.test(msg);
+        && /^(?:TypeError: )?(?:Failed to fetch|NetworkError when attempting to fetch resource\.?) \([^)]+\)$/.test(msg);
       if (!isHostScopedFetchFailure
           && (excType === 'TypeError' || excType === 'RangeError' || /^(?:TypeError|RangeError):/.test(msg))
           && frames.length > 0) {
@@ -408,7 +416,7 @@ function buildSentryInitOptions(): Parameters<SentryNs['init']>[0] {
       // real basemap / API regression is never silently dropped
       // (WORLDMONITOR-NE/NF, WORLDMONITOR-QG).
       if (isHostScopedFetchFailure) {
-        const hostMatch = msg.match(/^(?:Failed to fetch|NetworkError when attempting to fetch resource\.) \(([^)]+)\)$/);
+        const hostMatch = msg.match(/^(?:TypeError: )?(?:Failed to fetch|NetworkError when attempting to fetch resource\.?) \(([^)]+)\)$/);
         const host = hostMatch?.[1];
         if (host && THIRD_PARTY_FETCH_HOST_ALLOWLIST.has(host)) return null;
       }
@@ -578,123 +586,19 @@ function buildSentryInitOptions(): Parameters<SentryNs['init']>[0] {
       // drop TypeScript assertions and would mangle a regex that contained it
       // (same harness trap as the Floot gate above).
       const bareFrameFunction = (fn: string) => fn.replace(/\s*\[[^\]]*\]$/, '');
+      // DELIBERATELY bare-only — do NOT widen this to accept ` (<host>)`.
+      // #6746 review considered exactly that (annotated SG/TZ/Y8 messages no
+      // longer match this gate and now surface instead of being suppressed) and
+      // rejected it: the host-suffixed form must stay OUT of this gate, because
+      // an annotated first-party failure carrying an extension frame would then
+      // be suppressed — silencing a real api.worldmonitor.app outage for every
+      // user who runs a fetch-wrapping extension. That is the precise blind spot
+      // #6746 exists to prevent, and the existing test at
+      // tests/sentry-beforesend.test.mjs:757 fails when this is widened.
+      // Annotated extension noise is instead handled correctly by the host
+      // allowlist above: allowlisted host -> suppressed, ours -> surfaces.
       if (/^(?:TypeError: )?Failed to fetch$/.test(msg)
           && frames.some(f => /^(?:chrome|moz|safari(?:-web)?)-extension:\/\//.test(f.filename ?? '') && /^(?:(?:.*\.)?window\.|(?:window|Object)\.)?(?:fetch|apply)$/i.test(bareFrameFunction(f.function ?? '')))) {
-        return null;
-      }
-      // Bare `Failed to fetch` surfacing through the DebugBear RUM collector's
-      // window.fetch monkeypatch. DebugBear (src/bootstrap/debugbear-rum.ts →
-      // cdn.debugbear.com/<id>.js; Sentry attributes its frames to the script
-      // configured script path) wraps window.fetch to time it, so a
-      // transient network blip on ANY app fetch rejects and its wrapper
-      // re-surfaces the rejection as an unhandled rejection, injecting its own
-      // frames. Without DebugBear the identical failure is zero-frame and already
-      // suppressed above — the collector's frames are the ONLY reason it reaches
-      // here. The `/assets/*.js` frames it carries are `window.fetch` TRAMPOLINES
-      // (Vite code-split chunk names, e.g. panel-storage/widget-store, which do
-      // not themselves fetch — grep-verified), NOT real callers. Suppress only
-      // when a DebugBear collector frame is present AND every non-infra frame is
-      // either that collector or the observed caller-free `window.fetch`/`fetch`
-      // trampolines from panel-storage/widget-store. Other first-party fetch
-      // wrappers (notably runtime.ts) must surface. Mirrors the SG
-      // extension-wrapper gate above; collector identity comes from
-      // DEBUGBEAR_RUM_SCRIPT_SRC via the shared predicate.
-      // WORLDMONITOR-VC (93ev/69u, 2026-07-04+).
-      // The optional `\w{1,3}.` receiver prefix is WORLDMONITOR-VQ: a later Vite
-      // build emits the same trampoline as `Rt.window.fetch` rather than a bare
-      // `window.fetch`, and the anchored match rejected it, so the identical
-      // wrapper class re-surfaced as a new issue. The prefix is bounded to a
-      // minified identifier (≤3 chars) so a real named receiver — e.g.
-      // `apiClient.fetch` — is still read as a genuine caller and surfaces.
-      // WORLDMONITOR-Y4 is the third build-rename of the same wrapper: Vite
-      // emitted one hop of the trampoline as a BARE minified name (`t`) with no
-      // `fetch` in it at all, which no fetch-anchored pattern can match. Bare
-      // names are admitted only at ≤2 chars and only inside these two chunks —
-      // `fetchContent` (WORLDMONITOR-SG) and `apiClient.fetch` both stay above
-      // that bound and still surface, which their regression tests assert. What
-      // keeps the tolerance honest is that neither module backing these chunks
-      // issues a fetch of its own, so a bare minified frame in them cannot be
-      // the real caller; tests/debugbear-trampoline-chunks.test.mjs fails if
-      // either module ever gains one, rather than letting the gate rot silently.
-      // WORLDMONITOR-Y4 recurrence is the FOURTH build-rename: a later Vite build
-      // emitted one panel-storage hop with no function name at all, and `''`
-      // matched neither pattern above, so a single nameless frame defeated the
-      // `.every()` and the whole class re-surfaced. Measured 2026-08-13: all 14
-      // events before the bare-name deploy are suppressed by it, all 14 after it
-      // surfaced, every one blocked by exactly that `fn: null` panel-storage frame.
-      // An empty name is admitted on the same bound as the bare name — only inside
-      // the two chunks whose modules issue no fetch of their own — so it cannot
-      // hide a real caller; `fetchContent` and `apiClient.fetch` still surface.
-      // The RUNTIME value of that anonymous hop is '?', not '' (WORLDMONITOR-Z6):
-      // @sentry/core stamps every parsed frame with `function || UNKNOWN_FUNCTION`
-      // — literally '?' — before beforeSend runs (node_modules/@sentry/core/
-      // build/cjs/utils/stacktrace.js:115). Sentry INGEST then displays '?' as
-      // a null function, so a replay or fixture built from API events tests ''
-      // and passes while production tests '?' and fails — which is exactly how
-      // the ''-only tolerance shipped and Z6 kept firing from builds that
-      // contained it. '' stays admitted (other SDK paths/versions may omit the
-      // stamp); both are bounded by the same fetch-free-chunk invariant.
-      // The FIFTH escape is not a build-rename at all — it is an extra frame from
-      // OUTSIDE the page. WORLDMONITOR-Z6 kept firing after the '?' tolerance
-      // shipped, carrying a stack identical to the one above plus a tab-suspender
-      // extension's `freeze-controller.js` above DebugBear's collector (the
-      // extension aborts in-flight fetches when it freezes a background tab).
-      // `nonInfraFrames` drops only `<anonymous>`, `[native code]`, and
-      // `sentry-*.js`, so an extension frame stays in the set, matches neither
-      // predicate, and one frame defeats the `.every()` — the same single-frame
-      // failure mode as the nameless hop, arriving from a different direction.
-      // An extension frame can never be OUR caller (that is precisely what the
-      // two extension gates above already assume), and this gate still requires a
-      // collector frame plus a fetch-free trampoline for every remaining frame, so
-      // admitting it cannot hide a first-party fetch — a real caller alongside the
-      // extension still surfaces, which the regression tests assert.
-      // SUPERSEDED for new builds, RETAINED for old ones (#6746). The collector
-      // now rejects with a named `CollectorTransportError` that ignoreErrors
-      // matches exactly, so this stack-shape heuristic is no longer how the
-      // class is identified going forward. It stays because a browser running a
-      // cached pre-#6746 bundle still emits the bare `Failed to fetch`, and
-      // those sessions keep their coverage until the bundle ages out.
-      //
-      // DO NOT widen the chunk allowlist below to close a new escape of this
-      // class — that is the sixth-round trap. The allowlist is safe only while
-      // every chunk it names is caller-free, and Rollup re-partitions freely:
-      // `analytics-*.js` already carries `runtime.ts`, the interceptor every API
-      // request passes through. Adding it would suppress genuine
-      // api.worldmonitor.app outages. Fix new escapes at the source, the way
-      // CollectorTransportError does. `tests/debugbear-trampoline-chunks.test.mjs`
-      // now checks the built chunks, not just their namesake source files.
-      const isExtensionFrameFile = (file: string) =>
-        /^(?:chrome|moz|safari(?:-web)?)-extension:\/\//.test(file);
-      // On the chunk allowlist below (#6746): `panel-storage` is retained but is
-      // NO LONGER EMITTED as a chunk — the current build folds that module into
-      // `font-settings-*.js` and `analytics-*.js` — so that arm now matches only
-      // bundles cached from before the repartition. It still covers them
-      // (WORLDMONITOR-VC), which is why it is not deleted, but it cannot be
-      // verified against a current artifact and is therefore declared in
-      // KNOWN_ABSENT_CHUNKS in tests/debugbear-trampoline-chunks.test.mjs rather
-      // than silently trusted. `widget-store` is the arm still checked against a
-      // real built chunk.
-      //
-      // DO NOT add a chunk here to close a new escape of this class — that is
-      // the sixth-round trap. The allowlist is safe only while every chunk it
-      // names is caller-free, and Rollup repartitions freely: `analytics-*.js`
-      // already carries `runtime.ts`, the interceptor every API request passes
-      // through, so admitting it would suppress genuine api.worldmonitor.app
-      // outages. Fix new escapes at the source, the way CollectorTransportError
-      // does in analytics-collector-transport.ts.
-      const isTrampolineFrameFunction = (fn: string) =>
-        /^(?:\w{1,3}\.)?(?:window\.)?fetch$/.test(fn) || /^\w{1,2}$/.test(fn)
-        || fn === '' || fn === '?';
-      if (/^(?:TypeError: )?Failed to fetch$/.test(msg)
-          && frames.some(f => isDebugBearRumScriptFrame(f.filename ?? ''))
-          && nonInfraFrames.every(f =>
-            isDebugBearRumScriptFrame(f.filename ?? '')
-            || (/\/assets\/(?:panel-storage|widget-store)-[A-Za-z0-9_-]+\.js/.test(f.filename ?? '')
-              && isTrampolineFrameFunction(f.function ?? ''))
-            // Kept last so the trampoline predicate stays adjacent to the chunk
-            // allowlist it is bound to — tests/debugbear-trampoline-chunks.test.mjs
-            // asserts that coupling by source locality.
-            || isExtensionFrameFile(f.filename ?? ''))) {
         return null;
       }
       // Suppress Sentry SDK DOM breadcrumb null-access on document.activeElement/contains.
