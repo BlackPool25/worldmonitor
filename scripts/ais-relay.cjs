@@ -31,6 +31,7 @@ const {
   OPENROUTER_FREE_PRIMARY_MODEL,
   OPENROUTER_PROVIDER_ROUTING,
 } = require('./lib/llm-model-policy.cjs');
+const xNewsAccounts = require('./lib/x-news-accounts.cjs');
 const {
   YahooQuoteSummaryClient,
   buildSectorSeedMeta,
@@ -1224,6 +1225,126 @@ function startTelegramPollLoop() {
     setInterval(guardedTelegramPoll, TELEGRAM_POLL_INTERVAL_MS).unref?.();
     console.log('[Relay] Telegram poll loop started');
   }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Curated X news-account monitoring (Track A / #6654)
+// Official X API user-timeline + since_id. Cadence 5–15 min.
+// Requires env: X_BEARER_TOKEN (same Bearer as company-monitoring-worker).
+// ─────────────────────────────────────────────────────────────
+const X_BEARER_TOKEN = String(process.env.X_BEARER_TOKEN || '').trim();
+const X_ENABLED = Boolean(X_BEARER_TOKEN);
+const X_POLL_INTERVAL_MS = xNewsAccounts.clampPollIntervalMs(process.env.X_POLL_INTERVAL_MS || xNewsAccounts.DEFAULT_POLL_INTERVAL_MS);
+const X_MAX_FEED_ITEMS = Math.max(50, Number(process.env.X_MAX_FEED_ITEMS || xNewsAccounts.DEFAULT_MAX_FEED_ITEMS));
+const X_MAX_TEXT_CHARS = Math.max(200, Number(process.env.X_MAX_TEXT_CHARS || 800));
+const X_TRACK_A_ACCOUNT_BUDGET = 64;
+
+const xState = {
+  accounts: [],
+  cursorByAccountId: Object.create(null),
+  accountIdByHandle: Object.create(null),
+  items: [],
+  lookupOffset: 0,
+  lastPollAt: 0,
+  lastError: null,
+  rateLimitedUntil: 0,
+  startedAt: Date.now(),
+};
+
+function loadXAccounts() {
+  const p = path.join(__dirname, '..', 'data', 'x-accounts.json');
+  const set = String(process.env.X_CHANNEL_SET || 'full').toLowerCase();
+  try {
+    const raw = JSON.parse(readFileSync(p, 'utf8'));
+    const enabledTotal = xNewsAccounts.countEnabledAccounts(raw);
+    if (enabledTotal > X_TRACK_A_ACCOUNT_BUDGET) {
+      console.warn(`[Relay] X registry has ${enabledTotal} enabled accounts; Track A budget is ~${X_TRACK_A_ACCOUNT_BUDGET}. Re-run spend math before growing the set.`);
+    }
+    xState.accounts = xNewsAccounts.loadXAccounts(raw, { set });
+    if (!xState.accounts.length) {
+      console.warn(`[Relay] X account set "${set}" is empty — no accounts to poll`);
+    }
+    return xState.accounts;
+  } catch (e) {
+    xState.accounts = [];
+    xState.lastError = `failed to load x-accounts.json: ${e?.message || String(e)}`;
+    return [];
+  }
+}
+
+async function pollXOnce() {
+  if (!X_ENABLED) return;
+  if (xState.rateLimitedUntil && Date.now() < xState.rateLimitedUntil) return;
+
+  const accounts = xState.accounts.length ? xState.accounts : loadXAccounts();
+  if (!accounts.length) return;
+
+  const pollStart = Date.now();
+  const next = await xNewsAccounts.pollXFeed({
+    accounts,
+    state: xState,
+    bearerToken: X_BEARER_TOKEN,
+    fetchImpl: (...args) => globalThis.fetch(...args),
+    now: Date.now,
+    maxFeedItems: X_MAX_FEED_ITEMS,
+    maxTextChars: X_MAX_TEXT_CHARS,
+  });
+
+  xState.cursorByAccountId = next.cursorByAccountId;
+  xState.accountIdByHandle = next.accountIdByHandle;
+  xState.items = next.items;
+  xState.lookupOffset = next.lookupOffset || 0;
+  xState.lastError = next.lastError;
+  xState.rateLimitedUntil = next.rateLimitedUntil || 0;
+  xState.lastPollAt = Date.now();
+
+  const elapsed = ((Date.now() - pollStart) / 1000).toFixed(1);
+  console.log(`[Relay] X poll: ${next.accountsPolled}/${accounts.length} accounts, ${next.newCount} new posts, ${xState.items.length} total, ${next.accountsFailed} errors (${elapsed}s)`);
+
+  if (next.accountsPolled > 0) {
+    const rc = xState.items.length;
+    upstashSet('intelligence:x-feed:v1', {
+      count: rc,
+      updatedAt: new Date().toISOString(),
+      enabled: true,
+    }, 5400).catch(() => {});
+    upstashSet('seed-meta:intelligence:x-feed:v1', {
+      fetchedAt: Date.now(),
+      recordCount: rc,
+    }, 3600).catch(() => {});
+  }
+}
+
+let xPollInFlight = false;
+let xPollStartedAt = 0;
+
+function guardedXPoll() {
+  if (xPollInFlight) {
+    const stuck = Date.now() - xPollStartedAt;
+    if (stuck > X_POLL_INTERVAL_MS + 60_000) {
+      console.warn(`[Relay] X poll stuck for ${Math.round(stuck / 1000)}s — force-clearing in-flight flag`);
+      xPollInFlight = false;
+    } else {
+      return;
+    }
+  }
+  xPollInFlight = true;
+  xPollStartedAt = Date.now();
+  pollXOnce()
+    .catch((e) => console.warn('[Relay] X poll error:', e?.message || e))
+    .finally(() => { xPollInFlight = false; });
+}
+
+function startXPollLoop() {
+  if (!X_ENABLED) {
+    console.warn('[Relay] X news-account poll skipped — X_BEARER_TOKEN is not configured on ais-relay');
+    loadXAccounts();
+    return;
+  }
+  loadXAccounts();
+  guardedXPoll();
+  setInterval(guardedXPoll, X_POLL_INTERVAL_MS).unref?.();
+  console.log(`[Relay] X poll loop started (${Math.round(X_POLL_INTERVAL_MS / 60000)} min cadence)`);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -3868,6 +3989,16 @@ async function seedClassifyForVariant(variant, seenTitles) {
           });
         }
       }
+    }
+  }
+  for (const candidate of xNewsAccounts.collectXAlertCandidates(xState.items, RELAY_SOURCE_TIERS, Date.now(), RECENCY_GATE_MS)) {
+    if (!allTitles.has(candidate.title)) {
+      allTitles.set(candidate.title, {
+        source: candidate.source,
+        publishedAt: candidate.publishedAt,
+        corroborationCount: candidate.corroborationCount,
+        link: candidate.link,
+      });
     }
   }
   if (allTitles.size === 0) return { total: 0, classified: 0, skipped: 0 };
@@ -10444,6 +10575,17 @@ const server = http.createServer(async (req, res) => {
         pollInFlight: telegramPollInFlight,
         pollInFlightSince: telegramPollInFlight && telegramPollStartedAt ? new Date(telegramPollStartedAt).toISOString() : null,
       },
+      xFeed: {
+        enabled: X_ENABLED,
+        accounts: xState.accounts?.length || 0,
+        items: xState.items?.length || 0,
+        lastPollAt: xState.lastPollAt ? new Date(xState.lastPollAt).toISOString() : null,
+        hasError: !!xState.lastError,
+        lastError: xState.lastError || null,
+        pollInFlight: xPollInFlight,
+        pollInFlightSince: xPollInFlight && xPollStartedAt ? new Date(xPollStartedAt).toISOString() : null,
+        rateLimitedUntil: xState.rateLimitedUntil ? new Date(xState.rateLimitedUntil).toISOString() : null,
+      },
       oref: {
         enabled: SIREN_ALERTS_ENABLED,
         alertCount: orefState.lastAlerts?.length || 0,
@@ -10650,6 +10792,37 @@ const server = http.createServer(async (req, res) => {
         enabled: TELEGRAM_ENABLED,
         count: filtered.length,
         updatedAt: telegramState.lastPollAt ? new Date(telegramState.lastPollAt).toISOString() : null,
+        items: filtered,
+      }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Internal error' }));
+    }
+  } else if (pathname === '/x' || pathname.startsWith('/x/')) {
+    try {
+      const url = new URL(req.url, `http://localhost:${PORT}`);
+      const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit') || 50)));
+      const topic = (url.searchParams.get('topic') || '').trim().toLowerCase();
+      const account = (url.searchParams.get('account') || url.searchParams.get('channel') || '').trim().toLowerCase();
+
+      const items = Array.isArray(xState.items) ? xState.items : [];
+      const filtered = items.filter((it) => {
+        if (it.contentState === 'deleted') return false;
+        if (topic && String(it.topic || '').toLowerCase() !== topic) return false;
+        if (account && String(it.account || '').toLowerCase() !== account) return false;
+        return true;
+      }).slice(0, limit);
+
+      sendCompressed(req, res, 200, {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'public, max-age=10',
+        'CDN-Cache-Control': 'public, max-age=10',
+      }, JSON.stringify({
+        source: 'x',
+        earlySignal: true,
+        enabled: X_ENABLED,
+        count: filtered.length,
+        updatedAt: xState.lastPollAt ? new Date(xState.lastPollAt).toISOString() : null,
         items: filtered,
       }));
     } catch (e) {
@@ -12701,7 +12874,8 @@ server.listen(PORT, () => {
     console.log('[Relay] Test mode enabled — background seed loops are disabled');
     return;
   }
-  startTelegramPollLoop();
+    startTelegramPollLoop();
+    startXPollLoop();
   startOrefPollLoop();
   startUcdpSeedLoop();
   startMarketDataSeedLoop();
