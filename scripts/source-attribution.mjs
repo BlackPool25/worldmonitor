@@ -209,6 +209,12 @@ const PROVIDER_OVERRIDES = {
     attribution: 'Alberta 511 (Alberta Transportation and Economic Corridors). https://511.alberta.ca/',
     status: 'terms-review',
   },
+  'www.manitoba511.ca': {
+    provider: 'Manitoba 511',
+    license: 'Contains information from the Government of Manitoba, licensed under the OpenMB Information and Data Use License (Manitoba.ca/OpenMB). Manitoba 511 developer copy permits creating traffic apps; no separate developer access agreement is published.',
+    attribution: 'Manitoba 511 (Government of Manitoba). Contains information from the Government of Manitoba, licensed under the OpenMB Information and Data Use License. https://www.manitoba511.ca/',
+    status: 'terms-review',
+  },
   'secure.toronto.ca': {
     provider: 'City of Toronto Open Data',
     license: 'CKAN package_show for road-restrictions: license_id=notspecified, license_title="License not specified" (https://ckan0.cf.opendata.inter.prod-toronto.ca/api/3/action/package_show?id=road-restrictions). Portal dataset page chrome links OGL-Toronto but is not data-bound to this dataset.',
@@ -739,12 +745,12 @@ const PROVIDER_OVERRIDES = {
 // something `--write` can silently normalize into the manifest.
 export const PROVIDER_IDENTITY_REVIEW = Object.freeze({
   sha256: '1ba8f66f93005892bafe66446c06638e1c068f829492192a609eb2320e6a4d7b',
-  reason: 'Add the SaskAlert public JSON identity for emergencyalert.saskatchewan.ca under #6659, while retaining the reviewed B.C. Evacuation Orders and Alerts identity and the prior publisher identities.',
+  reason: 'Add the Manitoba 511 identity for www.manitoba511.ca on the shared provincial vendor /api/v2/get adapter, while retaining the reviewed SaskAlert, B.C. Evacuation Orders and Alerts, and prior publisher identities.',
   // A URL cited here is scanned like any other: this file sits inside
   // SOURCE_ROOTS, so citing a host that is not already a registered source
   // invents a provider row for it. The B.C. catalogue URLs above are safe
   // because that host is itself an observed source; parallel.ai is not.
-  reviewReference: 'Issue #6659 SaskAlert public JSON ingest; PR #6447 (vendor-disclosed contribution; Parallel customer terms served from the endpoint via x-parallel-terms); B.C. Data Catalogue record 7efd46d0-b5d3-4dff-af80-d376c42aec33',
+  reviewReference: 'Issue #6622 Manitoba 511 events and alerts; OpenMB Information and Data Use License; https://www.manitoba511.ca/developers/doc; Issue #6659 SaskAlert public JSON ingest; PR #6447 (vendor-disclosed contribution; Parallel customer terms served from the endpoint via x-parallel-terms); B.C. Data Catalogue record 7efd46d0-b5d3-4dff-af80-d376c42aec33',
 });
 
 export function providerIdentityDigest(providerOverrides = PROVIDER_OVERRIDES) {

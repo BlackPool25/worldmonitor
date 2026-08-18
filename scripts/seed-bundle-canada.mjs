@@ -45,7 +45,7 @@ const CANADA_SECTIONS = [
   // possible 60s wait on the per-host 10-calls/60s token bucket. 180s covers
   // that with margin — if the limiter sleeps past the timeout the section is
   // SIGTERM'd, which is a HARD failure rather than runSeed's graceful path.
-  { label: 'Provincial-511', script: 'seed-provincial-511.mjs', seedMetaKey: 'seed-meta:infra:ontario-511', canonicalKey: 'infra:ontario-511:v1', intervalMs: 15 * MIN, timeoutMs: 180_000 },
+  { label: 'Provincial-511', script: 'seed-provincial-511.mjs', seedMetaKey: 'seed-meta:infra:ontario-511', canonicalKey: 'infra:ontario-511:v1', intervalMs: 15 * MIN, timeoutMs: 240_000 },
   // 3.62MB body, not strictly valid JSON, sanitized then parsed. Road
   // restrictions are construction permits, not live incidents.
   { label: 'Toronto-Roads', script: 'seed-toronto-road-restrictions.mjs', seedMetaKey: 'seed-meta:infra:toronto-roads', canonicalKey: 'infra:toronto-roads:v1', intervalMs: 2 * HOUR, timeoutMs: 180_000 },

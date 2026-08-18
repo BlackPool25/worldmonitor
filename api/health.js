@@ -222,6 +222,7 @@ const BOOTSTRAP_KEYS = {
   weatherAlerts:     'weather:alerts:v1',
   canadaRoads:       'infra:ontario-511:v1',
   albertaRoads:      'infra:alberta-511:v1',
+  manitobaRoads:     'infra:manitoba-511:v1',
   torontoRoads:      'infra:toronto-roads:v1',
   bcOpen511:         'infra:bc-open511:v1',
   canadaAlerts:      'alerts:canada:v1',
@@ -717,6 +718,16 @@ const SEED_META = {
       mode: 'expiring-ack',
       fromKey: null,
       issue: 6612,
+      status: 'EMPTY',
+    },
+  },
+  manitobaRoads:    {
+    key: 'seed-meta:infra:manitoba-511',
+    maxStaleMin: 45, // same seed-provincial-511 cron */15; 45 = 3× interval
+    cutover: {
+      mode: 'expiring-ack',
+      fromKey: null,
+      issue: 6622,
       status: 'EMPTY',
     },
   },
@@ -1360,7 +1371,7 @@ function parseFredRatesRolloutUntil(results) {
 }
 
 const EMPTY_DATA_OK_KEYS = new Set([
-  'notamClosures', 'faaDelays', 'intlDelays', 'gpsjam', 'positiveGeoEvents', 'weatherAlerts', 'canadaRoads', 'albertaRoads', 'torontoRoads', 'bcOpen511', 'canadaAlerts', 'canadaAlertsAbSource', 'canadaAlertsBcSource', 'canadaAlertsSkSource',
+  'notamClosures', 'faaDelays', 'intlDelays', 'gpsjam', 'positiveGeoEvents', 'weatherAlerts', 'canadaRoads', 'albertaRoads', 'manitobaRoads', 'torontoRoads', 'bcOpen511', 'canadaAlerts', 'canadaAlertsAbSource', 'canadaAlertsBcSource', 'canadaAlertsSkSource',
   'earningsCalendar', 'econCalendar', 'cotPositioning',
   'usniFleet', // usniFleetStale covers the fallback; relay outages → WARN not CRIT
   'newsThreatSummary', // only written when classify produces country matches; quiet news periods = 0 countries, no write
@@ -1404,10 +1415,11 @@ const MISSING_DATA_IS_FAILURE_KEYS = new Set([
   // so they never refresh metadata alone. Without this, an expired or evicted
   // canonical key alongside a still-refreshing seed-meta classified OK: the map
   // layer goes blank and nothing pages. Same reasoning as `outages`.
-  // albertaRoads is written by the same seeder on the same publish path;
-  // torontoRoads is a different seeder under the same publish contract.
+  // albertaRoads and manitobaRoads are written by the same seeder on the same
+  // publish path; torontoRoads is a different seeder under the same publish contract.
   'canadaRoads',
   'albertaRoads',
+  'manitobaRoads',
   'torontoRoads',
   'bcOpen511',
   // Same contract, and the highest-stakes member of it: the provincial union

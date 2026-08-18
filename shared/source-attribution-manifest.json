@@ -11957,6 +11957,20 @@
       ]
     },
     {
+      "host": "www.manitoba511.ca",
+      "provider": "Manitoba 511",
+      "kind": "structured",
+      "observed": true,
+      "license": "Contains information from the Government of Manitoba, licensed under the OpenMB Information and Data Use License (Manitoba.ca/OpenMB). Manitoba 511 developer copy permits creating traffic apps; no separate developer access agreement is published.",
+      "attribution": "Manitoba 511 (Government of Manitoba). Contains information from the Government of Manitoba, licensed under the OpenMB Information and Data Use License. https://www.manitoba511.ca/",
+      "status": "terms-review",
+      "references": [
+        {
+          "path": "scripts/lib/provincial-511.mjs"
+        }
+      ]
+    },
+    {
       "host": "www.mbie.govt.nz",
       "provider": "www.mbie.govt.nz",
       "kind": "structured",

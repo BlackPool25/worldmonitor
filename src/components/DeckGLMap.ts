@@ -4986,7 +4986,12 @@ export class DeckGLMap {
       case 'canada-roads-layer':
       case 'canada-roads-paths-layer': {
         const title = obj.headline || obj.roadwayName || t('components.deckgl.layers.canadaRoads');
-        const origin = obj.jurisdiction || (obj.source === 'alberta-511' ? 'AB' : 'ON');
+        const origin = obj.jurisdiction
+          || (obj.source === 'manitoba-511' ? 'MB'
+            : obj.source === 'alberta-511' ? 'AB'
+            : obj.source === 'bc-open511' ? 'BC'
+            : obj.source === 'toronto-roads' ? 'Toronto'
+            : 'ON');
         const detail = obj.lanesAffected || obj.currImpact || obj.district;
         const extra = detail ? `<br/>${text(detail)}` : '';
         return { html: `<div class="deckgl-tooltip"><strong>${text(title)}</strong><br/>${text(origin)} · ${text(obj.severity || obj.eventType || '')}${extra}</div>` };

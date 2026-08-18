@@ -227,11 +227,10 @@ export const LAYER_EXPLANATIONS: Partial<Record<keyof MapLayers, LayerExplanatio
     coverage: 'curated',
     category: 'Transport',
     purpose: 'Shows official road incidents, alerts, conditions, closures, construction, and hazards across supported Canadian jurisdictions.',
-    source: 'Ontario 511 and Alberta 511 provincial feeds, City of Toronto Road Restrictions, and DriveBC Open511, seeded through WorldMonitor.',
-    freshness: 'Each road source is seeded every 15 minutes and monitored against a 45-minute freshness budget.',
+    source: 'Ontario 511, Alberta 511, and Manitoba 511 provincial feeds, City of Toronto Road Restrictions, and DriveBC Open511, seeded through WorldMonitor.',
+    freshness: 'Ontario, Alberta, and Manitoba 511 are seeded every 15 minutes and monitored against a 45-minute freshness budget. Toronto restrictions are seeded every 2 hours; DriveBC Open511 every 30 minutes.',
     confidence: 'Authoritative for the supported provincial and municipal publishers, subject to upstream publication timing and mapped geometry.',
     limitations: [
-      'Manitoba 511 is not ingested yet; it must use this same canadaRoads layer key when it ships.',
       'Alberta 511 roadconditions is not ingested (the vendor endpoint 404s); live Alberta paint is events and alerts only.',
       'Provincial alerts without coordinates do not appear as map dots.',
       'Road-condition polylines may simplify complex highway geometry.',

@@ -15,6 +15,7 @@ export type DataSourceId =
   | 'weather'
   | 'ontario_511'
   | 'alberta_511'
+  | 'manitoba_511'
   | 'toronto_roads'
   | 'bc_open511'
   | 'economic'
