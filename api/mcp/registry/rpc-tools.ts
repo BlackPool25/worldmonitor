@@ -1259,13 +1259,14 @@ export const RPC_TOOLS: ToolDef[] = [
         signal: AbortSignal.timeout(10_000),
       });
       await assertToolFetchOk(res, 'list-x-feed');
-      const payload = await res.json();
-      const posts = Array.isArray(payload?.posts) ? payload.posts.map((post) => {
+      const payload = await res.json() as Record<string, unknown>;
+      const rawPosts = Array.isArray(payload.posts) ? payload.posts : [];
+      const posts = rawPosts.map((post: unknown) => {
         if (!post || typeof post !== 'object') return {};
-        const rest = { ...post };
+        const rest = { ...(post as Record<string, unknown>) };
         delete rest.text;
         return rest;
-      }) : [];
+      });
       return {
         enabled: Boolean(payload?.enabled),
         count: posts.length,
