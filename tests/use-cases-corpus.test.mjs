@@ -6,9 +6,11 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, before, describe, it } from 'node:test';
+import { runInNewContext } from 'node:vm';
 
 import { buildCorpus } from '../scripts/build-crawlable-corpus.mjs';
 import {
+  HANDOFF_PRESERVE_SCRIPT,
   USE_CASE_PAGES,
   USE_CASES_CONTENT_VERSION,
 } from '../scripts/build-use-cases.mjs';
@@ -23,6 +25,58 @@ function jsonLdObjects(html) {
 function metaContent(html, name) {
   const match = html.match(new RegExp(`<meta name="${name}" content="([^"]*)"`, 'i'));
   return match?.[1] ?? null;
+}
+
+function htmlAttributes(source) {
+  return Object.fromEntries(
+    [...source.matchAll(/([^\s=]+)(?:="([^"]*)")?/g)]
+      .map(([, name, value = '']) => [name, value.replaceAll('&amp;', '&')]),
+  );
+}
+
+function handoffForDestination(html, destination) {
+  for (const [, source] of html.matchAll(/<a\b([^>]*)>/g)) {
+    const attributes = htmlAttributes(source);
+    if (attributes['data-umami-event-content-destination'] === destination) return attributes;
+  }
+  assert.fail(`missing ${destination} handoff`);
+}
+
+function executeHandoffPreserve(incomingSearch, initialHrefs) {
+  const anchors = initialHrefs.map((initialHref) => {
+    let href = initialHref;
+    return {
+      getAttribute(name) {
+        return name === 'href' ? href : null;
+      },
+      setAttribute(name, value) {
+        assert.equal(name, 'href');
+        href = value;
+      },
+      currentHref() {
+        return href;
+      },
+    };
+  });
+
+  runInNewContext(HANDOFF_PRESERVE_SCRIPT, {
+    URL,
+    URLSearchParams,
+    window: {
+      location: {
+        origin: 'https://www.worldmonitor.app',
+        search: incomingSearch,
+      },
+    },
+    document: {
+      querySelectorAll(selector) {
+        assert.equal(selector, '[data-use-case-handoff]');
+        return anchors;
+      },
+    },
+  });
+
+  return anchors.map((anchor) => anchor.currentHref());
 }
 
 describe('use-cases corpus (#6849)', () => {
@@ -91,18 +145,78 @@ describe('use-cases corpus (#6849)', () => {
     assert.match(pageHtml, new RegExp(`<meta name="lastmod" content="${USE_CASES_CONTENT_VERSION}">`));
   });
 
-  it('emits bounded use-case attribution on product handoffs without ref=', () => {
-    assert.match(pageHtml, /utm_source=seo-use-case/);
-    assert.match(pageHtml, /wm_content_source=worldmonitor-use-cases/);
-    assert.match(pageHtml, /wm_content_campaign=monitor-country-risk/);
-    assert.match(pageHtml, /wm_content_destination=dashboard/);
-    assert.match(pageHtml, /wm_content_placement=use-case-cta-dashboard/);
-    assert.match(pageHtml, /wm_content_destination=pro/);
-    assert.match(pageHtml, /wm_content_destination=api/);
-    assert.match(pageHtml, /wm_content_destination=mcp/);
-    assert.doesNotMatch(pageHtml, /[?&]ref=/);
-    assert.match(pageHtml, /data-use-case-handoff/);
-    assert.match(pageHtml, /country=TW&amp;expanded=1|country=TW&expanded=1/);
+  it('emits bounded URL and Umami attribution for every product handoff', () => {
+    const expectedPaths = {
+      dashboard: '/dashboard',
+      pro: '/pro',
+      api: '/docs/api-reference',
+      mcp: '/docs/mcp-quickstart',
+    };
+
+    for (const destination of ['dashboard', 'pro', 'api', 'mcp']) {
+      const attributes = handoffForDestination(pageHtml, destination);
+      const placement = `use-case-cta-${destination}`;
+      assert.equal(attributes['data-use-case-handoff'], '');
+      assert.equal(attributes['data-wm-content-link'], '');
+      assert.equal(attributes['data-umami-event'], 'use-case-product-cta-click');
+      for (const [field, value] of Object.entries({
+        source: 'worldmonitor-use-cases',
+        medium: 'owned-content',
+        campaign: 'monitor-country-risk',
+        destination,
+        placement,
+      })) {
+        assert.equal(attributes[`data-umami-event-${field}`], value);
+        assert.equal(attributes[`data-umami-event-content-${field}`], value);
+      }
+
+      const url = new URL(attributes.href, 'https://www.worldmonitor.app');
+      assert.equal(url.pathname, expectedPaths[destination]);
+      assert.equal(url.searchParams.get('utm_source'), 'seo-use-case');
+      assert.equal(url.searchParams.get('wm_content_source'), 'worldmonitor-use-cases');
+      assert.equal(url.searchParams.get('wm_content_medium'), 'owned-content');
+      assert.equal(url.searchParams.get('wm_content_campaign'), 'monitor-country-risk');
+      assert.equal(url.searchParams.get('wm_content_destination'), destination);
+      assert.equal(url.searchParams.get('wm_content_placement'), placement);
+      assert.equal(url.searchParams.has('ref'), false);
+      assert.equal(url.searchParams.has('wm_referral'), false);
+    }
+
+    const dashboardUrl = new URL(
+      handoffForDestination(pageHtml, 'dashboard').href,
+      'https://www.worldmonitor.app',
+    );
+    assert.equal(dashboardUrl.pathname, '/dashboard');
+    assert.equal(dashboardUrl.searchParams.get('country'), 'TW');
+    assert.equal(dashboardUrl.searchParams.get('expanded'), '1');
+  });
+
+  it('preserves bounded inbound UTM values without clobbering destination values', () => {
+    const longCampaign = 'x'.repeat(120);
+    const [dashboardHref, proHref, malformedHref] = executeHandoffPreserve(
+      `?utm_source=inbound&utm_source=second&utm_medium=email&utm_campaign=${longCampaign}&utm_term=term&utm_content=button&ref=affiliate&wm_referral=partner`,
+      [
+        '/dashboard?utm_source=destination&utm_medium=existing',
+        '/pro?utm_campaign=page',
+        'http://[',
+      ],
+    );
+
+    const dashboardUrl = new URL(dashboardHref, 'https://www.worldmonitor.app');
+    assert.equal(dashboardUrl.searchParams.get('utm_source'), 'destination');
+    assert.equal(dashboardUrl.searchParams.get('utm_medium'), 'existing');
+    assert.equal(dashboardUrl.searchParams.get('utm_campaign'), 'x'.repeat(100));
+    assert.equal(dashboardUrl.searchParams.get('utm_term'), 'term');
+    assert.equal(dashboardUrl.searchParams.get('utm_content'), 'button');
+    assert.equal(dashboardUrl.searchParams.has('ref'), false);
+    assert.equal(dashboardUrl.searchParams.has('wm_referral'), false);
+
+    const proUrl = new URL(proHref, 'https://www.worldmonitor.app');
+    assert.equal(proUrl.searchParams.get('utm_source'), 'inbound');
+    assert.equal(proUrl.searchParams.get('utm_campaign'), 'page');
+    assert.equal(proUrl.searchParams.has('ref'), false);
+    assert.equal(proUrl.searchParams.has('wm_referral'), false);
+    assert.equal(malformedHref, 'http://[');
   });
 
   it('records the family in the crawlable corpus manifest and countries hub', () => {
