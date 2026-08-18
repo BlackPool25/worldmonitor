@@ -27,13 +27,13 @@ describe('physical premium production registration', () => {
   });
 
   it('registers canonical-key, freshness, and two-record health checks', () => {
-    const health = read('api/health.js');
-    assert.match(health, /physicalPremiums:\s+'market:physical-premium:v1'/);
-    assert.match(health, /physicalPremiums:\s+\{[\s\S]*?key: 'seed-meta:market:physical-premium'/);
-    assert.match(health, /physicalPremiums:\s+\{[\s\S]*?maxStaleMin: 4320,[\s\S]*?minRecordCount: 2/);
-    assert.match(health, /physicalPremiums:\s+\{[\s\S]*?mode: 'activation-marker',[\s\S]*?issue: 6436/);
-    assert.match(health, /physicalPremiums: SEED_META\.physicalPremiums\.activationKey/);
-    assert.match(health, /'physicalPremiums',/);
+    const healthSrc = read('api/health.js');
+    assert.match(healthSrc, /physicalPremiums:\s+'market:physical-premium:v1'/);
+    assert.match(healthSrc, /physicalPremiums:\s+\{[\s\S]*?key: 'seed-meta:market:physical-premium'/);
+    assert.match(healthSrc, /physicalPremiums:\s+\{[\s\S]*?maxStaleMin: 4320,[\s\S]*?minRecordCount: 2/);
+    assert.match(healthSrc, /physicalPremiums:\s+\{[\s\S]*?mode: 'activation-marker',[\s\S]*?issue: 6436/);
+    assert.match(healthSrc, /physicalPremiums: SEED_META\.physicalPremiums\.activationKey/);
+    assert.match(healthSrc, /'physicalPremiums',/);
 
     const seedHealth = read('api/seed-health.js');
     assert.match(
