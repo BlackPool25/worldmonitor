@@ -97,6 +97,18 @@ describe('sources catalog domain assignment', () => {
     assert.equal(catalog[0].domainId, 'infrastructure');
   });
 
+  it('assigns the structured Sequoia provider to technology', () => {
+    const catalog = buildSourceCatalog([
+      {
+        provider: 'www.sequoiacap.com',
+        host: 'www.sequoiacap.com',
+        kind: 'structured',
+        references: [{ path: 'src/config/variants/tech.ts' }],
+      },
+    ]);
+    assert.equal(catalog[0].domainId, 'technology');
+  });
+
   it('assigns Toronto Transit Commission (TTC) GTFS-RT to infrastructure instead of failing the corpus build', () => {
     const catalog = buildSourceCatalog([
       {

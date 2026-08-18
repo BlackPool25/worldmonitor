@@ -158,6 +158,7 @@ const SOURCE_DOMAIN_OVERRIDES = new Map([
   ['www.newyorkfed.org', 'finance'],
   ['www.nfx.com', 'technology'],
   ['www.reddit.com', 'news'],
+  ['www.sequoiacap.com', 'technology'],
   ['SWF Institute', 'finance'],
   ['Toronto Transit Commission (TTC) GTFS-RT', 'infrastructure'],
   ['United Nations Population Division', 'finance'],
