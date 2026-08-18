@@ -244,16 +244,18 @@ describe('layer explanation metadata', () => {
     assert.match(LAYER_REGISTRY.canadaRoads.fallbackLabel, /Canada/i);
     assert.match(roads.source, /Ontario 511/i);
     assert.match(roads.source, /Alberta 511/i);
+    assert.match(roads.source, /Manitoba 511/i);
     assert.match(roads.source, /Toronto Road Restrictions/i);
     assert.match(roads.source, /DriveBC Open511/i);
     assert.match(roads.purpose, /closures/i);
     assert.doesNotMatch(roads.source, /Alberta 511[^.]{0,80}road-conditions/i);
-    assert.ok(
-      roads.limitations.some(limitation => /Manitoba/i.test(limitation)),
-      'canadaRoads limitations must still name Manitoba as not ingested',
+    assert.equal(
+      roads.limitations.some(limitation => /Manitoba 511 is not ingested/i.test(limitation)),
+      false,
+      'canadaRoads limitations must not still name Manitoba as not ingested',
     );
     assert.ok(
-      roads.limitations.some(limitation => /Alberta 511 roadconditions is not ingested/i),
+      roads.limitations.some(limitation => /Alberta 511 roadconditions is not ingested/i.test(limitation)),
       'canadaRoads limitations must say Alberta roadconditions is not ingested',
     );
     for (const path of ['scripts/seed-provincial-511.mjs', 'scripts/seed-toronto-road-restrictions.mjs', 'scripts/seed-open511.mjs', 'api/health.js', 'src/services/canada-roads.ts']) {

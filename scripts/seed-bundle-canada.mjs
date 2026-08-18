@@ -39,12 +39,12 @@ import { runBundle, HOUR, MIN } from './_bundle-runner.mjs';
 const here = dirname(fileURLToPath(import.meta.url));
 
 const CANADA_SECTIONS = [
-  // Ontario + Alberta share one vendor /api/v2/get adapter and one seeder; the
-  // Alberta host is a config entry on the same script, publishing a second key.
-  // Worst case is 3 endpoints x 3 runSeed attempts staggered 7s apart, plus a
-  // possible 60s wait on the per-host 10-calls/60s token bucket. 180s covers
-  // that with margin — if the limiter sleeps past the timeout the section is
-  // SIGTERM'd, which is a HARD failure rather than runSeed's graceful path.
+  // Ontario, Alberta, and Manitoba share one vendor /api/v2/get adapter and one
+  // seeder; each extra host is a config entry on the same script, publishing its
+  // own key. Worst case is 7 endpoints x 3 runSeed attempts staggered 7s apart,
+  // plus a possible 60s wait on the per-host 10-calls/60s token bucket. 240s
+  // covers that with margin — if the limiter sleeps past the timeout the section
+  // is SIGTERM'd, which is a HARD failure rather than runSeed's graceful path.
   { label: 'Provincial-511', script: 'seed-provincial-511.mjs', seedMetaKey: 'seed-meta:infra:ontario-511', canonicalKey: 'infra:ontario-511:v1', intervalMs: 15 * MIN, timeoutMs: 240_000 },
   // 3.62MB body, not strictly valid JSON, sanitized then parsed. Road
   // restrictions are construction permits, not live incidents.

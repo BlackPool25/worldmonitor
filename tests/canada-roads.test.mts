@@ -56,8 +56,9 @@ test('loads hydrated and missing sources independently and preserves valid empty
     'toronto-roads:to-1',
     'bc-open511:bc-1',
   ]);
-  assert.equal(result.records?.[1]?.district, 'Toronto and East York');
-  assert.equal(result.records?.[1]?.currImpact, 'High');
+  const toronto = result.records?.find((record) => record.source === 'toronto-roads');
+  assert.equal(toronto?.district, 'Toronto and East York');
+  assert.equal(toronto?.currImpact, 'High');
 });
 
 test('one failed tier source does not discard successful siblings', async () => {
@@ -72,6 +73,7 @@ test('one failed tier source does not discard successful siblings', async () => 
 
   assert.equal(result.states.canadaRoads, 'unavailable');
   assert.equal(result.states.albertaRoads, 'empty');
+  assert.equal(result.states.manitobaRoads, 'unavailable');
   assert.equal(result.states.torontoRoads, 'available');
   assert.equal(result.states.bcOpen511, 'unavailable');
   assert.deepEqual(result.records?.map(({ id }) => id), ['to-2']);
