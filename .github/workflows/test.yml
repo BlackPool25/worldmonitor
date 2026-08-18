@@ -98,7 +98,9 @@ jobs:
           echo "validation=$( [ "$VALIDATION" -gt 0 ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
           # Umami's database race cannot be covered by the normal no-Docker
           # unit suite. Run a real PostgreSQL gate only when its managed image,
-          # migration, patch, focused tests, or this workflow changes.
+          # migration, patch, or focused tests change. Do not trigger on every
+          # Test workflow edit: unit already pins the job shape, and rebuilding
+          # two Umami images is the cost that made this look like a per-PR tax.
           UMAMI=$(echo "$FILES" | awk '
             /^\.dockerignore$/ { count++ }
             /^Dockerfile\.umami$/ { count++ }
@@ -106,7 +108,6 @@ jobs:
             /^docker\/umami\// { count++ }
             /^scripts\/umami-retention\.sql$/ { count++ }
             /^tests\/umami-(runtime-remediation\.test|postgres-integration|runtime-write-probe)\.mjs$/ { count++ }
-            /^\.github\/workflows\/test\.yml$/ { count++ }
             END { print count + 0 }
           ')
           echo "umami=$( [ "$UMAMI" -gt 0 ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
@@ -631,9 +632,13 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # The focused suite is already inside `unit` / test:data. This job exists
+  # only for validation-docs PRs that skip `unit` (docs/ is carved out of
+  # `code`). Running it on every code PR paid a second npm ci for the same
+  # files.
   resilience-validation-smoke:
     needs: changes
-    if: needs.changes.outputs.code == 'true' || needs.changes.outputs.validation == 'true'
+    if: needs.changes.outputs.validation == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
