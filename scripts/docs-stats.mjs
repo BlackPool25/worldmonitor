@@ -1327,6 +1327,7 @@ export function validateVolatileInventoryClaims() {
     { path: 'docs/methodology/country-resilience-index.mdx', text: /current registry contains 72 indicators across 21 active dimensions and 6 domains.*2 structurally-retired dimensions/ },
     // Fixed scoring limits, not extensible source inventories.
     { path: 'docs/methodology/news-digest-and-briefing.mdx', text: /Corroboration score is capped at five sources/ },
+    { path: 'docs/methodology/news-credibility.mdx', text: /at five sources, with `20` points per source before the `0.20` weight/ },
     { path: 'docs/methodology/news-digest-and-briefing.mdx', text: /per entity-level source, capped at five sources/ },
     { path: 'docs/methodology/news-digest-and-briefing.mdx', text: /`critical-developing`.*\+5 sources/ },
     { path: 'docs/methodology/news-digest-and-briefing.mdx', text: /`high-event`.*\+5 sources/ },
