@@ -11967,6 +11967,9 @@
       "references": [
         {
           "path": "scripts/lib/provincial-511.mjs"
+        },
+        {
+          "path": "scripts/source-attribution.mjs"
         }
       ]
     },

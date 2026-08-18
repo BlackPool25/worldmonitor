@@ -744,7 +744,7 @@ const PROVIDER_OVERRIDES = {
 // a provider-bearing override a separate, explicit lifecycle event instead of
 // something `--write` can silently normalize into the manifest.
 export const PROVIDER_IDENTITY_REVIEW = Object.freeze({
-  sha256: '1ba8f66f93005892bafe66446c06638e1c068f829492192a609eb2320e6a4d7b',
+  sha256: 'a107d6f8cae94db6d23544594bec285194d6eaed6b002a6f80b358c67d4ea26a',
   reason: 'Add the Manitoba 511 identity for www.manitoba511.ca on the shared provincial vendor /api/v2/get adapter, while retaining the reviewed SaskAlert, B.C. Evacuation Orders and Alerts, and prior publisher identities.',
   // A URL cited here is scanned like any other: this file sits inside
   // SOURCE_ROOTS, so citing a host that is not already a registered source
