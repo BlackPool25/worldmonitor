@@ -168,7 +168,11 @@ describe('digest wiring (source-textual)', () => {
 
   it('list-feed-digest imports the shared scorer and writes credibilityScore', () => {
     assert.match(digestSrc, /from '\.\.\/\.\.\/\.\.\/\.\.\/shared\/news-credibility\.js'/);
-    assert.match(digestSrc, /item\.credibilityScore = computeCredibilityScore\(/);
+    assert.match(digestSrc, /return computeCredibilityScore\(\{/);
+    assert.match(
+      digestSrc,
+      /item\.credibilityScore = computeItemCredibilityScore\(item, scoringCorroboration\)/,
+    );
     assert.match(digestSrc, /credibilityScore: item\.credibilityScore/);
   });
 
