@@ -27,9 +27,14 @@ export type RuntimeProbe = {
   locationProtocol: string;
   locationHost: string;
   locationOrigin: string;
+  forceDesktopRuntime?: boolean;
 };
 
 export function detectDesktopRuntime(probe: RuntimeProbe): boolean {
+  if (probe.forceDesktopRuntime) {
+    return true;
+  }
+
   const tauriInUserAgent = probe.userAgent.includes('Tauri');
   const secureLocalhostOrigin = (
     probe.locationProtocol === 'https:' && (
@@ -55,12 +60,8 @@ export function detectDesktopRuntime(probe: RuntimeProbe): boolean {
 }
 
 export function isDesktopRuntime(): boolean {
-  if (FORCE_DESKTOP_RUNTIME) {
-    return true;
-  }
-
   if (typeof window === 'undefined') {
-    return false;
+    return FORCE_DESKTOP_RUNTIME;
   }
 
   return detectDesktopRuntime({
@@ -69,5 +70,6 @@ export function isDesktopRuntime(): boolean {
     locationProtocol: window.location?.protocol ?? '',
     locationHost: window.location?.host ?? '',
     locationOrigin: window.location?.origin ?? '',
+    forceDesktopRuntime: FORCE_DESKTOP_RUNTIME,
   });
 }

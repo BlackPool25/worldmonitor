@@ -56,6 +56,18 @@ describe('runtime env guards', () => {
       desktopRuntimeSrc.includes("const FORCE_DESKTOP_RUNTIME = ENV.VITE_DESKTOP_RUNTIME === '1'"),
       'Desktop runtime flag should read from the guarded ENV wrapper',
     );
+    assert.ok(
+      desktopRuntimeSrc.includes('forceDesktopRuntime?: boolean'),
+      'RuntimeProbe must accept the build-time FORCE flag so detectDesktopRuntime and isDesktopRuntime share one predicate',
+    );
+    assert.ok(
+      desktopRuntimeSrc.includes('if (probe.forceDesktopRuntime)'),
+      'detectDesktopRuntime must honor forceDesktopRuntime',
+    );
+    assert.ok(
+      desktopRuntimeSrc.includes('forceDesktopRuntime: FORCE_DESKTOP_RUNTIME'),
+      'isDesktopRuntime must pass FORCE_DESKTOP_RUNTIME into detectDesktopRuntime',
+    );
     // One owner for the flag: a second reader in runtime.ts would let the two
     // disagree about what "desktop" means.
     assert.doesNotMatch(

@@ -9,9 +9,7 @@ import { expect, test, type Page } from '@playwright/test';
  *
  * This spec reproduces the early-boot signal set exactly: a Tauri user agent
  * with NO bridge globals (the web bundle under the standard e2e server never
- * attaches them). The observable is main.ts's context-menu suppression — a
- * site that sniffed raw globals, so before the fix it skipped the listener
- * in precisely the environment it exists for.
+ * attaches them). Observables are the sites that used to sniff raw globals.
  */
 
 const TAURI_UA =
@@ -22,6 +20,13 @@ async function contextMenuDefaultPrevented(page: Page): Promise<boolean> {
     const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
     document.body.dispatchEvent(event);
     return event.defaultPrevented;
+  });
+}
+
+async function serviceWorkerRegistrationCount(page: Page): Promise<number> {
+  return page.evaluate(async () => {
+    if (!('serviceWorker' in navigator)) return 0;
+    return (await navigator.serviceWorker.getRegistrations()).length;
   });
 }
 
@@ -39,16 +44,18 @@ test.describe('desktop early boot (Tauri UA, no bridge globals) — #5912', () =
   test.describe('desktop runtime', () => {
     test.use({ userAgent: TAURI_UA });
 
-    test('context-menu suppression is active without the bridge globals', async ({ page }) => {
+    test('desktop gates engage without the bridge globals', async ({ page }) => {
       await loadDashboard(page);
 
-      // Premise: this run really is bridge-less — the UA is the ONLY signal.
+      // Premise: this run really is bridge-less — the UA is the ONLY extra signal.
       const hasGlobals = await page.evaluate(
         () => '__TAURI__' in window || '__TAURI_INTERNALS__' in window,
       );
       expect(hasGlobals).toBe(false);
 
       expect(await contextMenuDefaultPrevented(page)).toBe(true);
+      expect(await serviceWorkerRegistrationCount(page)).toBe(0);
+      expect(await page.evaluate(() => document.documentElement.dataset.variant)).toBe('happy');
     });
   });
 
