@@ -159,7 +159,7 @@ import { describeWmSessionDegradation, WM_SESSION_DEGRADED_FALLBACK_COPY } from 
 import { describeFreshness } from '@/services/persistent-cache';
 import { DesktopUpdater } from '@/app/desktop-updater';
 import { CountryIntelManager } from '@/app/country-intel';
-import { registerWebMcpTools } from '@/services/webmcp';
+import { DashboardBindingError, registerWebMcpTools } from '@/services/webmcp';
 import {
   getWebMcpDashboardContext,
   waitForWebMcpUiReady,
@@ -1824,8 +1824,22 @@ export class App {
         });
       },
       searchDashboard: async (query, scope, limit) => {
-        await this.waitForUiReady();
-        const manager = await this.ensureSearchManager();
+        await this.waitForDashboardReady(false);
+        if (this.state.isDestroyed) {
+          throw new DashboardBindingError('app_destroyed', 'Dashboard is no longer available.');
+        }
+        let manager: SearchManager;
+        try {
+          manager = await this.ensureSearchManager();
+        } catch (error) {
+          if (this.state.isDestroyed) {
+            throw new DashboardBindingError('app_destroyed', 'Dashboard is no longer available.');
+          }
+          throw error;
+        }
+        if (this.state.isDestroyed) {
+          throw new DashboardBindingError('app_destroyed', 'Dashboard is no longer available.');
+        }
         return manager.searchDashboard(query, scope, limit);
       },
       openSearchResult: async (resultKey) => {

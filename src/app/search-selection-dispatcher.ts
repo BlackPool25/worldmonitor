@@ -113,13 +113,17 @@ export class SearchSelectionDispatcher {
       }
       case 'hotspot': {
         const hotspot = result.data as typeof INTEL_HOTSPOTS[0];
-        ctx.map?.setView('global');
-        return this.schedule(() => ctx.map?.triggerHotspotClick(hotspot.id), 300, epoch);
+        return this.schedule(() => {
+          ctx.map?.setView('global');
+          ctx.map?.triggerHotspotClick(hotspot.id);
+        }, 300, epoch);
       }
       case 'conflict': {
         const conflict = result.data as typeof CONFLICT_ZONES[0];
-        ctx.map?.setView('global');
-        return this.schedule(() => ctx.map?.triggerConflictClick(conflict.id), 300, epoch);
+        return this.schedule(() => {
+          ctx.map?.setView('global');
+          ctx.map?.triggerConflictClick(conflict.id);
+        }, 300, epoch);
       }
       case 'market':
         this.scrollToPanel('markets', trackDetailedAnalytics);
@@ -129,43 +133,55 @@ export class SearchSelectionDispatcher {
         break;
       case 'base': {
         const base = result.data as MilitaryBase;
-        ctx.map?.setView('global');
-        return this.schedule(() => ctx.map?.triggerBaseClick(base.id), 300, epoch);
+        return this.schedule(() => {
+          ctx.map?.setView('global');
+          ctx.map?.triggerBaseClick(base.id);
+        }, 300, epoch);
       }
       case 'pipeline': {
         const pipeline = result.data as typeof PIPELINES[0];
-        ctx.map?.setView('global');
-        ctx.map?.enableLayer('pipelines');
-        ctx.mapLayers.pipelines = true;
-        return this.schedule(() => ctx.map?.triggerPipelineClick(pipeline.id), 300, epoch);
+        return this.schedule(() => {
+          ctx.map?.setView('global');
+          ctx.map?.enableLayer('pipelines');
+          ctx.mapLayers.pipelines = true;
+          ctx.map?.triggerPipelineClick(pipeline.id);
+        }, 300, epoch);
       }
       case 'cable': {
         const cable = result.data as typeof UNDERSEA_CABLES[0];
-        ctx.map?.setView('global');
-        ctx.map?.enableLayer('cables');
-        ctx.mapLayers.cables = true;
-        return this.schedule(() => ctx.map?.triggerCableClick(cable.id), 300, epoch);
+        return this.schedule(() => {
+          ctx.map?.setView('global');
+          ctx.map?.enableLayer('cables');
+          ctx.mapLayers.cables = true;
+          ctx.map?.triggerCableClick(cable.id);
+        }, 300, epoch);
       }
       case 'datacenter': {
         const dc = result.data as typeof AI_DATA_CENTERS[0];
-        ctx.map?.setView('global');
-        ctx.map?.enableLayer('datacenters');
-        ctx.mapLayers.datacenters = true;
-        return this.schedule(() => ctx.map?.triggerDatacenterClick(dc.id), 300, epoch);
+        return this.schedule(() => {
+          ctx.map?.setView('global');
+          ctx.map?.enableLayer('datacenters');
+          ctx.mapLayers.datacenters = true;
+          ctx.map?.triggerDatacenterClick(dc.id);
+        }, 300, epoch);
       }
       case 'nuclear': {
         const facility = result.data as typeof NUCLEAR_FACILITIES[0];
-        ctx.map?.setView('global');
-        ctx.map?.enableLayer('nuclear');
-        ctx.mapLayers.nuclear = true;
-        return this.schedule(() => ctx.map?.triggerNuclearClick(facility.id), 300, epoch);
+        return this.schedule(() => {
+          ctx.map?.setView('global');
+          ctx.map?.enableLayer('nuclear');
+          ctx.mapLayers.nuclear = true;
+          ctx.map?.triggerNuclearClick(facility.id);
+        }, 300, epoch);
       }
       case 'irradiator': {
         const irradiator = result.data as typeof GAMMA_IRRADIATORS[0];
-        ctx.map?.setView('global');
-        ctx.map?.enableLayer('irradiators');
-        ctx.mapLayers.irradiators = true;
-        return this.schedule(() => ctx.map?.triggerIrradiatorClick(irradiator.id), 300, epoch);
+        return this.schedule(() => {
+          ctx.map?.setView('global');
+          ctx.map?.enableLayer('irradiators');
+          ctx.mapLayers.irradiators = true;
+          ctx.map?.triggerIrradiatorClick(irradiator.id);
+        }, 300, epoch);
       }
       case 'earthquake':
       case 'outage':
@@ -173,71 +189,91 @@ export class SearchSelectionDispatcher {
         break;
       case 'techcompany': {
         const company = result.data as typeof TECH_COMPANIES[0];
-        ctx.map?.setView('global');
-        ctx.map?.enableLayer('techHQs');
-        ctx.mapLayers.techHQs = true;
-        return this.schedule(() => ctx.map?.setCenter(company.lat, company.lon, 4), 300, epoch);
+        return this.schedule(() => {
+          ctx.map?.setView('global');
+          ctx.map?.enableLayer('techHQs');
+          ctx.mapLayers.techHQs = true;
+          ctx.map?.setCenter(company.lat, company.lon, 4);
+        }, 300, epoch);
       }
       case 'ailab': {
         const lab = result.data as typeof AI_RESEARCH_LABS[0];
-        ctx.map?.setView('global');
-        return this.schedule(() => ctx.map?.setCenter(lab.lat, lab.lon, 4), 300, epoch);
+        return this.schedule(() => {
+          ctx.map?.setView('global');
+          ctx.map?.setCenter(lab.lat, lab.lon, 4);
+        }, 300, epoch);
       }
       case 'startup': {
         const ecosystem = result.data as typeof STARTUP_ECOSYSTEMS[0];
-        ctx.map?.setView('global');
-        ctx.map?.enableLayer('startupHubs');
-        ctx.mapLayers.startupHubs = true;
-        return this.schedule(() => ctx.map?.setCenter(ecosystem.lat, ecosystem.lon, 4), 300, epoch);
+        return this.schedule(() => {
+          ctx.map?.setView('global');
+          ctx.map?.enableLayer('startupHubs');
+          ctx.mapLayers.startupHubs = true;
+          ctx.map?.setCenter(ecosystem.lat, ecosystem.lon, 4);
+        }, 300, epoch);
       }
       case 'techevent': {
         const event = result.data as { lat: number; lng: number };
-        ctx.map?.setView('global');
-        ctx.map?.enableLayer('techEvents');
-        ctx.mapLayers.techEvents = true;
-        return this.schedule(() => ctx.map?.setCenter(event.lat, event.lng, 5), 300, epoch);
+        return this.schedule(() => {
+          ctx.map?.setView('global');
+          ctx.map?.enableLayer('techEvents');
+          ctx.mapLayers.techEvents = true;
+          ctx.map?.setCenter(event.lat, event.lng, 5);
+        }, 300, epoch);
       }
       case 'techhq': {
         const hq = result.data as typeof TECH_HQS[0];
-        ctx.map?.setView('global');
-        ctx.map?.enableLayer('techHQs');
-        ctx.mapLayers.techHQs = true;
-        return this.schedule(() => ctx.map?.setCenter(hq.lat, hq.lon, 4), 300, epoch);
+        return this.schedule(() => {
+          ctx.map?.setView('global');
+          ctx.map?.enableLayer('techHQs');
+          ctx.mapLayers.techHQs = true;
+          ctx.map?.setCenter(hq.lat, hq.lon, 4);
+        }, 300, epoch);
       }
       case 'accelerator': {
         const accelerator = result.data as typeof ACCELERATORS[0];
-        ctx.map?.setView('global');
-        ctx.map?.enableLayer('accelerators');
-        ctx.mapLayers.accelerators = true;
-        return this.schedule(() => ctx.map?.setCenter(accelerator.lat, accelerator.lon, 4), 300, epoch);
+        return this.schedule(() => {
+          ctx.map?.setView('global');
+          ctx.map?.enableLayer('accelerators');
+          ctx.mapLayers.accelerators = true;
+          ctx.map?.setCenter(accelerator.lat, accelerator.lon, 4);
+        }, 300, epoch);
       }
       case 'exchange': {
         const exchange = result.data as typeof STOCK_EXCHANGES[0];
-        ctx.map?.setView('global');
-        ctx.map?.enableLayer('stockExchanges');
-        ctx.mapLayers.stockExchanges = true;
-        return this.schedule(() => ctx.map?.setCenter(exchange.lat, exchange.lon, 4), 300, epoch);
+        return this.schedule(() => {
+          ctx.map?.setView('global');
+          ctx.map?.enableLayer('stockExchanges');
+          ctx.mapLayers.stockExchanges = true;
+          ctx.map?.setCenter(exchange.lat, exchange.lon, 4);
+        }, 300, epoch);
       }
       case 'financialcenter': {
         const center = result.data as typeof FINANCIAL_CENTERS[0];
-        ctx.map?.setView('global');
-        ctx.map?.enableLayer('financialCenters');
-        ctx.mapLayers.financialCenters = true;
-        return this.schedule(() => ctx.map?.setCenter(center.lat, center.lon, 4), 300, epoch);
+        return this.schedule(() => {
+          ctx.map?.setView('global');
+          ctx.map?.enableLayer('financialCenters');
+          ctx.mapLayers.financialCenters = true;
+          ctx.map?.setCenter(center.lat, center.lon, 4);
+        }, 300, epoch);
       }
       case 'centralbank': {
         const bank = result.data as typeof CENTRAL_BANKS[0];
-        ctx.map?.setView('global');
-        ctx.map?.enableLayer('centralBanks');
-        ctx.mapLayers.centralBanks = true;
-        return this.schedule(() => ctx.map?.setCenter(bank.lat, bank.lon, 4), 300, epoch);
+        return this.schedule(() => {
+          ctx.map?.setView('global');
+          ctx.map?.enableLayer('centralBanks');
+          ctx.mapLayers.centralBanks = true;
+          ctx.map?.setCenter(bank.lat, bank.lon, 4);
+        }, 300, epoch);
       }
       case 'commodityhub': {
         const hub = result.data as typeof COMMODITY_HUBS[0];
-        ctx.map?.setView('global');
-        ctx.map?.enableLayer('commodityHubs');
-        ctx.mapLayers.commodityHubs = true;
-        return this.schedule(() => ctx.map?.setCenter(hub.lat, hub.lon, 4), 300, epoch);
+        return this.schedule(() => {
+          ctx.map?.setView('global');
+          ctx.map?.enableLayer('commodityHubs');
+          ctx.mapLayers.commodityHubs = true;
+          ctx.map?.setCenter(hub.lat, hub.lon, 4);
+        }, 300, epoch);
       }
       case 'country': {
         const { code, name } = result.data as { code: string; name: string };
@@ -251,9 +287,11 @@ export class SearchSelectionDispatcher {
           lon: number;
           layer: keyof MapLayers;
         };
-        ctx.map?.enableLayer(layer);
-        ctx.mapLayers[layer] = true;
-        return this.schedule(() => ctx.map?.setCenter(lat, lon, 9), 300, epoch);
+        return this.schedule(() => {
+          ctx.map?.enableLayer(layer);
+          ctx.mapLayers[layer] = true;
+          ctx.map?.setCenter(lat, lon, 9);
+        }, 300, epoch);
       }
     }
     return true;
@@ -398,8 +436,10 @@ export class SearchSelectionDispatcher {
           const lon = (minLon + maxLon) / 2;
           const span = Math.max(maxLat - minLat, maxLon - minLon);
           const zoom = span > 40 ? 3 : span > 15 ? 4 : span > 5 ? 5 : 6;
-          ctx.map?.setView('global');
-          return this.schedule(() => ctx.map?.setCenter(lat, lon, zoom), 300, epoch);
+          return this.schedule(() => {
+            ctx.map?.setView('global');
+            ctx.map?.setCenter(lat, lon, zoom);
+          }, 300, epoch);
         }
         break;
       }

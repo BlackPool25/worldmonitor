@@ -25,11 +25,13 @@ import {
   searchSourceItemsEqual,
   type SearchIndexQueryResult,
 } from '@/components/search-engine';
-import type {
-  SearchCommandMatch,
-  SearchResult,
-  SearchResultType,
-  SearchableSource,
+import {
+  searchMatchIdentity,
+  type SearchCommandMatch,
+  type SearchMatch,
+  type SearchResult,
+  type SearchResultType,
+  type SearchableSource,
 } from '@/components/search-types';
 
 export type {
@@ -223,6 +225,47 @@ export class SearchModal {
 
   public getSearchIndexRevision(): number {
     return this.searchIndexRevision;
+  }
+
+  /** Resolve a previously issued identity from registered sources, not the ranked window. */
+  public resolveMatchByIdentity(identity: string): SearchMatch | undefined {
+    for (const source of this.sources) {
+      for (const item of source.items) {
+        const match: SearchMatch = {
+          kind: 'result',
+          score: 0,
+          result: {
+            type: source.type,
+            id: item.id,
+            title: item.title,
+            subtitle: item.subtitle,
+            data: item.data,
+          },
+        };
+        if (searchMatchIdentity(match) === identity) return match;
+      }
+    }
+    for (const command of getAllCommands()) {
+      const match: SearchMatch = {
+        kind: 'command',
+        score: 0,
+        title: resolveCommandLabel(command),
+        subtitle: resolveCategoryLabel(command),
+        command,
+      };
+      if (searchMatchIdentity(match) === identity) return match;
+    }
+    return undefined;
+  }
+
+  /** Drop debounce, close, and mobile-population work during manager teardown. */
+  public cancelPendingWork(): void {
+    this.debouncedSearch.cancel();
+    this.mobileInitialPopulationGeneration += 1;
+    if (this.closeTimeoutId) {
+      clearTimeout(this.closeTimeoutId);
+      this.closeTimeoutId = null;
+    }
   }
 
   public setOnSelect(callback: (result: SearchResult) => void): void {

@@ -1068,7 +1068,7 @@ describe('webmcp App.ts binding: readiness + teardown', () => {
     assert.ok(bindingBlock);
     assert.match(
       appSrc,
-      /^import \{ registerWebMcpTools \} from '@\/services\/webmcp';$/m,
+      /^import \{ DashboardBindingError, registerWebMcpTools \} from '@\/services\/webmcp';$/m,
     );
     assert.doesNotMatch(appSrc, /import\(['"]@\/services\/webmcp['"]\)/);
     const initBody = appSrc.match(
@@ -1140,7 +1140,7 @@ describe('webmcp App.ts binding: readiness + teardown', () => {
   it('keeps dashboard search read-only/lazy and validates opener keys before renderer demand', () => {
     assert.match(
       bindingBlock[0],
-      /searchDashboard:[\s\S]+?await this\.waitForUiReady\(\)[\s\S]+?await this\.ensureSearchManager\(\)[\s\S]+?manager\.searchDashboard/,
+      /searchDashboard:[\s\S]+?await this\.waitForDashboardReady\(false\)[\s\S]+?DashboardBindingError\('app_destroyed'[\s\S]+?await this\.ensureSearchManager\(\)[\s\S]+?manager\.searchDashboard/,
     );
     assert.match(
       bindingBlock[0],

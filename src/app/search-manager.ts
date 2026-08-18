@@ -193,6 +193,9 @@ export class SearchManager implements AppModule {
   private latestAdsb: PositionSample[] = [];
   private latestMilitary: MilitaryFlight[] = [];
   private latestAdsbUpdatedAt = 0;
+  private liveFlightOverlay: Array<{ position: PositionSample; expiresAt: number }> = [];
+  private liveFlightLookupGeneration = 0;
+  private acceptLateBaseHydration = true;
   private searchIndexReady: Promise<void> = Promise.resolve();
 
   constructor(ctx: AppContext, callbacks: SearchManagerCallbacks) {
@@ -220,11 +223,16 @@ export class SearchManager implements AppModule {
       refreshIndex: () => this.updateSearchIndex({ updateVisibleMetrics: false }),
       getModal: () => this.ctx.searchModal,
       hasPremiumAccess: () => hasPremiumAccess(getAuthState()),
-      fetchLiveFlight: (callsign) => SearchManager.waitWithTimeout(
-        this.fetchAndPublishLiveFlight(callsign),
-        SearchManager.SEARCH_INDEX_READY_TIMEOUT_MS,
-        'live-flight-search',
-      ),
+      fetchLiveFlight: async (callsign) => {
+        const generation = this.liveFlightLookupGeneration;
+        const completed = await SearchManager.waitWithTimeout(
+          this.fetchAndPublishLiveFlight(callsign, generation),
+          SearchManager.SEARCH_INDEX_READY_TIMEOUT_MS,
+          'live-flight-search',
+        );
+        if (!completed) this.liveFlightLookupGeneration += 1;
+      },
+      cancelPendingSelection: () => this.searchSelection.destroy(),
       getAuthContext: () => {
         const auth = getAuthState();
         return `${auth.user ? 'signed-in' : 'anonymous'}:${auth.isPending ? 'pending' : 'settled'}:${hasPremiumAccess(auth) ? 'premium' : 'free'}`;
@@ -240,6 +248,7 @@ export class SearchManager implements AppModule {
         if (!premium) {
           this.flightSearchItems = [];
           this.flightSourceExpiresAt = 0;
+          this.liveFlightOverlay = [];
           this.ctx.searchModal?.registerSource('flight', []);
         } else if (premiumRestored) {
           this.updateFlightSource(
@@ -265,10 +274,14 @@ export class SearchManager implements AppModule {
 
   destroy(): void {
     this.destroyed = true;
+    this.liveFlightLookupGeneration += 1;
+    this.acceptLateBaseHydration = false;
+    this.ctx.searchModal?.cancelPendingWork();
     this.webMcpSearch.destroy();
     this.searchSelection.destroy();
     this.flightSearchItems = [];
     this.flightSourceExpiresAt = 0;
+    this.liveFlightOverlay = [];
     this.latestAdsb = [];
     this.latestMilitary = [];
     this.latestAdsbUpdatedAt = 0;
@@ -495,9 +508,12 @@ export class SearchManager implements AppModule {
     ];
   }
 
-  private async fetchAndPublishLiveFlight(callsign: string): Promise<void> {
+  private async fetchAndPublishLiveFlight(
+    callsign: string,
+    generation = this.liveFlightLookupGeneration,
+  ): Promise<void> {
     const positions = await fetchAircraftPositions({ callsign });
-    if (this.destroyed) return;
+    if (this.destroyed || generation !== this.liveFlightLookupGeneration) return;
     // Deduplicate by callsign: keep the most recently observed entry per callsign.
     const seen = new Map<string, PositionSample>();
     for (const p of positions) {
@@ -507,16 +523,32 @@ export class SearchManager implements AppModule {
         seen.set(key, p);
       }
     }
-    this.updateFlightSource(
-      this.mergeLiveAdsb(this.latestAdsb, [...seen.values()]),
-      this.latestMilitary,
-      Date.now(),
-    );
+    const now = Date.now();
+    this.rememberLiveFlightLookup([...seen.values()], now);
+    this.updateFlightSource(this.latestAdsb, this.latestMilitary, now);
+  }
+
+  private rememberLiveFlightLookup(positions: PositionSample[], now: number): void {
+    const incomingIdentities = new Set(positions.flatMap(SearchManager.adsbIdentities));
+    this.liveFlightOverlay = this.liveFlightOverlay.filter((entry) => (
+      entry.expiresAt > now
+      && !SearchManager.adsbIdentities(entry.position).some((id) => incomingIdentities.has(id))
+    ));
+    for (const position of positions) {
+      const expiresAt = SearchManager.flightObservationTime(position.observedAt, now, now)
+        + FLIGHT_SEARCH_SOURCE_TTL_MS;
+      if (expiresAt > now) this.liveFlightOverlay.push({ position, expiresAt });
+    }
+  }
+
+  private pruneLiveFlightOverlay(now: number): PositionSample[] {
+    this.liveFlightOverlay = this.liveFlightOverlay.filter((entry) => entry.expiresAt > now);
+    return this.liveFlightOverlay.map((entry) => entry.position);
   }
 
   private async registerBaseSearchSource(): Promise<void> {
     const register = (bases: MilitaryBase[]) => {
-      if (this.destroyed) return;
+      if (this.destroyed || !this.acceptLateBaseHydration) return;
       this.ctx.searchModal?.registerSource('base', bases.map(b => ({
         id: b.id,
         title: b.name,
@@ -533,22 +565,25 @@ export class SearchManager implements AppModule {
     const hydration = Promise.resolve()
       .then(() => preloadMilitaryBases())
       .then(register);
-    await SearchManager.waitWithTimeout(
+    const completed = await SearchManager.waitWithTimeout(
       hydration,
       SearchManager.SEARCH_INDEX_READY_TIMEOUT_MS,
       'military-base-search-hydration',
     );
+    if (!completed) this.acceptLateBaseHydration = false;
   }
 
   private static async waitWithTimeout(
     promise: Promise<unknown>,
     timeoutMs: number,
     label: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
       await withTimeout(promise, timeoutMs, label);
+      return true;
     } catch {
       // Optional search enrichment must not block the dashboard search path.
+      return false;
     }
   }
 
@@ -798,6 +833,7 @@ export class SearchManager implements AppModule {
     military: MilitaryFlight[],
     adsbUpdatedAt = Date.now(),
   ): void {
+    if (this.destroyed) return;
     this.latestAdsb = [...adsb];
     this.latestMilitary = [...military];
     this.latestAdsbUpdatedAt = adsbUpdatedAt;
@@ -805,12 +841,14 @@ export class SearchManager implements AppModule {
     if (!hasPremiumAccess(getAuthState())) {
       this.flightSearchItems = [];
       this.flightSourceExpiresAt = 0;
+      this.liveFlightOverlay = [];
       this.ctx.searchModal.registerSource('flight', []);
       return;
     }
     const now = Date.now();
+    const mergedAdsb = this.mergeLiveAdsb(adsb, this.pruneLiveFlightOverlay(now));
     this.flightSearchItems = SearchManager.buildFlightSearchItems(
-      adsb,
+      mergedAdsb,
       military,
       adsbUpdatedAt,
       now,

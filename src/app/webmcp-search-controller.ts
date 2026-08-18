@@ -25,7 +25,6 @@ interface IssuedSearchResult {
   query: string;
   scope: DashboardSearchScope;
   identity: string;
-  indexRevision: number;
   authContext: string;
   securityEpoch: number;
   variant: string;
@@ -47,6 +46,7 @@ export interface WebMcpSearchControllerBindings {
   subscribeRuntimeConfig(listener: () => void): () => void;
   subscribeWidgetAccess(listener: () => void): () => void;
   onPremiumAccessChanged(premium: boolean, premiumRestored: boolean): void;
+  cancelPendingSelection(): void;
 }
 
 /** Owns WebMCP capability issuance, revocation, and use-time validation. */
@@ -67,6 +67,7 @@ export class WebMcpSearchController {
     const invalidate = (): void => {
       this.securityEpoch += 1;
       this.resultCache.clear();
+      this.bindings.cancelPendingSelection();
       const premium = this.bindings.hasPremiumAccess();
       const premiumRestored = !this.lastPremiumAccess && premium;
       this.lastPremiumAccess = premium;
@@ -140,7 +141,6 @@ export class WebMcpSearchController {
         query,
         scope,
         identity: searchMatchIdentity(match),
-        indexRevision: modal.getSearchIndexRevision(),
         authContext,
         securityEpoch: this.securityEpoch,
         variant: this.bindings.getVariant(),
@@ -163,46 +163,56 @@ export class WebMcpSearchController {
     if (this.bindings.isDestroyed()) return this.denied('invalid_or_expired_key');
     const issued = this.resultCache.get(resultKey);
     if (!issued) return this.denied('invalid_or_expired_key');
-    this.resultCache.delete(resultKey);
 
-    if (!this.isIssuedContextCurrent(issued)) return this.denied('search_state_changed');
+    if (!this.isIssuedContextCurrent(issued)) {
+      this.resultCache.delete(resultKey);
+      return this.denied('search_state_changed');
+    }
 
     this.bindings.refreshIndex();
     const modal = this.bindings.getModal();
-    if (!modal) return this.denied('search_state_changed');
-    let liveMatch = this.resolveLiveMatch(modal, issued);
-    if (!liveMatch) return this.denied('result_no_longer_available');
-    if (issued.indexRevision !== modal.getSearchIndexRevision()) {
+    if (!modal) {
+      this.resultCache.delete(resultKey);
       return this.denied('search_state_changed');
     }
+    let liveMatch = this.resolveLiveMatch(modal, issued);
+    if (!liveMatch) {
+      this.resultCache.delete(resultKey);
+      return this.denied('result_no_longer_available');
+    }
     if (!this.bindings.isMatchExecutable(liveMatch)) {
+      this.resultCache.delete(resultKey);
       return this.denied('result_no_longer_executable');
     }
 
     if (this.requiresMapRenderer(liveMatch) && waitForMapReady) {
       await waitForMapReady();
       if (this.bindings.isDestroyed() || !this.isIssuedContextCurrent(issued)) {
+        this.resultCache.delete(resultKey);
         return this.denied('search_state_changed');
       }
       this.bindings.refreshIndex();
       const refreshedModal = this.bindings.getModal();
       liveMatch = refreshedModal ? this.resolveLiveMatch(refreshedModal, issued) : undefined;
-      if (!liveMatch) return this.denied('result_no_longer_available');
-      if (issued.indexRevision !== refreshedModal?.getSearchIndexRevision()) {
-        return this.denied('search_state_changed');
+      if (!liveMatch) {
+        this.resultCache.delete(resultKey);
+        return this.denied('result_no_longer_available');
       }
     }
 
     if (!this.bindings.isMatchExecutable(liveMatch)) {
+      this.resultCache.delete(resultKey);
       return this.denied('result_no_longer_executable');
     }
-    if (this.bindings.isDestroyed()) return this.denied('search_state_changed');
-
-    this.bindings.getModal()?.closeForProgrammaticSelection();
-    const selected = await this.bindings.selectMatch(liveMatch);
-    if (this.bindings.isDestroyed() || !this.isIssuedContextCurrent(issued)) {
+    if (this.bindings.isDestroyed()) {
+      this.resultCache.delete(resultKey);
       return this.denied('search_state_changed');
     }
+
+    this.resultCache.delete(resultKey);
+    this.bindings.getModal()?.closeForProgrammaticSelection();
+    const selected = await this.bindings.selectMatch(liveMatch);
+    if (this.bindings.isDestroyed()) return this.denied('search_state_changed');
     if (!selected) {
       return this.denied('result_no_longer_executable');
     }
@@ -249,8 +259,9 @@ export class WebMcpSearchController {
     modal: SearchModal,
     issued: IssuedSearchResult,
   ): SearchMatch | undefined {
-    return modal.search(issued.query, issued.scope as SearchScope).orderedMatches
-      .find((match) => searchMatchIdentity(match) === issued.identity);
+    return modal.resolveMatchByIdentity(issued.identity)
+      ?? modal.search(issued.query, issued.scope as SearchScope).orderedMatches
+        .find((match) => searchMatchIdentity(match) === issued.identity);
   }
 
   private isIssuedContextCurrent(issued: IssuedSearchResult): boolean {

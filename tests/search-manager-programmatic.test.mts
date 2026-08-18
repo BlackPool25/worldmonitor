@@ -89,6 +89,7 @@ interface Runtime {
   liveFlightQueries: string[];
   liveFlightError: Error | null;
   liveFlightPending: boolean;
+  releaseLiveFlight: (() => void) | null;
   deferTimers: boolean;
   nextTimerId: number;
   pendingTimers: Map<number, () => void>;
@@ -99,6 +100,7 @@ interface ModalDouble {
   revision: number;
   openCalls: number;
   closeCalls: number;
+  cancelCalls: number;
   clearedSources: string[];
   flightCallsign: string | null;
   search(query: string, scope: string): {
@@ -106,10 +108,12 @@ interface ModalDouble {
     flightCallsign: string | null;
   };
   getSearchIndexRevision(): number;
+  resolveMatchByIdentity(identity: string): SearchMatch | undefined;
   registerSource(type: string, items: unknown[]): void;
   refreshSearch(): void;
   open(): void;
   closeForProgrammaticSelection(): void;
+  cancelPendingWork(): void;
 }
 
 interface Scenario {
@@ -267,8 +271,7 @@ function createHarness(variant: Variant, runtime: Runtime): new (ctx: any, callb
     (request: { callsign?: string }) => {
       runtime.liveFlightQueries.push(request.callsign ?? '');
       if (runtime.liveFlightError) return Promise.reject(runtime.liveFlightError);
-      if (runtime.liveFlightPending) return new Promise<never>(() => {});
-      return Promise.resolve([{
+      const livePosition = {
         icao24: 'abc123',
         callsign: request.callsign ?? 'AB123',
         lat: 1,
@@ -277,7 +280,13 @@ function createHarness(variant: Variant, runtime: Runtime): new (ctx: any, callb
         groundSpeedKts: 450,
         observedAt: Date.now(),
         onGround: false,
-      }]);
+      };
+      if (runtime.liveFlightPending) {
+        return new Promise<typeof livePosition[]>((resolve) => {
+          runtime.releaseLiveFlight = () => resolve([livePosition]);
+        });
+      }
+      return Promise.resolve([livePosition]);
     },
   ];
 
@@ -336,6 +345,7 @@ function makeScenario(
     liveFlightQueries: [],
     liveFlightError: null,
     liveFlightPending: false,
+    releaseLiveFlight: null,
     deferTimers: false,
     nextTimerId: 1,
     pendingTimers: new Map(),
@@ -362,6 +372,7 @@ function makeScenario(
     revision: 1,
     openCalls: 0,
     closeCalls: 0,
+    cancelCalls: 0,
     clearedSources: [],
     flightCallsign: null,
     search: () => ({
@@ -369,6 +380,9 @@ function makeScenario(
       flightCallsign: modal.flightCallsign,
     }),
     getSearchIndexRevision: () => modal.revision,
+    resolveMatchByIdentity: (identity) => modal.matches.find(
+      (match) => searchMatchIdentity(match) === identity,
+    ),
     registerSource: (type, items) => {
       if (items.length === 0) modal.clearedSources.push(type);
       if (type === 'flight' && items.length > 0) {
@@ -383,6 +397,7 @@ function makeScenario(
     refreshSearch: () => {},
     open: () => { modal.openCalls += 1; },
     closeForProgrammaticSelection: () => { modal.closeCalls += 1; },
+    cancelPendingWork: () => { modal.cancelCalls += 1; },
   };
   const mapLayers = Object.fromEntries(
     Object.keys(LAYER_REGISTRY).map((key) => [key, false]),
@@ -512,6 +527,7 @@ describe('SearchManager programmatic dashboard search (#6212)', () => {
 
     flushTimers(scenario.runtime);
     assert.deepEqual(scenario.calls.hotspotIds, []);
+    assert.deepEqual(scenario.calls.views, []);
     assert.deepEqual(scenario.calls.countryBriefs, [[
       'CA',
       'Canada',
@@ -544,6 +560,8 @@ describe('SearchManager programmatic dashboard search (#6212)', () => {
     flushTimers(scenario.runtime);
 
     assert.deepEqual(scenario.calls.hotspotIds, []);
+    assert.deepEqual(scenario.calls.views, []);
+    assert.equal(scenario.modal.cancelCalls, 1);
   });
 
   it('re-resolves a refreshed target and dispatches its fresh non-indexed payload', async () => {
@@ -634,6 +652,15 @@ describe('SearchManager programmatic dashboard search (#6212)', () => {
 
     assert.deepEqual(scenario.runtime.liveFlightQueries, ['AB123']);
     assert.deepEqual(response.results, []);
+
+    scenario.runtime.releaseLiveFlight?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepEqual(
+      scenario.modal.matches,
+      [],
+      'a timed-out live lookup must not mutate the shared flight index later',
+    );
   });
 
   it('keeps analytics origin local while an agent country selection is awaiting presentation', async () => {
@@ -692,7 +719,7 @@ describe('SearchManager programmatic dashboard search (#6212)', () => {
     });
   });
 
-  it('fails closed when the semantic search index revision changes', async () => {
+  it('keeps a key valid across a benign index refresh', async () => {
     const match = resultMatch(
       'country',
       'XZ',
@@ -709,11 +736,34 @@ describe('SearchManager programmatic dashboard search (#6212)', () => {
     const key = response.results[0]?.key;
     assert.ok(key);
     assert.deepEqual(await scenario.manager.openSearchResult(key), {
-      ok: false,
-      status: 'denied',
-      reason: 'search_state_changed',
+      ok: true,
+      status: 'opened',
+      type: 'country',
     });
-    assert.deepEqual(scenario.calls.countryBriefs, []);
+    assert.equal(scenario.calls.countryBriefs.length, 1);
+  });
+
+  it('does not consume a map-target key while the renderer is still becoming ready', async () => {
+    const scenario = makeScenario([
+      resultMatch('pipeline', 'pipe-1', 'Needle pipeline', { id: 'pipe-1' }),
+    ]);
+    const response = await scenario.manager.searchDashboard('needle', 'all', 10);
+    const key = response.results[0]?.key;
+    assert.ok(key);
+
+    let releaseReady!: () => void;
+    const pendingOpen = scenario.manager.openSearchResult(key, () => new Promise<void>((resolve) => {
+      releaseReady = resolve;
+    }));
+    await Promise.resolve();
+    scenario.modal.revision += 1;
+    releaseReady();
+    assert.deepEqual(await pendingOpen, {
+      ok: true,
+      status: 'opened',
+      type: 'pipeline',
+    });
+    assert.deepEqual(scenario.calls.pipelineIds, ['pipe-1']);
   });
 
   it('waits for async source hydration before issuing capabilities', async () => {
@@ -996,6 +1046,41 @@ describe('SearchManager programmatic dashboard search (#6212)', () => {
       status: 'denied',
       reason: 'result_no_longer_executable',
     });
+    assert.deepEqual(
+      scenario.runtime.detailedCountryAnalytics,
+      [],
+      'a failed country open must not emit detailed country analytics',
+    );
+  });
+
+  it('treats a superseded country brief as not executable and keeps analytics empty', async () => {
+    const scenario = makeScenario([
+      resultMatch('country', 'US', 'United States', { code: 'US', name: 'United States' }),
+    ]);
+    scenario.manager.callbacks.openCountryBriefByCode = (
+      code: string,
+      name: string,
+      options?: { trackDetailedAnalytics?: boolean },
+    ) => {
+      scenario.calls.countryBriefs.push([code, name, options]);
+      // Mirrors App.ts finish(false) when the requested page was superseded.
+      return Promise.resolve(false);
+    };
+
+    const response = await scenario.manager.searchDashboard('needle', 'all', 10);
+    const key = response.results[0]?.key;
+    assert.ok(key);
+    assert.deepEqual(await scenario.manager.openSearchResult(key), {
+      ok: false,
+      status: 'denied',
+      reason: 'result_no_longer_executable',
+    });
+    assert.deepEqual(scenario.calls.countryBriefs, [[
+      'US',
+      'United States',
+      { trackDetailedAnalytics: false },
+    ]]);
+    assert.deepEqual(scenario.runtime.detailedCountryAnalytics, []);
   });
 
   it('awaits country commands and closes an open palette before dispatch', async () => {
@@ -1265,6 +1350,122 @@ describe('SearchManager programmatic dashboard search (#6212)', () => {
         ['mil123', 'military'],
       ],
     );
+
+    scenario.manager.updateFlightSource([{
+      icao24: 'keep123',
+      callsign: 'KEEP1',
+      lat: 12,
+      lon: 13,
+      altitudeFt: 25_000,
+      groundSpeedKts: 350,
+      observedAt: now,
+      onGround: false,
+    }], [{
+      id: 'military-1',
+      callsign: 'MIL1',
+      hexCode: 'mil123',
+      aircraftType: 'fighter',
+      lat: 14,
+      lon: 15,
+      altitude: 30_000,
+      onGround: false,
+      lastSeen: new Date(now),
+    }], now);
+
+    assert.deepEqual(
+      scenario.modal.matches.map((match) => match.kind === 'result'
+        ? [match.result.id, match.result.data.kind]
+        : null),
+      [
+        ['keep123', 'adsb'],
+        ['abc123', 'adsb'],
+        ['mil123', 'military'],
+      ],
+      'a later viewport snapshot must keep the TTL-bounded live lookup',
+    );
+  });
+
+  it('ignores a late DeckGL flight publish after destroy', () => {
+    const scenario = makeScenario([]);
+    scenario.manager.destroy();
+    scenario.manager.updateFlightSource([{
+      icao24: 'late123',
+      callsign: 'LATE1',
+      lat: 1,
+      lon: 2,
+      altitudeFt: 30_000,
+      groundSpeedKts: 400,
+      observedAt: Date.now(),
+      onGround: false,
+    }], [], Date.now());
+
+    assert.deepEqual(scenario.modal.matches, []);
+    assert.equal(scenario.manager.flightSearchItems.length, 0);
+  });
+
+  it('reports opened when selection already applied across a security-context change', async () => {
+    const scenario = makeScenario([
+      resultMatch('country', 'US', 'United States', { code: 'US', name: 'United States' }),
+    ]);
+    scenario.manager.observeSecurityContext();
+    let resolveBrief!: (opened: boolean) => void;
+    scenario.manager.callbacks.openCountryBriefByCode = (
+      code: string,
+      name: string,
+      options?: { trackDetailedAnalytics?: boolean },
+    ) => {
+      scenario.calls.countryBriefs.push([code, name, options]);
+      return new Promise<boolean>((resolve) => {
+        resolveBrief = resolve;
+      });
+    };
+
+    const response = await scenario.manager.searchDashboard('needle', 'all', 10);
+    const key = response.results[0]?.key;
+    assert.ok(key);
+    const pendingOpen = scenario.manager.openSearchResult(key);
+    await Promise.resolve();
+    assert.equal(scenario.calls.countryBriefs.length, 1);
+
+    scenario.runtime.auth = {};
+    scenario.runtime.premium = false;
+    for (const listener of scenario.runtime.authListeners) listener();
+    resolveBrief(true);
+
+    assert.deepEqual(await pendingOpen, {
+      ok: true,
+      status: 'opened',
+      type: 'country',
+    });
+    assert.deepEqual(scenario.runtime.detailedCountryAnalytics, []);
+  });
+
+  it('resolves a desktop-issued key after the ranked window recaps', async () => {
+    const matches = Array.from({ length: 8 }, (_, index) => resultMatch(
+      'country',
+      `C${index}`,
+      `Country ${index}`,
+      { code: `C${index}`, name: `Country ${index}` },
+    ));
+    const scenario = makeScenario(matches);
+    const response = await scenario.manager.searchDashboard('needle', 'all', 10);
+    const issued = response.results[response.results.length - 1];
+    assert.ok(issued);
+    scenario.modal.search = () => ({
+      orderedMatches: matches.slice(0, 5),
+      flightCallsign: null,
+    });
+
+    assert.deepEqual(await scenario.manager.openSearchResult(issued.key), {
+      ok: true,
+      status: 'opened',
+      type: 'country',
+    });
+    assert.deepEqual(scenario.calls.countryBriefs, [[
+      'C7',
+      'Country 7',
+      { trackDetailedAnalytics: false },
+    ]]);
   });
 
   it('keeps the current flight index when optional live enrichment fails', async () => {
