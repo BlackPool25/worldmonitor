@@ -38,6 +38,7 @@
       "scripts/shared/country-name-to-iso2.cjs",
       "scripts/shared/country-names.json",
       "scripts/shared/iso2-to-region.json",
+      "scripts/shared/iso3-to-iso2.json",
       "scripts/shared/crypto-sectors.json",
       "scripts/shared/crypto.json",
       "scripts/shared/defi-tokens.json",

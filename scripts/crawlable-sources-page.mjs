@@ -200,6 +200,7 @@ const SOURCE_NAME_OVERRIDES = new Map([
   ['api.usaspending.gov', 'USAspending.gov'],
   ['api.weather.gc.ca', 'Environment and Climate Change Canada (ECCC)'],
   ['api.weather.gov', 'U.S. National Weather Service'],
+  ['severeweather.wmo.int', 'WMO Severe Weather Information Centre'],
   ['api.worldbank.org', 'World Bank'],
   ['api.wto.org', 'World Trade Organization (WTO)'],
   ['arxiv.org', 'arXiv'],
