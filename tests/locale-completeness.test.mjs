@@ -8,6 +8,35 @@ import { flattenKeys } from '../scripts/_locale-keys.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LOCALES_DIR = join(__dirname, '..', 'src', 'locales');
+const STALE_WEATHER_SCOPE_BY_LOCALE = Object.freeze({
+  'ar.json': /الولايات المتحدة وكندا/,
+  'bg.json': /САЩ и Канада/,
+  'cs.json': /USA a Kanad/,
+  'de.json': /(?:US- und Kanada|USA und Kanada)/,
+  'el.json': /ΗΠΑ και (?:τον )?Καναδά/,
+  'es.json': /EE\. UU\. y Canadá/,
+  'fa.json': /ایالات متحده و کانادا/,
+  'fr.json': /États-Unis et au Canada/,
+  'hi.json': /अमेरिका और कनाडा/,
+  'hr.json': /SAD(?:-u)? i Kanad/,
+  'hu.json': /(?:Egyesült államokbeli és kanadai|Egyesült Államokban és Kanadában)/i,
+  'it.json': /Stati Uniti e(?: in)? Canada/,
+  'ja.json': /米国とカナダ/,
+  'ko.json': /미국(?:·|과 )캐나다/,
+  'nl.json': /VS en Canada/,
+  'pl.json': /USA i Kanad/,
+  'pt.json': /EUA e no Canadá/,
+  'ro.json': /SUA și Canada/,
+  'ru.json': /США и Канад/,
+  'sv.json': /USA och Kanada/,
+  'sw.json': /Marekani na Kanada/,
+  'th.json': /สหรัฐฯ และแคนาดา/,
+  'tr.json': /ABD ve Kanada/,
+  'uk.json': /США та Канад/,
+  'vi.json': /Hoa Kỳ và Canada/,
+  'zh-TW.json': /美國與加拿大/,
+  'zh.json': /美国与加拿大/,
+});
 
 // Weather alerts merge NWS, ECCC, and WMO SWIC into one official-warning
 // pipeline. Copy must name all three agencies so a label cannot quietly shrink
@@ -48,6 +77,7 @@ describe('locale completeness', () => {
   for (const file of ['en.json', ...localeFiles]) {
     it(`${file} discloses NWS, ECCC, and WMO SWIC coverage for every weather layer label`, () => {
       const locale = JSON.parse(readFileSync(join(LOCALES_DIR, file), 'utf8'));
+      const staleScope = STALE_WEATHER_SCOPE_BY_LOCALE[file];
       const values = [
         locale.components.deckgl.layers.weatherAlerts,
         locale.components.deckgl.layerHelp.descriptions.weatherAlerts,
@@ -59,6 +89,13 @@ describe('locale completeness', () => {
         assert.match(value, /NWS/i, `${file} weather coverage copy must identify NWS`);
         assert.match(value, /ECCC/i, `${file} weather coverage copy must identify ECCC`);
         assert.match(value, /WMO|SWIC/i, `${file} weather coverage copy must identify WMO SWIC`);
+        if (staleScope) {
+          assert.doesNotMatch(
+            value,
+            staleScope,
+            `${file} weather coverage copy must not retain the former US/Canada-only scope`,
+          );
+        }
       }
     });
   }

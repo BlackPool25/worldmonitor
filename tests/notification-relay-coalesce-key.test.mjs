@@ -430,6 +430,29 @@ describe('ais-relay deriveWeatherCoalesceKey — VTEC parser', () => {
 });
 
 describe('ais-relay weather publisher — coalesceKey threading', () => {
+  it('carries last-good weather alerts by exact source during partial outages', () => {
+    assert.match(
+      aisRelaySrc,
+      /carriedNws\s*=\s*prevAlerts\.filter\(\(a\)\s*=>\s*a\?\.source\s*===\s*'nws'\)/,
+      'an NWS outage must not carry ECCC or SWIC alerts into the NWS slice',
+    );
+    assert.match(
+      aisRelaySrc,
+      /carriedEccc\s*=\s*prevAlerts\.filter\(\(a\)\s*=>\s*a\?\.source\s*===\s*'eccc'\)/,
+      'an ECCC outage must carry only ECCC alerts',
+    );
+    assert.match(
+      aisRelaySrc,
+      /carriedSwic\s*=\s*prevAlerts\.filter\(\(a\)\s*=>\s*a\?\.source\s*===\s*'swic'\)/,
+      'a SWIC outage must carry only SWIC alerts',
+    );
+    assert.doesNotMatch(
+      aisRelaySrc,
+      /carriedNws\s*=\s*prevAlerts\.filter\(\(a\)\s*=>\s*a\?\.source\s*!==\s*'eccc'\)/,
+      'the old broad NWS filter mixes third-party sources into the NWS slice',
+    );
+  });
+
   it('captures VTEC from properties.parameters.VTEC[0] in the alert mapping', () => {
     assert.match(
       weatherSelectSrc,

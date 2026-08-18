@@ -22,6 +22,7 @@ import assert from 'node:assert/strict';
 import {
   EXTRACTORS,
   SOURCE_KEYS,
+  detectCompositeEscalation,
   extractCommodityShock,
   extractCyberEscalation,
   extractDisplacementSurge,
@@ -713,24 +714,63 @@ describe('newly readable sources preserve semantics and time', () => {
     }), []);
   });
 
-  it('buckets extreme weather:alerts:v1 by ISO2 without opening a second weather key', () => {
+  it('maps weather countries to canonical theaters and keeps the strongest two', () => {
     const signals = extractWeatherExtreme({
       'weather:alerts:v1': {
         alerts: [
           { id: 'nws-1', severity: 'Extreme', countryCode: 'US' },
-          { id: 'eccc-1', severity: 'Extreme', countryCode: 'CA' },
-          { id: 'swic-in', severity: 'Extreme', countryCode: 'IN', source: 'swic' },
           { id: 'swic-jp', severity: 'Extreme', countryCode: 'JP', source: 'swic' },
-          { id: 'legacy-nws', severity: 'Extreme' },
+          ...Array.from({ length: 3 }, (_, index) => ({
+            id: `swic-in-${index}`,
+            severity: 'Extreme',
+            countryCode: 'IN',
+            source: 'swic',
+          })),
+          ...Array.from({ length: 5 }, (_, index) => ({
+            id: `swic-kz-${index}`,
+            severity: 'Extreme',
+            countryCode: 'KZ',
+            source: 'swic',
+          })),
         ],
       },
     });
-    const theaters = signals.map((s) => s.theater).sort();
-    // Cap is two theaters: North America (US+CA+legacy) plus one SWIC ISO2.
-    assert.equal(signals.length, 2);
-    assert.ok(theaters.includes('North America'));
+
+    assert.deepEqual(
+      signals.map((signal) => signal.theater),
+      ['Western Europe', 'South Asia'],
+      'the cap must use canonical theaters and retain the highest alert counts',
+    );
+    assert.ok(signals[0].severityScore > signals[1].severityScore);
     assert.equal(signals.every((s) => s.type === 'CROSS_SOURCE_SIGNAL_TYPE_WEATHER_EXTREME'), true);
     assert.equal(signals.every((s) => s.id.startsWith('weather:')), true);
+  });
+
+  it('lets SWIC weather join other signal categories in the same canonical theater', () => {
+    const [weather] = extractWeatherExtreme({
+      'weather:alerts:v1': {
+        alerts: [{ id: 'swic-in', severity: 'Extreme', countryCode: 'IN', source: 'swic' }],
+      },
+    });
+    const composites = detectCompositeEscalation([
+      weather,
+      {
+        id: 'forecast-south-asia',
+        type: 'CROSS_SOURCE_SIGNAL_TYPE_FORECAST_DETERIORATION',
+        theater: 'South Asia',
+        severityScore: 2,
+      },
+      {
+        id: 'unrest-south-asia',
+        type: 'CROSS_SOURCE_SIGNAL_TYPE_UNREST_SURGE',
+        theater: 'South Asia',
+        severityScore: 2,
+      },
+    ]);
+
+    assert.equal(weather.theater, 'South Asia');
+    assert.equal(composites.length, 1);
+    assert.equal(composites[0].theater, 'South Asia');
   });
 });
 

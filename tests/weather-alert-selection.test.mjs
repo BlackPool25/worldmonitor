@@ -511,6 +511,21 @@ describe('WMO SWIC adapter on weather:alerts:v1', () => {
     assert.equal(WEATHER_ALERTS_SOURCE_VERSION, 'nws+eccc+swic-v1');
     assert.match(SEEDER_SOURCE, /CANONICAL_KEY = 'weather:alerts:v1'/);
     assert.match(SEEDER_SOURCE, /fetchSwicAlertCatalog/);
+    assert.match(
+      SEEDER_SOURCE,
+      /readCanonicalValue\(CANONICAL_KEY\)/,
+      'the standalone writer must read the current envelope before a degraded overwrite',
+    );
+    assert.match(
+      SEEDER_SOURCE,
+      /carryFailedWeatherAlertSources/,
+      'the standalone writer must carry only the failed source slices',
+    );
+    assert.match(
+      SEEDER_SOURCE,
+      /afterPublish:\s*weatherAlertsAfterPublish/,
+      'degraded source state must reach seed-meta through freshnessMetaPatch',
+    );
     assert.doesNotMatch(SEEDER_SOURCE, /weather:alerts:canada/);
     assert.doesNotMatch(AIS_RELAY_SOURCE, /canada_weather_alert/);
     assert.match(AIS_RELAY_SOURCE, /eventType:\s*'weather_alert'/);
@@ -545,6 +560,21 @@ describe('WMO SWIC adapter on weather:alerts:v1', () => {
     assert.equal(location.lat, 20.5);
     assert.equal(location.lon, 78.9);
     assert.equal(location.geometry, undefined);
+  });
+
+  it('normalizes offset-free SWIC timestamps to explicit UTC instants', () => {
+    const originalTimezone = process.env.TZ;
+    process.env.TZ = 'America/New_York';
+    try {
+      const members = indexSwicMembers([{ ra: 2, members: [swicMember()] }]);
+      const [alert] = selectSwicAlerts([swicItem()], members);
+      assert.equal(alert.onset, '2026-08-18T12:00:00.000Z');
+      assert.equal(alert.expires, '2026-08-18T15:00:00.000Z');
+      assert.equal(new Date(alert.expires).toISOString(), '2026-08-18T15:00:00.000Z');
+    } finally {
+      if (originalTimezone === undefined) delete process.env.TZ;
+      else process.env.TZ = originalTimezone;
+    }
   });
 
   it('uses item geometry as the polygon tier when SWIC publishes a ring', () => {
