@@ -2145,7 +2145,17 @@
       "infoTooltip": "<strong>Toplinska karta sektora</strong> Izvedba S&P 500 sektora na prvi pogled. Intenzitet boje odražava veličinu dnevne promjene. Zelena = dobit, Crvena = gubitak."
     },
     "commodities": {
-      "infoTooltip": "<strong>Robe</strong> Trgovinska robu fokusirana na metale i materijale, bez energenata. Cijene energije nalaze se u Energy Complex; makroekonomski indikatori stresa nalaze se u Macro Stress."
+      "infoTooltip": "<strong>Robe</strong> Trgovinska robu fokusirana na metale i materijale, bez energenata. Cijene energije nalaze se u Energy Complex; makroekonomski indikatori stresa nalaze se u Macro Stress.",
+      "commodities": "Commodities",
+      "physicalPremiums": "Physical premium",
+      "physical": "Physical",
+      "paper": "Paper",
+      "premium": "Premium",
+      "asOf": "As of {{date}}",
+      "metals": {
+        "gold": "Gold",
+        "silver": "Silver"
+      }
     },
     "crypto": {
       "infoTooltip": "<strong>Kriptovalute</strong> Životijedne cijene, 24h promjene i volumen za glavne kriptovalute. Podaci su preuzeti s CoinGecka."

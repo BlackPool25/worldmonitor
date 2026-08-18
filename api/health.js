@@ -202,6 +202,7 @@ const BOOTSTRAP_KEYS = {
   wildfiresBootstrap: 'wildfire:fires-bootstrap:v1',
   marketQuotes:      'market:stocks-bootstrap:v1',
   commodityQuotes:   'market:commodities-bootstrap:v1',
+  physicalPremiums:  'market:physical-premium:v1',
   cyberThreats:      'cyber:threats-bootstrap:v2',
   techReadiness:     'economic:worldbank-techreadiness:v1',
   progressData:      'economic:worldbank-progress:v1',
@@ -616,6 +617,18 @@ const SEED_META = {
   // measured floor without alarming on the known-dead eight.
   countryStockIndexes: { key: 'seed-meta:market:country-indexes', maxStaleMin: 30, minRecordCount: 30 },
   commodityQuotes:  { key: 'seed-meta:market:commodities',    maxStaleMin: 30 },
+  physicalPremiums: {
+    key: 'seed-meta:market:physical-premium',
+    maxStaleMin: 4320,
+    minRecordCount: 2,
+    activationKey: 'seed-activated:market:physical-premium',
+    cutover: {
+      mode: 'activation-marker',
+      fromKey: null,
+      issue: 6436,
+      activationKey: 'seed-activated:market:physical-premium',
+    },
+  },
   goldExtended:     { key: 'seed-meta:market:gold-extended',  maxStaleMin: 30 },
   goldEtfFlows:     { key: 'seed-meta:market:gold-etf-flows', maxStaleMin: 2880 }, // SPDR publishes daily; 2× = 48h tolerance
   goldCbReserves:   { key: 'seed-meta:market:gold-cb-reserves', maxStaleMin: 44640 }, // IMF IFS is monthly w/ ~2-3mo lag; 31d tolerance
@@ -1228,6 +1241,10 @@ const ON_DEMAND_KEYS = new Set([
   // Softening lifts once the durable activation marker exists.
   'bocValet',
   'statcanWds',
+  // License-gated scheduled producer. The marker is written only after a
+  // licensed run publishes the canonical snapshot. Before that first publish,
+  // absence is pending activation; after it, missing or stale data is strict.
+  'physicalPremiums',
   'riskScoresLive',
   'usniFleetStale', 'positiveEventsLive',
   'bisPolicy', 'bisExchange', 'bisCredit',
@@ -1297,6 +1314,7 @@ const ACTIVATION_MARKERS = {
   cbrRates: 'seed-activated:economic:cbr-rates',
   bocValet: 'seed-activated:economic:boc-valet',
   statcanWds: 'seed-activated:economic:statcan-wds',
+  physicalPremiums: SEED_META.physicalPremiums.activationKey,
   newsFeedHealth: 'seed-activated:news:feed-health',
   newsRecallBenchmark: 'seed-activated:news:recall-benchmark',
   // Written by scripts/_seed-history.mjs on every ingest-health report,

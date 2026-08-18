@@ -1,0 +1,44 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { describe, it } from 'node:test';
+
+const root = resolve(import.meta.dirname, '..');
+const read = (path) => readFileSync(resolve(root, path), 'utf8');
+
+describe('physical premium production registration', () => {
+  it('runs in the daily macro bundle and declares its license activation flag', () => {
+    const bundle = read('scripts/seed-bundle-macro.mjs');
+    assert.match(
+      bundle,
+      /label: 'Physical-Premiums'.*script: 'seed-physical-premiums\.mjs'.*intervalMs: DAY/s,
+    );
+
+    const registry = JSON.parse(read('scripts/railway-services.json'));
+    const macro = registry.find((entry) => entry.entry === 'scripts/seed-bundle-macro.mjs');
+    assert.ok(macro);
+    assert.ok(macro.requiredEnv.includes('SGE_MARKET_DATA_LICENSED'));
+    assert.ok(macro.watchPatterns.includes('scripts/seed-physical-premiums.mjs'));
+    assert.ok(macro.watchPatterns.includes('scripts/lib/main-module.mjs'));
+  });
+
+  it('registers canonical-key, freshness, and two-record health checks', () => {
+    const health = read('api/health.js');
+    assert.match(health, /physicalPremiums:\s+'market:physical-premium:v1'/);
+    assert.match(health, /physicalPremiums:\s+\{[\s\S]*?key: 'seed-meta:market:physical-premium'/);
+    assert.match(health, /physicalPremiums:\s+\{[\s\S]*?maxStaleMin: 4320,[\s\S]*?minRecordCount: 2/);
+    assert.match(health, /physicalPremiums:\s+\{[\s\S]*?mode: 'activation-marker',[\s\S]*?issue: 6436/);
+    assert.match(health, /physicalPremiums: SEED_META\.physicalPremiums\.activationKey/);
+    assert.match(health, /'physicalPremiums',/);
+
+    const seedHealth = read('api/seed-health.js');
+    assert.match(
+      seedHealth,
+      /'market:physical-premium':\s+\{[\s\S]*?key: 'seed-meta:market:physical-premium',[\s\S]*?intervalMin: 2160,[\s\S]*?minRecordCount: 2,[\s\S]*?activationKey: 'seed-activated:market:physical-premium'/,
+    );
+
+    const seeder = read('scripts/seed-physical-premiums.mjs');
+    assert.match(seeder, /PHYSICAL_PREMIUM_ACTIVATION_KEY = 'seed-activated:market:physical-premium'/);
+    assert.match(seeder, /afterPublish: markPhysicalPremiumActivated/);
+  });
+});

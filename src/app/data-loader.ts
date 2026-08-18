@@ -2161,7 +2161,7 @@ export class DataLoaderManager implements AppModule {
       return;
     }
     const {
-      fetchMultipleStocks, fetchCommodityQuotes, fetchSectors, warmCommodityCache, warmSectorCache,
+      fetchMultipleStocks, fetchCommodityQuotes, fetchPhysicalPremiums, fetchSectors, warmCommodityCache, warmSectorCache,
       fetchCrypto, fetchCryptoSectors, fetchDefiTokens, fetchAiTokens, fetchOtherTokens,
     } = marketMod;
     try {
@@ -2365,6 +2365,16 @@ export class DataLoaderManager implements AppModule {
         }
         if (!metalsLoaded) commoditiesPanel?.renderCommodities([]);
         if (!energyLoaded) energyPanel?.updateTape([]);
+      }
+
+      if (commoditiesPanel) {
+        try {
+          const physicalPremiums = await fetchPhysicalPremiums();
+          if (isCurrent()) commoditiesPanel.updatePhysicalPremiums(physicalPremiums);
+        } catch {
+          // The physical comparison is an optional tab; a failure must not
+          // downgrade the existing commodity tape or its provider status.
+        }
       }
 
       // Load ECB FX rates for CommoditiesPanel FX tab

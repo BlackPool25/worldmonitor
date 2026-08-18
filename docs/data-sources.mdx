@@ -430,6 +430,7 @@ Physical-economy fundamentals for the Energy and Commodity variants: storage, in
 - US crude oil inventories, fuel prices, and energy statistics (EIA)
 - IEA oil stock coverage and OECD inventory context
 - Gold — central-bank reserves (IMF), ETF flows (SPDR), and spot trend
+- SGE SHAU/SHAG physical benchmarks compared with seeded COMEX futures
 - CFTC Commitments of Traders positioning (reviewed US government data)
 - Global fuel-price tracking with national statistical sources (for example Malaysia's data.gov.my and Mexico's datos.gob.mx)
 - Commodity news network: precious metals, base metals, critical minerals, mining companies, and supply-chain feeds — see the [feed inventory](#server-side-feed-aggregation)
@@ -444,8 +445,22 @@ Physical-economy fundamentals for the Energy and Commodity variants: storage, in
 | U.S. EIA | Crude oil inventories, fuel prices, energy data | [eia.gov/opendata](https://www.eia.gov/opendata) |
 | USGS Mineral Commodity Summaries | Annual mine and refinery production by country (public domain) | [sciencebase.gov MCS 2026](https://doi.org/10.5066/P1WKQ63T) |
 | BGS World Mineral Production | Cross-check / fill where USGS lacks a world table (attribution required) | [bgs.ac.uk world mineral statistics](https://www.bgs.ac.uk/mineralsuk/statistics/world-mineral-statistics/) |
+| Shanghai Gold Exchange | SHAU gold and SHAG silver daily AM/PM benchmarks | [official benchmark data](https://en.sge.com.cn/data_BenchmarkPrice) |
 
 Licensing: USGS MCS data is U.S. public domain. BGS World Mineral Production requires attribution to the British Geological Survey; IEA critical-minerals datasets are not ingested because redistribution terms are stricter than USGS/BGS, so USGS-unpublished REE refining shares are omitted.
+
+The physical precious-metals comparison uses the latest valid SGE PM print and
+retains its own trade date through weekends and exchange holidays. SHAU is CNY
+per gram. SHAG is CNY per kilogram. The daily seed reads the existing COMEX
+`GC=F`/`SI=F` and `shared:fx-rates:v1` snapshots; it does not make a second
+COMEX or FX request. The conversion is `CNY per gram × CNY/USD × 31.1034768`.
+The stored payload includes both raw legs, their observation times, the FX
+input, and the derived USD-per-troy-ounce and percentage premiums.
+
+SGE ingestion is fail-closed behind `SGE_MARKET_DATA_LICENSED=true`. Operators
+must set the flag only after redistribution, display, and attribution rights
+are documented for the deployment. See the SGE
+[market-data license page](https://en.sge.com.cn/data_Licensed).
 
 Deep dives: [Energy crisis panel](/panels/energy-crisis) · [Chokepoints methodology](/methodology/chokepoints) · [Pipelines methodology](/methodology/pipelines) · [Storage methodology](/methodology/storage)
 

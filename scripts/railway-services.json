@@ -607,6 +607,9 @@
     "entry": "scripts/seed-bundle-macro.mjs",
     "deployMode": "nixpacks-root-scripts",
     "service": "seed-bundle-macro",
+    "requiredEnv": [
+      "SGE_MARKET_DATA_LICENSED"
+    ],
     "watchPatterns": [
       "scripts/_bundle-runner.mjs",
       "scripts/_china-macro-contract.mjs",
@@ -629,6 +632,7 @@
       "scripts/china-policy/normalize.mjs",
       "scripts/lib/boc-valet.mjs",
       "scripts/lib/llm-telemetry.cjs",
+      "scripts/lib/main-module.mjs",
       "scripts/lib/statcan-wds.mjs",
       "scripts/nixpacks.toml",
       "scripts/package-lock.json",
@@ -652,6 +656,7 @@
       "scripts/seed-fatf-listing.mjs",
       "scripts/seed-imf-macro.mjs",
       "scripts/seed-national-debt.mjs",
+      "scripts/seed-physical-premiums.mjs",
       "scripts/seed-statcan-wds.mjs",
       "scripts/seed-wb-external-debt.mjs",
       "scripts/shared/country-names.json",

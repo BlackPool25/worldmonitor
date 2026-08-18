@@ -1914,7 +1914,17 @@
       "topTargets": "Paesi principali bersagliati"
     },
     "commodities": {
-      "infoTooltip": "<strong>Materie Prime</strong> Listino materie prime non energetiche negoziabili, focalizzato su metalli e materiali. I prezzi dell'energia si trovano in Complesso Energetico; gli indicatori di stress macro si trovano in Stress Macro."
+      "infoTooltip": "<strong>Materie Prime</strong> Listino materie prime non energetiche negoziabili, focalizzato su metalli e materiali. I prezzi dell'energia si trovano in Complesso Energetico; gli indicatori di stress macro si trovano in Stress Macro.",
+      "commodities": "Commodities",
+      "physicalPremiums": "Physical premium",
+      "physical": "Physical",
+      "paper": "Paper",
+      "premium": "Premium",
+      "asOf": "As of {{date}}",
+      "metals": {
+        "gold": "Gold",
+        "silver": "Silver"
+      }
     },
     "crypto": {
       "infoTooltip": "<strong>Cripto</strong> Prezzi in tempo reale, variazioni 24h e volume delle principali criptovalute. Dati forniti da CoinGecko."

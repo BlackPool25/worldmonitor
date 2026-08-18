@@ -1988,7 +1988,17 @@
       "infoTooltip": "<strong>Szektoros Hőtérkép</strong> Az S&P 500 szektor teljesítménye egy pillantásra. A szín intenzitása a napi változás mértékét tükrözi. Zöld = nyereség, Piros = veszteség."
     },
     "commodities": {
-      "infoTooltip": "<strong>Árucikkek</strong> Kereskedhető, nem energetikai árucikkek szalagja, amely fémekre és anyagokra összpontosít. Az energiaárak az Energy Complex-ben vannak; a makroökonómiai stresszindikátorok a Macro Stress-ben."
+      "infoTooltip": "<strong>Árucikkek</strong> Kereskedhető, nem energetikai árucikkek szalagja, amely fémekre és anyagokra összpontosít. Az energiaárak az Energy Complex-ben vannak; a makroökonómiai stresszindikátorok a Macro Stress-ben.",
+      "commodities": "Commodities",
+      "physicalPremiums": "Physical premium",
+      "physical": "Physical",
+      "paper": "Paper",
+      "premium": "Premium",
+      "asOf": "As of {{date}}",
+      "metals": {
+        "gold": "Gold",
+        "silver": "Silver"
+      }
     },
     "crypto": {
       "infoTooltip": "<strong>Kriptó</strong> Valós idejű árak, 24 órás változások és volumen a fő kriptovalutákra. Az adatokat a CoinGecko biztosítja."

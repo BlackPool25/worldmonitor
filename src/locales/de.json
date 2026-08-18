@@ -1911,7 +1911,17 @@
       "topTargets": "Top-Zielländer"
     },
     "commodities": {
-      "infoTooltip": "<strong>Rohstoffe</strong> Handelbare Nicht-Energie-Rohstoffe mit Schwerpunkt auf Metallen und Materialien. Energiepreise finden Sie im Energiekomplex, Makro-Stressindikatoren unter Makro-Stress."
+      "infoTooltip": "<strong>Rohstoffe</strong> Handelbare Nicht-Energie-Rohstoffe mit Schwerpunkt auf Metallen und Materialien. Energiepreise finden Sie im Energiekomplex, Makro-Stressindikatoren unter Makro-Stress.",
+      "commodities": "Commodities",
+      "physicalPremiums": "Physical premium",
+      "physical": "Physical",
+      "paper": "Paper",
+      "premium": "Premium",
+      "asOf": "As of {{date}}",
+      "metals": {
+        "gold": "Gold",
+        "silver": "Silver"
+      }
     },
     "crypto": {
       "infoTooltip": "<strong>Krypto</strong> Live-Kurse, 24h-Veränderungen und Volumen der wichtigsten Kryptowährungen. Daten von CoinGecko."

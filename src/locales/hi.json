@@ -1988,7 +1988,17 @@
       "infoTooltip": "<strong>सेक्टर हीटमैप</strong> S&P 500 सेक्टर प्रदर्शन एक नजर में। रंग तीव्रता दैनिक परिवर्तन का परिमाण दिखाती है। हरा = लाभ, लाल = हानि।"
     },
     "commodities": {
-      "infoTooltip": "<strong>कमोडिटी</strong> व्यापार योग्य गैर-ऊर्जा कमोडिटी टेप जो धातु और सामग्री पर केंद्रित है। ऊर्जा कीमतें ऊर्जा कॉम्प्लेक्स में लाइव; मैक्रो तनाव संकेत मैक्रो तनाव में।"
+      "infoTooltip": "<strong>कमोडिटी</strong> व्यापार योग्य गैर-ऊर्जा कमोडिटी टेप जो धातु और सामग्री पर केंद्रित है। ऊर्जा कीमतें ऊर्जा कॉम्प्लेक्स में लाइव; मैक्रो तनाव संकेत मैक्रो तनाव में।",
+      "commodities": "Commodities",
+      "physicalPremiums": "Physical premium",
+      "physical": "Physical",
+      "paper": "Paper",
+      "premium": "Premium",
+      "asOf": "As of {{date}}",
+      "metals": {
+        "gold": "Gold",
+        "silver": "Silver"
+      }
     },
     "crypto": {
       "infoTooltip": "<strong>क्रिप्टो</strong> प्रमुख क्रिप्टोकरेंसी की लाइव कीमतें, 24 घंटे बदलाव, और वॉल्यूम। डेटा स्रोत: CoinGecko।"
