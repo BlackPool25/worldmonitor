@@ -135,8 +135,8 @@ test('is registered as an active service now that it is provisioned', () => {
   assert.ok(Array.isArray(entry.watchPatterns) && entry.watchPatterns.length > 0);
   assert.deepEqual(
     entry.requiredEnv,
-    ['UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN'],
-    'members publish through runSeed, which needs the Upstash REST pair',
+    ['UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN', 'MANITOBA_511_KEY'],
+    'members publish through runSeed (Upstash REST pair); Manitoba 511 needs its Railway key',
   );
 });
 
