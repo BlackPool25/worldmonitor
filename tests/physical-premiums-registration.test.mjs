@@ -11,7 +11,7 @@ const PHYSICAL_PREMIUM_KEY = 'market:physical-premium:v1';
 const PHYSICAL_PREMIUM_META_KEY = 'seed-meta:market:physical-premium';
 
 describe('physical premium production registration', () => {
-  it('runs in the daily macro bundle and declares its license activation flag', () => {
+  it('runs in the daily macro bundle without a license env gate', () => {
     const bundle = read('scripts/seed-bundle-macro.mjs');
     assert.match(
       bundle,
@@ -21,7 +21,7 @@ describe('physical premium production registration', () => {
     const registry = JSON.parse(read('scripts/railway-services.json'));
     const macro = registry.find((entry) => entry.entry === 'scripts/seed-bundle-macro.mjs');
     assert.ok(macro);
-    assert.ok(macro.requiredEnv.includes('SGE_MARKET_DATA_LICENSED'));
+    assert.equal(macro.requiredEnv, undefined);
     assert.ok(macro.watchPatterns.includes('scripts/seed-physical-premiums.mjs'));
     assert.ok(macro.watchPatterns.includes('scripts/lib/main-module.mjs'));
   });
@@ -54,7 +54,7 @@ describe('physical premium production registration', () => {
     );
   });
 
-  it('softens absence only before the first licensed publish, then is strict', () => {
+  it('softens absence only before the first successful publish, then is strict', () => {
     const base = {
       keyStrens: new Map([[PHYSICAL_PREMIUM_KEY, 0]]),
       keyErrors: new Map(),

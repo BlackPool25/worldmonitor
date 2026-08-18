@@ -341,12 +341,12 @@ const STANDALONE_KEYS = {
   cbrRates:              'economic:cbr-rates:v1',
   bocValet:              'economic:boc-valet:v1',
   statcanWds:            'economic:statcan-wds:v1',
-  // License-gated SGE physical premiums. The dashboard fetches them on demand
-  // via GET /api/market/v1/get-physical-premiums, not bootstrap hydration.
+  // SGE physical premiums. The dashboard fetches them on demand via
+  // GET /api/market/v1/get-physical-premiums, not bootstrap hydration.
   // classifyKey only treats ON_DEMAND_KEYS as pending when allowOnDemand is
   // true, and that flag is set only on the STANDALONE_KEYS walk. Keeping this
   // here (not in BOOTSTRAP_KEYS) is what makes the activation-marker cutover
-  // pending before the first licensed publish and strict after it.
+  // pending before the first successful publish and strict after it.
   physicalPremiums:      'market:physical-premium:v1',
   bisPropertyResidential: 'economic:bis:property-residential:v1',
   bisPropertyCommercial:  'economic:bis:property-commercial:v1',
@@ -1247,9 +1247,9 @@ const ON_DEMAND_KEYS = new Set([
   // Softening lifts once the durable activation marker exists.
   'bocValet',
   'statcanWds',
-  // License-gated scheduled producer. The marker is written only after a
-  // licensed run publishes the canonical snapshot. Before that first publish,
-  // absence is pending activation; after it, missing or stale data is strict.
+  // Scheduled producer. The marker is written only after a successful
+  // publish of the canonical snapshot. Before that first publish, absence is
+  // pending activation; after it, missing or stale data is strict.
   'physicalPremiums',
   'riskScoresLive',
   'usniFleetStale', 'positiveEventsLive',

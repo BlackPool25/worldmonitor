@@ -608,9 +608,6 @@
     "entry": "scripts/seed-bundle-macro.mjs",
     "deployMode": "nixpacks-root-scripts",
     "service": "seed-bundle-macro",
-    "requiredEnv": [
-      "SGE_MARKET_DATA_LICENSED"
-    ],
     "watchPatterns": [
       "scripts/_bundle-runner.mjs",
       "scripts/_china-macro-contract.mjs",

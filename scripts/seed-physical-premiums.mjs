@@ -2,9 +2,7 @@
 
 /**
  * Seed Shanghai Gold Exchange physical benchmarks against existing COMEX
- * futures snapshots. The SGE license is an explicit runtime gate: operators
- * must not activate the source until redistribution and display rights are
- * recorded for the deployment.
+ * futures snapshots.
  *
  * Usage:
  *   node scripts/seed-physical-premiums.mjs [--env production|preview|development] [--sha <sha>]
@@ -29,7 +27,6 @@ export const TROY_OUNCE_GRAMS = 31.1034768;
 
 const CACHE_TTL_SECONDS = 3 * 24 * 3600;
 const SGE_MAX_CONTENT_AGE_MIN = 10 * DAY_MIN;
-const SGE_LICENSE_FLAG = 'SGE_MARKET_DATA_LICENSED';
 const SGE_GOLD_URL = 'https://en.sge.com.cn/data_BenchmarkPrice_Daily';
 const SGE_SILVER_URL = 'https://en.sge.com.cn/data/data_silver_daily';
 
@@ -293,14 +290,6 @@ export function physicalPremiumContentMeta(payload, nowMs = Date.now()) {
   );
 }
 
-export function assertSgeLicenseActivated(env = process.env) {
-  if (env[SGE_LICENSE_FLAG] !== 'true') {
-    throw nonRetryableError(
-      `${SGE_LICENSE_FLAG}=true is required after SGE redistribution and display rights are documented`,
-    );
-  }
-}
-
 export function parseSeedTargetArgs(args = process.argv.slice(2)) {
   let env = 'production';
   let sha = '';
@@ -347,7 +336,6 @@ export async function fetchSgeHtml(url, contract, fetchFn = fetch) {
 }
 
 async function fetchPhysicalPremiums({ runStartedAtMs }) {
-  assertSgeLicenseActivated();
   const [goldHtml, silverHtml, commoditySnapshot, fxSnapshot] = await Promise.all([
     fetchSgeHtml(SGE_GOLD_URL, 'SHAU'),
     fetchSgeHtml(SGE_SILVER_URL, 'SHAG'),

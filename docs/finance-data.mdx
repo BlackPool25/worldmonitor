@@ -88,7 +88,7 @@ and seeder path must use a provider whose terms permit that commercial use
 | **Financial Modeling Prep (FMP)** | **Not selected.** FMP Terms of Service §2.2.1–2.2.2 prohibit commercial use and any multi-user display/redistribution without a separate Data Display and Licensing Agreement. Wiring `FMP_API_KEY` without that agreement would recreate the compliance problem #3731 describes. Revisit only after an enterprise rebroadcast agreement is in place. |
 | **Finnhub** | **Primary** for request-time equity gap fetches and watchlist symbol search (`FINNHUB_API_KEY`). Free tier is quota-limited; production should use a paid plan sized to watchlist traffic. |
 | **Alpha Vantage** | **Authorized fallback** for equity gap fetches and **primary bulk path** for the market-quotes seeder (`ALPHA_VANTAGE_API_KEY`). Also powers physical commodity and FX daily series in seeders. Free tier is tightly rate-limited; production seeders need a higher tier. |
-| **Shanghai Gold Exchange (SGE)** | **License-gated physical benchmark source.** SHAU and SHAG ingestion remains disabled unless `SGE_MARKET_DATA_LICENSED=true`. Set that flag only after the deployment's redistribution, display, and attribution rights are documented. |
+| **Shanghai Gold Exchange (SGE)** | **Physical benchmark source.** Daily SHAU gold and SHAG silver AM/PM benchmarks used to compute USD/oz premiums against existing COMEX snapshots. |
 | **CoinGecko / CoinPaprika** | Crypto quote and stablecoin surfaces (existing chain; not part of the equity adapter). |
 
 ### Supported product surfaces
@@ -98,7 +98,7 @@ and seeder path must use a provider whose terms permit that commercial use
 | Default equity / index universe | Railway seed `market:stocks-bootstrap:v1` via `scripts/seed-market-quotes.mjs` (AV → Finnhub → optional Yahoo residual for yahooOnly listings) | ~5–30 min seed cadence | Seed hit = zero upstream call on the edge |
 | Custom watchlist equities | Seed-first, then bounded Redis-cached gap via `server/.../_quote-provider.ts` (Finnhub → Alpha Vantage) | 5 min positive cache; 15 min negative for definitive not-found | Provider errors are never cached |
 | Commodity futures (configured set) | Seed `shared/commodities.json` / AV physical + residual | Seed cadence | RPC is seed-set only (#6307); no FMP |
-| Physical precious-metals premiums | Daily SGE SHAU/SHAG PM benchmark + existing COMEX and shared CNY/USD snapshots | Daily; 72h run freshness, 10d content-age ceiling | License flag is mandatory; the seeder does not refetch COMEX or FX |
+| Physical precious-metals premiums | Daily SGE SHAU/SHAG PM benchmark + existing COMEX and shared CNY/USD snapshots | Daily; 72h run freshness, 10d content-age ceiling | Enabled by default; the seeder does not refetch COMEX or FX |
 | FX (Gulf / macro) | Seeders using AV `FX_DAILY` where wired | Seed cadence | Not part of equity watchlist gap fetch |
 | Crypto | CoinGecko → CoinPaprika (+ relay) | Seed + bounded gap (#6306) | Separate from equity adapter |
 | Historical series | Seeder-side AV daily commodity / FX series; premium analysis paths | Daily | Request-time gap fetch does **not** pull history (would double the budget) |

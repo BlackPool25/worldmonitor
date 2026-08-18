@@ -632,7 +632,7 @@ export const CACHE_TOOLS: ToolDef[] = [
     // Do not add the new physical-premium seed-meta yet. evaluateFreshness ORs
     // every check into one tool-wide flag, so its deployment-order miss would
     // mark unrelated equity, crypto, FX, and commodity responses stale until
-    // the first licensed Railway publish. /api/health owns this key meanwhile.
+    // the first Railway publish. /api/health owns this key meanwhile.
     _freshnessChecks: [...MARKET_FRESHNESS_CHECKS],
     // NOTE: `GET /api/market/v1/get-gold-intelligence` is NOT covered here.
     // The audit-time cross-reference matched on the single `market:commodities-bootstrap:v1`

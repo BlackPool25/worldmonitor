@@ -4,7 +4,6 @@ import { describe, it } from 'node:test';
 import { resolve } from 'node:path';
 
 import {
-  assertSgeLicenseActivated,
   buildPhysicalPremiumPayload,
   convertSgePriceToUsdPerOz,
   fetchSgeHtml,
@@ -122,16 +121,11 @@ describe('physical premium seed', () => {
     assert.equal(validatePhysicalPremiumPayload(payload), true);
   });
 
-  it('fails closed on changed SGE markup or unlicensed activation', () => {
+  it('fails closed on changed SGE markup', () => {
     assert.throws(
       () => parseSgeBenchmarkHtml('<table><tr><td>changed format</td></tr></table>', { contract: 'SHAU', unit: 'gram' }),
       /SHAU benchmark/,
     );
-    assert.throws(
-      () => assertSgeLicenseActivated({}),
-      /SGE_MARKET_DATA_LICENSED=true/,
-    );
-    assert.doesNotThrow(() => assertSgeLicenseActivated({ SGE_MARKET_DATA_LICENSED: 'true' }));
   });
 
   it('scopes non-production keys by environment and revision', () => {
