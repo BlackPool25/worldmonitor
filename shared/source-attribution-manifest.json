@@ -9732,9 +9732,6 @@
           "path": "scripts/china-macro/calendar.mjs"
         },
         {
-          "path": "scripts/china-macro/source-runtime.mjs"
-        },
-        {
           "path": "scripts/cross-strait-activity/adapters.mjs"
         },
         {
