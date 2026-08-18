@@ -21,6 +21,7 @@ import {
 } from '../src/config/map-layer-definitions.ts';
 import { searchMatchIdentity, type SearchMatch, type SearchResult } from '../src/components/search-types.ts';
 import { OpaqueResultCache } from '../src/services/opaque-result-cache.ts';
+import { withTimeout } from '../src/utils/with-timeout.ts';
 
 type Variant = 'full' | 'tech' | 'finance' | 'happy' | 'commodity' | 'energy';
 
@@ -87,6 +88,7 @@ interface Runtime {
   widgetAccessListeners: Set<() => void>;
   liveFlightQueries: string[];
   liveFlightError: Error | null;
+  liveFlightPending: boolean;
   deferTimers: boolean;
   nextTimerId: number;
   pendingTimers: Map<number, () => void>;
@@ -180,6 +182,7 @@ function createHarness(variant: Variant, runtime: Runtime): new (ctx: any, callb
     't',
     'setTimeout',
     'clearTimeout',
+    'withTimeout',
     'fetchAircraftPositions',
   ];
   const dependencyValues = [
@@ -260,9 +263,11 @@ function createHarness(variant: Variant, runtime: Runtime): new (ctx: any, callb
       return timer;
     },
     (timer: number) => { runtime.pendingTimers.delete(timer); },
+    withTimeout,
     (request: { callsign?: string }) => {
       runtime.liveFlightQueries.push(request.callsign ?? '');
       if (runtime.liveFlightError) return Promise.reject(runtime.liveFlightError);
+      if (runtime.liveFlightPending) return new Promise<never>(() => {});
       return Promise.resolve([{
         icao24: 'abc123',
         callsign: request.callsign ?? 'AB123',
@@ -330,6 +335,7 @@ function makeScenario(
     widgetAccessListeners: new Set(),
     liveFlightQueries: [],
     liveFlightError: null,
+    liveFlightPending: false,
     deferTimers: false,
     nextTimerId: 1,
     pendingTimers: new Map(),
@@ -485,15 +491,24 @@ describe('SearchManager programmatic dashboard search (#6212)', () => {
     scenario.runtime.deferTimers = true;
     const response = await scenario.manager.searchDashboard('needle', 'all', 10);
 
-    assert.deepEqual(
-      await scenario.manager.openSearchResult(response.results[0].key),
-      { ok: true, status: 'opened', type: 'hotspot' },
-    );
+    let staleOpenSettled = false;
+    const staleOpen = scenario.manager.openSearchResult(response.results[0].key)
+      .then((result: unknown) => {
+        staleOpenSettled = true;
+        return result;
+      });
+    await Promise.resolve();
     assert.equal(scenario.runtime.pendingTimers.size, 1);
+    assert.equal(staleOpenSettled, false, 'scheduled map work must keep the opener pending');
     assert.deepEqual(
       await scenario.manager.openSearchResult(response.results[1].key),
       { ok: true, status: 'opened', type: 'country' },
     );
+    assert.deepEqual(await staleOpen, {
+      ok: false,
+      status: 'denied',
+      reason: 'result_no_longer_executable',
+    });
 
     flushTimers(scenario.runtime);
     assert.deepEqual(scenario.calls.hotspotIds, []);
@@ -511,12 +526,21 @@ describe('SearchManager programmatic dashboard search (#6212)', () => {
     scenario.runtime.deferTimers = true;
     const response = await scenario.manager.searchDashboard('needle', 'all', 10);
 
-    assert.deepEqual(
-      await scenario.manager.openSearchResult(response.results[0].key),
-      { ok: true, status: 'opened', type: 'hotspot' },
-    );
+    let openSettled = false;
+    const pendingOpen = scenario.manager.openSearchResult(response.results[0].key)
+      .then((result: unknown) => {
+        openSettled = true;
+        return result;
+      });
+    await Promise.resolve();
     assert.equal(scenario.runtime.pendingTimers.size, 1);
+    assert.equal(openSettled, false, 'scheduled map work must keep the opener pending');
     scenario.manager.destroy();
+    assert.deepEqual(await pendingOpen, {
+      ok: false,
+      status: 'denied',
+      reason: 'search_state_changed',
+    });
     flushTimers(scenario.runtime);
 
     assert.deepEqual(scenario.calls.hotspotIds, []);
@@ -594,6 +618,22 @@ describe('SearchManager programmatic dashboard search (#6212)', () => {
     assert.deepEqual(scenario.runtime.liveFlightQueries, ['AB123']);
     assert.equal(response.results[0]?.type, 'flight');
     assert.equal(response.results[0]?.title, 'AB123');
+  });
+
+  it('bounds a hung live callsign lookup before returning search results', async () => {
+    const scenario = makeScenario([]);
+    scenario.modal.flightCallsign = 'AB123';
+    scenario.runtime.liveFlightPending = true;
+    scenario.manager.constructor.SEARCH_INDEX_READY_TIMEOUT_MS = 20;
+
+    const response = await withTimeout(
+      scenario.manager.searchDashboard('flight ab123', 'signals', 10),
+      250,
+      'search-dashboard-test',
+    );
+
+    assert.deepEqual(scenario.runtime.liveFlightQueries, ['AB123']);
+    assert.deepEqual(response.results, []);
   });
 
   it('keeps analytics origin local while an agent country selection is awaiting presentation', async () => {

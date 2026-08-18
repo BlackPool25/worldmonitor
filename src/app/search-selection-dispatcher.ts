@@ -60,13 +60,16 @@ interface SelectionOptions {
 export class SearchSelectionDispatcher {
   private highlightTimers = new WeakMap<Element, ReturnType<typeof setTimeout>>();
   private programmaticEpoch = 0;
-  private readonly programmaticTimers = new Set<ReturnType<typeof setTimeout>>();
+  private readonly programmaticTimers = new Map<ReturnType<typeof setTimeout>, () => void>();
 
   public constructor(private readonly bindings: SearchSelectionDispatcherBindings) {}
 
   public destroy(): void {
     this.programmaticEpoch += 1;
-    for (const timer of this.programmaticTimers) this.bindings.clearTimeout(timer);
+    for (const [timer, cancel] of this.programmaticTimers) {
+      this.bindings.clearTimeout(timer);
+      cancel();
+    }
     this.programmaticTimers.clear();
   }
 
@@ -106,20 +109,17 @@ export class SearchSelectionDispatcher {
         if (!target) return false;
         const [targetPanelId, targetPanel] = target;
         this.scrollToPanel(targetPanelId, trackDetailedAnalytics);
-        this.schedule(() => targetPanel.scrollToNewsItem(item.link), 300, epoch);
-        break;
+        return this.schedule(() => targetPanel.scrollToNewsItem(item.link), 300, epoch);
       }
       case 'hotspot': {
         const hotspot = result.data as typeof INTEL_HOTSPOTS[0];
         ctx.map?.setView('global');
-        this.schedule(() => ctx.map?.triggerHotspotClick(hotspot.id), 300, epoch);
-        break;
+        return this.schedule(() => ctx.map?.triggerHotspotClick(hotspot.id), 300, epoch);
       }
       case 'conflict': {
         const conflict = result.data as typeof CONFLICT_ZONES[0];
         ctx.map?.setView('global');
-        this.schedule(() => ctx.map?.triggerConflictClick(conflict.id), 300, epoch);
-        break;
+        return this.schedule(() => ctx.map?.triggerConflictClick(conflict.id), 300, epoch);
       }
       case 'market':
         this.scrollToPanel('markets', trackDetailedAnalytics);
@@ -130,48 +130,42 @@ export class SearchSelectionDispatcher {
       case 'base': {
         const base = result.data as MilitaryBase;
         ctx.map?.setView('global');
-        this.schedule(() => ctx.map?.triggerBaseClick(base.id), 300, epoch);
-        break;
+        return this.schedule(() => ctx.map?.triggerBaseClick(base.id), 300, epoch);
       }
       case 'pipeline': {
         const pipeline = result.data as typeof PIPELINES[0];
         ctx.map?.setView('global');
         ctx.map?.enableLayer('pipelines');
         ctx.mapLayers.pipelines = true;
-        this.schedule(() => ctx.map?.triggerPipelineClick(pipeline.id), 300, epoch);
-        break;
+        return this.schedule(() => ctx.map?.triggerPipelineClick(pipeline.id), 300, epoch);
       }
       case 'cable': {
         const cable = result.data as typeof UNDERSEA_CABLES[0];
         ctx.map?.setView('global');
         ctx.map?.enableLayer('cables');
         ctx.mapLayers.cables = true;
-        this.schedule(() => ctx.map?.triggerCableClick(cable.id), 300, epoch);
-        break;
+        return this.schedule(() => ctx.map?.triggerCableClick(cable.id), 300, epoch);
       }
       case 'datacenter': {
         const dc = result.data as typeof AI_DATA_CENTERS[0];
         ctx.map?.setView('global');
         ctx.map?.enableLayer('datacenters');
         ctx.mapLayers.datacenters = true;
-        this.schedule(() => ctx.map?.triggerDatacenterClick(dc.id), 300, epoch);
-        break;
+        return this.schedule(() => ctx.map?.triggerDatacenterClick(dc.id), 300, epoch);
       }
       case 'nuclear': {
         const facility = result.data as typeof NUCLEAR_FACILITIES[0];
         ctx.map?.setView('global');
         ctx.map?.enableLayer('nuclear');
         ctx.mapLayers.nuclear = true;
-        this.schedule(() => ctx.map?.triggerNuclearClick(facility.id), 300, epoch);
-        break;
+        return this.schedule(() => ctx.map?.triggerNuclearClick(facility.id), 300, epoch);
       }
       case 'irradiator': {
         const irradiator = result.data as typeof GAMMA_IRRADIATORS[0];
         ctx.map?.setView('global');
         ctx.map?.enableLayer('irradiators');
         ctx.mapLayers.irradiators = true;
-        this.schedule(() => ctx.map?.triggerIrradiatorClick(irradiator.id), 300, epoch);
-        break;
+        return this.schedule(() => ctx.map?.triggerIrradiatorClick(irradiator.id), 300, epoch);
       }
       case 'earthquake':
       case 'outage':
@@ -182,78 +176,68 @@ export class SearchSelectionDispatcher {
         ctx.map?.setView('global');
         ctx.map?.enableLayer('techHQs');
         ctx.mapLayers.techHQs = true;
-        this.schedule(() => ctx.map?.setCenter(company.lat, company.lon, 4), 300, epoch);
-        break;
+        return this.schedule(() => ctx.map?.setCenter(company.lat, company.lon, 4), 300, epoch);
       }
       case 'ailab': {
         const lab = result.data as typeof AI_RESEARCH_LABS[0];
         ctx.map?.setView('global');
-        this.schedule(() => ctx.map?.setCenter(lab.lat, lab.lon, 4), 300, epoch);
-        break;
+        return this.schedule(() => ctx.map?.setCenter(lab.lat, lab.lon, 4), 300, epoch);
       }
       case 'startup': {
         const ecosystem = result.data as typeof STARTUP_ECOSYSTEMS[0];
         ctx.map?.setView('global');
         ctx.map?.enableLayer('startupHubs');
         ctx.mapLayers.startupHubs = true;
-        this.schedule(() => ctx.map?.setCenter(ecosystem.lat, ecosystem.lon, 4), 300, epoch);
-        break;
+        return this.schedule(() => ctx.map?.setCenter(ecosystem.lat, ecosystem.lon, 4), 300, epoch);
       }
       case 'techevent': {
         const event = result.data as { lat: number; lng: number };
         ctx.map?.setView('global');
         ctx.map?.enableLayer('techEvents');
         ctx.mapLayers.techEvents = true;
-        this.schedule(() => ctx.map?.setCenter(event.lat, event.lng, 5), 300, epoch);
-        break;
+        return this.schedule(() => ctx.map?.setCenter(event.lat, event.lng, 5), 300, epoch);
       }
       case 'techhq': {
         const hq = result.data as typeof TECH_HQS[0];
         ctx.map?.setView('global');
         ctx.map?.enableLayer('techHQs');
         ctx.mapLayers.techHQs = true;
-        this.schedule(() => ctx.map?.setCenter(hq.lat, hq.lon, 4), 300, epoch);
-        break;
+        return this.schedule(() => ctx.map?.setCenter(hq.lat, hq.lon, 4), 300, epoch);
       }
       case 'accelerator': {
         const accelerator = result.data as typeof ACCELERATORS[0];
         ctx.map?.setView('global');
         ctx.map?.enableLayer('accelerators');
         ctx.mapLayers.accelerators = true;
-        this.schedule(() => ctx.map?.setCenter(accelerator.lat, accelerator.lon, 4), 300, epoch);
-        break;
+        return this.schedule(() => ctx.map?.setCenter(accelerator.lat, accelerator.lon, 4), 300, epoch);
       }
       case 'exchange': {
         const exchange = result.data as typeof STOCK_EXCHANGES[0];
         ctx.map?.setView('global');
         ctx.map?.enableLayer('stockExchanges');
         ctx.mapLayers.stockExchanges = true;
-        this.schedule(() => ctx.map?.setCenter(exchange.lat, exchange.lon, 4), 300, epoch);
-        break;
+        return this.schedule(() => ctx.map?.setCenter(exchange.lat, exchange.lon, 4), 300, epoch);
       }
       case 'financialcenter': {
         const center = result.data as typeof FINANCIAL_CENTERS[0];
         ctx.map?.setView('global');
         ctx.map?.enableLayer('financialCenters');
         ctx.mapLayers.financialCenters = true;
-        this.schedule(() => ctx.map?.setCenter(center.lat, center.lon, 4), 300, epoch);
-        break;
+        return this.schedule(() => ctx.map?.setCenter(center.lat, center.lon, 4), 300, epoch);
       }
       case 'centralbank': {
         const bank = result.data as typeof CENTRAL_BANKS[0];
         ctx.map?.setView('global');
         ctx.map?.enableLayer('centralBanks');
         ctx.mapLayers.centralBanks = true;
-        this.schedule(() => ctx.map?.setCenter(bank.lat, bank.lon, 4), 300, epoch);
-        break;
+        return this.schedule(() => ctx.map?.setCenter(bank.lat, bank.lon, 4), 300, epoch);
       }
       case 'commodityhub': {
         const hub = result.data as typeof COMMODITY_HUBS[0];
         ctx.map?.setView('global');
         ctx.map?.enableLayer('commodityHubs');
         ctx.mapLayers.commodityHubs = true;
-        this.schedule(() => ctx.map?.setCenter(hub.lat, hub.lon, 4), 300, epoch);
-        break;
+        return this.schedule(() => ctx.map?.setCenter(hub.lat, hub.lon, 4), 300, epoch);
       }
       case 'country': {
         const { code, name } = result.data as { code: string; name: string };
@@ -269,8 +253,7 @@ export class SearchSelectionDispatcher {
         };
         ctx.map?.enableLayer(layer);
         ctx.mapLayers[layer] = true;
-        this.schedule(() => ctx.map?.setCenter(lat, lon, 9), 300, epoch);
-        break;
+        return this.schedule(() => ctx.map?.setCenter(lat, lon, 9), 300, epoch);
       }
     }
     return true;
@@ -416,7 +399,7 @@ export class SearchSelectionDispatcher {
           const span = Math.max(maxLat - minLat, maxLon - minLon);
           const zoom = span > 40 ? 3 : span > 15 ? 4 : span > 5 ? 5 : 6;
           ctx.map?.setView('global');
-          this.schedule(() => ctx.map?.setCenter(lat, lon, zoom), 300, epoch);
+          return this.schedule(() => ctx.map?.setCenter(lat, lon, zoom), 300, epoch);
         }
         break;
       }
@@ -473,16 +456,27 @@ export class SearchSelectionDispatcher {
     }, 3100));
   }
 
-  private schedule(callback: () => void, delay: number, epoch?: number): void {
+  private schedule(callback: () => void, delay: number, epoch?: number): boolean | Promise<boolean> {
     if (epoch === undefined) {
       this.bindings.setTimeout(callback, delay);
-      return;
+      return true;
     }
-    const timer = this.bindings.setTimeout(() => {
-      this.programmaticTimers.delete(timer);
-      if (epoch === this.programmaticEpoch) callback();
-    }, delay);
-    this.programmaticTimers.add(timer);
+    return new Promise<boolean>((resolve, reject) => {
+      const timer = this.bindings.setTimeout(() => {
+        this.programmaticTimers.delete(timer);
+        if (epoch !== this.programmaticEpoch) {
+          resolve(false);
+          return;
+        }
+        try {
+          callback();
+          resolve(true);
+        } catch (error) {
+          reject(error);
+        }
+      }, delay);
+      this.programmaticTimers.set(timer, () => resolve(false));
+    });
   }
 
   private variant(): MapVariant {

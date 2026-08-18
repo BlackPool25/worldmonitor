@@ -220,7 +220,11 @@ export class SearchManager implements AppModule {
       refreshIndex: () => this.updateSearchIndex({ updateVisibleMetrics: false }),
       getModal: () => this.ctx.searchModal,
       hasPremiumAccess: () => hasPremiumAccess(getAuthState()),
-      fetchLiveFlight: (callsign) => this.fetchAndPublishLiveFlight(callsign),
+      fetchLiveFlight: (callsign) => SearchManager.waitWithTimeout(
+        this.fetchAndPublishLiveFlight(callsign),
+        SearchManager.SEARCH_INDEX_READY_TIMEOUT_MS,
+        'live-flight-search',
+      ),
       getAuthContext: () => {
         const auth = getAuthState();
         return `${auth.user ? 'signed-in' : 'anonymous'}:${auth.isPending ? 'pending' : 'settled'}:${hasPremiumAccess(auth) ? 'premium' : 'free'}`;

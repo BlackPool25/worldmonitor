@@ -199,7 +199,11 @@ export class WebMcpSearchController {
     if (this.bindings.isDestroyed()) return this.denied('search_state_changed');
 
     this.bindings.getModal()?.closeForProgrammaticSelection();
-    if (!(await this.bindings.selectMatch(liveMatch))) {
+    const selected = await this.bindings.selectMatch(liveMatch);
+    if (this.bindings.isDestroyed() || !this.isIssuedContextCurrent(issued)) {
+      return this.denied('search_state_changed');
+    }
+    if (!selected) {
       return this.denied('result_no_longer_executable');
     }
     return { ok: true, status: 'opened', type: this.matchType(liveMatch) };
