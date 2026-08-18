@@ -1,6 +1,6 @@
 import '../styles/main.css';
 import { BreakingNewsBanner } from '@/components/BreakingNewsBanner';
-import { initI18n } from '@/services/i18n';
+import { I18N_RESOURCES_LOADED_EVENT, initI18n, t } from '@/services/i18n';
 import type { BreakingAlert } from '@/services/breaking-news-alerts';
 
 declare global {
@@ -44,7 +44,13 @@ const SAMPLE_ALERTS: BreakingAlert[] = [
 
 window.__breakingNewsBannerHarness = { ready: false, layout: 'overlay' };
 
+const englishResourcesReady = new Promise<void>((resolve) => {
+  window.addEventListener(I18N_RESOURCES_LOADED_EVENT, () => resolve(), { once: true });
+});
 await initI18n();
+if (t('components.intelligenceFindings.time.justNow').startsWith('components.')) {
+  await englishResourcesReady;
+}
 
 new BreakingNewsBanner();
 

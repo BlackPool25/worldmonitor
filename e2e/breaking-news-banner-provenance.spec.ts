@@ -48,6 +48,7 @@ async function assertBadgeColourSemantics(page: Page): Promise<void> {
   await expect(reuters.locator('.tier-badge.tier-1')).toHaveText('★ Wire');
   await expect(reuters.locator('.propaganda-badge')).toHaveCount(0);
   await expect(reuters.locator('.tier-badge.tier-1')).toHaveCSS('color', 'rgb(68, 255, 136)');
+  await expect(banner.locator('.breaking-alert-time').first()).toHaveText('· just now');
 
   const alJazeera = banner.locator('.breaking-alert', { hasText: 'Al Jazeera' });
   await expect(alJazeera.locator('.tier-badge.tier-2')).toBeVisible();

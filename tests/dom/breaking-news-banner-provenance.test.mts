@@ -15,9 +15,13 @@ vi.mock('@/services/i18n', () => ({
   t: (key: string) => key,
 }));
 
-vi.mock('@/utils', () => ({
-  isMobileDevice: () => isMobile(),
-}));
+vi.mock('@/utils', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/utils')>();
+  return {
+    ...actual,
+    isMobileDevice: () => isMobile(),
+  };
+});
 
 import { BreakingNewsBanner } from '@/components/BreakingNewsBanner';
 import type { BreakingAlert } from '@/services/breaking-news-alerts';
