@@ -85,6 +85,18 @@
       }
     },
     {
+      "name": "manitobaRoads",
+      "status": "EMPTY",
+      "issue": 6622,
+      "reason": "manitobaRoads now probes seed-meta:infra:manitoba-511. The key cannot exist until the first seed-bundle-canada tick materializes it, and MANITOBA_511_KEY is not yet set on Railway. EMPTY is acknowledged only through that first */5 window; it must block immediately afterward.",
+      "expiresAt": "2026-08-19T12:05:00.000Z",
+      "cutover": {
+        "probeKey": "seed-meta:infra:manitoba-511",
+        "activatedAt": "2026-08-19T12:00:00.000Z",
+        "firstScheduledRunAt": "2026-08-19T12:05:00.000Z"
+      }
+    },
+    {
       "name": "staticRefHeavyBundleTick",
       "status": "EMPTY",
       "issue": 6806,

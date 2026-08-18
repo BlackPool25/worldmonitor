@@ -760,6 +760,16 @@ test('Manitoba partial poll must not replace last-good or flip health green', as
   );
 });
 
+test('manitobaRoads EMPTY cutover is acknowledged until the first Canada bundle tick', () => {
+  const baseline = JSON.parse(readFileSync(new URL('../scripts/seed-freshness-baseline.json', import.meta.url), 'utf8'));
+  const ack = baseline.acknowledged.find((row) => row.name === 'manitobaRoads');
+  assert.ok(ack, 'new manitobaRoads probe needs an expiring acknowledgement until first Railway tick');
+  assert.equal(ack.status, 'EMPTY');
+  assert.equal(ack.issue, 6622);
+  assert.equal(ack.cutover?.probeKey, 'seed-meta:infra:manitoba-511');
+  assert.equal(ack.expiresAt, ack.cutover?.firstScheduledRunAt);
+});
+
 test('seeder fixtures and adapter never embed a Manitoba credential', () => {
   const seeder = readFileSync(new URL('../scripts/seed-provincial-511.mjs', import.meta.url), 'utf8');
   assert.match(seeder, /process\.env\.MANITOBA_511_KEY/);
