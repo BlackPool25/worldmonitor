@@ -401,11 +401,29 @@ test('the StatCan and BoC EMPTY waivers are retired with independent issue owner
   assert.match(runbook, /0 8 \* \* \*[^\n]*daily 08:00 UTC/);
 });
 
-test('STATCAN_MAX_CONTENT_AGE_MIN clears the ~79-day content-age peak and is wired into the seeder', () => {
-  // WDS refPer is the FIRST of the reference month, so a monthly series'
-  // newest observation start-dates a month before the data exists: June CPI
-  // carries refPer 2026-06-01 while July CPI releases ~2026-08-19, a ~79-day
-  // natural peak. The budget must clear that peak.
+test('STATCAN_MAX_CONTENT_AGE_MIN clears the MEASURED 83-day content-age peak and is wired into the seeder', () => {
+  // WDS refPer is the FIRST of the reference month, so a monthly series' newest
+  // observation start-dates a month before the data exists: July CPI carries
+  // refPer 2026-07-01 and released 2026-08-17. Content age therefore sawtooths,
+  // and the budget must clear the PEAK of that tooth, not its average.
+  //
+  // Measured 2026-08-18 over the 15 refPers WDS returns for the CPI vector
+  // (getDataFromVectorsAndLatestNPeriods, latestN=15), taking each peak as
+  // `next release - held refPer + 1` (the +1 because seed-bundle-macro ticks
+  // 08:00 UTC while StatCan releases 08:30 ET = 12:30 UTC, so a release is only
+  // visible to the FOLLOWING day's tick):
+  //
+  //   publication lag   min 43d   max 54d   mean 47.9d
+  //   cycle peak        min 75d   max 83d   mean 78.9d
+  //   budget  75d -> breaches 13 of 14 cycles   (the value this replaced)
+  //   budget  90d -> breaches  0 of 14 cycles   (7d clear of the worst)
+  //
+  // The floor below is the MEASURED max, not the ~79d average this test
+  // originally carried: at 79 an edit to 80d would have passed here while
+  // breaching three of those fourteen cycles. Re-measure before lowering it —
+  // an estimate that sits under the real peak makes this assertion agree with a
+  // budget that alarms every month. See docs/solutions/logic-errors/
+  // a-guard-that-hardcodes-an-external-services-latency-goes-green-when-that-latency-drifts.md
   //
   // Unlike its two siblings in #6831 — China (tests/china-macro-production-
   // registration.test.mts) and CISS (tests/ciss-stale-threshold-consistency
@@ -413,10 +431,18 @@ test('STATCAN_MAX_CONTENT_AGE_MIN clears the ~79-day content-age peak and is wir
   // wiring. The generic seeder-content-age-coverage net skips StatCan because
   // www150.statcan.gc.ca is not one of its FREEZE_PRONE_MARKER hosts, so a
   // wrong value or a dropped maxContentAgeMin wiring would ship unnoticed.
+  const MEASURED_CYCLE_PEAK_DAYS = 83;   // measured 2026-08-18, 14 cycles
   assert.equal(STATCAN_MAX_CONTENT_AGE_MIN, 90 * DAY_MIN);
   assert.ok(
-    STATCAN_MAX_CONTENT_AGE_MIN > 79 * DAY_MIN,
-    'budget must exceed the ~79-day content-age peak',
+    STATCAN_MAX_CONTENT_AGE_MIN > MEASURED_CYCLE_PEAK_DAYS * DAY_MIN,
+    `budget must exceed the measured ${MEASURED_CYCLE_PEAK_DAYS}-day cycle peak, or it alarms on a healthy series`,
+  );
+  // A monthly series that MISSES a release reaches peak + ~30d. The budget has
+  // to stay under that or a real upstream stall never surfaces — the failure
+  // this alarm exists for.
+  assert.ok(
+    STATCAN_MAX_CONTENT_AGE_MIN < (MEASURED_CYCLE_PEAK_DAYS + 30) * DAY_MIN,
+    'budget must stay under a missed-release peak, or a genuine StatCan stall goes undetected',
   );
   assert.match(
     seederSrc,
