@@ -551,7 +551,24 @@ jobs:
       - name: Repair Playwright install after OS-deps timeout
         if: steps.playwright-cache.outputs.cache-hit == 'true' && steps.playwright-install-deps.outcome == 'failure'
         timeout-minutes: 10
-        run: npx playwright install --with-deps chromium
+        run: |
+          set -euo pipefail
+          # Run 32161039934: GHA timed out install-deps after 8m, but apt-get
+          # (pid 2500) still held /var/lib/apt/lists/lock. The immediate
+          # --with-deps fallback then exited 100 on that lock.
+          sudo pkill -9 -f 'playwright install-deps' || true
+          sudo pkill -9 apt-get || true
+          for _ in $(seq 1 20); do
+            if command -v fuser >/dev/null 2>&1 \
+              && sudo fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then
+              sleep 1
+              continue
+            fi
+            sudo rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend
+            break
+          done
+          sudo dpkg --configure -a || true
+          npx playwright install --with-deps chromium
       # One invocation for all three smoke specs: each `playwright test` run
       # boots its own vite dev server (reuseExistingServer is false), so three
       # separate steps paid three boots; the specs are independent and share

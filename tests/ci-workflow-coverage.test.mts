@@ -449,7 +449,7 @@ describe('CI workflow coverage', () => {
     );
     assert.match(
       job,
-      /steps\.playwright-install-deps\.outcome == 'failure'[\s\S]*npx playwright install --with-deps chromium/,
+      /steps\.playwright-install-deps\.outcome == 'failure'[\s\S]*pkill -9 apt-get[\s\S]*npx playwright install --with-deps chromium/,
     );
   });
 
