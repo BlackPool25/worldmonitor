@@ -1,5 +1,13 @@
+import { createRequire } from 'node:module';
+
+const {
+  parseProxyConfigForAttempt,
+  proxyFetch,
+} = createRequire(import.meta.url)('../_proxy-utils.cjs');
+
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_RETRY_DELAY_MS = 1_000;
+const FETCH_TIMEOUT_MS = 12_000;
 
 function sourceContractError(message) {
   return Object.assign(new Error(`SOURCE_CONTRACT_VIOLATION:${message}`), {
@@ -26,6 +34,74 @@ function validateSourceUrl(value, policy) {
     throw sourceContractError('UNAPPROVED_URL');
   }
   return url;
+}
+
+/**
+ * Should a failed DIRECT fetch be retried through the configured proxy?
+ *
+ * Only connection-level failures qualify. The publisher answering — any HTTP
+ * status, 403 and 429 included — is a real answer and belongs to the caller's
+ * own status handling; re-asking it from a second egress point would be evading
+ * the publisher's decision rather than routing around a network block, and only
+ * the latter is in scope. fetch() does not throw on status, so those never
+ * arrive here anyway; this is a statement of intent for whoever widens it next.
+ *
+ * Also excluded: our own contract guard (the URL/redirect/size rejection is not
+ * a transport problem), a caller-initiated abort, and TLS chain failures, which
+ * fetchText already treats as permanent and which a different route would hit
+ * identically.
+ */
+export function shouldRetryViaProxy(error) {
+  if (error?.code === 'SOURCE_CONTRACT_VIOLATION') return false;
+  if (error?.name === 'AbortError') return false;
+  if (
+    error?.code === 'SELF_SIGNED_CERT_IN_CHAIN'
+    || error?.cause?.code === 'SELF_SIGNED_CERT_IN_CHAIN'
+    || /self signed certificate|certificate chain/i.test(
+      `${String(error?.message)} ${String(error?.cause?.message)}`,
+    )
+  ) return false;
+  return true;
+}
+
+/**
+ * The same declared request, from a different egress point.
+ *
+ * Measured 2026-08-18: www.stats.gov.cn answers this exact client normally from
+ * a laptop (HTTP 200, ~12 KiB index, ~164 KiB article) while Railway's egress
+ * cannot open the connection at all. The seeder reported FETCH_FAILED rather
+ * than TIMEOUT or HTTP_nnn, which is what identifies it as connection-level
+ * rather than the publisher refusing us. All three required NBS series sat on
+ * preserved values while the seeder itself kept publishing, so
+ * seed-meta:economic:china-macro-transport froze at 2026-08-14 and health read
+ * STALE_SEED off a key the seeder had never stopped updating.
+ *
+ * Headers are forwarded UNCHANGED on purpose: the same declared User-Agent and
+ * Accept-Language reaching the publisher over a different route, not a
+ * different client. `location` is carried across because fetchText does its own
+ * `redirect: 'manual'` handling and would otherwise lose the hop.
+ */
+async function fetchThroughProxy(target, init, proxyUrl) {
+  const proxyConfig = parseProxyConfigForAttempt(proxyUrl, 0);
+  if (!proxyConfig) return null;
+  const result = await proxyFetch(String(target), proxyConfig, {
+    headers: init?.headers,
+    method: init?.method || 'GET',
+    maxResponseBytes: MAX_RESPONSE_BYTES,
+    timeoutMs: FETCH_TIMEOUT_MS,
+    signal: init?.signal,
+  });
+  if (result.buffer.byteLength > MAX_RESPONSE_BYTES) {
+    throw sourceContractError('RESPONSE_TOO_LARGE');
+  }
+  return new Response(result.buffer, {
+    status: result.status,
+    headers: {
+      ...(result.location ? { Location: result.location } : {}),
+      'Content-Type': result.contentType || 'text/html',
+      'Content-Length': String(result.buffer.byteLength),
+    },
+  });
 }
 
 export function requestBudget(maxRequests) {
@@ -62,6 +138,10 @@ export async function fetchText(fetchFn, value, {
   budget,
   onRedirect = () => {},
   assertTargetAllowed = () => {},
+  // Opt-in per publisher. Null, or an unset PROXY_URL, leaves this path
+  // byte-for-byte unchanged — a source reachable directly never grows a hop.
+  proxyUrl = null,
+  onProxyFallback = () => {},
 }) {
   let target = validateSourceUrl(value, policy);
   assertTargetAllowed(target);
@@ -71,28 +151,52 @@ export async function fetchText(fetchFn, value, {
   for (;;) {
     budget.consume();
     let response;
+    const requestInit = {
+      headers: {
+        Accept: 'text/html,text/plain;q=0.9,*/*;q=0.1',
+        'Accept-Language': 'en,zh-CN;q=0.8',
+        'User-Agent': 'WorldMonitor/2.10 (+https://worldmonitor.app)',
+      },
+      redirect: 'manual',
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    };
     try {
-      response = await fetchFn(target.toString(), {
-        headers: {
-          Accept: 'text/html,text/plain;q=0.9,*/*;q=0.1',
-          'Accept-Language': 'en,zh-CN;q=0.8',
-          'User-Agent': 'WorldMonitor/2.10 (+https://worldmonitor.app)',
-        },
-        redirect: 'manual',
-        signal: AbortSignal.timeout(12_000),
-      });
+      response = await fetchFn(target.toString(), requestInit);
     } catch (error) {
       const permanentTls = error?.code === 'SELF_SIGNED_CERT_IN_CHAIN'
         || error?.cause?.code === 'SELF_SIGNED_CERT_IN_CHAIN'
         || /self signed certificate|certificate chain/i.test(
           `${String(error?.message)} ${String(error?.cause?.message)}`,
         );
-      if (transientRetries === 0 && !permanentTls && error?.code !== 'SOURCE_CONTRACT_VIOLATION') {
-        transientRetries += 1;
-        await waitForRetry();
-        continue;
+      if (proxyUrl && shouldRetryViaProxy(error)) {
+        try {
+          // A proxied retry reaches the publisher a SECOND time, so it consumes
+          // budget like any other request. Counting it keeps requestCount an
+          // honest measure of load placed on the source rather than of how
+          // often we happened to succeed.
+          budget.consume();
+          const proxied = await fetchThroughProxy(target, requestInit, proxyUrl);
+          if (proxied) {
+            onProxyFallback({ url: target.toString(), directReason: reasonFor(error) });
+            response = proxied;
+          }
+        } catch (proxyError) {
+          // A contract violation from the proxied response is ours and must
+          // surface. Anything else falls through to the direct-path handling
+          // below carrying the ORIGINAL error — reporting the proxy's failure
+          // instead would bury why the direct route failed, which is the
+          // diagnosis that matters.
+          if (proxyError?.code === 'SOURCE_CONTRACT_VIOLATION') throw proxyError;
+        }
       }
-      throw error;
+      if (!response) {
+        if (transientRetries === 0 && !permanentTls && error?.code !== 'SOURCE_CONTRACT_VIOLATION') {
+          transientRetries += 1;
+          await waitForRetry();
+          continue;
+        }
+        throw error;
+      }
     }
     if (response.status >= 300 && response.status < 400) {
       onRedirect('encountered');
