@@ -2,7 +2,7 @@
 // Source: proto/worldmonitor/**/*.proto buf.validate annotations.
 
 export const GENERATED_PROTO_VALIDATION_RULE_COUNT = 525;
-export const GENERATED_REQUEST_METHOD_COUNT = 156;
+export const GENERATED_REQUEST_METHOD_COUNT = 157;
 
 export const GENERATED_REQUEST_TYPES = {
   "analyzeStock": "worldmonitor.market.v1.AnalyzeStockRequest",
@@ -141,6 +141,7 @@ export const GENERATED_REQUEST_TYPES = {
   "listUnrestEvents": "worldmonitor.unrest.v1.ListUnrestEventsRequest",
   "listWebcams": "worldmonitor.webcam.v1.ListWebcamsRequest",
   "listWorldBankIndicators": "worldmonitor.economic.v1.ListWorldBankIndicatorsRequest",
+  "listXFeed": "worldmonitor.intelligence.v1.ListXFeedRequest",
   "lookupSanctionEntity": "worldmonitor.sanctions.v1.LookupSanctionEntityRequest",
   "recordBaselineSnapshot": "worldmonitor.infrastructure.v1.RecordBaselineSnapshotRequest",
   "registerInterest": "worldmonitor.leads.v1.RegisterInterestRequest",
@@ -984,6 +985,9 @@ export const GENERATED_MESSAGE_RULES = {
     "fields": {}
   },
   "worldmonitor.intelligence.v1.ListTelegramFeedRequest": {
+    "fields": {}
+  },
+  "worldmonitor.intelligence.v1.ListXFeedRequest": {
     "fields": {}
   },
   "worldmonitor.intelligence.v1.SearchGdeltDocumentsRequest": {

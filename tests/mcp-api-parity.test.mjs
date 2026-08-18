@@ -228,6 +228,8 @@ const EXCLUDED_FROM_MCP_PARITY = new Map([
     "manual-mapping: parameterized cache key not statically resolvable — equivalent data covered by sibling cache tool at the prefix level"],
   ["GET /api/intelligence/v1/list-telegram-feed",
     "manual-mapping: handler uses inline Redis or Convex (not server/_shared/redis) — manual triage"],
+  ["GET /api/intelligence/v1/list-x-feed",
+    "manual-mapping: handler uses inline Redis or Convex (not server/_shared/redis) — X news-account MCP tool is added with panel exposure"],
   ["GET /api/market/v1/get-stock-analysis-history",
     "manual-mapping: handler uses inline Redis or Convex (not server/_shared/redis) — manual triage"],
   ["GET /api/market/v1/list-stored-stock-backtests",
