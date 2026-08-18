@@ -128,6 +128,7 @@ import { fetchSecurityAdvisories } from '@/services/security-advisories';
 import { fetchThermalEscalations } from '@/services/thermal-escalation';
 import { fetchCrossSourceSignals } from '@/services/cross-source-signals';
 import { fetchTelegramFeed } from '@/services/telegram-intel';
+import { fetchXFeed } from '@/services/x-intel';
 import { fetchOrefAlerts, startOrefPolling, stopOrefPolling, onOrefAlertsUpdate } from '@/services/oref-alerts';
 import { getResilienceRanking } from '@/services/resilience';
 import { buildResilienceChoroplethMap } from '@/components/resilience-choropleth-utils';
@@ -3131,6 +3132,10 @@ export class DataLoaderManager implements AppModule {
       tasks.push(this.loadTelegramIntel());
     }
 
+    if (!_desktopLocked) {
+      tasks.push(this.loadXIntel());
+    }
+
     // OREF sirens (premium-locked on desktop without API key)
     if (!_desktopLocked) {
       tasks.push((async () => {
@@ -4413,6 +4418,19 @@ export class DataLoaderManager implements AppModule {
       console.error('[App] Telegram intel fetch failed:', error);
       this.callPanel('telegram-intel', 'setData', {
         source: 'telegram', enabled: false, count: 0, updatedAt: null, items: [],
+      });
+    }
+  }
+
+  async loadXIntel(): Promise<void> {
+    if (isDesktopRuntime() && !hasPremiumAccess()) return;
+    try {
+      const result = await fetchXFeed();
+      this.callPanel('x-intel', 'setData', result);
+    } catch (error) {
+      console.error('[App] X news-account fetch failed:', error);
+      this.callPanel('x-intel', 'setData', {
+        source: 'x', enabled: false, count: 0, updatedAt: null, items: [],
       });
     }
   }

@@ -181,6 +181,7 @@
                   "panels/monitors",
                   "panels/oref-sirens",
                   "panels/telegram-intel",
+                  "panels/x-intel",
                   "panels/fsi"
                 ]
               },
@@ -647,6 +648,7 @@
                   "zh/panels/monitors",
                   "zh/panels/oref-sirens",
                   "zh/panels/telegram-intel",
+                  "zh/panels/x-intel",
                   "zh/panels/fsi"
                 ]
               },

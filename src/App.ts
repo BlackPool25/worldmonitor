@@ -708,6 +708,9 @@ export class App {
     if (shouldPrime('telegram-intel')) {
       primeTask('telegram-intel', () => this.dataLoader.loadTelegramIntel());
     }
+    if (shouldPrime('x-intel')) {
+      primeTask('x-intel', () => this.dataLoader.loadXIntel());
+    }
     if (shouldPrime('gulf-economies')) {
       const panel = this.state.panels['gulf-economies'] as GulfEconomiesPanel | undefined;
       if (panel) primeTask('gulf-economies', () => panel.fetchData());
@@ -3374,6 +3377,13 @@ export class App {
       () => this.dataLoader.loadTelegramIntel(),
       REFRESH_INTERVALS.telegramIntel,
       () => this.isPanelNearViewport('telegram-intel')
+    );
+
+    this.refreshScheduler.scheduleRefresh(
+      'x-intel',
+      () => this.dataLoader.loadXIntel(),
+      REFRESH_INTERVALS.xIntel,
+      () => this.isPanelNearViewport('x-intel')
     );
 
     this.refreshScheduler.scheduleRefresh(
