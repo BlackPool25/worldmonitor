@@ -823,7 +823,7 @@ AI-classified geopolitical threat news summaries, GDELT intelligence signals, cr
 
 - **API endpoints:** `GET /api/intelligence/v1/list-cross-source-signals`, `GET /api/intelligence/v1/search-gdelt-documents`
 - **Kind:** cache read — sub-second response from Redis bootstrap cache.
-- **Corroboration:** every top story carries `uniqueSourceCount`, `corroborationSourceCount`, `entityCorroboration`, `sourceTier`, the contributing outlet names in `sources`, and every clustered headline in `memberTitles`, alongside `lastUpdated`, `upstreamImportanceScore`, and `effectiveImportanceScore`.
+- **Corroboration:** every top story carries `uniqueSourceCount`, `corroborationSourceCount`, `entityCorroboration`, `sourceTier`, the contributing outlet names in `sources`, and every clustered headline in `memberTitles`, alongside `lastUpdated`, `upstreamImportanceScore`, `effectiveImportanceScore`, and `credibilityScore` (0-100 source reliability, distinct from importance; state-controlled media is capped at 40).
 - **Freshness budget:** up to **30 min** before `stale: true` is flagged (set by the seeder cron's expected interval).
 
 <CodeGroup>
@@ -903,7 +903,7 @@ curl -s https://worldmonitor.app/mcp \
 
 ### `get_news_clusters`
 
-Current topic clusters computed over the live headline digest with the same Jaccard clustering (0.5 title-token similarity) the dashboard uses, so agents see the same story groupings as the UI. Each cluster reports its primary headline, member count, `distinctSourceCount` (the corroboration signal `min_sources` filters on), source names, top keywords (stop-word and generic-term filtered), aggregated threat level/category, and time span. Server-side primary selection is recency-based because digest items carry no per-source tier.
+Current topic clusters computed over the live headline digest with the same Jaccard clustering (0.5 title-token similarity) the dashboard uses, so agents see the same story groupings as the UI. Each cluster reports its primary headline, member count, `distinctSourceCount` (the corroboration signal `min_sources` filters on), source names, top keywords (stop-word and generic-term filtered), aggregated threat level/category, time span, and `credibilityScore` (0-100 source reliability for the primary outlet, distinct from importance). Server-side primary selection is recency-based because digest items carry no per-source tier.
 
 **Parameters (tool-specific):**
 

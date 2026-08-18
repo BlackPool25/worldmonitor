@@ -5,7 +5,15 @@ import {
   normalizeChinaMacroPreflight,
   validateChinaMacroAvailabilityBindings,
 } from '../../../shared/china-macro-normalization';
-import { getSourceProvenanceState } from '../../../shared/source-provenance';
+import {
+  getSourceProvenanceState,
+  type PropagandaRisk,
+} from '../../../shared/source-provenance';
+import {
+  CREDIBILITY_HIGH_RISK_CAP,
+  computeCredibilityScore,
+} from '../../../shared/news-credibility.js';
+import { getSourceTier } from '../../../server/_shared/source-tiers';
 import { hasRedistributableProviderAttribution } from '../../../shared/provider-redistribution';
 import { CII_RISK_SCORE_CACHE_KEYS } from '../../_cii-risk-cache-keys.js';
 // @ts-expect-error — generated Edge-safe JS mirror; authored types live in shared/bootstrap-tier-keys.d.ts
@@ -153,15 +161,40 @@ function summarizeConflictEvents(data: Record<string, unknown>): Record<string, 
   return summary;
 }
 
+function normalizeStoredCredibilityScore(
+  value: unknown,
+  propagandaRisk: PropagandaRisk,
+): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 100) {
+    return null;
+  }
+  const score = Math.round(value);
+  return propagandaRisk === 'high'
+    ? Math.min(score, CREDIBILITY_HIGH_RISK_CAP)
+    : score;
+}
+
 function addNewsSourceProvenance(value: unknown): unknown {
   if (!Array.isArray(value)) return value;
   return value.map((story) => {
     if (!story || typeof story !== 'object' || Array.isArray(story)) return story;
     const record = story as Record<string, unknown>;
     const sourceName = typeof record.primarySource === 'string' ? record.primarySource.trim() : '';
+    const provenance = getSourceProvenanceState(sourceName);
+    const servedScore = normalizeStoredCredibilityScore(record.credibilityScore, provenance.risk);
+    const corroboration = Number(
+      record.uniqueSourceCount ?? record.corroborationSourceCount ?? 1,
+    );
     return {
       ...record,
-      sourceProvenance: getSourceProvenanceState(sourceName),
+      sourceProvenance: provenance,
+      credibilityScore: servedScore !== null
+        ? servedScore
+        : computeCredibilityScore({
+          sourceTier: getSourceTier(sourceName),
+          propagandaRisk: provenance.risk,
+          independentCorroborationCount: Number.isFinite(corroboration) ? corroboration : 1,
+        }),
     };
   });
 }
@@ -792,7 +825,7 @@ export const CACHE_TOOLS: ToolDef[] = [
     name: 'get_news_intelligence',
     _uiResourceUri: NEWS_INTELLIGENCE_UI_URI,
     _outputBudgetBytes: 131072,
-    description: 'AI-classified geopolitical threat news summaries, GDELT intelligence signals, cross-source signals, and security advisories from WorldMonitor\'s intelligence layer. Each top story carries full corroboration metadata — uniqueSourceCount, corroborationSourceCount, entityCorroboration, sourceTier, the contributing outlet names, and every clustered headline.',
+    description: 'AI-classified geopolitical threat news summaries, GDELT intelligence signals, cross-source signals, and security advisories from WorldMonitor\'s intelligence layer. Each top story carries full corroboration metadata — uniqueSourceCount, corroborationSourceCount, entityCorroboration, sourceTier, the contributing outlet names, every clustered headline, and credibilityScore (0-100 source reliability, distinct from importance).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -817,6 +850,7 @@ export const CACHE_TOOLS: ToolDef[] = [
           topStories: { type: 'array', items: { type: 'object', properties: {
             primaryTitle: { type: 'string' }, primarySource: { type: 'string' }, primaryLink: { type: 'string' },
             pubDate: { type: 'string' }, sourceCount: { type: 'number' }, importanceScore: { type: 'number' },
+            credibilityScore: { type: 'number', description: '0-100 source-reliability score, distinct from importanceScore. Built from source tier, propaganda risk, and independent corroboration. State-controlled media is capped at 40.' },
             // Corroboration and clustering fields the seeder already writes
             // into every news:insights:v1 topStories entry (see the object
             // built in scripts/seed-insights.mjs). This is a cache tool: the

@@ -238,6 +238,7 @@ function protoItemToNewsItem(p: ProtoNewsItem): NewsItem {
     pubDate: new Date(p.publishedAt),
     isAlert: p.isAlert,
     importanceScore: p.importanceScore || undefined,
+    credibilityScore: Number.isFinite(p.credibilityScore) ? p.credibilityScore : undefined,
     corroborationCount: p.corroborationCount || undefined,
     storyMeta: p.storyMeta && p.storyMeta.phase !== 'STORY_PHASE_UNSPECIFIED' ? {
       firstSeen:    p.storyMeta.firstSeen,
@@ -254,6 +255,7 @@ function protoItemToNewsItem(p: ProtoNewsItem): NewsItem {
     ...(p.locationName && { locationName: p.locationName }),
     ...(p.location && { lat: p.location.latitude, lon: p.location.longitude }),
     ...(p.importanceScore ? { importanceScore: p.importanceScore } : {}),
+    ...(Number.isFinite(p.credibilityScore) ? { credibilityScore: p.credibilityScore } : {}),
     ...(p.corroborationCount ? { corroborationCount: p.corroborationCount } : {}),
     // Cleaned RSS description (U3 proto field 12). Only populated when the
     // upstream feed carried a usable <description>/<content:encoded>/<summary>;
