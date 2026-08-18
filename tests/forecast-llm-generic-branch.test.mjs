@@ -16,6 +16,9 @@ import assert from 'node:assert/strict';
 import {
   callForecastLLM,
   resolveForecastLlmProviders,
+  getForecastLlmCallOptions,
+  getMarketImplicationsMinRunBudgetMs,
+  buildCriticalSignalRouteTag,
   __setForecastLlmTransportForTests,
   __setForecastLlmRunDeadlineForTests,
 } from '../scripts/seed-forecasts.mjs';
@@ -27,6 +30,9 @@ const ENV_KEYS = [
   'OPENROUTER_API_KEY',
   'GROQ_API_KEY',
   'FORECAST_LLM_PROVIDER_ORDER',
+  'FORECAST_LLM_CRITICAL_PROVIDER_ORDER',
+  'FORECAST_LLM_CRITICAL_MODEL_OPENROUTER',
+  'FORECAST_LLM_MARKET_IMPLICATIONS_PROVIDER_ORDER',
 ];
 
 // Cheap JSON RPC: every shape probe here only needs the literal `{ choices: [...] }`
@@ -202,10 +208,10 @@ const GENERIC_URL = 'https://example.invalid/v1/chat/completions';
 const GENERIC_MODEL = 'gpt-3.5-turbo';
 const GENERIC_SECRET = 'redacted-llm-key';
 
-function setGenericEnv() {
+function setGenericEnv(model = GENERIC_MODEL) {
   process.env.LLM_API_URL = GENERIC_URL;
   process.env.LLM_API_KEY = GENERIC_TOKEN;
-  process.env.LLM_MODEL = GENERIC_MODEL;
+  process.env.LLM_MODEL = model;
 }
 
 // Snapshot the outgoing fetch call into one place so the shape assertions stay
@@ -514,4 +520,64 @@ test('PER-79 generic-branch regression: outbound fetch shape is OpenAI-compatibl
   );
   assert.equal(body.messages[0].content, 'sys-prompt');
   assert.equal(body.messages[1].content, 'user-prompt');
+});
+
+// ── Stage composition + cache tag (PR review findings #2 and #7) ─────────────
+// The suite above only resolved the default chain. critical_signals feeds
+// state-derived probabilities and market_implications is budget-gated; both
+// append generic at the tail when the last-resort trio is set. The cache tag
+// must keep the hosted pin-based shape and add generic+LLM_MODEL only when
+// generic is actually in the resolved chain.
+
+test('critical_signals options append generic after the groq/openrouter pin', () => {
+  setGenericEnv();
+  const names = resolveForecastLlmProviders(getForecastLlmCallOptions('critical_signals'))
+    .map((provider) => provider.name);
+  assert.deepEqual(names, ['groq', 'openrouter', 'generic']);
+});
+
+test('market_implications options append generic after the openrouter-only pin', () => {
+  setGenericEnv();
+  const names = resolveForecastLlmProviders(getForecastLlmCallOptions('market_implications'))
+    .map((provider) => provider.name);
+  assert.deepEqual(names, ['openrouter', 'generic']);
+});
+
+test('generic-only market_implications budget is generic timeout plus stage guard', () => {
+  setGenericEnv();
+  // 60_000 generic default + FORECAST_LLM_STAGE_BUDGET_GUARD_MS (5_000).
+  assert.equal(
+    getMarketImplicationsMinRunBudgetMs(getForecastLlmCallOptions('market_implications')),
+    65_000,
+  );
+});
+
+test('critical_signals cache tag includes generic model only when generic is runnable', () => {
+  const hostedBaseline = buildCriticalSignalRouteTag(getForecastLlmCallOptions('critical_signals'));
+  assert.equal(
+    hostedBaseline.includes('generic'),
+    false,
+    'hosted pin tag must not mention generic when named keys and LLM_* are unset',
+  );
+
+  setGenericEnv('local-llama-3');
+  const genericTag = buildCriticalSignalRouteTag(getForecastLlmCallOptions('critical_signals'));
+  assert.equal(genericTag.includes('generic'), true, 'generic-only tag must name the generic provider');
+  assert.equal(genericTag.includes('local-llama-3'), true, 'generic-only tag must include LLM_MODEL');
+  assert.notEqual(genericTag, hostedBaseline);
+
+  setGenericEnv('other-local-model');
+  const rotatedTag = buildCriticalSignalRouteTag(getForecastLlmCallOptions('critical_signals'));
+  assert.equal(rotatedTag.includes('other-local-model'), true);
+  assert.notEqual(rotatedTag, genericTag, 'changing LLM_MODEL must miss the previous 20-minute Redis key');
+
+  process.env.OPENROUTER_API_KEY = 'openrouter-test-key';
+  setGenericEnv('local-llama-3');
+  const hostedWithGenericEnvs = buildCriticalSignalRouteTag(getForecastLlmCallOptions('critical_signals'));
+  assert.equal(hostedWithGenericEnvs.includes('generic'), false);
+  assert.equal(
+    hostedWithGenericEnvs,
+    hostedBaseline,
+    'named-key hosted path must keep the pin-based tag bit-identical',
+  );
 });

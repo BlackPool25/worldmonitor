@@ -3609,11 +3609,7 @@ async function extractCriticalSignalBundle(inputs) {
   // other's frames within the TTL — strength/confidence magnitudes are
   // model-dependent and probability-coupled.
   const criticalLlmOptions = getForecastLlmCallOptions('critical_signals');
-  const criticalRouteTag = [
-    (criticalLlmOptions.providerOrder || []).join('-') || 'default',
-    criticalLlmOptions.modelOverrides?.openrouter || 'table',
-    criticalLlmOptions.modelOverrides?.groq || 'table',
-  ].join('_').replace(/[^a-zA-Z0-9._/-]/g, '-');
+  const criticalRouteTag = buildCriticalSignalRouteTag(criticalLlmOptions);
   const cacheKey = `forecast:critical-signals:llm:${criticalRouteTag}:${buildCriticalSignalCandidateHash(candidates)}`;
   const fallbackSignalsFromCandidates = (coveredIndexes = new Set()) =>
     extractRegexCriticalNewsSignals(inputs, candidates.filter((item) => !coveredIndexes.has(item.candidateIndex)));
@@ -14941,6 +14937,24 @@ function resolveForecastLlmProviders(options = {}) {
   return providers.length > 0 ? providers : FORECAST_LLM_PROVIDERS;
 }
 
+// Hosted production must keep the pin-based critical_signals cache tag
+// (#4965): `providerOrder` then the openrouter/groq override slots. Replacing
+// that whole tag with the resolved runnable chain would change the hosted
+// key shape and bust the 20-minute Redis cache for no reason. Append the
+// generic name + model ONLY when generic is actually in the resolved chain
+// (self-host / last-resort). Changing LLM_MODEL then misses the old key
+// instead of serving stale frames into state-derived probabilities.
+function buildCriticalSignalRouteTag(options = {}) {
+  const pinTag = [
+    (options.providerOrder || []).join('-') || 'default',
+    options.modelOverrides?.openrouter || 'table',
+    options.modelOverrides?.groq || 'table',
+  ].join('_');
+  const generic = resolveForecastLlmProviders(options).find((provider) => provider.name === 'generic');
+  const genericSuffix = generic ? `_generic_${generic.model}` : '';
+  return `${pinTag}${genericSuffix}`.replace(/[^a-zA-Z0-9._/-]/g, '-');
+}
+
 function moveForecastLlmProviderToBack(options = {}, providerName = '') {
   if (!providerName) return options;
   const requestedOrder = Array.isArray(options.providerOrder) && options.providerOrder.length > 0
@@ -19177,6 +19191,7 @@ export {
   parseForecastProviderOrder,
   getForecastLlmCallOptions,
   getMarketImplicationsMinRunBudgetMs,
+  buildCriticalSignalRouteTag,
   FORECAST_LLM_RUN_BUDGET_MS,
   FORECAST_SEED_LOCK_TTL_MS,
   resolveForecastLlmProviders,
