@@ -18,6 +18,7 @@ const ISO3_TO_ISO2 = JSON.parse(
 );
 
 export const MAX_ALERTS = 50;
+const WEATHER_ALERT_SOURCES = Object.freeze(['nws', 'eccc', 'swic']);
 // Per-source floor so Canadian alerts cannot be dropped behind US small-craft
 // advisories (and vice versa) when the merged cap is applied. A third source
 // (SWIC) gets the same floor; leftover slots fill by severity.
@@ -302,6 +303,23 @@ export function validateSelectedAlerts(data) {
   return Array.isArray(data?.alerts);
 }
 
+export function weatherAlertsAfterPublish(data) {
+  if (data?.sourceState !== 'degraded') {
+    return { freshnessMetaPatch: { sourceState: 'ok' } };
+  }
+  const failedSources = WEATHER_ALERT_SOURCES.filter(
+    (source) => Array.isArray(data?.failedSources) && data.failedSources.includes(source),
+  );
+  return {
+    freshnessMetaPatch: {
+      sourceState: 'degraded',
+      errorCode: data?.errorCode || 'WEATHER_ALERT_SOURCE_INCOMPLETE',
+      ...(failedSources.length > 0 ? { failedSources } : {}),
+      ...(data?.skipReason ? { skipReason: String(data.skipReason) } : {}),
+    },
+  };
+}
+
 function sortBySeverityThenStable(alerts) {
   return [...alerts].sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
 }
@@ -356,6 +374,21 @@ export function mergeAlertSources(parts = {}, { totalLimit = MAX_ALERTS, perSour
   return sortBySeverityThenStable(kept).slice(0, totalLimit);
 }
 
+export function carryFailedWeatherAlertSources(previousAlerts, failedSources = []) {
+  const alerts = Array.isArray(previousAlerts) ? previousAlerts : [];
+  const failed = new Set(
+    Array.isArray(failedSources)
+      ? failedSources.filter((source) => WEATHER_ALERT_SOURCES.includes(source))
+      : [],
+  );
+  return Object.fromEntries(
+    WEATHER_ALERT_SOURCES.map((source) => [
+      source,
+      failed.has(source) ? alerts.filter((alert) => alert?.source === source) : [],
+    ]),
+  );
+}
+
 export function mapSwicSeverity(code) {
   return SWIC_SEVERITY[Number(code)] ?? 'Unknown';
 }
@@ -366,6 +399,19 @@ export function mapSwicUrgency(code) {
 
 export function mapSwicCertainty(code) {
   return SWIC_CERTAINTY[Number(code)] ?? 'Unknown';
+}
+
+export function normalizeSwicTimestamp(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const offsetFree = raw.match(
+    /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d{1,3})?$/,
+  );
+  const candidate = offsetFree
+    ? `${offsetFree[1]}T${offsetFree[2]}${offsetFree[3] || ''}Z`
+    : raw;
+  const timestamp = Date.parse(candidate);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : '';
 }
 
 export function countryCodeFromSwicUrl(url) {
@@ -437,8 +483,8 @@ export function normalizeSwicAlert(item, member) {
     headline,
     description: headline.slice(0, 500),
     areaDesc,
-    onset: item.effective || item.sent || '',
-    expires: item.expires || '',
+    onset: normalizeSwicTimestamp(item.effective || item.sent),
+    expires: normalizeSwicTimestamp(item.expires),
     coordinates: placed.coordinates,
     centroid: placed.centroid,
     countryCode,

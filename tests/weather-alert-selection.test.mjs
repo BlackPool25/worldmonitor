@@ -17,6 +17,7 @@ import {
   SWIC_SOURCE_DECISION,
   WEATHER_ALERTS_SOURCE_VERSION,
   calculateCentroid,
+  carryFailedWeatherAlertSources,
   countryCodeFromSwicUrl,
   eligibleAlertCount,
   extractCoordinates,
@@ -32,6 +33,7 @@ import {
   selectEcccAlerts,
   selectSwicAlerts,
   validateSelectedAlerts,
+  weatherAlertsAfterPublish,
   weatherAlertNotifyCountryCode,
   weatherAlertNotifyLocation,
   weatherAlertNotifySource,
@@ -620,6 +622,43 @@ describe('WMO SWIC adapter on weather:alerts:v1', () => {
     const nws = selectAlerts([feature('Severe', 7)]);
     assert.deepEqual(mergeAlertSources({ nws: null, eccc: [], swic }).map((a) => a.id), ['in-only']);
     assert.deepEqual(mergeAlertSources({ nws, eccc: [], swic: undefined }).map((a) => a.id), ['alert-7']);
+  });
+
+  it('carries only the failed source slices from the previous weather envelope', () => {
+    const carried = carryFailedWeatherAlertSources([
+      { id: 'nws-old', source: 'nws' },
+      { id: 'eccc-old', source: 'eccc' },
+      { id: 'swic-old', source: 'swic' },
+      { id: 'legacy-untagged' },
+    ], ['nws', 'swic']);
+
+    assert.deepEqual(carried.nws.map((alert) => alert.id), ['nws-old']);
+    assert.deepEqual(carried.eccc, []);
+    assert.deepEqual(carried.swic.map((alert) => alert.id), ['swic-old']);
+  });
+
+  it('projects standalone source degradation into freshness metadata', () => {
+    assert.deepEqual(
+      weatherAlertsAfterPublish({
+        alerts: [],
+        sourceState: 'degraded',
+        errorCode: 'WEATHER_ALERT_SOURCE_INCOMPLETE',
+        failedSources: ['swic'],
+        skipReason: 'swic-unavailable',
+      }),
+      {
+        freshnessMetaPatch: {
+          sourceState: 'degraded',
+          errorCode: 'WEATHER_ALERT_SOURCE_INCOMPLETE',
+          failedSources: ['swic'],
+          skipReason: 'swic-unavailable',
+        },
+      },
+    );
+    assert.deepEqual(
+      weatherAlertsAfterPublish({ alerts: [] }),
+      { freshnessMetaPatch: { sourceState: 'ok' } },
+    );
   });
 
   it('keeps a SWIC floor so Extreme India alerts survive a US Minor flood', () => {
