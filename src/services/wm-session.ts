@@ -766,6 +766,14 @@ function withCredentials(init?: RequestInit): RequestInit {
 // instead of silently no-op'ing on the install guard. Without it, future
 // tests that wipe state and expect a fresh install would see a stale
 // `window.fetch` wrapper from a prior test.
+// Test-only: populate `cached` the way a successful mint does, without
+// going through attemptWmSession. The storage-prime helper used to rely
+// on writing `{exp}` into `cached` before remint; that path is gone so a
+// leftover failed remint cannot look like a live session.
+export function __primeWmSessionCacheForTests(exp: number): void {
+  cached = { exp };
+}
+
 export function __resetWmSessionForTests(): void {
   cached = null;
   inflight = null;

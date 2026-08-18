@@ -159,12 +159,22 @@ function setStoredSessionExp(_token: string, expMs: number): void {
 const FAR_FUTURE = Date.now() + 12 * 60 * 60 * 1000;
 const PAST = Date.now() - 1000;
 
-// Force the in-memory `cached` state by calling the module's API. ensureWmSession
-// reads sessionStorage when cached is null — set the storage and prime via
-// getWmSessionToken doesn't help because that only reads cached. We rely on
-// ensureWmSession's storage path to populate `cached`.
+// Force the in-memory `cached` expiry the way a successful mint does.
+// ensureWmSession no longer copies sessionStorage `{exp}` into `cached`
+// without a token (that leftover is the WG bug), so tests that want
+// "session already established this page" use the dedicated prime hook.
 async function primeCachedFromStorage(): Promise<void> {
-  await mod.ensureWmSession();
+  const raw = memoryStorage.get('wm-session-exp');
+  if (!raw) {
+    await mod.ensureWmSession();
+    return;
+  }
+  const parsed = JSON.parse(raw) as { exp?: unknown };
+  if (typeof parsed.exp !== 'number') {
+    await mod.ensureWmSession();
+    return;
+  }
+  mod.__primeWmSessionCacheForTests(parsed.exp);
 }
 
 describe('wm-session first RPC after mint (WORLDMONITOR-XP)', () => {
