@@ -2348,6 +2348,23 @@
       ]
     },
     {
+      "host": "cnn.gr",
+      "provider": "cnn.gr",
+      "kind": "feed",
+      "observed": true,
+      "license": "Provider terms for this feed publisher; verify before redistribution",
+      "attribution": "Credit cnn.gr and link to the original feed publisher.",
+      "status": "terms-review",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
+          "path": "src/config/feeds.ts"
+        }
+      ]
+    },
+    {
       "host": "co.usembassy.gov",
       "provider": "co.usembassy.gov",
       "kind": "structured",
@@ -5394,6 +5411,23 @@
       "observed": true,
       "license": "Provider terms for this feed publisher; verify before redistribution",
       "attribution": "Credit lequotidien.sn and link to the original feed publisher.",
+      "status": "terms-review",
+      "references": [
+        {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
+          "path": "src/config/feeds.ts"
+        }
+      ]
+    },
+    {
+      "host": "liberal.gr",
+      "provider": "liberal.gr",
+      "kind": "feed",
+      "observed": true,
+      "license": "Provider terms for this feed publisher; verify before redistribution",
+      "attribution": "Credit liberal.gr and link to the original feed publisher.",
       "status": "terms-review",
       "references": [
         {
@@ -10691,18 +10725,10 @@
       "host": "www.cnn.gr",
       "provider": "www.cnn.gr",
       "kind": "feed",
-      "observed": true,
+      "observed": false,
       "license": "Provider terms for this feed publisher; verify before redistribution",
       "attribution": "Credit www.cnn.gr and link to the original feed publisher.",
-      "status": "terms-review",
-      "references": [
-        {
-          "path": "server/worldmonitor/news/v1/_feeds.ts"
-        },
-        {
-          "path": "src/config/feeds.ts"
-        }
-      ]
+      "status": "excluded"
     },
     {
       "host": "www.coindesk.com",
@@ -11952,18 +11978,10 @@
       "host": "www.liberal.gr",
       "provider": "www.liberal.gr",
       "kind": "feed",
-      "observed": true,
+      "observed": false,
       "license": "Provider terms for this feed publisher; verify before redistribution",
       "attribution": "Credit www.liberal.gr and link to the original feed publisher.",
-      "status": "terms-review",
-      "references": [
-        {
-          "path": "server/worldmonitor/news/v1/_feeds.ts"
-        },
-        {
-          "path": "src/config/feeds.ts"
-        }
-      ]
+      "status": "excluded"
     },
     {
       "host": "www.lighthousereports.com",

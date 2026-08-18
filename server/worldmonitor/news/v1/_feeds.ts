@@ -200,8 +200,8 @@ export const VARIANT_FEEDS: Record<string, Record<string, ServerFeed[]>> = {
       { name: 'ERT', url: gnLocale('site:ert.gr when:2d', 'el', 'GR', 'GR:el'), lang: 'el' },
       { name: 'AMNA', url: gnLocale('site:amna.gr when:2d', 'el', 'GR', 'GR:el'), lang: 'el' },
       { name: 'Ta Nea', url: 'https://www.tanea.gr/feed/', lang: 'el' },
-      { name: 'Liberal GR', url: 'https://www.liberal.gr/feed', lang: 'el' },
-      { name: 'CNN Greece', url: 'https://www.cnn.gr/feed', lang: 'el' },
+      { name: 'Liberal GR', url: gnLocale('site:liberal.gr when:2d', 'el', 'GR', 'GR:el'), lang: 'el' },
+      { name: 'CNN Greece', url: gnLocale('site:cnn.gr when:2d', 'el', 'GR', 'GR:el'), lang: 'el' },
     ],
     middleeast: [
       { name: 'BBC Middle East', url: 'https://feeds.bbci.co.uk/news/world/middle_east/rss.xml' },

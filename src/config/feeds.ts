@@ -237,8 +237,8 @@ export const FULL_FEEDS: Record<string, Feed[]> = {
     { name: 'ERT', url: rss('https://news.google.com/rss/search?q=site:ert.gr+when:2d&hl=el&gl=GR&ceid=GR:el'), lang: 'el' },
     { name: 'AMNA', url: rss('https://news.google.com/rss/search?q=site:amna.gr+when:2d&hl=el&gl=GR&ceid=GR:el'), lang: 'el' },
     { name: 'Ta Nea', url: rss('https://www.tanea.gr/feed/'), lang: 'el' },
-    { name: 'Liberal GR', url: rss('https://www.liberal.gr/feed'), lang: 'el' },
-    { name: 'CNN Greece', url: rss('https://www.cnn.gr/feed'), lang: 'el' },
+    { name: 'Liberal GR', url: rss('https://news.google.com/rss/search?q=site:liberal.gr+when:2d&hl=el&gl=GR&ceid=GR:el'), lang: 'el' },
+    { name: 'CNN Greece', url: rss('https://news.google.com/rss/search?q=site:cnn.gr+when:2d&hl=el&gl=GR&ceid=GR:el'), lang: 'el' },
     // Baltic states — Eastern flank (#5952). English-language Baltic news
     // services (no lang tag) so EN digests can include them as flank sources.
     { name: 'ERR News', url: rss('https://news.err.ee/rss') },
