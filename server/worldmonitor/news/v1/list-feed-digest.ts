@@ -28,6 +28,8 @@ import { buildTickerDictionary, extractTickers } from '../../../../shared/ticker
 import stocksData from '../../../../shared/stocks.json';
 import { buildClassifyCacheKey } from '../../intelligence/v1/_shared';
 import { getSourceTier } from '../../../_shared/source-tiers';
+import { getSourcePropagandaRisk } from '../../../../shared/source-provenance';
+import { computeCredibilityScore } from '../../../../shared/news-credibility.js';
 import {
   STORY_TRACK_KEY,
   STORY_SOURCES_KEY,
@@ -192,6 +194,7 @@ interface ParsedItem {
   confidence: number;
   classSource: 'keyword' | 'keyword-historical-downgrade' | 'llm';
   importanceScore: number;
+  credibilityScore: number;
   corroborationCount: number;
   entityCorroborationCount: number;
   titleHash?: string;
@@ -634,6 +637,7 @@ function parseRssXml(xml: string, feed: ServerFeed, variant: string): ParseResul
       confidence: threat.confidence,
       classSource: threat.source,
       importanceScore: 0,
+      credibilityScore: 0,
       corroborationCount: 1,
       entityCorroborationCount: 0,
       lang: feed.lang ?? 'en',
@@ -1085,6 +1089,7 @@ function toProtoItem(item: ParsedItem, storyMeta?: ProtoStoryMeta): ProtoNewsIte
     publishedAt: item.publishedAt,
     isAlert: item.isAlert,
     importanceScore: item.importanceScore,
+    credibilityScore: item.credibilityScore,
     corroborationCount: item.corroborationCount ?? 0,
     storyMeta,
     threat: {
@@ -1525,6 +1530,11 @@ async function buildDigest(variant: string, lang: string): Promise<ListFeedDiges
           entityCorroborationCount: item.entityCorroborationCount,
         },
       );
+      item.credibilityScore = computeCredibilityScore({
+        sourceTier: getSourceTier(item.source),
+        propagandaRisk: getSourcePropagandaRisk(item.source).risk,
+        independentCorroborationCount: scoringCorroboration,
+      });
       if (hasDiplomacyFlashpointSignal(item.title)) diplomacySignalCount++;
       if (item.entityCorroborationCount > 0) entityCorroborationHitCount++;
       if (item.classSource === 'llm') llmScoredCount++;
@@ -1644,6 +1654,7 @@ export const __testing__ = {
   extractFirstDateTag,
   buildStoryTrackHsetFields,
   computeImportanceScore,
+  computeCredibilityScore,
   hasDiplomacyFlashpointSignal,
   promoteDiplomacySeverity,
   computeEntityCorroborationSignals,

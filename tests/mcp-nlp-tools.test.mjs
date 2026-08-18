@@ -241,6 +241,8 @@ describe('#5697 NLP MCP tools', () => {
     const clusterSchema = byName.get('get_news_clusters')?.outputSchema.properties.clusters.items;
     assert.ok(clusterSchema.required.includes('primarySourceProvenance'));
     assert.ok(clusterSchema.required.includes('sourceProvenance'));
+    assert.ok(clusterSchema.required.includes('credibilityScore'));
+    assert.equal(clusterSchema.properties.credibilityScore.type, 'number');
     assert.equal(clusterSchema.properties.primarySourceProvenance.type, 'object');
     assert.equal(clusterSchema.properties.sourceProvenance.type, 'array');
     assert.equal(clusterSchema.properties.sourceProvenance.items.properties.source.type, 'string');
@@ -613,6 +615,8 @@ describe('#5697 NLP MCP tools', () => {
       assert.ok(hormuz.topKeywords.includes('hormuz'));
       assert.equal(hormuz.threatLevel, 'critical');
       assert.equal(hormuz.isAlert, true);
+      assert.equal(typeof hormuz.credibilityScore, 'number');
+      assert.ok(hormuz.credibilityScore >= 70, `wire cluster should score high, got ${hormuz.credibilityScore}`);
       assert.ok(hormuz.firstSeen.endsWith('Z') && hormuz.lastUpdated.endsWith('Z'));
     });
 

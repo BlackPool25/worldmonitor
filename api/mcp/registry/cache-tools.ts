@@ -6,6 +6,8 @@ import {
   validateChinaMacroAvailabilityBindings,
 } from '../../../shared/china-macro-normalization';
 import { getSourceProvenanceState } from '../../../shared/source-provenance';
+import { computeCredibilityScore } from '../../../shared/news-credibility.js';
+import { getSourceTier } from '../../../server/_shared/source-tiers';
 import { hasRedistributableProviderAttribution } from '../../../shared/provider-redistribution';
 import { CII_RISK_SCORE_CACHE_KEYS } from '../../_cii-risk-cache-keys.js';
 // @ts-expect-error — generated Edge-safe JS mirror; authored types live in shared/bootstrap-tier-keys.d.ts
@@ -155,9 +157,21 @@ function addNewsSourceProvenance(value: unknown): unknown {
     if (!story || typeof story !== 'object' || Array.isArray(story)) return story;
     const record = story as Record<string, unknown>;
     const sourceName = typeof record.primarySource === 'string' ? record.primarySource.trim() : '';
+    const provenance = getSourceProvenanceState(sourceName);
+    const servedScore = Number(record.credibilityScore);
+    const corroboration = Number(
+      record.uniqueSourceCount ?? record.corroborationSourceCount ?? 1,
+    );
     return {
       ...record,
-      sourceProvenance: getSourceProvenanceState(sourceName),
+      sourceProvenance: provenance,
+      credibilityScore: Number.isFinite(servedScore)
+        ? servedScore
+        : computeCredibilityScore({
+          sourceTier: getSourceTier(sourceName),
+          propagandaRisk: provenance.risk,
+          independentCorroborationCount: Number.isFinite(corroboration) ? corroboration : 1,
+        }),
     };
   });
 }
@@ -779,6 +793,7 @@ export const CACHE_TOOLS: ToolDef[] = [
           topStories: { type: 'array', items: { type: 'object', properties: {
             primaryTitle: { type: 'string' }, primarySource: { type: 'string' }, primaryLink: { type: 'string' },
             pubDate: { type: 'string' }, sourceCount: { type: 'number' }, importanceScore: { type: 'number' },
+            credibilityScore: { type: 'number', description: '0-100 source-reliability score, distinct from importanceScore. Built from source tier, propaganda risk, and independent corroboration. State-controlled media is capped at 40.' },
             // Corroboration and clustering fields the seeder already writes
             // into every news:insights:v1 topStories entry (see the object
             // built in scripts/seed-insights.mjs). This is a cache tool: the

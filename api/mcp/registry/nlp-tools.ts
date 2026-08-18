@@ -24,6 +24,8 @@ import {
 import { clusterNewsCore, protoThreatLevelToLabel, topClusterKeywords } from '../../../shared/news-clustering-core.js';
 import type { NewsItemCore } from '../../../shared/news-clustering-core.js';
 import { getSourceProvenanceState } from '../../../shared/source-provenance.js';
+import { computeCredibilityScore } from '../../../shared/news-credibility.js';
+import { getSourceTier } from '../../../server/_shared/source-tiers';
 import { buildAuthHeaders } from '../auth';
 import { assertToolFetchOk } from '../billing-denial';
 import { argStr, ciIncludes } from '../filters';
@@ -494,7 +496,7 @@ export const NLP_TOOLS: ToolDef[] = [
     // records plus a separate primary record. Keep the dispatcher budget
     // aligned with that supported maximum instead of rejecting valid output.
     _outputBudgetBytes: 262144,
-    description: 'Current topic clusters over the live headline digest, computed with the same Jaccard clustering the dashboard uses. Select the full digest (default) or tech digest with variant, then optionally restrict by category such as commodities, vcblogs, or accelerators. Each cluster reports its primary headline, member count, distinct sources with fail-closed provenance, top keywords, threat level, and time span. Deterministic — no LLM.',
+    description: 'Current topic clusters over the live headline digest, computed with the same Jaccard clustering the dashboard uses. Select the full digest (default) or tech digest with variant, then optionally restrict by category such as commodities, vcblogs, or accelerators. Each cluster reports its primary headline, member count, distinct sources with fail-closed provenance, top keywords, threat level, time span, and credibilityScore (0-100 source reliability, distinct from importance). Deterministic — no LLM.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -522,7 +524,7 @@ export const NLP_TOOLS: ToolDef[] = [
           type: 'array',
           items: {
             type: 'object',
-            required: ['primarySourceProvenance', 'sourceProvenance'],
+            required: ['primarySourceProvenance', 'sourceProvenance', 'credibilityScore'],
             properties: {
               id: { type: 'string' },
               title: { type: 'string', description: 'Primary headline. Server-side primary selection is recency-based: digest items carry no per-source tier.' },
@@ -551,6 +553,10 @@ export const NLP_TOOLS: ToolDef[] = [
               isAlert: { type: 'boolean' },
               threatLevel: { type: 'string' }, threatCategory: { type: 'string' },
               firstSeen: { type: 'string' }, lastUpdated: { type: 'string' },
+              credibilityScore: {
+                type: 'number',
+                description: '0-100 source-reliability score for the primary outlet, distinct from importance. Built from source tier, propaganda risk, and independent corroboration.',
+              },
             },
           },
         },
@@ -633,6 +639,11 @@ export const NLP_TOOLS: ToolDef[] = [
           threatCategory: cluster.threat?.category ?? 'general',
           firstSeen: cluster.firstSeen.toISOString(),
           lastUpdated: cluster.lastUpdated.toISOString(),
+          credibilityScore: computeCredibilityScore({
+            sourceTier: getSourceTier(cluster.primarySource),
+            propagandaRisk: provenanceBySource.get(cluster.primarySource)!.risk,
+            independentCorroborationCount: distinctPublishers,
+          }),
         };
       });
       return {

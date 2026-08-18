@@ -927,6 +927,7 @@ async function fetchInsights() {
       corroborationSourceCount: story.corroborationSourceCount ?? 0,
       importanceScore: story.importanceScore,
       effectiveImportanceScore: story.effectiveImportanceScore,
+      ...(Number.isFinite(story.credibilityScore) ? { credibilityScore: story.credibilityScore } : {}),
       velocity: { level: 'normal', sourcesPerHour: 0 },
       isAlert: story.isAlert,
       category,
