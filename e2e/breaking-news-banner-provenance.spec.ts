@@ -104,11 +104,13 @@ test.describe('breaking news banner provenance screenshots', () => {
       return {
         position: style.position,
         afterHeader: header?.nextElementSibling === el,
+        insideApp: el.parentElement?.id === 'app',
         overflowX: el.scrollWidth - el.clientWidth,
       };
     });
     expect(metrics.position).toBe('static');
     expect(metrics.afterHeader).toBe(true);
+    expect(metrics.insideApp).toBe(true);
     expect(metrics.overflowX).toBeLessThanOrEqual(1);
 
     const pageOverflowX = await page.evaluate(() =>
