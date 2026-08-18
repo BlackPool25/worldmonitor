@@ -615,9 +615,7 @@ export const NLP_TOOLS: ToolDef[] = [
         .slice(0, limit);
       const projected = selectedClusters.map(({ cluster, sources, distinctPublishers }) => {
         const projectedSources = sources.slice(0, 8);
-        const primaryItem = cluster.allItems.find(item =>
-          item.link === cluster.primaryLink && item.title === cluster.primaryTitle);
-        const digestCredibilityScore = primaryItem?.credibilityScore;
+        const digestCredibilityScore = cluster.credibilityScore;
         const provenanceBySource = new Map(
           [...new Set([cluster.primarySource, ...projectedSources])]
             .map(source => [source, getSourceProvenanceState(source)] as const),

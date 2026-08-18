@@ -91,11 +91,6 @@ describe('publisherFamilyFor resolves curated publisher names (#6430)', () => {
 describe('credibility scoring prefers canonical publisher identity (#6597)', () => {
   it('scores configured Reuters aliases and syndicated Reuters items as Reuters', () => {
     assert.equal(
-      typeof computeItemCredibilityScore,
-      'function',
-      'digest must expose its production item-level credibility scorer for regression coverage',
-    );
-    assert.equal(
       computeItemCredibilityScore({ source: 'Reuters Asia', originPublisher: '' }, 1),
       84,
     );
@@ -106,11 +101,6 @@ describe('credibility scoring prefers canonical publisher identity (#6597)', () 
   });
 
   it('applies the high-risk cap to state media syndicated through a generic feed', () => {
-    assert.equal(
-      typeof computeItemCredibilityScore,
-      'function',
-      'digest must expose its production item-level credibility scorer for regression coverage',
-    );
     assert.ok(
       computeItemCredibilityScore({ source: 'Oil & Gas', originPublisher: 'RT' }, 5) <= 40,
     );

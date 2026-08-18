@@ -27,7 +27,7 @@ import { classifyEphemeralLiveCoverage } from '../../../../shared/ephemeral-live
 import { buildTickerDictionary, extractTickers } from '../../../../shared/ticker-extract.js';
 import stocksData from '../../../../shared/stocks.json';
 import { buildClassifyCacheKey } from '../../intelligence/v1/_shared';
-import { getSourceTier, SOURCE_TIERS } from '../../../_shared/source-tiers';
+import { getSourceTier, hasSourceTier } from '../../../_shared/source-tiers';
 import {
   getSourcePropagandaRisk,
   hasReviewedPropagandaRisk,
@@ -252,11 +252,12 @@ function resolveCredibilitySourceName(item: CredibilitySourceItem): string {
   ].filter((candidate): candidate is string =>
     typeof candidate === 'string' && candidate.length > 0);
 
+  // Prefer one identity reviewed by both registries so tier and risk describe
+  // the same publisher; then degrade toward whichever curated signal exists.
   return candidates.find(candidate =>
-    hasReviewedPropagandaRisk(candidate)
-    && Object.prototype.hasOwnProperty.call(SOURCE_TIERS, candidate))
+    hasReviewedPropagandaRisk(candidate) && hasSourceTier(candidate))
     ?? candidates.find(hasReviewedPropagandaRisk)
-    ?? candidates.find(candidate => Object.prototype.hasOwnProperty.call(SOURCE_TIERS, candidate))
+    ?? candidates.find(hasSourceTier)
     ?? rawName;
 }
 

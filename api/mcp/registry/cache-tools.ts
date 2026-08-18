@@ -5,7 +5,10 @@ import {
   normalizeChinaMacroPreflight,
   validateChinaMacroAvailabilityBindings,
 } from '../../../shared/china-macro-normalization';
-import { getSourceProvenanceState } from '../../../shared/source-provenance';
+import {
+  getSourceProvenanceState,
+  type PropagandaRisk,
+} from '../../../shared/source-provenance';
 import {
   CREDIBILITY_HIGH_RISK_CAP,
   computeCredibilityScore,
@@ -154,7 +157,10 @@ function summarizeConflictEvents(data: Record<string, unknown>): Record<string, 
   return summary;
 }
 
-function normalizeStoredCredibilityScore(value: unknown, propagandaRisk: string): number | null {
+function normalizeStoredCredibilityScore(
+  value: unknown,
+  propagandaRisk: PropagandaRisk,
+): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 100) {
     return null;
   }

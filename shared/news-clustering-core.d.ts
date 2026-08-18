@@ -36,6 +36,7 @@ export interface ClusteredEventCore {
   primaryTitle: string;
   primarySource: string;
   primaryLink: string;
+  credibilityScore?: number;
   /** Articles in the cluster — a volume signal, not a corroboration signal. */
   sourceCount: number;
   /** Distinct publishers behind those articles (#6428). */

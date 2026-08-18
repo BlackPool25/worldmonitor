@@ -6,12 +6,6 @@ import * as seedInsights from '../scripts/seed-insights.mjs';
 
 describe('seed-insights credibility propagation (#6597)', () => {
   it('preserves the digest score through normalization and clustering', () => {
-    assert.equal(
-      typeof seedInsights.normalizeDigestItemsForInsights,
-      'function',
-      'the production normalization seam must be executable in regression tests',
-    );
-
     const normalized = seedInsights.normalizeDigestItemsForInsights([{
       title: 'Reuters reports a major diplomatic development',
       source: 'Reuters',
@@ -27,12 +21,6 @@ describe('seed-insights credibility propagation (#6597)', () => {
   });
 
   it('keeps pre-rollout items without a fabricated stored score', () => {
-    assert.equal(
-      typeof seedInsights.normalizeDigestItemsForInsights,
-      'function',
-      'the production normalization seam must be executable in regression tests',
-    );
-
     const normalized = seedInsights.normalizeDigestItemsForInsights([{
       title: 'Legacy digest item without credibility metadata',
       source: 'Legacy Feed',
