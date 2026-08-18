@@ -5,14 +5,17 @@ import {
   ECCC_MAX_BYTES,
   NWS_ALERTS_URL,
   NWS_HOST,
+  SWIC_MAX_BYTES,
   WEATHER_ALERTS_SOURCE_VERSION,
   fetchApprovedWeatherJson,
   fetchEcccAlertFeatures,
+  fetchSwicAlertCatalog,
   formatTruncationWarning,
   mergeAlertSources,
   rankEligibleAlerts,
   requireAlertFeatures,
   selectEcccAlerts,
+  selectSwicAlerts,
   validateSelectedAlerts,
 } from './_weather-alert-select.mjs';
 
@@ -37,7 +40,7 @@ async function fetchSourceFeatures(url, allowedHosts, label) {
 }
 
 async function fetchAlerts() {
-  const [nwsFeatures, ecccResult] = await Promise.all([
+  const [nwsFeatures, ecccResult, swicResult] = await Promise.all([
     fetchSourceFeatures(NWS_ALERTS_URL, [NWS_HOST], 'NWS'),
     fetchEcccAlertFeatures({
       userAgent: CHROME_UA,
@@ -46,16 +49,27 @@ async function fetchAlerts() {
       console.warn(`weather-alerts: ECCC fetch failed: ${err.message || err}`);
       return null;
     }),
+    fetchSwicAlertCatalog({
+      userAgent: CHROME_UA,
+      maxBytes: SWIC_MAX_BYTES,
+    }).catch((err) => {
+      console.warn(`weather-alerts: SWIC fetch failed: ${err.message || err}`);
+      return null;
+    }),
   ]);
 
-  if (nwsFeatures == null && ecccResult == null) {
-    throw new Error('NWS and ECCC weather alert fetches both failed');
+  if (nwsFeatures == null && ecccResult == null && swicResult == null) {
+    throw new Error('NWS, ECCC, and SWIC weather alert fetches all failed');
   }
 
   const nwsAlerts = nwsFeatures ? rankEligibleAlerts(nwsFeatures) : [];
   const ecccAlerts = ecccResult ? selectEcccAlerts(ecccResult.features) : [];
-  const alerts = mergeAlertSources({ nws: nwsAlerts, eccc: ecccAlerts });
-  const truncationWarning = formatTruncationWarning(nwsAlerts.length + ecccAlerts.length, alerts.length);
+  const swicAlerts = swicResult ? selectSwicAlerts(swicResult.items, swicResult.membersByMid) : [];
+  const alerts = mergeAlertSources({ nws: nwsAlerts, eccc: ecccAlerts, swic: swicAlerts });
+  const truncationWarning = formatTruncationWarning(
+    nwsAlerts.length + ecccAlerts.length + swicAlerts.length,
+    alerts.length,
+  );
   if (truncationWarning) console.warn(truncationWarning);
 
   // A partial ECCC fetch still publishes — dropping the statuses that DID answer
@@ -73,6 +87,7 @@ async function fetchAlerts() {
   }
   if (nwsFeatures == null) degraded.push('nws-unavailable');
   if (ecccResult == null) degraded.push('eccc-unavailable');
+  if (swicResult == null) degraded.push('swic-unavailable');
 
   return degraded.length
     ? { alerts, sourceState: 'degraded', errorCode: 'WEATHER_ALERT_SOURCE_INCOMPLETE', skipReason: degraded.join(',') }

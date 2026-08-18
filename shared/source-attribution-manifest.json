@@ -8020,6 +8020,20 @@
       ]
     },
     {
+      "host": "severeweather.wmo.int",
+      "provider": "severeweather.wmo.int",
+      "kind": "structured",
+      "observed": true,
+      "license": "Provider terms for this upstream API/dataset; verify before redistribution",
+      "attribution": "Credit severeweather.wmo.int and link to the original upstream API/dataset.",
+      "status": "terms-review",
+      "references": [
+        {
+          "path": "scripts/_weather-alert-select.mjs"
+        }
+      ]
+    },
+    {
       "host": "sifted.eu",
       "provider": "sifted.eu",
       "kind": "feed+structured",

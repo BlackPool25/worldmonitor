@@ -484,7 +484,7 @@ IOC 分为四种类型（`c2_server`、`malware_host`、`phishing`、`malicious_
 - NASA FIRMS 卫星火灾探测（VIIRS 热点）
 - 西太平洋热带气旋观测（香港天文台、日本气象厅）
 - 15 个冲突与灾害高发区域的气候异常检测（Open-Meteo ERA5）
-- 天气警报和恶劣天气状况
+- 天气警报和恶劣天气状况（NWS + ECCC 多边形，WMO SWIC 官方 CAP 点位）
 - 辐射监测 — 见[辐射监测面板](/zh/panels/radiation-watch)
 
 **主要提供商**
@@ -499,6 +499,9 @@ IOC 分为四种类型（`c2_server`、`malware_host`、`phishing`、`malicious_
 | 香港天文台 | 本地热带气旋警告信号 | [data.weather.gov.hk](https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=warnsum&lang=en) |
 | 日本气象厅 | 西北太平洋热带气旋观测 | [jma.go.jp](https://www.jma.go.jp/bosai/map.html#contents=typhoon) |
 | Open-Meteo | ERA5 再分析气候数据 | [open-meteo.com](https://open-meteo.com) |
+| 美国国家气象局 | 官方美国天气警报（多边形） | [api.weather.gov](https://api.weather.gov/alerts/active) |
+| 加拿大环境与气候变化部 | 官方加拿大天气警报（多边形） | [api.weather.gc.ca](https://api.weather.gc.ca) |
+| WMO 恶劣天气信息中心 | WMO 成员官方 CAP，合并进 `weather:alerts:v1`（点位） | [severeweather.wmo.int](https://severeweather.wmo.int/json/wmo_all.json) |
 
 深入阅读：[自然灾害](/zh/natural-disasters) · [疾病警报方法论](/zh/methodology/disease-alert-level) · [热点升级面板](/zh/panels/thermal-escalation)
 

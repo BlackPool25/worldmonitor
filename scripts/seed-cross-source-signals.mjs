@@ -766,11 +766,17 @@ function extractWeatherExtreme(d) {
   // seed-weather-alerts.mjs:49) and publishes no category field.
   const extreme = alerts.filter(a => enumMatches(a.severity, 'extreme'));
   if (extreme.length === 0) return [];
-  // The alert carries areaDesc ('Kern County, CA; Tulare County, CA') and no
-  // country/region. Bucketing by that string would give almost every alert its
-  // own theater, which can never join a composite. The feed is NWS-only, so the
-  // theater is North America by construction.
-  const regionMap = new Map([['North America', extreme.length]]);
+  // Extreme alerts now include SWIC members outside North America. Missing
+  // countryCode (legacy NWS rows) still buckets as North America; ISO2 from
+  // the merged weather:alerts:v1 record is the theater key otherwise.
+  const regionMap = new Map();
+  for (const alert of extreme) {
+    const cc = String(alert?.countryCode || '').toUpperCase();
+    const theater = !cc || cc === 'US' || cc === 'CA' || cc === 'MX'
+      ? 'North America'
+      : cc;
+    regionMap.set(theater, (regionMap.get(theater) || 0) + 1);
+  }
   const signals = [];
   for (const [theater, count] of regionMap) {
     const score = BASE_WEIGHT['CROSS_SOURCE_SIGNAL_TYPE_WEATHER_EXTREME'] * Math.min(2, 1 + count / 5);

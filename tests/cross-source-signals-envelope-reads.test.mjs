@@ -712,6 +712,26 @@ describe('newly readable sources preserve semantics and time', () => {
       },
     }), []);
   });
+
+  it('buckets extreme weather:alerts:v1 by ISO2 without opening a second weather key', () => {
+    const signals = extractWeatherExtreme({
+      'weather:alerts:v1': {
+        alerts: [
+          { id: 'nws-1', severity: 'Extreme', countryCode: 'US' },
+          { id: 'eccc-1', severity: 'Extreme', countryCode: 'CA' },
+          { id: 'swic-in', severity: 'Extreme', countryCode: 'IN', source: 'swic' },
+          { id: 'swic-jp', severity: 'Extreme', countryCode: 'JP', source: 'swic' },
+          { id: 'legacy-nws', severity: 'Extreme' },
+        ],
+      },
+    });
+    const theaters = signals.map((s) => s.theater).sort();
+    // Cap is two theaters: North America (US+CA+legacy) plus one SWIC ISO2.
+    assert.equal(signals.length, 2);
+    assert.ok(theaters.includes('North America'));
+    assert.equal(signals.every((s) => s.type === 'CROSS_SOURCE_SIGNAL_TYPE_WEATHER_EXTREME'), true);
+    assert.equal(signals.every((s) => s.id.startsWith('weather:')), true);
+  });
 });
 
 describe('extractor registry stays covered', () => {
