@@ -7992,6 +7992,9 @@
       "status": "terms-review",
       "references": [
         {
+          "path": "server/worldmonitor/news/v1/_feeds.ts"
+        },
+        {
           "path": "src/config/feeds.ts"
         }
       ]
@@ -13028,15 +13031,12 @@
     {
       "host": "www.sequoiacap.com",
       "provider": "www.sequoiacap.com",
-      "kind": "feed+structured",
+      "kind": "structured",
       "observed": true,
       "license": "Provider terms for this feed publisher; verify before redistribution",
       "attribution": "Credit www.sequoiacap.com and link to the original feed publisher.",
       "status": "terms-review",
       "references": [
-        {
-          "path": "server/worldmonitor/news/v1/_feeds.ts"
-        },
         {
           "path": "src/config/variants/tech.ts"
         }
