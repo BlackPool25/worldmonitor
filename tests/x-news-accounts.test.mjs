@@ -23,8 +23,11 @@ describe('data/x-accounts.json registry (#6654)', () => {
   it('starts with about 64 enabled accounts, matching the Telegram analogue', () => {
     const enabled = xNews.countEnabledAccounts(registry);
     assert.equal(enabled, 64, `expected 64 enabled accounts, got ${enabled}`);
+    const all = xNews.loadXAccounts(registry);
     const full = xNews.loadXAccounts(registry, { set: 'full' });
     const tech = xNews.loadXAccounts(registry, { set: 'tech' });
+    assert.equal(all.length, 64);
+    assert.equal(new Set(all.map((account) => account.handle.toLowerCase())).size, 64);
     assert.equal(full.length, 56);
     assert.equal(tech.length, 8);
   });
@@ -90,20 +93,16 @@ describe('normalizeXPost / dedup (#6654)', () => {
     assert.equal(merged[1].id, 'Reuters:10');
   });
 
-  it('MCP/alert facts omit R4 tweet bodies', () => {
+  it('alert facts omit R4 tweet bodies', () => {
     const item = xNews.normalizeXPost({
       id: '99',
       text: 'SECRET BODY that must not leak to embed partners',
       created_at: '2026-08-18T12:00:00.000Z',
     }, account);
     const facts = xNews.derivedAlertFacts(item);
-    const mcp = xNews.toMcpItem(item);
     assert.equal(facts.link, item.url);
     assert.equal(facts.source, 'Reuters');
     assert.doesNotMatch(JSON.stringify(facts), /SECRET BODY/);
-    assert.equal(mcp.permalink, item.url);
-    assert.equal('text' in mcp, false);
-    assert.doesNotMatch(JSON.stringify(mcp), /SECRET BODY/);
   });
 
   it('collectXAlertCandidates skips deleted posts, omits tweet bodies, and drops unlisted/tier-4 sources', () => {
@@ -253,7 +252,150 @@ describe('since_id poll loop + 429 backoff (#6654)', () => {
       wait: async () => {},
     });
     assert.equal(state.accountsPolled, 0);
+    assert.equal(state.accountOffset, 0);
     assert.ok(state.rateLimitedUntil > 1000);
     assert.match(state.lastError, /rate limited/);
+  });
+
+  it('pages one fixed since_id window before advancing its cursor', async () => {
+    const calls = [];
+    const fetchImpl = async (url) => {
+      const parsed = new URL(url);
+      calls.push(parsed);
+      if (parsed.pathname === '/2/tweets') {
+        return new Response(JSON.stringify({ data: [{ id: '101' }, { id: '102' }] }), { status: 200 });
+      }
+      const token = parsed.searchParams.get('pagination_token');
+      return new Response(JSON.stringify(token ? {
+        data: [{ id: '101', text: 'older', created_at: '2026-08-18T11:59:00.000Z' }],
+        meta: {},
+      } : {
+        data: [{ id: '102', text: 'newest', created_at: '2026-08-18T12:00:00.000Z' }],
+        meta: { next_token: 'page-2' },
+      }), { status: 200 });
+    };
+    const state = await xNews.pollXFeed({
+      accounts: [{ handle: 'Reuters', accountId: '1652541', maxMessages: 10 }],
+      state: { cursorByAccountId: { '1652541': '100' }, items: [] },
+      bearerToken: 'test-token',
+      fetchImpl,
+      wait: async () => {},
+    });
+    const timelineCalls = calls.filter((url) => url.pathname.endsWith('/tweets') && url.pathname !== '/2/tweets');
+    assert.equal(timelineCalls.length, 2);
+    assert.equal(timelineCalls[0].searchParams.get('since_id'), '100');
+    assert.equal(timelineCalls[1].searchParams.get('since_id'), '100');
+    assert.equal(timelineCalls[1].searchParams.get('pagination_token'), 'page-2');
+    assert.equal(state.cursorByAccountId['1652541'], '102');
+    assert.equal(state.cycleComplete, true);
+  });
+
+  it('does not advance the cursor when the timeline page limit truncates a window', async () => {
+    const state = await xNews.pollXFeed({
+      accounts: [{ handle: 'Reuters', accountId: '1652541', maxMessages: 10 }],
+      state: { cursorByAccountId: { '1652541': '100' }, items: [] },
+      bearerToken: 'test-token',
+      maxTimelinePages: 1,
+      fetchImpl: async () => new Response(JSON.stringify({
+        data: [{ id: '102', text: 'newest' }],
+        meta: { next_token: 'more' },
+      }), { status: 200 }),
+      wait: async () => {},
+      lookupDeletions: false,
+    });
+    assert.equal(state.cursorByAccountId['1652541'], '100');
+    assert.equal(state.accountsFailed, 1);
+    assert.equal(state.cycleComplete, false);
+    assert.equal(state.items.length, 0);
+  });
+
+  it('rotates the next account after a partial 429 cycle', async () => {
+    const accounts = [
+      { handle: 'Reuters', accountId: '1652541' },
+      { handle: 'AP', accountId: '51241574' },
+      { handle: 'BBCWorld', accountId: '742143' },
+    ];
+    const first = await xNews.pollXFeed({
+      accounts,
+      state: { items: [], accountOffset: 0 },
+      bearerToken: 'test-token',
+      fetchImpl: async () => new Response('rate limited', { status: 429, headers: { 'retry-after': '30' } }),
+      now: () => 1000,
+      wait: async () => {},
+      lookupDeletions: false,
+    });
+    assert.equal(first.accountsAttempted, 1);
+    assert.equal(first.accountOffset, 1);
+
+    let firstPath = '';
+    await xNews.pollXFeed({
+      accounts,
+      state: { ...first, rateLimitedUntil: 0 },
+      bearerToken: 'test-token',
+      fetchImpl: async (url) => {
+        firstPath ||= new URL(url).pathname;
+        return new Response('rate limited', { status: 429, headers: { 'retry-after': '30' } });
+      },
+      now: () => 1000,
+      wait: async () => {},
+      lookupDeletions: false,
+    });
+    assert.match(firstPath, /\/2\/users\/51241574\/tweets$/);
+  });
+
+  it('marks partial account coverage incomplete', async () => {
+    const state = await xNews.pollXFeed({
+      accounts: [
+        { handle: 'Reuters', accountId: '1652541' },
+        { handle: 'AP', accountId: '51241574' },
+      ],
+      state: { items: [] },
+      bearerToken: 'test-token',
+      fetchImpl: async (url) => {
+        const parsed = new URL(url);
+        if (parsed.pathname.includes('/1652541/')) {
+          return new Response(JSON.stringify({ data: [] }), { status: 200 });
+        }
+        return new Response('failure', { status: 503 });
+      },
+      wait: async () => {},
+      lookupDeletions: false,
+    });
+    assert.equal(state.accountsPolled, 1);
+    assert.equal(state.accountsFailed, 1);
+    assert.equal(state.accountsAttempted, 2);
+    assert.equal(state.cycleComplete, false);
+  });
+});
+
+describe('versioned X feed snapshot', () => {
+  it('round-trips bounded serving state and poll cursors across a restart', () => {
+    const item = xNews.normalizeXPost({ id: '101', text: 'body' }, {
+      handle: 'Reuters', accountId: '1652541', label: 'Reuters', sourceName: 'Reuters',
+    });
+    const snapshot = xNews.buildXFeedSnapshot({
+      generation: 7,
+      cursorByAccountId: { '1652541': '101' },
+      accountIdByHandle: { Reuters: '1652541' },
+      items: [item],
+      lookupOffset: 4,
+      accountOffset: 9,
+      lastPollAt: 1_755_521_200_000,
+      lastHealthyAt: 1_755_521_200_000,
+      lastCoverage: { expected: 64, polled: 64, failed: 0, attempted: 64, complete: true },
+    }, { enabled: true, expectedAccounts: 64 });
+    const hydrated = xNews.hydrateXFeedSnapshot(snapshot);
+    assert.equal(snapshot.version, xNews.X_FEED_SNAPSHOT_VERSION);
+    assert.equal(snapshot.count, 1);
+    assert.equal(hydrated.generation, 7);
+    assert.equal(hydrated.cursorByAccountId['1652541'], '101');
+    assert.equal(hydrated.accountOffset, 9);
+    assert.equal(hydrated.items[0].text, 'body');
+    assert.equal(hydrated.lastCoverage.complete, true);
+  });
+
+  it('rejects an unversioned or malformed snapshot', () => {
+    assert.equal(xNews.hydrateXFeedSnapshot({ items: [] }), null);
+    assert.equal(xNews.hydrateXFeedSnapshot({ version: 1, items: [] }), null);
   });
 });

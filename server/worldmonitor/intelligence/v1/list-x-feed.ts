@@ -20,7 +20,6 @@ interface XRelayPost {
   timestampMs?: string | number;
   url?: unknown;
   permalink?: unknown;
-  facts?: unknown[];
   hasMedia?: boolean;
   lang?: string;
   contentState?: string;
@@ -63,9 +62,6 @@ function toHttpUrl(value: unknown): string {
 }
 
 function derivedFacts(post: XRelayPost, permalink: string): string[] {
-  if (Array.isArray(post.facts)) {
-    return post.facts.map(toText).map((fact) => fact.trim()).filter(Boolean);
-  }
   const accountName = toText(post.accountTitle || post.accountName || post.account || post.handle).trim() || 'X';
   const topic = toText(post.topic).trim() || 'update';
   const facts = [`${accountName} posted a ${topic} update`];
@@ -93,6 +89,7 @@ export const listXFeed: IntelligenceServiceHandler['listXFeed'] = async (
   params.set('limit', String(limit));
   if (req.topic) params.set('topic', req.topic);
   if (req.account) params.set('account', req.account);
+  params.set('includeDeleted', '1');
 
   const url = `${relayBaseUrl}/x/feed?${params.toString()}`;
   try {

@@ -436,6 +436,7 @@ export class DataLoaderManager implements AppModule {
   private loadAllDataPromise: Promise<void> | null = null;
   private loadAllDataRerunRequested = false;
   private loadAllDataQueuedForceAll = false;
+  private xIntelAbortController: AbortController | null = null;
 
   private digestBreaker = { state: 'closed' as 'closed' | 'open' | 'half-open', failures: 0, cooldownUntil: 0 };
   private readonly digestRequestTimeoutMs = 8000;
@@ -562,6 +563,8 @@ export class DataLoaderManager implements AppModule {
     this.stopSatellitePropagation();
     if (this.imageryRetryTimer) { clearTimeout(this.imageryRetryTimer); this.imageryRetryTimer = null; }
     this.applyTimeRangeFilterToNewsPanelsDebounced.cancel();
+    this.xIntelAbortController?.abort();
+    this.xIntelAbortController = null;
     stopOrefPolling();
     if (this.boundMarketWatchlistHandler) {
       window.removeEventListener('wm-market-watchlist-changed', this.boundMarketWatchlistHandler as EventListener);
@@ -4483,14 +4486,25 @@ export class DataLoaderManager implements AppModule {
 
   async loadXIntel(): Promise<void> {
     if (isDesktopRuntime() && !hasPremiumAccess()) return;
+    const hydrated = getHydratedData('xFeed') as import('@/services/x-intel').XFeedResponse | undefined;
+    if (hydrated && Array.isArray(hydrated.items) && !this.ctx.isDestroyed) {
+      this.callPanel('x-intel', 'setData', hydrated);
+    }
+    const controller = new AbortController();
+    this.xIntelAbortController?.abort();
+    this.xIntelAbortController = controller;
     try {
-      const result = await fetchXFeed();
+      const result = await fetchXFeed(50, controller.signal);
+      if (controller.signal.aborted || this.ctx.isDestroyed) return;
       this.callPanel('x-intel', 'setData', result);
     } catch (error) {
+      if (controller.signal.aborted || this.ctx.isDestroyed) return;
       console.error('[App] X news-account fetch failed:', error);
       this.callPanel('x-intel', 'setData', {
         source: 'x', enabled: false, count: 0, updatedAt: null, items: [],
       });
+    } finally {
+      if (this.xIntelAbortController === controller) this.xIntelAbortController = null;
     }
   }
 

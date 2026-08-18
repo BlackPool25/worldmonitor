@@ -20,6 +20,8 @@ const DEFAULT_MAX_TEXT_CHARS = 800;
 const DEFAULT_MAX_MESSAGES = 10;
 const DEFAULT_STAGGER_MS = 200;
 const MAX_TWEET_LOOKUP_IDS = 100;
+const DEFAULT_MAX_TIMELINE_PAGES = 10;
+const X_FEED_SNAPSHOT_VERSION = 1;
 const USER_AGENT = 'WorldMonitor/1.0 (curated news-account monitoring; +https://worldmonitor.app)';
 
 function toText(value) {
@@ -44,9 +46,19 @@ function clampPollIntervalMs(raw) {
 }
 
 function loadXAccounts(raw, options = {}) {
-  const set = String(options.set || 'full').toLowerCase();
-  const bucket = raw?.channels?.[set];
-  const rows = Array.isArray(bucket) ? bucket : [];
+  // The normal serving set is the union, not one registry bucket. Buckets are
+  // editorial views and overlap as the registry evolves; `set` remains an
+  // explicit operator override for constrained runs.
+  const requestedSet = Object.prototype.hasOwnProperty.call(options, 'set') && options.set != null
+    ? String(options.set).trim().toLowerCase()
+    : '';
+  const hasExplicitSet = requestedSet !== '' && requestedSet !== 'all' && requestedSet !== '*';
+  const set = hasExplicitSet ? requestedSet : '';
+  const channels = raw?.channels && typeof raw.channels === 'object' ? raw.channels : {};
+  const rows = hasExplicitSet
+    ? (Array.isArray(channels[set]) ? channels[set] : [])
+    : Object.values(channels).flatMap((bucket) => Array.isArray(bucket) ? bucket : []);
+  const seen = new Set();
   return rows
     .filter((row) => row && typeof row.handle === 'string')
     .map((row) => {
@@ -64,7 +76,13 @@ function loadXAccounts(raw, options = {}) {
         maxMessages: row.maxMessages != null ? Number(row.maxMessages) : DEFAULT_MAX_MESSAGES,
       };
     })
-    .filter((row) => row.handle && row.enabled);
+    .filter((row) => {
+      if (!row.handle || !row.enabled) return false;
+      const key = row.accountId ? `id:${row.accountId}` : `handle:${row.handle.toLowerCase()}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 }
 
 function countEnabledAccounts(raw) {
@@ -163,23 +181,6 @@ function collectXAlertCandidates(items, sourceTiers, now = Date.now(), recencyMs
   return candidates;
 }
 
-function toMcpItem(item) {
-  const facts = derivedAlertFacts(item);
-  return {
-    id: item?.id || '',
-    accountId: item?.accountId || '',
-    accountName: item?.accountTitle || item?.account || '',
-    handle: item?.account || '',
-    topic: item?.topic || '',
-    timestampMs: item?.ts ? Date.parse(item.ts) || 0 : 0,
-    permalink: facts.permalink,
-    facts: facts.facts,
-    hasMedia: Boolean(item?.hasMedia),
-    lang: item?.lang || '',
-    contentState: item?.contentState || 'active',
-  };
-}
-
 function mergeAndDedup(existing, incoming, maxItems = DEFAULT_MAX_FEED_ITEMS) {
   const seen = new Set();
   return [...incoming, ...existing]
@@ -216,6 +217,86 @@ function purgeExpiredTombstones(items, now = Date.now(), ttlMs = TOMBSTONE_TTL_M
   });
 }
 
+function copyCursorMap(value) {
+  const result = Object.create(null);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return result;
+  for (const [accountId, cursor] of Object.entries(value)) {
+    const normalizedAccountId = normalizeAccountId(accountId);
+    const normalizedCursor = normalizeAccountId(cursor);
+    if (normalizedAccountId && normalizedCursor) result[normalizedAccountId] = normalizedCursor;
+  }
+  return result;
+}
+
+function copyAccountIdMap(value) {
+  const result = Object.create(null);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return result;
+  for (const [handle, accountId] of Object.entries(value)) {
+    const normalizedHandle = normalizeHandle(handle);
+    const normalizedAccountId = normalizeAccountId(accountId);
+    if (normalizedHandle && normalizedAccountId) result[normalizedHandle] = normalizedAccountId;
+  }
+  return result;
+}
+
+function normalizeCoverage(value, expectedAccounts = 0) {
+  const expected = Math.max(0, Math.floor(Number(value?.expected ?? expectedAccounts) || 0));
+  const polled = Math.max(0, Math.floor(Number(value?.polled) || 0));
+  const failed = Math.max(0, Math.floor(Number(value?.failed) || 0));
+  const attempted = Math.max(0, Math.floor(Number(value?.attempted) || 0));
+  return {
+    expected,
+    polled,
+    failed,
+    attempted,
+    complete: Boolean(value?.complete) && expected > 0 && polled === expected && failed === 0,
+  };
+}
+
+function buildXFeedSnapshot(state, { enabled = false, expectedAccounts = 0 } = {}) {
+  const items = Array.isArray(state?.items) ? state.items.slice(0, DEFAULT_MAX_FEED_ITEMS) : [];
+  const lastPollAt = Number(state?.lastPollAt) || 0;
+  const coverage = normalizeCoverage(state?.lastCoverage, expectedAccounts);
+  return {
+    version: X_FEED_SNAPSHOT_VERSION,
+    generation: Math.max(0, Math.floor(Number(state?.generation) || 0)),
+    source: 'x',
+    earlySignal: true,
+    enabled: Boolean(enabled),
+    count: items.length,
+    updatedAt: lastPollAt > 0 ? new Date(lastPollAt).toISOString() : null,
+    coverage,
+    items,
+    pollState: {
+      cursorByAccountId: copyCursorMap(state?.cursorByAccountId),
+      accountIdByHandle: copyAccountIdMap(state?.accountIdByHandle),
+      lookupOffset: Math.max(0, Math.floor(Number(state?.lookupOffset) || 0)),
+      accountOffset: Math.max(0, Math.floor(Number(state?.accountOffset) || 0)),
+      lastPollAt,
+      lastHealthyAt: Math.max(0, Number(state?.lastHealthyAt) || 0),
+      coverage,
+    },
+  };
+}
+
+function hydrateXFeedSnapshot(snapshot, { maxItems = DEFAULT_MAX_FEED_ITEMS } = {}) {
+  if (!snapshot || snapshot.version !== X_FEED_SNAPSHOT_VERSION || !Array.isArray(snapshot.items)) return null;
+  const pollState = snapshot.pollState;
+  if (!pollState || typeof pollState !== 'object' || Array.isArray(pollState)) return null;
+  const itemLimit = Math.max(1, Math.floor(Number(maxItems) || DEFAULT_MAX_FEED_ITEMS));
+  return {
+    generation: Math.max(0, Math.floor(Number(snapshot.generation) || 0)),
+    cursorByAccountId: copyCursorMap(pollState.cursorByAccountId),
+    accountIdByHandle: copyAccountIdMap(pollState.accountIdByHandle),
+    items: snapshot.items.filter((item) => item && typeof item === 'object').slice(0, itemLimit),
+    lookupOffset: Math.max(0, Math.floor(Number(pollState.lookupOffset) || 0)),
+    accountOffset: Math.max(0, Math.floor(Number(pollState.accountOffset) || 0)),
+    lastPollAt: Math.max(0, Number(pollState.lastPollAt) || 0),
+    lastHealthyAt: Math.max(0, Number(pollState.lastHealthyAt) || 0),
+    lastCoverage: normalizeCoverage(pollState.coverage ?? snapshot.coverage),
+  };
+}
+
 function alertSourcePassesTierGate(sourceName, sourceTiers) {
   const tier = Object.prototype.hasOwnProperty.call(sourceTiers, sourceName)
     ? Number(sourceTiers[sourceName])
@@ -247,13 +328,14 @@ function buildUserByUsernameUrl(handle) {
   return url;
 }
 
-function buildUserTimelineUrl({ accountId, sinceId, maxResults }) {
+function buildUserTimelineUrl({ accountId, sinceId, maxResults, paginationToken }) {
   const id = normalizeAccountId(accountId);
   const url = new URL(`/2/users/${encodeURIComponent(id)}/tweets`, X_API_ORIGIN);
   url.searchParams.set('max_results', String(Math.max(5, Math.min(100, maxResults || DEFAULT_MAX_MESSAGES))));
   url.searchParams.set('tweet.fields', 'created_at,lang,public_metrics,referenced_tweets,attachments,edit_history_tweet_ids');
   url.searchParams.set('exclude', 'retweets,replies');
   if (sinceId) url.searchParams.set('since_id', String(sinceId));
+  if (paginationToken) url.searchParams.set('pagination_token', String(paginationToken));
   return url;
 }
 
@@ -265,7 +347,8 @@ function buildTweetsLookupUrl(ids) {
   return { url, ids: unique };
 }
 
-async function xFetchJson(fetchImpl, url, bearerToken, { timeoutMs = 15_000 } = {}) {
+async function xFetchJson(fetchImpl, url, bearerToken, { timeoutMs = 15_000, signal } = {}) {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const response = await fetchImpl(url, {
     method: 'GET',
     headers: {
@@ -273,7 +356,7 @@ async function xFetchJson(fetchImpl, url, bearerToken, { timeoutMs = 15_000 } = 
       Accept: 'application/json',
       'User-Agent': USER_AGENT,
     },
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
   });
   let body = null;
   try {
@@ -303,30 +386,49 @@ async function pollXFeed({
   maxTextChars = DEFAULT_MAX_TEXT_CHARS,
   staggerMs = DEFAULT_STAGGER_MS,
   lookupDeletions = true,
+  maxTimelinePages = DEFAULT_MAX_TIMELINE_PAGES,
+  signal,
 } = {}) {
   const nextState = {
     cursorByAccountId: { ...(state?.cursorByAccountId || {}) },
     accountIdByHandle: { ...(state?.accountIdByHandle || {}) },
     items: Array.isArray(state?.items) ? [...state.items] : [],
     lookupOffset: Number(state?.lookupOffset) || 0,
+    accountOffset: Number(state?.accountOffset) || 0,
     lastError: null,
     rateLimitedUntil: 0,
     accountsPolled: 0,
     accountsFailed: 0,
     newCount: 0,
+    accountsAttempted: 0,
+    cycleComplete: false,
   };
   if (!bearerToken) {
     nextState.lastError = 'X_BEARER_TOKEN is not configured';
     return nextState;
   }
 
+  const configuredAccounts = Array.isArray(accounts) ? accounts : [];
+  const startingOffset = configuredAccounts.length
+    ? ((nextState.accountOffset % configuredAccounts.length) + configuredAccounts.length) % configuredAccounts.length
+    : 0;
+  const orderedAccounts = configuredAccounts.length
+    ? [...configuredAccounts.slice(startingOffset), ...configuredAccounts.slice(0, startingOffset)]
+    : [];
+  const pageLimit = Math.max(1, Math.floor(Number(maxTimelinePages) || DEFAULT_MAX_TIMELINE_PAGES));
   const newItems = [];
-  for (const account of accounts) {
+  for (const account of orderedAccounts) {
     if (nextState.rateLimitedUntil) break;
+    nextState.accountsAttempted += 1;
     let accountId = normalizeAccountId(account.accountId) || nextState.accountIdByHandle[account.handle];
     try {
       if (!accountId) {
-        const { response, body } = await xFetchJson(fetchImpl, buildUserByUsernameUrl(account.handle), bearerToken);
+        const { response, body } = await xFetchJson(
+          fetchImpl,
+          buildUserByUsernameUrl(account.handle),
+          bearerToken,
+          { signal },
+        );
         if (response.status === 429) {
           nextState.rateLimitedUntil = now() + compute429BackoffMs(response.headers, 0);
           nextState.lastError = `rate limited resolving @${account.handle}`;
@@ -342,36 +444,62 @@ async function pollXFeed({
         nextState.accountIdByHandle[account.handle] = accountId;
       }
 
+      // Keep the original cursor fixed throughout pagination. Advancing it
+      // mid-window would skip older pages if the later request fails.
       const sinceId = nextState.cursorByAccountId[accountId];
-      const url = buildUserTimelineUrl({
-        accountId,
-        sinceId,
-        maxResults: account.maxMessages || DEFAULT_MAX_MESSAGES,
-      });
-      const { response, body } = await xFetchJson(fetchImpl, url, bearerToken);
-      if (response.status === 429) {
-        nextState.rateLimitedUntil = now() + compute429BackoffMs(response.headers, 0);
-        nextState.lastError = `rate limited polling @${account.handle}`;
-        break;
+      let paginationToken = '';
+      let pageCount = 0;
+      let completeWindow = false;
+      let pageFailed = false;
+      const accountItems = [];
+      let newestPostId = sinceId || '';
+      const boundAccount = { ...account, accountId };
+      while (pageCount < pageLimit) {
+        const url = buildUserTimelineUrl({
+          accountId,
+          sinceId,
+          maxResults: account.maxMessages || DEFAULT_MAX_MESSAGES,
+          paginationToken,
+        });
+        const { response, body } = await xFetchJson(fetchImpl, url, bearerToken, { signal });
+        if (response.status === 429) {
+          nextState.rateLimitedUntil = now() + compute429BackoffMs(response.headers, 0);
+          nextState.lastError = `rate limited polling @${account.handle}`;
+          break;
+        }
+        if (!response.ok) {
+          nextState.accountsFailed += 1;
+          nextState.lastError = `timeline @${account.handle} failed: HTTP ${response.status}`;
+          pageFailed = true;
+          break;
+        }
+        const tweets = Array.isArray(body?.data) ? body.data : [];
+        for (const tweet of tweets) {
+          const item = normalizeXPost(tweet, boundAccount, { maxTextChars });
+          if (!item) continue;
+          accountItems.push(item);
+          if (!newestPostId || BigInt(item.postId) > BigInt(newestPostId)) newestPostId = item.postId;
+        }
+        paginationToken = typeof body?.meta?.next_token === 'string' ? body.meta.next_token : '';
+        pageCount += 1;
+        if (!paginationToken) {
+          completeWindow = true;
+          break;
+        }
       }
-      if (!response.ok) {
-        nextState.accountsFailed += 1;
-        nextState.lastError = `timeline @${account.handle} failed: HTTP ${response.status}`;
+      if (nextState.rateLimitedUntil) break;
+      if (pageFailed) {
         await sleep(staggerMs, wait);
         continue;
       }
-
-      const tweets = Array.isArray(body?.data) ? body.data : [];
-      const boundAccount = { ...account, accountId };
-      for (const tweet of tweets) {
-        const item = normalizeXPost(tweet, boundAccount, { maxTextChars });
-        if (!item) continue;
-        newItems.push(item);
-        if (!nextState.cursorByAccountId[accountId] ||
-            BigInt(item.postId) > BigInt(nextState.cursorByAccountId[accountId])) {
-          nextState.cursorByAccountId[accountId] = item.postId;
-        }
+      if (!completeWindow) {
+        nextState.accountsFailed += 1;
+        nextState.lastError = `timeline @${account.handle} exceeded ${pageLimit} page limit`;
+        await sleep(staggerMs, wait);
+        continue;
       }
+      newItems.push(...accountItems);
+      if (newestPostId) nextState.cursorByAccountId[accountId] = newestPostId;
       nextState.accountsPolled += 1;
       await sleep(staggerMs, wait);
     } catch (error) {
@@ -380,10 +508,21 @@ async function pollXFeed({
     }
   }
 
+  // Move the starting point even after a 429 or a partial cycle. This makes
+  // the next admitted request start beyond the account that consumed quota.
+  if (configuredAccounts.length) {
+    nextState.accountOffset = (startingOffset + nextState.accountsAttempted) % configuredAccounts.length;
+  }
+
   nextState.items = mergeAndDedup(nextState.items, newItems, maxFeedItems);
   nextState.newCount = newItems.length;
 
-  if (lookupDeletions && nextState.items.length && !nextState.rateLimitedUntil) {
+  nextState.cycleComplete = configuredAccounts.length > 0
+    && nextState.accountsPolled === configuredAccounts.length
+    && nextState.accountsFailed === 0
+    && !nextState.rateLimitedUntil;
+
+  if (lookupDeletions && nextState.items.length && nextState.cycleComplete) {
     const activeIds = nextState.items
       .filter((item) => item.contentState !== 'deleted')
       .map((item) => item.postId)
@@ -396,16 +535,24 @@ async function pollXFeed({
     if (rotated.length) {
       const { url, ids } = buildTweetsLookupUrl(rotated);
       try {
-        const { response, body } = await xFetchJson(fetchImpl, url, bearerToken);
+        const { response, body } = await xFetchJson(fetchImpl, url, bearerToken, { signal });
         if (response.status === 429) {
           nextState.rateLimitedUntil = now() + compute429BackoffMs(response.headers, 0);
           nextState.lastError = 'rate limited during deletion lookup';
+          nextState.cycleComplete = false;
         } else if (response.ok) {
           const found = new Set((Array.isArray(body?.data) ? body.data : []).map((row) => String(row.id)));
-          const missing = ids.filter((id) => !found.has(String(id)));
+          const unresolved = new Set((Array.isArray(body?.errors) ? body.errors : [])
+            .map((row) => normalizeAccountId(row?.resource_id || row?.value))
+            .filter(Boolean));
+          const missing = ids.filter((id) => !found.has(String(id)) && !unresolved.has(String(id)));
           if (missing.length) nextState.items = tombstonePosts(nextState.items, missing, now());
+        } else {
+          nextState.cycleComplete = false;
+          nextState.lastError = `deletion lookup failed: HTTP ${response.status}`;
         }
       } catch (error) {
+        nextState.cycleComplete = false;
         nextState.lastError = `deletion lookup failed: ${error?.message || String(error)}`;
       }
     }
@@ -423,6 +570,8 @@ module.exports = {
   MAX_POLL_INTERVAL_MS,
   TOMBSTONE_TTL_MS,
   DEFAULT_MAX_FEED_ITEMS,
+  DEFAULT_MAX_TIMELINE_PAGES,
+  X_FEED_SNAPSHOT_VERSION,
   loadXAccounts,
   countEnabledAccounts,
   normalizeHandle,
@@ -431,10 +580,11 @@ module.exports = {
   normalizeXPost,
   derivedAlertFacts,
   collectXAlertCandidates,
-  toMcpItem,
   mergeAndDedup,
   tombstonePosts,
   purgeExpiredTombstones,
+  buildXFeedSnapshot,
+  hydrateXFeedSnapshot,
   alertSourcePassesTierGate,
   parseRetryAfterMs,
   compute429BackoffMs,

@@ -1238,6 +1238,10 @@ const X_POLL_INTERVAL_MS = xNewsAccounts.clampPollIntervalMs(process.env.X_POLL_
 const X_MAX_FEED_ITEMS = Math.max(50, Number(process.env.X_MAX_FEED_ITEMS || xNewsAccounts.DEFAULT_MAX_FEED_ITEMS));
 const X_MAX_TEXT_CHARS = Math.max(200, Number(process.env.X_MAX_TEXT_CHARS || 800));
 const X_TRACK_A_ACCOUNT_BUDGET = 64;
+const X_FEED_CACHE_KEY = 'intelligence:x-feed:v1';
+const X_FEED_META_KEY = 'seed-meta:intelligence:x-feed:v1';
+const X_FEED_TTL_SECONDS = 5400;
+const X_FEED_META_TTL_SECONDS = 3600;
 
 const xState = {
   accounts: [],
@@ -1245,7 +1249,11 @@ const xState = {
   accountIdByHandle: Object.create(null),
   items: [],
   lookupOffset: 0,
+  accountOffset: 0,
+  generation: 0,
   lastPollAt: 0,
+  lastHealthyAt: 0,
+  lastCoverage: null,
   lastError: null,
   rateLimitedUntil: 0,
   startedAt: Date.now(),
@@ -1253,16 +1261,18 @@ const xState = {
 
 function loadXAccounts() {
   const p = path.join(__dirname, '..', 'data', 'x-accounts.json');
-  const set = String(process.env.X_CHANNEL_SET || 'full').toLowerCase();
+  const set = String(process.env.X_CHANNEL_SET || '').trim().toLowerCase();
   try {
     const raw = JSON.parse(readFileSync(p, 'utf8'));
     const enabledTotal = xNewsAccounts.countEnabledAccounts(raw);
     if (enabledTotal > X_TRACK_A_ACCOUNT_BUDGET) {
       console.warn(`[Relay] X registry has ${enabledTotal} enabled accounts; Track A budget is ~${X_TRACK_A_ACCOUNT_BUDGET}. Re-run spend math before growing the set.`);
     }
-    xState.accounts = xNewsAccounts.loadXAccounts(raw, { set });
+    xState.accounts = set
+      ? xNewsAccounts.loadXAccounts(raw, { set })
+      : xNewsAccounts.loadXAccounts(raw);
     if (!xState.accounts.length) {
-      console.warn(`[Relay] X account set "${set}" is empty — no accounts to poll`);
+      console.warn(`[Relay] X account set "${set || 'all'}" is empty — no accounts to poll`);
     }
     return xState.accounts;
   } catch (e) {
@@ -1272,7 +1282,50 @@ function loadXAccounts() {
   }
 }
 
-async function pollXOnce() {
+async function hydrateXState() {
+  const snapshot = await upstashGet(X_FEED_CACHE_KEY, (reason) => {
+    console.warn(`[Relay] X snapshot hydration failed: ${reason}`);
+  });
+  const hydrated = xNewsAccounts.hydrateXFeedSnapshot(snapshot, { maxItems: X_MAX_FEED_ITEMS });
+  if (!hydrated) return false;
+  xState.cursorByAccountId = hydrated.cursorByAccountId;
+  xState.accountIdByHandle = hydrated.accountIdByHandle;
+  xState.items = hydrated.items;
+  xState.lookupOffset = hydrated.lookupOffset;
+  xState.accountOffset = hydrated.accountOffset;
+  xState.generation = hydrated.generation;
+  xState.lastPollAt = hydrated.lastPollAt;
+  xState.lastHealthyAt = hydrated.lastHealthyAt;
+  xState.lastCoverage = hydrated.lastCoverage;
+  console.log(`[Relay] X snapshot hydrated: generation ${xState.generation}, ${xState.items.length} items`);
+  return true;
+}
+
+async function publishXSnapshot(expectedAccounts, cycleComplete) {
+  const snapshot = xNewsAccounts.buildXFeedSnapshot(xState, {
+    enabled: X_ENABLED,
+    expectedAccounts,
+  });
+  const dataWritten = await upstashSet(X_FEED_CACHE_KEY, snapshot, X_FEED_TTL_SECONDS);
+  if (!dataWritten) {
+    xState.lastError = xState.lastError || 'failed to publish X snapshot';
+    return false;
+  }
+  if (!cycleComplete) return true;
+  const metaWritten = await upstashSet(X_FEED_META_KEY, {
+    fetchedAt: xState.lastHealthyAt,
+    recordCount: snapshot.count,
+    generation: snapshot.generation,
+    coverage: snapshot.coverage,
+  }, X_FEED_META_TTL_SECONDS);
+  if (!metaWritten) {
+    xState.lastError = xState.lastError || 'failed to publish X seed metadata';
+    return false;
+  }
+  return true;
+}
+
+async function pollXOnce({ generation, signal } = {}) {
   if (!X_ENABLED) return;
   if (xState.rateLimitedUntil && Date.now() < xState.rateLimitedUntil) return;
 
@@ -1288,60 +1341,70 @@ async function pollXOnce() {
     now: Date.now,
     maxFeedItems: X_MAX_FEED_ITEMS,
     maxTextChars: X_MAX_TEXT_CHARS,
+    signal,
   });
+
+  if (generation !== xState.generation || signal?.aborted) {
+    console.warn(`[Relay] X poll generation ${generation} finished stale; discarding result`);
+    return;
+  }
 
   xState.cursorByAccountId = next.cursorByAccountId;
   xState.accountIdByHandle = next.accountIdByHandle;
   xState.items = next.items;
   xState.lookupOffset = next.lookupOffset || 0;
+  xState.accountOffset = next.accountOffset || 0;
   xState.lastError = next.lastError;
   xState.rateLimitedUntil = next.rateLimitedUntil || 0;
   xState.lastPollAt = Date.now();
+  xState.lastCoverage = {
+    expected: accounts.length,
+    polled: next.accountsPolled,
+    failed: next.accountsFailed,
+    attempted: next.accountsAttempted,
+    complete: next.cycleComplete,
+  };
+  if (next.cycleComplete) xState.lastHealthyAt = xState.lastPollAt;
 
   const elapsed = ((Date.now() - pollStart) / 1000).toFixed(1);
   console.log(`[Relay] X poll: ${next.accountsPolled}/${accounts.length} accounts, ${next.newCount} new posts, ${xState.items.length} total, ${next.accountsFailed} errors (${elapsed}s)`);
 
-  if (next.accountsPolled > 0) {
-    const rc = xState.items.length;
-    upstashSet('intelligence:x-feed:v1', {
-      count: rc,
-      updatedAt: new Date().toISOString(),
-      enabled: true,
-    }, 5400).catch(() => {});
-    upstashSet('seed-meta:intelligence:x-feed:v1', {
-      fetchedAt: Date.now(),
-      recordCount: rc,
-    }, 3600).catch(() => {});
-  }
+  await publishXSnapshot(accounts.length, next.cycleComplete);
 }
 
 let xPollInFlight = false;
 let xPollStartedAt = 0;
+let xPollAbortController = null;
 
 function guardedXPoll() {
   if (xPollInFlight) {
     const stuck = Date.now() - xPollStartedAt;
     if (stuck > X_POLL_INTERVAL_MS + 60_000) {
-      console.warn(`[Relay] X poll stuck for ${Math.round(stuck / 1000)}s — force-clearing in-flight flag`);
-      xPollInFlight = false;
-    } else {
-      return;
+      console.warn(`[Relay] X poll still in flight after ${Math.round(stuck / 1000)}s — retaining single-writer lock`);
     }
+    return;
   }
   xPollInFlight = true;
   xPollStartedAt = Date.now();
-  pollXOnce()
+  xPollAbortController = new AbortController();
+  const generation = xState.generation + 1;
+  xState.generation = generation;
+  pollXOnce({ generation, signal: xPollAbortController.signal })
     .catch((e) => console.warn('[Relay] X poll error:', e?.message || e))
-    .finally(() => { xPollInFlight = false; });
+    .finally(() => {
+      if (generation !== xState.generation) return;
+      xPollInFlight = false;
+      xPollAbortController = null;
+    });
 }
 
-function startXPollLoop() {
+async function startXPollLoop() {
+  loadXAccounts();
+  await hydrateXState();
   if (!X_ENABLED) {
     console.warn('[Relay] X news-account poll skipped — X_BEARER_TOKEN is not configured on ais-relay');
-    loadXAccounts();
     return;
   }
-  loadXAccounts();
   guardedXPoll();
   setInterval(guardedXPoll, X_POLL_INTERVAL_MS).unref?.();
   console.log(`[Relay] X poll loop started (${Math.round(X_POLL_INTERVAL_MS / 60000)} min cadence)`);
@@ -10601,6 +10664,9 @@ const server = http.createServer(async (req, res) => {
         lastPollAt: xState.lastPollAt ? new Date(xState.lastPollAt).toISOString() : null,
         hasError: !!xState.lastError,
         lastError: xState.lastError || null,
+        generation: xState.generation,
+        coverage: xState.lastCoverage,
+        lastHealthyAt: xState.lastHealthyAt ? new Date(xState.lastHealthyAt).toISOString() : null,
         pollInFlight: xPollInFlight,
         pollInFlightSince: xPollInFlight && xPollStartedAt ? new Date(xPollStartedAt).toISOString() : null,
         rateLimitedUntil: xState.rateLimitedUntil ? new Date(xState.rateLimitedUntil).toISOString() : null,
@@ -10823,10 +10889,11 @@ const server = http.createServer(async (req, res) => {
       const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit') || 50)));
       const topic = (url.searchParams.get('topic') || '').trim().toLowerCase();
       const account = (url.searchParams.get('account') || url.searchParams.get('channel') || '').trim().toLowerCase();
+      const includeDeleted = url.searchParams.get('includeDeleted') === '1';
 
       const items = Array.isArray(xState.items) ? xState.items : [];
       const filtered = items.filter((it) => {
-        if (it.contentState === 'deleted') return false;
+        if (!includeDeleted && it.contentState === 'deleted') return false;
         if (topic && String(it.topic || '').toLowerCase() !== topic) return false;
         if (account && String(it.account || '').toLowerCase() !== account) return false;
         return true;
@@ -10842,6 +10909,7 @@ const server = http.createServer(async (req, res) => {
         enabled: X_ENABLED,
         count: filtered.length,
         updatedAt: xState.lastPollAt ? new Date(xState.lastPollAt).toISOString() : null,
+        coverage: xState.lastCoverage,
         items: filtered,
       }));
     } catch (e) {
@@ -12894,7 +12962,10 @@ server.listen(PORT, () => {
     return;
   }
     startTelegramPollLoop();
-    startXPollLoop();
+    void startXPollLoop().catch((error) => {
+      xState.lastError = `X poll startup failed: ${error?.message || String(error)}`;
+      console.warn('[Relay] X poll startup failed:', error?.message || error);
+    });
   startOrefPollLoop();
   startUcdpSeedLoop();
   startMarketDataSeedLoop();

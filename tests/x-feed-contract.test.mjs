@@ -118,7 +118,9 @@ describe('server listXFeed relay normalization', () => {
   it('maps relay items into permalink + facts and never returns tweet bodies', async () => {
     process.env.WS_RELAY_URL = 'https://relay.example.com';
     process.env.RELAY_SHARED_SECRET = 'test-secret';
-    globalThis.fetch = async () => new Response(JSON.stringify({
+    globalThis.fetch = async (url) => {
+      assert.equal(new URL(String(url)).searchParams.get('includeDeleted'), '1');
+      return new Response(JSON.stringify({
       enabled: true,
       count: 0,
       items: [{
@@ -134,10 +136,11 @@ describe('server listXFeed relay normalization', () => {
         lang: 'en',
         contentState: 'active',
       }],
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    };
 
     const response = await listXFeed(/** @type {any} */ ({}), { limit: 25, topic: '', account: '' });
     assert.equal(response.enabled, true);
@@ -148,6 +151,52 @@ describe('server listXFeed relay normalization', () => {
     assert.equal(response.posts[0].timestampMs, Date.parse('2026-08-18T12:30:00Z'));
     assert.ok(response.posts[0].facts.length > 0);
     assert.equal('text' in response.posts[0], false);
+    assert.doesNotMatch(JSON.stringify(response), /SECRET BODY/);
+  });
+
+  it('preserves relay tombstones for RPC consumers', async () => {
+    process.env.WS_RELAY_URL = 'https://relay.example.com';
+    process.env.RELAY_SHARED_SECRET = 'test-secret';
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      enabled: true,
+      items: [{
+        id: 'Reuters:deleted',
+        account: 'Reuters',
+        topic: 'breaking',
+        url: 'https://x.com/Reuters/status/deleted',
+        text: '',
+        contentState: 'deleted',
+      }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    const response = await listXFeed(/** @type {any} */ ({}), { limit: 25, topic: '', account: '' });
+    assert.equal(response.count, 1);
+    assert.equal(response.posts[0].contentState, 'deleted');
+    assert.equal('text' in response.posts[0], false);
+  });
+
+  it('derives RPC facts instead of trusting relay-provided facts', async () => {
+    process.env.WS_RELAY_URL = 'https://relay.example.com';
+    process.env.RELAY_SHARED_SECRET = 'test-secret';
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      enabled: true,
+      items: [{
+        id: 'Reuters:124',
+        account: 'Reuters',
+        topic: 'breaking',
+        url: 'https://x.com/Reuters/status/124',
+        facts: ['SECRET BODY injected through relay facts'],
+      }],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    const response = await listXFeed(/** @type {any} */ ({}), { limit: 25, topic: '', account: '' });
+    assert.deepEqual(response.posts[0].facts, [
+      'Reuters posted a breaking update',
+      'https://x.com/Reuters/status/124',
+    ]);
     assert.doesNotMatch(JSON.stringify(response), /SECRET BODY/);
   });
 

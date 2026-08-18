@@ -51,6 +51,12 @@ describe('Bootstrap cache key registry', () => {
     );
   });
 
+  it('registers the rendered X feed in bootstrap hydration', () => {
+    assert.equal(CANONICAL_BOOTSTRAP_CACHE_KEYS.xFeed, 'intelligence:x-feed:v1');
+    assert.equal(CANONICAL_BOOTSTRAP_TIERS.xFeed, 'slow');
+    assert.equal(EDGE_BOOTSTRAP_CACHE_KEYS.xFeed, CANONICAL_BOOTSTRAP_CACHE_KEYS.xFeed);
+  });
+
   it('generated edge mirror exactly matches the authored shared registry', () => {
     assert.deepEqual(EDGE_BOOTSTRAP_CACHE_KEYS, CANONICAL_BOOTSTRAP_CACHE_KEYS);
     assert.deepEqual(EDGE_BOOTSTRAP_TIERS, CANONICAL_BOOTSTRAP_TIERS);
