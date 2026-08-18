@@ -1318,6 +1318,7 @@ export const COVERAGE_FAILURE_REASONS = Object.freeze([
   'validator-rejected',
   'parsed-zero-products',
   'pin-validator-rejected',
+  'match-admission-persist-failed',
   'unknown-error',
 ]);
 
