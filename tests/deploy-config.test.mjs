@@ -289,8 +289,8 @@ describe('crawlable content corpus deployment contracts', () => {
   ];
 
   // #6575: the negative-lookahead SPA catch-all is gone. The dashboard
-  // document is only served by the explicit /dashboard rewrites plus the two
-  // enumerated client-side History routes (/stocks/:symbol?, /story).
+  // document is only served by the explicit /dashboard rewrites plus the
+  // enumerated client-side History routes (/stocks, /stocks/:symbol, /story).
   const getSpaFallbackRewrites = () => vercelConfig.rewrites.filter((r) =>
     r.destination === DASHBOARD_HTML_DESTINATION && r.source !== '/dashboard'
   );
@@ -455,7 +455,7 @@ describe('crawlable content corpus deployment contracts', () => {
     const fallbacks = getSpaFallbackRewrites();
     assert.deepEqual(
       fallbacks.map((r) => r.source).sort(),
-      ['/stocks/:symbol*', '/story'],
+      ['/stocks', '/stocks/:symbol', '/story'],
       'the SPA fallback inventory must stay enumerable — every entry is a real client-side route'
     );
 
@@ -468,8 +468,12 @@ describe('crawlable content corpus deployment contracts', () => {
       );
     }
 
+    assert.equal(firstRewriteFor({ host: 'www.worldmonitor.app', path: '/stocks' })?.destination, DASHBOARD_HTML_DESTINATION);
     assert.equal(firstRewriteFor({ host: 'www.worldmonitor.app', path: '/stocks/AAPL' })?.destination, DASHBOARD_HTML_DESTINATION);
     assert.equal(firstRewriteFor({ host: 'www.worldmonitor.app', path: '/story' })?.destination, DASHBOARD_HTML_DESTINATION);
+    assert.equal(firstRewriteFor({ host: 'www.worldmonitor.app', path: '/stocks/foo/bar' }), null);
+    assert.equal(firstRedirectFor({ host: 'www.worldmonitor.app', path: '/story/' })?.destination, '/story');
+    assert.equal(firstRedirectFor({ host: 'www.worldmonitor.app', path: '/dashboard/' })?.destination, '/dashboard');
     // Unknown garbage used to soft-404 the dashboard through the catch-all.
     assert.equal(firstRewriteFor({ host: 'www.worldmonitor.app', path: '/this-is-not-a-page' }), null);
     assert.equal(firstRewriteFor({ host: 'www.worldmonitor.app', path: '/security' }), null);
@@ -912,7 +916,7 @@ describe('welcome landing page routing', () => {
     assert.equal(
       catchAll,
       undefined,
-      'unknown paths must 404 instead of soft-404ing the dashboard (#6575); the fallback inventory is /dashboard, /stocks/:symbol*, /story only'
+      'unknown paths must 404 instead of soft-404ing the dashboard (#6575); the fallback inventory is /dashboard, /stocks, /stocks/:symbol, /story only'
     );
   });
 
@@ -1953,7 +1957,7 @@ describe('embeddable map route guardrails', () => {
       );
       assert.equal(shadow, undefined, path + ' must serve the public embed entry, not the app shell');
     }
-    assert.ok(SPA_HTML_CACHE_SOURCE.includes('embed'), 'HTML cache catch-all must keep excluding the public embed entry');
+    assert.ok(SPA_HTML_CACHE_SOURCE.includes('|embed|embed\\.html|'), 'HTML cache catch-all must keep excluding the public embed entry');
     assert.equal(getCacheHeaderValue(SPA_HTML_CACHE_SOURCE), 'private, no-cache, must-revalidate');
   });
 
@@ -2655,7 +2659,7 @@ describe('agent readiness: auth.md walkthrough', () => {
       r.destination === DASHBOARD_HTML_DESTINATION && sourceToRegExp(r.source).test(path)
     );
     assert.equal(dashboardShadow('/auth.md'), undefined, '/auth.md must serve the real file, not the dashboard');
-    assert.ok(SPA_HTML_CACHE_SOURCE.includes('auth'), 'HTML cache catch-all must keep excluding /auth.md');
+    assert.ok(SPA_HTML_CACHE_SOURCE.includes('|auth\\.md|'), 'HTML cache catch-all must keep excluding /auth.md');
   });
 
   // pricing.md and support.md are advertised in api-catalog service-meta and
@@ -2676,7 +2680,8 @@ describe('agent readiness: auth.md walkthrough', () => {
         r.destination === DASHBOARD_HTML_DESTINATION && sourceToRegExp(r.source).test(mdPath)
       );
       assert.equal(shadow, undefined, `${mdPath} must serve the real file, not the dashboard`);
-      assert.ok(SPA_HTML_CACHE_SOURCE.includes(mdPath.slice(1).split('.')[0]), `HTML cache catch-all must keep excluding ${mdPath}`);
+      const token = mdPath.slice(1).replaceAll('.', '\\.');
+      assert.ok(SPA_HTML_CACHE_SOURCE.includes(`|${token}|`), `HTML cache catch-all must keep excluding ${mdPath}`);
       assert.ok(
         existsSync(resolve(__dirname, `../public${mdPath}`)),
         `public${mdPath} must exist — it is advertised in api-catalog service-meta and llms.txt`
@@ -2694,7 +2699,7 @@ describe('agent readiness: auth.md walkthrough', () => {
       r.destination === DASHBOARD_HTML_DESTINATION && sourceToRegExp(r.source).test(path)
     );
     assert.equal(dashboardShadow('/agent.txt'), undefined, '/agent.txt must serve the real file, not the dashboard');
-    assert.ok(SPA_HTML_CACHE_SOURCE.includes('agent'), 'HTML cache catch-all must keep excluding /agent.txt');
+    assert.ok(SPA_HTML_CACHE_SOURCE.includes('|agent\\.txt|'), 'HTML cache catch-all must keep excluding /agent.txt');
     const agentTxt = readFileSync(resolve(__dirname, '../public/agent.txt'), 'utf-8');
     assert.match(agentTxt, /When to use/i, 'agent.txt must carry when-to-use guidance');
     assert.ok(agentTxt.includes('https://worldmonitor.app/mcp'), 'agent.txt must point at the MCP server');
@@ -3773,7 +3778,7 @@ describe('variant-host canonicalization (#6833–#6836)', () => {
     assert.ok(catchAllHeader, 'expected the pinned SPA cache-header rule');
     assert.equal(getCacheHeaderValue(SPA_HTML_CACHE_SOURCE), 'private, no-cache, must-revalidate');
     // The enumerated SPA entry routes keep the no-cache policy.
-    for (const path of ['/dashboard', '/stocks/AAPL', '/story']) {
+    for (const path of ['/dashboard', '/stocks', '/stocks/AAPL', '/story']) {
       assert.equal(effectiveCacheControl(path), 'private, no-cache, must-revalidate', path + ' must stay no-cache');
     }
   });
@@ -3836,8 +3841,10 @@ describe('variant-host canonicalization (#6833–#6836)', () => {
       assert.equal(shadow, undefined, `${path} must 404 instead of serving dashboard.html`);
     }
     // The real client-side History routes keep reaching the SPA document.
+    assert.equal(firstRewriteFor({ host: 'www.worldmonitor.app', path: '/stocks' })?.destination, DASHBOARD_HTML_DESTINATION);
     assert.equal(firstRewriteFor({ host: 'www.worldmonitor.app', path: '/stocks/AAPL' })?.destination, DASHBOARD_HTML_DESTINATION);
     assert.equal(firstRewriteFor({ host: 'www.worldmonitor.app', path: '/story' })?.destination, DASHBOARD_HTML_DESTINATION);
+    assert.equal(firstRewriteFor({ host: 'www.worldmonitor.app', path: '/stocks/foo/bar' }), null);
     assert.ok(SPA_HTML_CACHE_SOURCE.includes('|src|'), 'HTML cache catch-all must exclude /src');
     assert.ok(SPA_HTML_CACHE_SOURCE.includes('|tmp|'), 'HTML cache catch-all must exclude /tmp');
     assert.ok(SPA_HTML_CACHE_SOURCE.includes('|server|'), 'HTML cache catch-all must exclude /server');

@@ -44,8 +44,8 @@ describe('SPA fallback scope (#6575)', () => {
   it('serves the dashboard document only from the enumerated client History routes', () => {
     assert.deepEqual(
       dashboardRewrites().map((r) => r.source).sort(),
-      ['/dashboard', '/stocks/:symbol*', '/story'],
-      'inventory: /dashboard itself plus the two client History routes',
+      ['/dashboard', '/stocks', '/stocks/:symbol', '/story'],
+      'inventory: /dashboard itself plus the client History routes',
     );
     const story = vercel.rewrites.find((r) => r.source === '/story');
     assert.equal(story?.destination, DASHBOARD_HTML_DESTINATION);
@@ -61,8 +61,18 @@ describe('SPA fallback scope (#6575)', () => {
 
   it('real client-side deep links keep reaching the SPA document', () => {
     assert.equal(dashboardShadow('/dashboard')?.destination, DASHBOARD_HTML_DESTINATION);
+    assert.equal(dashboardShadow('/stocks')?.destination, DASHBOARD_HTML_DESTINATION);
     assert.equal(dashboardShadow('/stocks/AAPL')?.destination, DASHBOARD_HTML_DESTINATION);
     assert.equal(dashboardShadow('/story')?.destination, DASHBOARD_HTML_DESTINATION);
+    assert.equal(dashboardShadow('/stocks/foo/bar'), undefined, 'nested /stocks paths must 404, not soft-404 the SPA');
+  });
+
+  it('canonicalizes trailing-slash History URLs instead of 404ing them', () => {
+    const dest = (source) => vercel.redirects.find((r) => r.source === source)?.destination;
+    assert.equal(dest('/dashboard/'), '/dashboard');
+    assert.equal(dest('/story/'), '/story');
+    assert.equal(dest('/stocks/'), '/stocks');
+    assert.equal(dest('/stocks/:symbol/'), '/stocks/:symbol');
   });
 
   it('never reintroduces a negative-lookahead SPA catch-all', () => {
