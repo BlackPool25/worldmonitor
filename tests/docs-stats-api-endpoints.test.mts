@@ -80,6 +80,25 @@ describe('docs-stats api endpoint inventory', () => {
     assertRealTreeUntouched(probeName);
   });
 
+  // Parallel test:data can run this file next to
+  // tests/docs-stats-plan-layer-entitlement.test.mts, which spawns
+  // `docs-stats --check` and walks api/ via source-attribution. Stage the
+  // leftover only in the sandbox (#6702) so that sibling scan never sees it.
+  it('leaves source-attribution able to walk api/ while the leftover exists', async () => {
+    const probeName = '[__docs_stats_probe__]';
+    await withStatsRoot(async (sandbox) => {
+      const leftover = resolve(sandbox, 'api', probeName);
+      mkdirSync(resolve(leftover, 'v1'), { recursive: true });
+      try {
+        assertRealTreeUntouched(probeName);
+        assert.doesNotThrow(() => computeStats());
+      } finally {
+        rmSync(leftover, { recursive: true, force: true });
+      }
+    });
+    assertRealTreeUntouched(probeName);
+  });
+
   it('still counts a leftover directory once it contains a real file', async () => {
     // #6702: same sandbox-absolute staging as the empty-probe test above.
     const probeName = '[__docs_stats_probe2__]';
