@@ -9,13 +9,14 @@ import {
   SOURCE_PROPAGANDA_RISK,
   SOURCE_TYPES,
 } from '../shared/source-provenance.ts';
-import { X_ACCOUNT_SOURCE_TIERS } from '../shared/x-account-trust.ts';
+import { SOURCE_TIERS } from '../server/_shared/source-tiers.ts';
+import { X_ACCOUNT_SOURCE_TIERS, X_ACCOUNT_TRUST } from '../shared/x-account-trust.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const xNews = require('../scripts/lib/x-news-accounts.cjs');
 const registry = JSON.parse(readFileSync(join(__dirname, '../data/x-accounts.json'), 'utf8'));
-const sourceTiers = JSON.parse(readFileSync(join(__dirname, '../shared/source-tiers.json'), 'utf8'));
+const rssSourceTiers = JSON.parse(readFileSync(join(__dirname, '../shared/source-tiers.json'), 'utf8'));
 const healthSrc = readFileSync(join(__dirname, '../api/health.js'), 'utf8');
 const relaySrc = readFileSync(join(__dirname, '../scripts/ais-relay.cjs'), 'utf8');
 
@@ -28,24 +29,36 @@ function enabledSourceNames() {
 }
 
 describe('X news-account public trust registries (#6654)', () => {
-  it('registers every enabled X sourceName in SOURCE_TYPES, SOURCE_PROPAGANDA_RISK, and source-tiers.json', () => {
+  it('registers every enabled X sourceName in the public trust registries', () => {
     const missing = [];
     for (const name of enabledSourceNames()) {
       if (!Object.prototype.hasOwnProperty.call(SOURCE_TYPES, name)) missing.push(`type:${name}`);
       if (!Object.prototype.hasOwnProperty.call(SOURCE_PROPAGANDA_RISK, name)) missing.push(`risk:${name}`);
-      if (!Object.prototype.hasOwnProperty.call(sourceTiers, name)) missing.push(`tier:${name}`);
+      if (!Object.prototype.hasOwnProperty.call(SOURCE_TIERS, name)) missing.push(`tier:${name}`);
     }
     assert.deepEqual(missing, [], `X accounts missing from public trust registries:\n${missing.join('\n')}`);
   });
 
   it('does not place enabled X accounts in the explicit tier-4 set the relay drops', () => {
     const explicitTier4 = new Set(
-      Object.entries(sourceTiers).filter(([, tier]) => tier === 4).map(([name]) => name),
+      Object.entries(SOURCE_TIERS).filter(([, tier]) => tier === 4).map(([name]) => name),
     );
-    const dropped = enabledSourceNames().filter((name) => explicitTier4.has(name) || sourceTiers[name] === 4);
+    const dropped = enabledSourceNames().filter((name) => explicitTier4.has(name) || SOURCE_TIERS[name] === 4);
     assert.deepEqual(dropped, [], `enabled X accounts would be dropped by RELAY_TIER4_SOURCES: ${dropped.join(', ')}`);
     for (const name of Object.keys(X_ACCOUNT_SOURCE_TIERS)) {
       assert.notEqual(X_ACCOUNT_SOURCE_TIERS[name], 4, `${name} overlay must not be tier 4`);
+    }
+  });
+
+  it('keeps additive X tiers out of the canonical RSS tier JSON', () => {
+    const additiveEntries = X_ACCOUNT_TRUST.filter((entry) => !entry.reuseTier);
+    assert.deepEqual(
+      Object.keys(X_ACCOUNT_SOURCE_TIERS).sort(),
+      additiveEntries.map((entry) => entry.sourceName).sort(),
+    );
+    for (const entry of additiveEntries) {
+      assert.equal(rssSourceTiers[entry.sourceName], undefined, `${entry.sourceName} must come from the X overlay`);
+      assert.equal(X_ACCOUNT_SOURCE_TIERS[entry.sourceName], entry.tier);
     }
   });
 
@@ -62,11 +75,11 @@ describe('X news-account public trust registries (#6654)', () => {
       sourceName,
       topic: 'breaking',
     }));
-    const candidates = xNews.collectXAlertCandidates(items, sourceTiers, now);
+    const candidates = xNews.collectXAlertCandidates(items, SOURCE_TIERS, now);
     assert.equal(candidates.length, enabledSourceNames().length);
     const candidateSources = new Set(candidates.map((item) => item.source));
     for (const name of enabledSourceNames()) {
-      assert.equal(xNews.alertSourcePassesTierGate(name, sourceTiers), true, `${name} must pass the alert tier gate`);
+      assert.equal(xNews.alertSourcePassesTierGate(name, SOURCE_TIERS), true, `${name} must pass the alert tier gate`);
       assert.ok(candidateSources.has(name), `${name} missing from collectXAlertCandidates`);
     }
     assert.doesNotMatch(JSON.stringify(candidates), /SECRET BODY/);
@@ -93,7 +106,7 @@ describe('X news-account public trust registries (#6654)', () => {
     }, { ...account, sourceName: 'Synthetic Aggregator' });
     const candidates = xNews.collectXAlertCandidates(
       [live, deleted, aggregator],
-      { ...sourceTiers, 'Synthetic Aggregator': 4 },
+      { ...SOURCE_TIERS, 'Synthetic Aggregator': 4 },
       Date.parse('2026-08-18T12:05:00.000Z'),
     );
     assert.equal(candidates.length, 1);

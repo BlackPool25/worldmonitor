@@ -2,6 +2,10 @@
 // Keep this module runtime-neutral so it remains safe in both runtimes.
 import { CONFIGURED_SOURCE_PROVENANCE_DECLARATIONS } from './source-provenance-declarations';
 import { X_ACCOUNT_SOURCE_PROPAGANDA_RISK, X_ACCOUNT_SOURCE_TYPES } from './x-account-trust';
+import {
+  TELEGRAM_SOURCE_PROPAGANDA_RISK,
+  TELEGRAM_SOURCE_TYPES,
+} from './telegram-channel-trust';
 
 // 'unknown' = not yet reviewed (default for unlisted sources — never invent a type)
 // 'other' remains available as an explicit classification when needed.
@@ -181,7 +185,10 @@ export const SOURCE_TYPES: Record<string, SourceType> = {
   'The Guardian Post': 'mainstream', 'Tchadinfos': 'mainstream',
   'Alwihda Info': 'mainstream', 'Radio Ndeke Luka': 'mainstream',
 
-  // Curated X news-account overlay (#6654). Additive; Telegram overlay is #6600.
+  // Telegram channels (#6600). Additive keys keyed by channel display label.
+  ...TELEGRAM_SOURCE_TYPES,
+
+  // Curated X news-account overlay (#6654). Additive to Telegram.
   ...X_ACCOUNT_SOURCE_TYPES,
 };
 
@@ -454,7 +461,10 @@ export const SOURCE_PROPAGANDA_RISK: Record<string, SourceRiskProfile> = {
   'The Astana Times': { risk: 'medium', stateAffiliated: 'Kazakhstan', note: 'Kazakhstan government-funded English-language news' },
   'The Times of Central Asia': { risk: 'medium', note: 'Independent English-language Central Asia news outlet' },
 
-  // Curated X news-account overlay (#6654). Additive; Telegram overlay is #6600.
+  // Telegram channels (#6600). Additive keys keyed by channel display label.
+  ...TELEGRAM_SOURCE_PROPAGANDA_RISK,
+
+  // Curated X news-account overlay (#6654). Additive to Telegram.
   ...X_ACCOUNT_SOURCE_PROPAGANDA_RISK,
 };
 

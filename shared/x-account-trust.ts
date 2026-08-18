@@ -1,16 +1,18 @@
 // Public trust overlay for curated X news accounts (#6654 Track A).
 //
 // Operational `tier` in data/x-accounts.json is poll-priority, not the public
-// editorial scale in shared/source-tiers.json. This module fills gaps so every
+// editorial scale. This module fills gaps so every
 // enabled X `sourceName` is present in SOURCE_TYPES, SOURCE_PROPAGANDA_RISK,
-// and source-tiers.json. Existing RSS mastheads are reused (not rewritten).
+// and the additive X tier overlay. Existing RSS mastheads are reused.
 //
 // Extension point matches #6600: spread into shared/source-provenance.ts and
-// append missing JSON keys. Keep this file X-only. Do not register Telegram
-// channels here.
+// server/_shared/source-tiers.ts. Keep this file X-only. Do not register
+// Telegram channels here.
 //
 // Types are duplicated (not imported) so this module stays a leaf and
 // shared/source-provenance.ts can spread the records without a cycle.
+
+import xAccountSourceTiers from './x-account-source-tiers.json';
 
 type SourceType = 'wire' | 'gov' | 'intel' | 'mainstream' | 'market' | 'tech' | 'other' | 'unknown';
 type PropagandaRisk = 'low' | 'medium' | 'high' | 'unknown';
@@ -444,8 +446,4 @@ export const X_ACCOUNT_SOURCE_PROPAGANDA_RISK: Record<string, SourceRiskProfile>
     .map((entry) => [entry.sourceName, xRiskProfile(entry)]),
 );
 
-export const X_ACCOUNT_SOURCE_TIERS: Record<string, number> = Object.fromEntries(
-  X_ACCOUNT_TRUST
-    .filter((entry) => !entry.reuseTier)
-    .map((entry) => [entry.sourceName, entry.tier]),
-);
+export const X_ACCOUNT_SOURCE_TIERS = xAccountSourceTiers as Record<string, number>;

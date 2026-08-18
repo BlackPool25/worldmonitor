@@ -28,6 +28,7 @@ export {
   hasReviewedSourceType,
   isStateAffiliatedSource,
 } from '../../shared/source-provenance';
+export { resolveTelegramSourceName } from '../../shared/telegram-channel-trust';
 export { computeCredibilityScore } from '../../shared/news-credibility.js';
 export type {
   PropagandaRisk,
