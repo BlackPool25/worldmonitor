@@ -10,6 +10,8 @@ import {
   fetchSgeHtml,
   parseSeedTargetArgs,
   parseSgeBenchmarkHtml,
+  physicalPremiumActivationWrite,
+  shouldWritePhysicalPremiumActivationMarker,
   validatePhysicalPremiumPayload,
 } from '../scripts/seed-physical-premiums.mjs';
 
@@ -143,5 +145,25 @@ describe('physical premium seed', () => {
       { env: 'development', sha: 'dev' },
     );
     assert.throws(() => parseSeedTargetArgs(['--env=staging']), /Invalid --env/);
+  });
+
+  it('writes the unprefixed activation marker only for production publishes', () => {
+    assert.equal(shouldWritePhysicalPremiumActivationMarker('production'), true);
+    assert.equal(shouldWritePhysicalPremiumActivationMarker('preview'), false);
+    assert.equal(shouldWritePhysicalPremiumActivationMarker('development'), false);
+    assert.deepEqual(
+      physicalPremiumActivationWrite('production'),
+      ['SET', 'seed-activated:market:physical-premium', '1'],
+    );
+    assert.equal(physicalPremiumActivationWrite('preview'), null);
+    assert.equal(physicalPremiumActivationWrite('development'), null);
+    assert.equal(
+      physicalPremiumActivationWrite(parseSeedTargetArgs(['--env', 'preview']).env),
+      null,
+    );
+    assert.equal(
+      physicalPremiumActivationWrite(parseSeedTargetArgs(['--env=development']).env),
+      null,
+    );
   });
 });

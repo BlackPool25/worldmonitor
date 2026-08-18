@@ -50,11 +50,23 @@ const METALS = [
   },
 ];
 
-async function markPhysicalPremiumActivated() {
+export function shouldWritePhysicalPremiumActivationMarker(env) {
+  return env === 'production';
+}
+
+export function physicalPremiumActivationWrite(env) {
+  return shouldWritePhysicalPremiumActivationMarker(env)
+    ? ['SET', PHYSICAL_PREMIUM_ACTIVATION_KEY, '1']
+    : null;
+}
+
+async function markPhysicalPremiumActivated({ env } = {}) {
+  const command = physicalPremiumActivationWrite(env);
+  if (!command) return;
   try {
     const creds = getOptionalUpstashCreds();
     if (!creds) return;
-    await upstashCommand(creds, ['SET', PHYSICAL_PREMIUM_ACTIVATION_KEY, '1']);
+    await upstashCommand(creds, command);
   } catch (error) {
     console.warn(`  WARN: activation marker write failed: ${error?.message || error}`);
   }
@@ -374,7 +386,7 @@ export async function runPhysicalPremiumSeed(args = process.argv.slice(2)) {
     maxStaleMin: 3 * DAY_MIN,
     contentMeta: physicalPremiumContentMeta,
     maxContentAgeMin: SGE_MAX_CONTENT_AGE_MIN,
-    afterPublish: markPhysicalPremiumActivated,
+    afterPublish: () => markPhysicalPremiumActivated({ env }),
   });
 }
 

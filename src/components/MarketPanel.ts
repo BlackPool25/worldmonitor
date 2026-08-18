@@ -647,7 +647,7 @@ export class CommoditiesPanel extends Panel {
       (d) => typeof d.price === 'number' && Number.isFinite(d.price) && !d.symbol?.endsWith('=X'),
     );
     if (validData.length === 0) {
-      if (!hasFx) {
+      if (!hasFx && !hasPhysical) {
         this.showRetrying(t('common.failedCommodities'));
         return;
       }

@@ -74,4 +74,42 @@ describe('CommoditiesPanel physical-premium tab', () => {
     expect(text).toContain('Shanghai Gold Exchange SHAU PM benchmark');
     expect(text).toContain('As of 2026-08-18');
   });
+
+  it('keeps the Physical tab when commodities fail and FX is empty', async () => {
+    panel.renderCommodities([]);
+    panel.updatePhysicalPremiums({
+      premiums: [{
+        metal: 'gold',
+        physical: {
+          price: 953.88,
+          currency: 'CNY',
+          unit: 'gram',
+          source: 'Shanghai Gold Exchange SHAU PM benchmark',
+          asOf: '2026-08-18',
+        },
+        paper: {
+          price: 4455.6,
+          currency: 'USD',
+          unit: 'troy ounce',
+          source: 'COMEX GC=F futures snapshot',
+          asOf: '2026-08-18T12:22:24.000Z',
+        },
+        premiumUsdPerOz: -46.7889,
+        premiumPct: -1.0501,
+        computedAt: '2026-08-18T12:30:00.000Z',
+      }],
+      fx: {
+        pair: 'CNY/USD',
+        rate: 0.1486,
+        source: 'shared:fx-rates:v1',
+        asOf: '2026-08-18T12:28:48.000Z',
+      },
+    });
+    await flush();
+
+    const root = panel.getElement();
+    expect(root.querySelector('[data-tab="physical"]')).not.toBeNull();
+    expect(root.querySelector('.panel-error-state')).toBeNull();
+    expect(root.textContent).toContain('Commodities data temporarily unavailable');
+  });
 });

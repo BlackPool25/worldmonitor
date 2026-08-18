@@ -202,7 +202,6 @@ const BOOTSTRAP_KEYS = {
   wildfiresBootstrap: 'wildfire:fires-bootstrap:v1',
   marketQuotes:      'market:stocks-bootstrap:v1',
   commodityQuotes:   'market:commodities-bootstrap:v1',
-  physicalPremiums:  'market:physical-premium:v1',
   cyberThreats:      'cyber:threats-bootstrap:v2',
   techReadiness:     'economic:worldbank-techreadiness:v1',
   progressData:      'economic:worldbank-progress:v1',
@@ -342,6 +341,13 @@ const STANDALONE_KEYS = {
   cbrRates:              'economic:cbr-rates:v1',
   bocValet:              'economic:boc-valet:v1',
   statcanWds:            'economic:statcan-wds:v1',
+  // License-gated SGE physical premiums. The dashboard fetches them on demand
+  // via GET /api/market/v1/get-physical-premiums, not bootstrap hydration.
+  // classifyKey only treats ON_DEMAND_KEYS as pending when allowOnDemand is
+  // true, and that flag is set only on the STANDALONE_KEYS walk. Keeping this
+  // here (not in BOOTSTRAP_KEYS) is what makes the activation-marker cutover
+  // pending before the first licensed publish and strict after it.
+  physicalPremiums:      'market:physical-premium:v1',
   bisPropertyResidential: 'economic:bis:property-residential:v1',
   bisPropertyCommercial:  'economic:bis:property-commercial:v1',
   imfMacro:             'economic:imf:macro:v2',
