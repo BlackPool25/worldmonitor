@@ -334,7 +334,9 @@ npm run sources:check     # fails with "missing manifest entry for <host>"
 npm run sources:generate  # writes the row and regenerates docs/source-attribution.mdx
 ```
 
-Give the host a display name only by adding it to `PROVIDER_OVERRIDES` in that script and bumping `PROVIDER_IDENTITY_REVIEW` to the recomputed digest; provider identities are hash-pinned so renaming one stays an explicit review event. Note that the script scans itself, so never paste a provider URL into a comment or review string there — it will register that host as a data source.
+Give the host a display name only by adding it to `PROVIDER_OVERRIDES` in that script and bumping `PROVIDER_IDENTITY_REVIEW` to the recomputed digest; provider identities are hash-pinned so renaming one stays an explicit review event. Because the script lives inside the roots it scans, a URL you cite in one of its own strings counts as a discovered source — fine when that host is already registered (the licence links on existing rows), but citing an unregistered host invents a provider row for it.
+
+Two ordering rules follow from the manifest being a fixpoint of the source tree: a row cannot be added ahead of the code that introduces its host, and a rebase that lands alongside another attribution change should re-run `sources:generate` rather than hand-merge the generated files.
 
 ### Country boundary overrides
 

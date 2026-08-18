@@ -84,6 +84,12 @@ const publisherMetadataFeed = (provider) => ({
  * become a provider rename or regroup.
  */
 export const PROVIDER_IDENTITY_GROUPS = Object.freeze({
+  'bc-evacuation-orders-alerts': Object.freeze({
+    provider: 'B.C. Evacuation Orders and Alerts',
+    memberHosts: Object.freeze(['catalogue.data.gov.bc.ca', 'services6.arcgis.com']),
+    reason: 'The B.C. catalogue record supplies the licence for the ArcGIS evacuation dataset.',
+    reviewReference: 'Issue #6659 source-rights probe',
+  }),
   interfax: Object.freeze({
     provider: 'Interfax',
     memberHosts: Object.freeze(['interfax.com', 'www.interfax.ru']),
@@ -213,6 +219,20 @@ const PROVIDER_OVERRIDES = {
     provider: 'BC Open511',
     license: 'Open Government Licence - British Columbia (OGL-BC). Confirmed on https://api.open511.gov.bc.ca/help. API Terms of Use for OGL-BC information also apply.',
     attribution: 'DriveBC Open511 (Province of British Columbia). Licensed under OGL-BC. https://api.open511.gov.bc.ca/help',
+    status: 'reviewed',
+  },
+  'catalogue.data.gov.bc.ca': {
+    provider: 'B.C. Evacuation Orders and Alerts',
+    identityGroup: 'bc-evacuation-orders-alerts',
+    license: 'Open Government Licence - British Columbia (OGL-BC). The B.C. Data Catalogue record 7efd46d0-b5d3-4dff-af80-d376c42aec33 explicitly assigns OGL-BC to this ArcGIS layer.',
+    attribution: 'Contains information licensed under the Open Government Licence - British Columbia. https://catalogue.data.gov.bc.ca/dataset/7efd46d0-b5d3-4dff-af80-d376c42aec33',
+    status: 'reviewed',
+  },
+  'services6.arcgis.com': {
+    provider: 'B.C. Evacuation Orders and Alerts',
+    identityGroup: 'bc-evacuation-orders-alerts',
+    license: 'Open Government Licence - British Columbia (OGL-BC). The B.C. Data Catalogue record 7efd46d0-b5d3-4dff-af80-d376c42aec33 explicitly assigns OGL-BC to this ArcGIS layer.',
+    attribution: 'Contains information licensed under the Open Government Licence - British Columbia. https://catalogue.data.gov.bc.ca/dataset/7efd46d0-b5d3-4dff-af80-d376c42aec33',
     status: 'reviewed',
   },
   'www.alberta.ca': {
@@ -712,12 +732,13 @@ const PROVIDER_OVERRIDES = {
 // a provider-bearing override a separate, explicit lifecycle event instead of
 // something `--write` can silently normalize into the manifest.
 export const PROVIDER_IDENTITY_REVIEW = Object.freeze({
-  sha256: '483f27c36d34eda62c3f1633bc38b8e8f05a5fdfb8c01f55497c0cee0e774970',
-  reason: 'Add the Parallel Search MCP identity for search.parallel.ai as an excluded user-configured MCP connector, matching the Robtex, Linear, Airtable, and Cloudflare MCP rows, while retaining the prior publisher, site-scoped, and crisis-desk identities.',
-  // Do not cite provider URLs here: this file is inside SOURCE_ROOTS, so a bare
-  // URL literal in a review string registers its host as a discovered upstream
-  // source and invents a provider row for it.
-  reviewReference: 'PR #6447 (vendor-disclosed contribution; Parallel customer terms served from the endpoint via x-parallel-terms); PR #6662; PR #6670; PR #6736; PR #6840; issues #6813-#6830; Annahar Lebanon follow-up; Polish depth follow-up',
+  sha256: '832bf346b66ce9e423ae015c74f49fd4e0185c13e9947bee0331e2b0ae96a5b8',
+  reason: 'Add the Parallel Search MCP identity for search.parallel.ai as an excluded user-configured MCP connector, matching the Robtex, Linear, Airtable, and Cloudflare MCP rows, while retaining the reviewed B.C. Evacuation Orders and Alerts identity and the prior publisher, site-scoped, and crisis-desk identities.',
+  // A URL cited here is scanned like any other: this file sits inside
+  // SOURCE_ROOTS, so citing a host that is not already a registered source
+  // invents a provider row for it. The B.C. catalogue URLs above are safe
+  // because that host is itself an observed source; parallel.ai is not.
+  reviewReference: 'PR #6447 (vendor-disclosed contribution; Parallel customer terms served from the endpoint via x-parallel-terms); Issue #6659 source-rights probe; B.C. Data Catalogue record 7efd46d0-b5d3-4dff-af80-d376c42aec33',
 });
 
 export function providerIdentityDigest(providerOverrides = PROVIDER_OVERRIDES) {
