@@ -26,6 +26,16 @@ export interface McpPreset {
   defaultTitle?: string;
 }
 
+/** Quick Connect catalog. Presets only prefill the connect form — /api/mcp-proxy
+ *  keeps no host allowlist, so a preset grants no reach a user could not get by
+ *  typing the URL. Adding one is therefore a curation decision, not a capability
+ *  change.
+ *
+ *  Every `serverUrl` host here is discovered by scripts/source-attribution.mjs
+ *  and must have a curated row in shared/source-attribution-manifest.json, or
+ *  `npm run sources:check` and `test:data` go red. After adding a preset, run
+ *  `npm run sources:generate`; for a named provider identity, add the host to
+ *  PROVIDER_OVERRIDES and bump PROVIDER_IDENTITY_REVIEW. */
 export const MCP_PRESETS: McpPreset[] = [
   {
     name: 'Exa Search',

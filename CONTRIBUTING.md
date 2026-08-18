@@ -325,6 +325,17 @@ For endpoints that deal with non-JSON payloads (XML feeds, binary data, HTML emb
 - Should update at least daily for real-time relevance
 - Must include geographic coordinates or be geo-locatable
 
+### Source attribution ledger
+
+Any new outbound host that appears in a URL literal under `scripts/`, `server/`, `api/`, or `src/` is discovered by `scripts/source-attribution.mjs` and needs a curated row in `shared/source-attribution-manifest.json`. This catches contributions that only add data — a feed URL, an MCP preset in `src/services/mcp-store.ts` — with no obvious link to the ledger:
+
+```bash
+npm run sources:check     # fails with "missing manifest entry for <host>"
+npm run sources:generate  # writes the row and regenerates docs/source-attribution.mdx
+```
+
+Give the host a display name only by adding it to `PROVIDER_OVERRIDES` in that script and bumping `PROVIDER_IDENTITY_REVIEW` to the recomputed digest; provider identities are hash-pinned so renaming one stays an explicit review event. Note that the script scans itself, so never paste a provider URL into a comment or review string there — it will register that host as a data source.
+
 ### Country boundary overrides
 
 Country outlines are loaded from `public/data/countries.geojson`. Optional higher-resolution overrides (sourced from [Natural Earth](https://www.naturalearthdata.com/)) are served from R2 CDN. The app loads overrides after the main file and replaces geometry for any country whose `ISO3166-1-Alpha-2` (or `ISO_A2`) matches. To refresh boundary overrides from Natural Earth, run:
