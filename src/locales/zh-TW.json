@@ -1253,7 +1253,7 @@
           "infraDatacenters": "AI算力叢集 >=10,000 GPU",
           "infraOutages": "網際網路中斷和服務故障",
           "naturalEventsTech": "地震、風暴、火災（可能影響資料中心）",
-          "weatherAlerts": "各國氣象機構發布的官方惡劣天氣預警（NWS、ECCC、WMO SWIC）",
+          "weatherAlerts": "各國氣象部門釋出的官方惡劣天氣預警（NWS、ECCC、WMO SWIC）",
           "economicCenters": "證券交易所和央行",
           "countriesOverlay": "國家名稱疊加層",
           "financeExchanges": "按市場層級劃分的全球主要交易所",
