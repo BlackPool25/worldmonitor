@@ -217,6 +217,8 @@ describe('UI, API, and methodology surfaces', () => {
   it('MCP get_news_intelligence and get_news_clusters expose credibilityScore', () => {
     assert.match(mcpCacheSrc, /credibilityScore: \{ type: 'number'/);
     assert.match(mcpNlpSrc, /credibilityScore: \{\n\s+type: 'number'/s);
-    assert.match(mcpNlpSrc, /credibilityScore: computeCredibilityScore\(/);
+    assert.match(mcpNlpSrc, /const digestCredibilityScore = primaryItem\?\.credibilityScore/);
+    assert.match(mcpNlpSrc, /credibilityScore: Number\.isFinite\(digestCredibilityScore\)/);
+    assert.match(mcpNlpSrc, /: computeCredibilityScore\(\{/);
   });
 });
