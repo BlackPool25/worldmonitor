@@ -42,6 +42,17 @@ const libSrc = readFileSync(resolve(here, '../scripts/lib/statcan-wds.mjs'), 'ut
 const seederSrc = readFileSync(resolve(here, '../scripts/seed-statcan-wds.mjs'), 'utf8');
 const testSrc = readFileSync(fileURLToPath(import.meta.url), 'utf8');
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function inclusiveUtcDateDays(startDate, endTimestamp) {
+  const endDate = typeof endTimestamp === 'string' ? endTimestamp.slice(0, 10) : '';
+  assert.match(startDate, /^\d{4}-\d{2}-\d{2}$/);
+  assert.match(endDate, /^\d{4}-\d{2}-\d{2}$/);
+  const elapsedMs = Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`);
+  assert.equal(elapsedMs % DAY_MS, 0);
+  return elapsedMs / DAY_MS + 1;
+}
+
 test('UTC date path is required in the change-list URL and cache key', () => {
   assert.equal(utcDateIso(Date.parse('2026-08-13T21:49:00Z')), '2026-08-13');
   const url = changedCubeListUrl('2026-08-13');
@@ -401,28 +412,17 @@ test('the StatCan and BoC EMPTY waivers are retired with independent issue owner
   assert.match(runbook, /0 8 \* \* \*[^\n]*daily 08:00 UTC/);
 });
 
-test('STATCAN_MAX_CONTENT_AGE_MIN clears the MEASURED 83-day content-age peak and is wired into the seeder', () => {
+test('STATCAN_MAX_CONTENT_AGE_MIN clears retained healthy cycles, catches a missed release, and is wired into the seeder', () => {
   // WDS refPer is the FIRST of the reference month, so a monthly series' newest
-  // observation start-dates a month before the data exists: July CPI carries
-  // refPer 2026-07-01 and released 2026-08-17. Content age therefore sawtooths,
-  // and the budget must clear the PEAK of that tooth, not its average.
+  // observation start-dates a month before the data exists. Content age
+  // therefore sawtooths, and the budget must clear the PEAK of that tooth, not
+  // its average.
   //
-  // Measured 2026-08-18 over the 15 refPers WDS returns for the CPI vector
-  // (getDataFromVectorsAndLatestNPeriods, latestN=15), taking each peak as
-  // `next release - held refPer + 1` (the +1 because seed-bundle-macro ticks
-  // 08:00 UTC while StatCan releases 08:30 ET = 12:30 UTC, so a release is only
-  // visible to the FOLLOWING day's tick):
-  //
-  //   publication lag   min 43d   max 54d   mean 47.9d
-  //   cycle peak        min 75d   max 83d   mean 78.9d
-  //   budget  75d -> breaches 13 of 14 cycles   (the value this replaced)
-  //   budget  90d -> breaches  0 of 14 cycles   (7d clear of the worst)
-  //
-  // The floor below is the MEASURED max, not the ~79d average this test
-  // originally carried: at 79 an edit to 80d would have passed here while
-  // breaching three of those fourteen cycles. Re-measure before lowering it —
-  // an estimate that sits under the real peak makes this assertion agree with a
-  // budget that alarms every month. See docs/solutions/logic-errors/
+  // Derive both policy bounds from retained release history. A healthy cycle
+  // peaks at `next release - held refPer + 1`; a one-release miss recovers at
+  // `release after next - held refPer + 1`. The +1 accounts for the 08:00 UTC
+  // seed preceding StatCan's 08:30 ET release, which makes the new observation
+  // visible on the following day's tick. See docs/solutions/logic-errors/
   // a-guard-that-hardcodes-an-external-services-latency-goes-green-when-that-latency-drifts.md
   //
   // Unlike its two siblings in #6831 — China (tests/china-macro-production-
@@ -431,17 +431,28 @@ test('STATCAN_MAX_CONTENT_AGE_MIN clears the MEASURED 83-day content-age peak an
   // wiring. The generic seeder-content-age-coverage net skips StatCan because
   // www150.statcan.gc.ca is not one of its FREEZE_PRONE_MARKER hosts, so a
   // wrong value or a dropped maxContentAgeMin wiring would ship unnoticed.
-  const MEASURED_CYCLE_PEAK_DAYS = 83;   // measured 2026-08-18, 14 cycles
+  const cpiPoints = parseVectorSeries(vectorDoc, CPI_VECTOR_ID).points;
+  const healthyCyclePeaks = cpiPoints.slice(0, -1).map((point, index) => (
+    inclusiveUtcDateDays(point.refPer, cpiPoints[index + 1].releaseTime)
+  ));
+  const missedReleasePeaks = cpiPoints.slice(0, -2).map((point, index) => (
+    inclusiveUtcDateDays(point.refPer, cpiPoints[index + 2].releaseTime)
+  ));
+  const measuredHealthyPeakDays = Math.max(...healthyCyclePeaks);
+  const measuredMissedReleasePeakDays = Math.min(...missedReleasePeaks);
+
+  assert.equal(cpiPoints.length, 15, 'the retained CPI fixture must cover 15 reference periods');
+  assert.equal(healthyCyclePeaks.length, 14, 'the fixture must measure 14 healthy cycles');
+  assert.equal(missedReleasePeaks.length, 13, 'the fixture must measure 13 one-release misses');
+  assert.equal(measuredHealthyPeakDays, 85, 'the retained healthy-cycle maximum must remain explicit');
+  assert.equal(measuredMissedReleasePeakDays, 106, 'the earliest one-release-miss peak must remain explicit');
   assert.equal(STATCAN_MAX_CONTENT_AGE_MIN, 90 * DAY_MIN);
   assert.ok(
-    STATCAN_MAX_CONTENT_AGE_MIN > MEASURED_CYCLE_PEAK_DAYS * DAY_MIN,
-    `budget must exceed the measured ${MEASURED_CYCLE_PEAK_DAYS}-day cycle peak, or it alarms on a healthy series`,
+    STATCAN_MAX_CONTENT_AGE_MIN > measuredHealthyPeakDays * DAY_MIN,
+    `budget must exceed the measured ${measuredHealthyPeakDays}-day healthy-cycle peak, or it alarms on a current series`,
   );
-  // A monthly series that MISSES a release reaches peak + ~30d. The budget has
-  // to stay under that or a real upstream stall never surfaces — the failure
-  // this alarm exists for.
   assert.ok(
-    STATCAN_MAX_CONTENT_AGE_MIN < (MEASURED_CYCLE_PEAK_DAYS + 30) * DAY_MIN,
+    STATCAN_MAX_CONTENT_AGE_MIN < measuredMissedReleasePeakDays * DAY_MIN,
     'budget must stay under a missed-release peak, or a genuine StatCan stall goes undetected',
   );
   assert.match(
