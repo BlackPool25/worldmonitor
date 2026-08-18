@@ -121,6 +121,18 @@ describe('sources catalog domain assignment', () => {
     assert.equal(catalog[0].domainId, 'environment');
   });
 
+  it('assigns Manitoba 511 to infrastructure instead of failing the corpus build', () => {
+    const catalog = buildSourceCatalog([
+      {
+        provider: 'Manitoba 511',
+        host: 'www.manitoba511.ca',
+        kind: 'structured',
+        references: [{ path: 'scripts/lib/provincial-511.mjs' }],
+      },
+    ]);
+    assert.equal(catalog[0].domainId, 'infrastructure');
+  });
+
   it('still fails closed when a structured provider has no catalog domain', () => {
     assert.throws(
       () => buildSourceCatalog([{
