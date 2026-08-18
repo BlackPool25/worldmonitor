@@ -647,6 +647,8 @@ function sourceDecision({
   robotsStatus,
   termsStatus,
   sourceUrl,
+  proxyFallbacks,
+  proxyDirectReason,
 }) {
   return {
     publisherId,
@@ -661,6 +663,9 @@ function sourceDecision({
     robotsStatus,
     termsStatus,
     sourceUrl,
+    ...(proxyFallbacks > 0
+      ? { proxyFallbacks, proxyDirectReason }
+      : {}),
   };
 }
 
@@ -681,6 +686,7 @@ export async function fetchChinaMacroSnapshot({
   // required NBS series on preserved values. Unset PROXY_URL keeps the direct
   // path byte-for-byte unchanged.
   proxyUrl = process.env.PROXY_URL || null,
+  proxyFetchFn,
   readCachedFn = readCanonicalValue,
   onDecision = (entry) => console.log(JSON.stringify({
     event: 'china_macro_source_preflight',
@@ -733,12 +739,18 @@ export async function fetchChinaMacroSnapshot({
   let nbsProxyFallbacks = 0;
   let nbsProxyDirectReason = null;
   let nbsError = null;
+  const nbsProxy = {
+    proxyUrl,
+    onProxyFallback: (entry) => { nbsProxyFallbacks += 1; nbsProxyDirectReason = entry.directReason; },
+    ...(proxyFetchFn ? { proxyFetchFn } : {}),
+  };
   try {
     const robots = await checkRobots(fetchFn, NBS_ROBOTS_URL, {
       policy: SOURCE_POLICIES.nbsRobots,
       budget: nbsBudget,
       candidatePaths: [new URL(NBS_LIST_URL).pathname],
       onRedirect: (state) => { nbsRedirectBehavior = state; },
+      ...nbsProxy,
     });
     nbsRobotsStatus = robots.status;
     const listing = await fetchText(fetchFn, NBS_LIST_URL, {
@@ -746,8 +758,7 @@ export async function fetchChinaMacroSnapshot({
       budget: nbsBudget,
       assertTargetAllowed: (url) => assertRobotsAllowed(robots.text, [url.pathname]),
       onRedirect: (state) => { nbsRedirectBehavior = state; },
-      proxyUrl,
-      onProxyFallback: (entry) => { nbsProxyFallbacks += 1; nbsProxyDirectReason = entry.directReason; },
+      ...nbsProxy,
     });
     const industrialUrl = findReleaseUrl(
       listing.text,
@@ -780,8 +791,7 @@ export async function fetchChinaMacroSnapshot({
         budget: nbsBudget,
         assertTargetAllowed: (target) => assertRobotsAllowed(robots.text, [target.pathname]),
         onRedirect: (state) => { nbsRedirectBehavior = state; },
-        proxyUrl,
-        onProxyFallback: (entry) => { nbsProxyFallbacks += 1; nbsProxyDirectReason = entry.directReason; },
+        ...nbsProxy,
       });
       pages.push(page);
     }
