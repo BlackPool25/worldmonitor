@@ -733,7 +733,7 @@ const PROVIDER_OVERRIDES = {
 // something `--write` can silently normalize into the manifest.
 export const PROVIDER_IDENTITY_REVIEW = Object.freeze({
   sha256: '832bf346b66ce9e423ae015c74f49fd4e0185c13e9947bee0331e2b0ae96a5b8',
-  reason: 'Add the Parallel Search MCP identity for search.parallel.ai as an excluded user-configured MCP connector, matching the Robtex, Linear, Airtable, and Cloudflare MCP rows, while retaining the reviewed B.C. Evacuation Orders and Alerts identity and the prior publisher, site-scoped, and crisis-desk identities.',
+  reason: 'Add the Parallel Search MCP identity for search.parallel.ai as an excluded user-configured MCP connector, matching the Robtex, Linear, Airtable, and Cloudflare MCP rows, while retaining the reviewed B.C. Evacuation Orders and Alerts identity and the prior publisher identities.',
   // A URL cited here is scanned like any other: this file sits inside
   // SOURCE_ROOTS, so citing a host that is not already a registered source
   // invents a provider row for it. The B.C. catalogue URLs above are safe
