@@ -47,6 +47,23 @@ describe('military-flights request bounds normalization (#6249)', () => {
     assert.deepEqual(bounds, { south: -90, north: 90, west: -180, east: 180 });
   });
 
+  it('does not widen a Pacific box that only touches +180', () => {
+    // Fiji / MapLibre east-edge: wrap(+180) must stay +180, not invert to -180.
+    assert.deepEqual(
+      normalizeBounds(req({ swLon: 177.34, neLon: 180 })),
+      { south: 0, north: 1, west: 177.34, east: 180 },
+    );
+    assert.deepEqual(
+      normalizeBounds(req({ swLon: 140, neLon: 180 })),
+      { south: 0, north: 1, west: 140, east: 180 },
+    );
+    // World-copy of 140..180.
+    assert.deepEqual(
+      normalizeBounds(req({ swLon: 500, neLon: 540 })),
+      { south: 0, north: 1, west: 140, east: 180 },
+    );
+  });
+
   it('swaps inverted corners and wraps the result', () => {
     const bounds = normalizeBounds(req({ swLat: 10, swLon: 20, neLat: 5, neLon: 10 }));
     assert.deepEqual(bounds, { south: 5, north: 10, west: 10, east: 20 });

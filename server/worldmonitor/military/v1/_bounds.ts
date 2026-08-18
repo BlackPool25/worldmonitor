@@ -20,7 +20,13 @@ export interface RequestBounds {
 }
 
 function wrapLongitude(lon: number): number {
-  return (((lon + 180) % 360) + 360) % 360 - 180;
+  // Already-canonical values must pass through unchanged. The `%` wrap
+  // introduces float noise (177.34 -> 177.34000000000003) and maps +180
+  // onto -180, which then looks like an antimeridian inversion.
+  if (lon > -180 && lon <= 180) return lon;
+  const wrapped = (((lon + 180) % 360) + 360) % 360 - 180;
+  if (wrapped === -180 && lon > 0) return 180;
+  return wrapped;
 }
 
 /** False for NaN/±Infinity in any corner coordinate — the caller must answer empty. */

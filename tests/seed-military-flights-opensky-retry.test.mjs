@@ -20,20 +20,26 @@ const STATES_URL = 'https://opensky-network.org/api/states/all?extended=1';
 
 const originalFetch = globalThis.fetch;
 let statesCalls;
+let statesAuth;
 let statesResponses;
 let tokenCalls;
+let tokenSerial = 0;
 
 function installStates(responses) {
   statesResponses = [...responses];
   statesCalls = [];
+  statesAuth = [];
   tokenCalls = 0;
-  globalThis.fetch = async (url) => {
+  globalThis.fetch = async (url, init = {}) => {
     const raw = typeof url === 'string' ? url : url.url;
     if (raw === TOKEN_URL) {
       tokenCalls += 1;
-      return Response.json({ access_token: `token-${tokenCalls}`, expires_in: 1800 });
+      tokenSerial += 1;
+      return Response.json({ access_token: `token-${tokenSerial}`, expires_in: 1800 });
     }
     if (raw === STATES_URL) {
+      const headers = init.headers && typeof init.headers === 'object' ? init.headers : {};
+      statesAuth.push(headers.Authorization || headers.authorization || '');
       statesCalls.push(raw);
       const next = statesResponses.shift();
       if (typeof next === 'number') {
@@ -74,9 +80,13 @@ describe('OpenSky global fetch retry ladder (#6249)', () => {
     const result = await fetchOpenSkyAuthenticated();
     assert.equal(result.status, 'success:direct');
     assert.equal(statesCalls.length, 2);
-    // The first token may still be module-cached from a prior test, so the
-    // observable contract is that a refresh POST happened for the retry.
-    assert.ok(tokenCalls >= 1, 'the unauthorized attempt must refresh the token');
+    assert.match(statesAuth[0], /^Bearer /);
+    assert.match(statesAuth[1], /^Bearer /);
+    assert.notEqual(
+      statesAuth[1],
+      statesAuth[0],
+      'the unauthorized attempt must refresh the bearer, not retry the same token',
+    );
   });
 
   test('two consecutive 401s report without looping', async () => {
