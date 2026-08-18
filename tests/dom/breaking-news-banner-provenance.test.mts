@@ -126,18 +126,26 @@ describe('breaking-news banner source provenance (#6598)', () => {
   describe('mobile in-flow', () => {
     beforeEach(() => {
       isMobile.mockReturnValue(true);
+      const app = document.createElement('div');
+      app.id = 'app';
       const header = document.createElement('header');
       header.className = 'header';
-      document.body.appendChild(header);
+      const mainContent = document.createElement('main');
+      mainContent.className = 'main-content';
+      app.append(header, mainContent);
+      document.body.appendChild(app);
       banner = mountBanner();
     });
 
     it('joins the document flow after the header instead of overlaying the body', () => {
+      const app = document.querySelector('#app');
       const header = document.querySelector('.header');
+      const mainContent = document.querySelector('.main-content');
       const container = document.querySelector('.breaking-news-container');
       expect(container).not.toBeNull();
       expect(header?.nextElementSibling).toBe(container);
-      expect(container?.parentElement).toBe(document.body);
+      expect(container?.nextElementSibling).toBe(mainContent);
+      expect(container?.parentElement).toBe(app);
     });
 
     it('keeps provenance and tier badges in the in-flow alert', () => {

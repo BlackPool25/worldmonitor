@@ -101,30 +101,36 @@ test.describe('breaking news banner provenance screenshots', () => {
     const metrics = await banner.evaluate((el) => {
       const style = getComputedStyle(el);
       const header = document.querySelector('.header');
+      const mainContent = document.querySelector('.main-content');
+      const bannerRect = el.getBoundingClientRect();
+      const contentRect = mainContent?.getBoundingClientRect();
       return {
         position: style.position,
         afterHeader: header?.nextElementSibling === el,
         insideApp: el.parentElement?.id === 'app',
+        contentAfterBanner: contentRect ? contentRect.top >= bannerRect.bottom - 1 : false,
         overflowX: el.scrollWidth - el.clientWidth,
       };
     });
     expect(metrics.position).toBe('static');
     expect(metrics.afterHeader).toBe(true);
     expect(metrics.insideApp).toBe(true);
+    expect(metrics.contentAfterBanner).toBe(true);
     expect(metrics.overflowX).toBeLessThanOrEqual(1);
 
     const pageOverflowX = await page.evaluate(() =>
       document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(pageOverflowX).toBeLessThanOrEqual(1);
 
-    await expect(banner).toHaveScreenshot('mobile-in-flow.png', {
+    const appShell = page.locator('#app');
+    await expect(appShell).toHaveScreenshot('mobile-in-flow.png', {
       animations: 'disabled',
       caret: 'hide',
       scale: 'css',
       maxDiffPixelRatio: 0.04,
     });
     const screenshot = await captureScreenshot(page, testInfo, 'mobile-in-flow', {
-      locator: banner,
+      locator: appShell,
     });
     expect(screenshot).toBeTruthy();
     expectPngScreenshot(await page.screenshot({ fullPage: false, animations: 'disabled' }), 'mobile');
