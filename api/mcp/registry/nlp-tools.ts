@@ -135,7 +135,7 @@ function patternEntityKind(value: string): 'cve' | 'apt' | 'fin' | 'leader' {
 type NlpDigestCategoryGroup = {
   items?: Array<{
     source?: string; title?: string; link?: string; publishedAt?: number;
-    isAlert?: boolean;
+    isAlert?: boolean; credibilityScore?: number;
     threat?: { level?: string; category?: string; confidence?: number; source?: string };
   }>;
 };
@@ -234,6 +234,9 @@ async function fetchNlpDigestItems(
         link,
         pubDate: new Date(Number(raw.publishedAt) || 0),
         isAlert: raw.isAlert === true,
+        credibilityScore: Number.isFinite(raw.credibilityScore)
+          ? nlpClampInt(raw.credibilityScore, 0, 100, 0)
+          : undefined,
         tier: 3,
         threat: raw.threat ? {
           level: protoThreatLevelToLabel(raw.threat.level),
@@ -612,6 +615,9 @@ export const NLP_TOOLS: ToolDef[] = [
         .slice(0, limit);
       const projected = selectedClusters.map(({ cluster, sources, distinctPublishers }) => {
         const projectedSources = sources.slice(0, 8);
+        const primaryItem = cluster.allItems.find(item =>
+          item.link === cluster.primaryLink && item.title === cluster.primaryTitle);
+        const digestCredibilityScore = primaryItem?.credibilityScore;
         const provenanceBySource = new Map(
           [...new Set([cluster.primarySource, ...projectedSources])]
             .map(source => [source, getSourceProvenanceState(source)] as const),
@@ -639,11 +645,13 @@ export const NLP_TOOLS: ToolDef[] = [
           threatCategory: cluster.threat?.category ?? 'general',
           firstSeen: cluster.firstSeen.toISOString(),
           lastUpdated: cluster.lastUpdated.toISOString(),
-          credibilityScore: computeCredibilityScore({
-            sourceTier: getSourceTier(cluster.primarySource),
-            propagandaRisk: provenanceBySource.get(cluster.primarySource)!.risk,
-            independentCorroborationCount: distinctPublishers,
-          }),
+          credibilityScore: Number.isFinite(digestCredibilityScore)
+            ? digestCredibilityScore
+            : computeCredibilityScore({
+              sourceTier: getSourceTier(cluster.primarySource),
+              propagandaRisk: provenanceBySource.get(cluster.primarySource)!.risk,
+              independentCorroborationCount: distinctPublishers,
+            }),
         };
       });
       return {

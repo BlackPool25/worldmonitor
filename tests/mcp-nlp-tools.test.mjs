@@ -36,7 +36,7 @@ const digestResponse = {
     politics: {
       items: [
         { source: 'Reuters', title: 'Iran closes Strait of Hormuz to all tanker traffic', link: 'https://n/1', publishedAt: 1785405600000, isAlert: true, threat: { level: 'THREAT_LEVEL_CRITICAL', category: 'conflict', confidence: 0.9, source: 'llm' } },
-        { source: 'AP News', title: 'Iran closes Strait of Hormuz, tanker traffic halted', link: 'https://n/2', publishedAt: 1785405900000, isAlert: false, threat: { level: 'THREAT_LEVEL_HIGH', category: 'conflict', confidence: 0.8, source: 'keyword' } },
+        { source: 'AP News', title: 'Iran closes Strait of Hormuz, tanker traffic halted', link: 'https://n/2', publishedAt: 1785405900000, isAlert: false, credibilityScore: 73, threat: { level: 'THREAT_LEVEL_HIGH', category: 'conflict', confidence: 0.8, source: 'keyword' } },
       ],
     },
     tech: {
@@ -615,8 +615,11 @@ describe('#5697 NLP MCP tools', () => {
       assert.ok(hormuz.topKeywords.includes('hormuz'));
       assert.equal(hormuz.threatLevel, 'critical');
       assert.equal(hormuz.isAlert, true);
-      assert.equal(typeof hormuz.credibilityScore, 'number');
-      assert.ok(hormuz.credibilityScore >= 70, `wire cluster should score high, got ${hormuz.credibilityScore}`);
+      assert.equal(
+        hormuz.credibilityScore,
+        73,
+        'cluster must preserve the digest score for its primary headline',
+      );
       assert.ok(hormuz.firstSeen.endsWith('Z') && hormuz.lastUpdated.endsWith('Z'));
     });
 

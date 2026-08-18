@@ -26,6 +26,7 @@ export interface NewsItemCore {
   locationName?: string;
   lang?: string;
   pubDateMissing?: boolean;
+  credibilityScore?: number;
 }
 
 export type NewsItemWithTier = NewsItemCore & { tier: number };
