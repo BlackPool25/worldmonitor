@@ -697,6 +697,24 @@ test('fetchVendor511(MANITOBA_511) pulls events and alerts through the shared ad
   assert.equal(limiterTesting.pendingTokens('www.manitoba511.ca'), 2);
 });
 
+test('Manitoba treats an HTTP 200 error object as a failed resource', async () => {
+  const fetchFn = async (url) => {
+    if (String(url).includes('/event')) {
+      return jsonResponse({ error: 'invalid key', key: 'must-not-be-logged' });
+    }
+    return jsonResponse(MANITOBA_ALERTS_FIXTURE);
+  };
+  const envelope = await fetchVendor511(MANITOBA_511, {
+    fetchFn,
+    staggerMs: 0,
+    key: 'mb-test-key-not-a-real-secret',
+  });
+  assert.equal(envelope.events.length, 0);
+  assert.equal(envelope.alerts.length, 2);
+  assert.deepEqual(envelope.failedResources, ['event']);
+  assert.equal(isCompleteVendor511(envelope, MANITOBA_511), false);
+});
+
 test('Manitoba partial poll must not replace last-good or flip health green', async () => {
   const eventsDownAlertsEmpty = async (url) => {
     if (String(url).includes('/event')) return new Response('nope', { status: 503 });
@@ -738,8 +756,9 @@ test('Manitoba partial poll must not replace last-good or flip health green', as
   assert.match(seeder, /MANITOBA_511_KEY/);
   assert.match(seeder, /infra:manitoba-511:v1/);
   assert.match(seeder, /seed-meta:infra:manitoba-511/);
-  assert.match(seeder, /sourceState: 'unavailable'/);
-  assert.match(seeder, /skipReason: 'MANITOBA_511_KEY missing'/);
+  assert.doesNotMatch(seeder, /sourceState: 'unavailable'/);
+  assert.doesNotMatch(seeder, /skipReason: 'MANITOBA_511_KEY missing'/);
+  assert.doesNotMatch(seeder, /writeManitobaNotConfiguredMeta/);
   assert.match(seeder, /loadEnvFile\(import\.meta\.url\)/);
   assert.doesNotMatch(seeder, /mb-test-key|REDACTED|sk-/);
   const fetchManitoba = seeder.slice(
@@ -750,9 +769,24 @@ test('Manitoba partial poll must not replace last-good or flip health green', as
   assert.match(fetchManitoba, /notConfigured = true/);
   assert.match(fetchManitoba, /if \(!isCompleteVendor511\(envelope, MANITOBA_511\)\)/);
   assert.match(fetchManitoba, /new Error\(`Manitoba 511: partial poll/);
+
+  const preserveManitoba = seeder.slice(
+    seeder.indexOf('async function preserveManitoba'),
+    seeder.indexOf('async function publishManitobaFromTick'),
+  );
+  assert.match(
+    preserveManitoba,
+    /extendExistingTtl\(\[MANITOBA_KEY, MANITOBA_META_KEY\], CACHE_TTL\)/,
+  );
+  assert.doesNotMatch(preserveManitoba, /writeSeedMeta/);
+
   const publishManitoba = seeder.slice(seeder.indexOf('async function publishManitobaFromTick'));
-  assert.match(publishManitoba, /if \(data\?._manitobaNotConfigured\)/);
-  assert.match(publishManitoba, /await preserveManitoba\(\)/);
+  const notConfiguredBranch = publishManitoba.slice(
+    publishManitoba.indexOf('if (data?._manitobaNotConfigured)'),
+    publishManitoba.indexOf('if (!data || data._manitobaFailed)'),
+  );
+  assert.match(notConfiguredBranch, /await preserveManitoba\(\)/);
+  assert.doesNotMatch(notConfiguredBranch, /writeSeedMeta|publishManitobaEnvelope/);
   assert.ok(
     publishManitoba.indexOf('await preserveManitoba()')
     < publishManitoba.indexOf('await publishManitobaEnvelope'),

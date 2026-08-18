@@ -20,6 +20,9 @@ import { bundleDisableEnvVar, disabledMembersFromEnv } from '../scripts/_bundle-
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const src = readFileSync(join(root, 'scripts/seed-bundle-canada.mjs'), 'utf8');
 const RUNNER_SRC = readFileSync(join(root, 'scripts/_bundle-runner.mjs'), 'utf8');
+const ACCEPTANCE_BASELINE = JSON.parse(
+  readFileSync(join(root, 'scripts/seed-freshness-baseline.json'), 'utf8'),
+);
 const sections = extractBundleSections(src);
 
 const MIN = 60_000;
@@ -69,6 +72,34 @@ test('per-member cadence is the declared one, not TTC\'s cron inherited', () => 
       `${label} cadence changed — confirm the bandwidth math before accepting it`,
     );
   }
+});
+
+test('Manitoba cutover acknowledgement reaches the first eligible Provincial-511 admission', () => {
+  const provincial = section('Provincial-511');
+  const intervalMs = resolveExpr(src, provincial.intervalMsExpr);
+  const freshnessGuard = /elapsed\s*<\s*section\.intervalMs\s*\*\s*(\d+(?:\.\d+)?)/.exec(RUNNER_SRC);
+  assert.ok(freshnessGuard, 'bundle runner must expose its interval freshness admission ratio');
+  const freshnessRatio = Number(freshnessGuard[1]);
+  assert.ok(freshnessRatio > 0 && freshnessRatio <= 1, 'freshness admission ratio must be in (0, 1]');
+
+  const service = JSON.parse(readFileSync(join(root, 'scripts/railway-services.json'), 'utf8'))
+    .find((row) => row.service === 'seed-bundle-canada');
+  assert.equal(service?.cronSchedule, '*/5 * * * *');
+  const cronIntervalMs = 5 * MIN;
+
+  const manitoba = ACCEPTANCE_BASELINE.acknowledged.find((entry) => entry.name === 'manitobaRoads');
+  assert.ok(manitoba, 'manitobaRoads stays acknowledged until its first eligible bundle admission');
+  const activatedAt = Date.parse(manitoba.cutover?.activatedAt);
+  const firstScheduledRunAt = Date.parse(manitoba.cutover?.firstScheduledRunAt);
+  const firstEligibleDelayMs = Math.ceil((intervalMs * freshnessRatio) / cronIntervalMs) * cronIntervalMs;
+
+  assert.equal(
+    firstScheduledRunAt,
+    activatedAt + firstEligibleDelayMs,
+    'the cutover must include */5 ticks skipped by the runner\'s 0.8-interval freshness gate',
+  );
+  assert.equal(Date.parse(manitoba.expiresAt), firstScheduledRunAt);
+  assert.equal(manitoba.cutover?.firstScheduledRunAt, '2026-08-19T12:15:00.000Z');
 });
 
 test('seed-meta keys follow runSeed(domain, resource), not the canonical key', () => {

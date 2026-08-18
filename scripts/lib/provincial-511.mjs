@@ -383,6 +383,18 @@ function kindForResource(resource) {
   return 'event';
 }
 
+function hasSupported511ListShape(body, resource) {
+  if (Array.isArray(body)) return true;
+  if (!body || typeof body !== 'object') return false;
+
+  const resourceListKey = resource === 'alerts'
+    ? 'alerts'
+    : resource === 'roadconditions'
+      ? 'roadconditions'
+      : 'events';
+  return Array.isArray(body[resourceListKey]) || Array.isArray(body.data);
+}
+
 /**
  * Fetch one vendor resource. Calls acquire511Slot(hostname) before the request.
  *
@@ -435,6 +447,9 @@ export async function get(baseUrl, resource, opts = {}) {
     throw new Error(`provincial-511 ${resource}: HTTP ${resp.status}`);
   }
   const body = await readLimitedJson(resp, maxBytes);
+  if (!hasSupported511ListShape(body, resource)) {
+    throw new Error(`provincial-511 ${resource}: unexpected response shape`);
+  }
   return {
     records: normalize511List(body, kindForResource(resource), jurisdiction),
     raw: body,

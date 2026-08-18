@@ -6,9 +6,9 @@
 // Seeds Ontario 511 (events/alerts/roadconditions), Alberta 511 events and
 // alerts, and Manitoba 511 events and alerts. One process ticks all three
 // jurisdictions, so they clear on the same tick. Manitoba requires
-// MANITOBA_511_KEY via loadEnvFile; an unset key skips that jurisdiction as
-// not-configured and does not clear last-good. Do not add Canada loops to
-// ais-relay.cjs.
+// MANITOBA_511_KEY via loadEnvFile; an unset key skips that jurisdiction,
+// preserves last-good without rewriting freshness, and lets fetchedAt age into
+// an actionable health failure. Do not add Canada loops to ais-relay.cjs.
 // Each fetch goes through acquire511Slot(hostname) inside the adapter
 // (511on.ca, 511.alberta.ca, and www.manitoba511.ca are separate 10/60 buckets).
 
@@ -194,19 +194,10 @@ async function preserveManitoba() {
   await extendExistingTtl([MANITOBA_KEY, MANITOBA_META_KEY], CACHE_TTL);
 }
 
-async function writeManitobaNotConfiguredMeta() {
-  await writeSeedMeta(MANITOBA_KEY, 0, MANITOBA_META_KEY, undefined, undefined, {
-    sourceVersion: 'manitoba-511-v1',
-    sourceState: 'unavailable',
-    skipReason: 'MANITOBA_511_KEY missing',
-  });
-}
-
 async function publishManitobaFromTick(data) {
   if (data?._manitobaNotConfigured) {
-    console.warn('  Manitoba 511: not configured; preserving last-good');
+    console.warn('  Manitoba 511: not configured; preserving last-good while freshness metadata ages');
     await preserveManitoba();
-    await writeManitobaNotConfiguredMeta();
     return;
   }
   if (!data || data._manitobaFailed) {

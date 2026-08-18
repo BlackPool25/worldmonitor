@@ -81,7 +81,7 @@ export const LAYER_REGISTRY: Record<keyof MapLayers, LayerDefinition> = {
   displacement:             def('displacement',             '&#128101;', 'displacementFlows',        'Displacement Flows'),
   climate:                  def('climate',                  '&#127787;', 'climateAnomalies',         'Climate Anomalies'),
   weather:                  def('weather',                  '&#9928;',   'weatherAlerts',            'US + Canada Weather Alerts (NWS, ECCC)'),
-  canadaRoads:              def('canadaRoads',              '&#128679;', 'canadaRoads',              'Canada Roads (Ontario, Alberta, Toronto, BC)', ['deck']),
+  canadaRoads:              def('canadaRoads',              '&#128679;', 'canadaRoads',              'Canada Roads (Ontario, Alberta, Manitoba, Toronto, BC)', ['deck']),
   canadaAlerts:             def('canadaAlerts',             '&#9888;',   'canadaAlerts',             'Canada Alerts (AB + BC + SK)', ['deck']),
   outages:                  def('outages',                  '&#128225;', 'internetOutages',          'Internet Disruptions'),
   cyberThreats:             def('cyberThreats',             '&#128737;', 'cyberThreats',             'Cyber Threats'),
@@ -634,6 +634,7 @@ export const LAYER_SYNONYMS: Record<string, Array<keyof MapLayers>> = {
   // Both sides of the merge claimed this alias: Alberta 511 roads (#6612) and
   // Alberta Emergency Alert (#6610). Searching "alberta" should surface both.
   alberta: ['canadaRoads', 'canadaAlerts'],
+  manitoba: ['canadaRoads'],
   toronto: ['canadaRoads'],
   britishcolumbia: ['canadaRoads', 'canadaAlerts'],
   bcalert: ['canadaAlerts'],
