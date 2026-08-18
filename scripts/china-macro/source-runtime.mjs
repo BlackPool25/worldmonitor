@@ -8,6 +8,10 @@ const {
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_RETRY_DELAY_MS = 1_000;
 const FETCH_TIMEOUT_MS = 12_000;
+// Exit nodes to try before giving up. Four covers the measured ~6% per-exit
+// failure rate against NBS with room to spare; more would trade wall time for
+// nothing, since a host the proxy genuinely cannot reach fails on every exit.
+const PROXY_EXIT_ATTEMPTS = 4;
 
 function sourceContractError(message) {
   return Object.assign(new Error(`SOURCE_CONTRACT_VIOLATION:${message}`), {
@@ -82,26 +86,51 @@ export function shouldRetryViaProxy(error) {
  * `redirect: 'manual'` handling and would otherwise lose the hop.
  */
 async function fetchThroughProxy(target, init, proxyUrl) {
-  const proxyConfig = parseProxyConfigForAttempt(proxyUrl, 0);
-  if (!proxyConfig) return null;
-  const result = await proxyFetch(String(target), proxyConfig, {
-    headers: init?.headers,
-    method: init?.method || 'GET',
-    maxResponseBytes: MAX_RESPONSE_BYTES,
-    timeoutMs: FETCH_TIMEOUT_MS,
-    signal: init?.signal,
-  });
-  if (result.buffer.byteLength > MAX_RESPONSE_BYTES) {
-    throw sourceContractError('RESPONSE_TOO_LARGE');
+  let lastError = null;
+  // Rotate exits. parseProxyConfigForAttempt maps the attempt index onto a
+  // different gateway port and therefore a different exit node, and individual
+  // exits fail this host intermittently: measured 2026-08-18 over 18 single
+  // attempts against www.stats.gov.cn, 17 returned the real page (12017 bytes,
+  // byte-identical to a direct fetch) and one failed CONNECT with 522, while
+  // rotating across four indices succeeded 5 of 5 rounds. A single fixed
+  // attempt would carry that ~6% per-request failure into all five NBS fetches
+  // and lose roughly a quarter of runs.
+  //
+  // A rotation step is FREE against the request budget on purpose: a 522 from
+  // the gateway means the tunnel was never established, so the publisher was
+  // never contacted and no load was placed on it. The budget bounds load on the
+  // source, not attempts made on our side.
+  for (let attempt = 0; attempt < PROXY_EXIT_ATTEMPTS; attempt += 1) {
+    const proxyConfig = parseProxyConfigForAttempt(proxyUrl, attempt);
+    if (!proxyConfig) return null;
+    let result;
+    try {
+      result = await proxyFetch(String(target), proxyConfig, {
+        headers: init?.headers,
+        method: init?.method || 'GET',
+        maxResponseBytes: MAX_RESPONSE_BYTES,
+        timeoutMs: FETCH_TIMEOUT_MS,
+        signal: init?.signal,
+      });
+    } catch (error) {
+      lastError = error;
+      if (error?.name === 'AbortError') throw error;
+      continue;
+    }
+    if (result.buffer.byteLength > MAX_RESPONSE_BYTES) {
+      throw sourceContractError('RESPONSE_TOO_LARGE');
+    }
+    return new Response(result.buffer, {
+      status: result.status,
+      headers: {
+        ...(result.location ? { Location: result.location } : {}),
+        'Content-Type': result.contentType || 'text/html',
+        'Content-Length': String(result.buffer.byteLength),
+      },
+    });
   }
-  return new Response(result.buffer, {
-    status: result.status,
-    headers: {
-      ...(result.location ? { Location: result.location } : {}),
-      'Content-Type': result.contentType || 'text/html',
-      'Content-Length': String(result.buffer.byteLength),
-    },
-  });
+  if (lastError) throw lastError;
+  return null;
 }
 
 export function requestBudget(maxRequests) {
@@ -170,11 +199,19 @@ export async function fetchText(fetchFn, value, {
         );
       if (proxyUrl && shouldRetryViaProxy(error)) {
         try {
-          // A proxied retry reaches the publisher a SECOND time, so it consumes
-          // budget like any other request. Counting it keeps requestCount an
-          // honest measure of load placed on the source rather than of how
-          // often we happened to succeed.
-          budget.consume();
+          // Deliberately NO second budget.consume() here.
+          //
+          // The budget bounds load placed on the PUBLISHER, and a connection-
+          // level failure never reached it — no socket, no request, no load. The
+          // proxied attempt is the same logical request finally arriving, so it
+          // is covered by the unit this iteration already consumed at the top of
+          // the loop.
+          //
+          // Counting it twice is not merely pedantic: NBS_MAX_REQUESTS_PER_RUN
+          // is 8 and a run makes 5 NBS fetches (robots + listing + 3 articles).
+          // On Railway the direct attempt fails every time, so double-counting
+          // needs 10 and trips REQUEST_BUDGET_EXCEEDED — the fix would have
+          // failed for a different reason than the one it fixes.
           const proxied = await fetchThroughProxy(target, requestInit, proxyUrl);
           if (proxied) {
             onProxyFallback({ url: target.toString(), directReason: reasonFor(error) });

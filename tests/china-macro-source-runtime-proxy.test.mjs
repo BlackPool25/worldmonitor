@@ -99,6 +99,29 @@ describe('china-macro proxy fallback (#6676 NBS egress block)', () => {
       );
     });
 
+    it('a proxied retry does NOT double-consume the budget', async () => {
+      // The budget bounds load on the PUBLISHER. A connection-level failure
+      // never reached it, so the proxied attempt is the same logical request
+      // finally arriving — one unit, not two.
+      //
+      // This is load-bearing arithmetic, not style: NBS_MAX_REQUESTS_PER_RUN is
+      // 8 and a run makes 5 NBS fetches (robots + listing + 3 articles). On
+      // Railway the direct attempt fails every time, so double-counting needs 10
+      // and trips REQUEST_BUDGET_EXCEEDED — the fix failing for a different
+      // reason than the one it fixes.
+      const fetchFn = async () => { throw connectionFailure(); };
+      const budget = requestBudget(8);
+      await assert.rejects(fetchText(fetchFn, 'https://example.test/a', {
+        policy: POLICY,
+        budget,
+        proxyUrl: 'not-a-proxy-url',
+      }));
+      assert.ok(
+        budget.count <= 2,
+        `one logical request must not cost ${budget.count} budget units; five such fetches would exceed the NBS cap of 8`,
+      );
+    });
+
     it('a request budget still bounds the load a blocked publisher receives', async () => {
       // The fallback must not become an escape hatch from the budget: a proxied
       // retry reaches the publisher a second time and is counted, so a source
