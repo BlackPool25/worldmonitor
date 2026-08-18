@@ -579,6 +579,12 @@ const PROVIDER_OVERRIDES = {
     attribution: 'Excluded from the provider count: user-configured MCP connector.',
     status: 'excluded',
   },
+  'search.parallel.ai': {
+    provider: 'Parallel Search MCP',
+    license: 'Excluded: optional user-configured MCP connector',
+    attribution: 'Excluded from the provider count: user-configured MCP connector.',
+    status: 'excluded',
+  },
   'api.example.com': {
     provider: 'Example API placeholder',
     license: 'Excluded: documentation/test placeholder',
@@ -706,9 +712,12 @@ const PROVIDER_OVERRIDES = {
 // a provider-bearing override a separate, explicit lifecycle event instead of
 // something `--write` can silently normalize into the manifest.
 export const PROVIDER_IDENTITY_REVIEW = Object.freeze({
-  sha256: '05ff5054ce1a277d10772f75031895a7bf3916c4097305b45907f794cc130faf',
-  reason: 'Add reviewed Polish publisher identities for PAP, Gazeta Wyborcza, Polityka, Onet, OKO.press, and TVP Info while retaining the prior site-scoped and crisis-desk identities.',
-  reviewReference: 'PR #6662; PR #6670; PR #6736; PR #6840; issues #6813-#6830; Annahar Lebanon follow-up; Polish depth follow-up',
+  sha256: '483f27c36d34eda62c3f1633bc38b8e8f05a5fdfb8c01f55497c0cee0e774970',
+  reason: 'Add the Parallel Search MCP identity for search.parallel.ai as an excluded user-configured MCP connector, matching the Robtex, Linear, Airtable, and Cloudflare MCP rows, while retaining the prior publisher, site-scoped, and crisis-desk identities.',
+  // Do not cite provider URLs here: this file is inside SOURCE_ROOTS, so a bare
+  // URL literal in a review string registers its host as a discovered upstream
+  // source and invents a provider row for it.
+  reviewReference: 'PR #6447 (vendor-disclosed contribution; Parallel customer terms served from the endpoint via x-parallel-terms); PR #6662; PR #6670; PR #6736; PR #6840; issues #6813-#6830; Annahar Lebanon follow-up; Polish depth follow-up',
 });
 
 export function providerIdentityDigest(providerOverrides = PROVIDER_OVERRIDES) {
