@@ -106,5 +106,11 @@ describe('X news-account public trust registries (#6654)', () => {
     assert.match(healthSrc, /issue: 6654/);
     assert.match(relaySrc, /intelligence:x-feed:v1/);
     assert.match(relaySrc, /seed-meta:intelligence:x-feed:v1/);
+    const baseline = JSON.parse(readFileSync(join(__dirname, '../scripts/seed-freshness-baseline.json'), 'utf8'));
+    const ack = baseline.acknowledged.find((row) => row.name === 'xFeed');
+    assert.ok(ack, 'xFeed needs an expiring EMPTY acknowledgement until the first ais-relay poll');
+    assert.equal(ack.status, 'EMPTY');
+    assert.equal(ack.issue, 6654);
+    assert.equal(ack.cutover.probeKey, 'seed-meta:intelligence:x-feed:v1');
   });
 });
