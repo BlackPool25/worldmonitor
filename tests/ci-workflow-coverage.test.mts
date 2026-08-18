@@ -116,7 +116,6 @@ const REQUIRED_DESKTOP_CONFIG_INPUTS = [
 const REQUIRED_DESKTOP_RUST_INPUTS = [
   'src-tauri/sidecar/',
   'src-tauri/',
-  '.github/workflows/test.yml',
 ] as const;
 
 function escapeRegExp(value: string): string {
@@ -871,6 +870,31 @@ describe('CI workflow coverage', () => {
     );
   });
 
+  it('path-filters Test jobs on push to main instead of compiling everything', () => {
+    const changes = testWorkflow.slice(testWorkflow.indexOf('id: diff'));
+    const pushGate = changes.slice(0, changes.indexOf('CODE=$('));
+    assert.match(
+      pushGate,
+      /compare\/\$\{BEFORE\}\.\.\.\$\{\{ github\.sha \}\}/,
+      'push to main must classify files from the compare API',
+    );
+    assert.match(
+      pushGate,
+      /No usable parent SHA; running every Test job/,
+      'a zero parent SHA must fail open',
+    );
+    assert.match(
+      pushGate,
+      /Compare listing is truncated at 300 files; running every Test job/,
+      'a truncated compare must fail open',
+    );
+    assert.match(pushGate, /emit_all_true/);
+    assert.ok(
+      pushGate.indexOf('compare/${BEFORE}') < pushGate.lastIndexOf('emit_all_true'),
+      'the compare must run; fail-open is only the truncated/error path',
+    );
+  });
+
   it('does not rebuild Umami images for an unrelated Test workflow edit', () => {
     const umamiFilter = shellAwkAssignmentBlock('UMAMI');
     assert.equal(
@@ -935,6 +959,21 @@ describe('CI workflow coverage', () => {
         `test.yml desktop_rust filter must cover ${input}`,
       );
     }
+    assert.equal(
+      evaluateAwkAssignmentBlock(desktopRustFilter, ['src-tauri/src/lib.rs']),
+      1,
+      'desktop-rust must compile when the Tauri crate changes',
+    );
+    assert.equal(
+      evaluateAwkAssignmentBlock(desktopRustFilter, ['src-tauri/sidecar/local-api-server.js']),
+      0,
+      'desktop-rust must skip sidecar-only changes (those ride the code filter)',
+    );
+    assert.equal(
+      evaluateAwkAssignmentBlock(desktopRustFilter, ['.github/workflows/test.yml']),
+      0,
+      'desktop-rust must not compile the Tauri crate for a Test workflow edit',
+    );
     assert.match(
       testJobBlock('desktop-config'),
       /if: needs\.changes\.outputs\.desktop_config == 'true'/,
