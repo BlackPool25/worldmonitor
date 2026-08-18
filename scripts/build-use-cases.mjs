@@ -33,7 +33,7 @@ const UMAMI_SCRIPT_TAG =
   + 'data-domains="worldmonitor.app,www.worldmonitor.app,happy.worldmonitor.app" '
   + 'nonce="wm-static-bootstrap"></script>';
 
-const HANDOFF_PRESERVE_SCRIPT = `(() => {
+export const HANDOFF_PRESERVE_SCRIPT = `(() => {
   const PARAMS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content'];
   const rewrite = (anchor) => {
     try {
@@ -49,6 +49,28 @@ const HANDOFF_PRESERVE_SCRIPT = `(() => {
   };
   document.querySelectorAll('[data-use-case-handoff]').forEach(rewrite);
 })();`;
+
+const HANDOFF_UMAMI_EVENT = 'use-case-product-cta-click';
+const HANDOFF_SOURCE = 'worldmonitor-use-cases';
+const HANDOFF_MEDIUM = 'owned-content';
+
+function handoffAttributes({ campaign, destination, placement }, escapeHtml) {
+  const dimensions = {
+    source: HANDOFF_SOURCE,
+    medium: HANDOFF_MEDIUM,
+    campaign,
+    destination,
+    placement,
+  };
+  const analyticsAttributes = Object.entries(dimensions)
+    .flatMap(([name, value]) => [
+      `data-umami-event-${name}="${escapeHtml(value)}"`,
+      `data-umami-event-content-${name}="${escapeHtml(value)}"`,
+    ])
+    .join(' ');
+
+  return `data-use-case-handoff data-wm-content-link data-umami-event="${HANDOFF_UMAMI_EVENT}" ${analyticsAttributes}`;
+}
 
 function withContentAttribution(url, {
   source = 'worldmonitor-use-cases',
@@ -127,36 +149,42 @@ function renderCountryRiskUseCase({ tpl, baseUrl, lastmod }) {
     'A repeatable World Monitor country-risk workflow: establish a baseline, review live instability, check corroborating signals, record uncertainty, then act.';
   assertMetaDescription(description, 'monitor-country-risk');
 
-  const dashboardHref = withUtmSource(
-    withContentAttribution('/?country=TW&expanded=1', {
+  const handoffs = {
+    dashboard: {
       campaign: 'monitor-country-risk',
       destination: 'dashboard',
       placement: 'use-case-cta-dashboard',
-    }),
-    'seo-use-case',
-  );
-  const proHref = withUtmSource(
-    withContentAttribution('/pro', {
+    },
+    pro: {
       campaign: 'monitor-country-risk',
       destination: 'pro',
       placement: 'use-case-cta-pro',
-    }),
-    'seo-use-case',
-  );
-  const apiHref = withUtmSource(
-    withContentAttribution('/docs/api-reference', {
+    },
+    api: {
       campaign: 'monitor-country-risk',
       destination: 'api',
       placement: 'use-case-cta-api',
-    }),
-    'seo-use-case',
-  );
-  const mcpHref = withUtmSource(
-    withContentAttribution('/docs/mcp-quickstart', {
+    },
+    mcp: {
       campaign: 'monitor-country-risk',
       destination: 'mcp',
       placement: 'use-case-cta-mcp',
-    }),
+    },
+  };
+  const dashboardHref = withUtmSource(
+    withContentAttribution('/dashboard?country=TW&expanded=1', handoffs.dashboard),
+    'seo-use-case',
+  );
+  const proHref = withUtmSource(
+    withContentAttribution('/pro', handoffs.pro),
+    'seo-use-case',
+  );
+  const apiHref = withUtmSource(
+    withContentAttribution('/docs/api-reference', handoffs.api),
+    'seo-use-case',
+  );
+  const mcpHref = withUtmSource(
+    withContentAttribution('/docs/mcp-quickstart', handoffs.mcp),
     'seo-use-case',
   );
 
@@ -208,12 +236,12 @@ function renderCountryRiskUseCase({ tpl, baseUrl, lastmod }) {
 
       <h2>Exact next action</h2>
       <p>Open the Taiwan country brief in the live dashboard to continue the worked example, then swap the country code for your own exposure list.</p>
-      <p><a class="cta" data-use-case-handoff data-dashboard-link href="${escapeHtml(dashboardHref)}">Open Taiwan country brief →</a></p>
+      <p><a class="cta" ${handoffAttributes(handoffs.dashboard, escapeHtml)} data-dashboard-link href="${escapeHtml(dashboardHref)}">Open Taiwan country brief →</a></p>
       <p>Secondary handoffs when they continue this workflow:</p>
       <ul class="related">
-        <li><a data-use-case-handoff href="${escapeHtml(proHref)}">Pro alerting</a></li>
-        <li><a data-use-case-handoff href="${escapeHtml(apiHref)}">API reference</a></li>
-        <li><a data-use-case-handoff href="${escapeHtml(mcpHref)}">MCP quickstart</a></li>
+        <li><a ${handoffAttributes(handoffs.pro, escapeHtml)} href="${escapeHtml(proHref)}">Pro alerting</a></li>
+        <li><a ${handoffAttributes(handoffs.api, escapeHtml)} href="${escapeHtml(apiHref)}">API reference</a></li>
+        <li><a ${handoffAttributes(handoffs.mcp, escapeHtml)} href="${escapeHtml(mcpHref)}">MCP quickstart</a></li>
       </ul>
 
       <h2>Supporting material</h2>
@@ -260,39 +288,45 @@ function renderVerifyBreakingNewsUseCase({ tpl, baseUrl, lastmod }) {
     'Verify a breaking claim with World Monitor: capture it, assess sources, check independent signals, record contradictions, then take a qualified next action.';
   assertMetaDescription(description, 'verify-breaking-news');
 
+  const handoffs = {
+    dashboard: {
+      campaign: 'verify-breaking-news',
+      destination: 'dashboard',
+      placement: 'use-case-cta-dashboard',
+    },
+    pro: {
+      campaign: 'verify-breaking-news',
+      destination: 'pro',
+      placement: 'use-case-cta-pro',
+    },
+    api: {
+      campaign: 'verify-breaking-news',
+      destination: 'api',
+      placement: 'use-case-cta-api',
+    },
+    mcp: {
+      campaign: 'verify-breaking-news',
+      destination: 'mcp',
+      placement: 'use-case-cta-mcp',
+    },
+  };
   const dashboardHref = withUtmSource(
     withContentAttribution(
-      '/?view=mena&layers=ais,flights,fires,outages,hotspots,natural,military&timeRange=24h',
-      {
-        campaign: 'verify-breaking-news',
-        destination: 'dashboard',
-        placement: 'use-case-cta-dashboard',
-      },
+      '/dashboard?view=mena&layers=ais,flights,fires,outages,hotspots,natural,military&timeRange=24h',
+      handoffs.dashboard,
     ),
     'seo-use-case',
   );
   const proHref = withUtmSource(
-    withContentAttribution('/pro', {
-      campaign: 'verify-breaking-news',
-      destination: 'pro',
-      placement: 'use-case-cta-pro',
-    }),
+    withContentAttribution('/pro', handoffs.pro),
     'seo-use-case',
   );
   const apiHref = withUtmSource(
-    withContentAttribution('/docs/api-reference', {
-      campaign: 'verify-breaking-news',
-      destination: 'api',
-      placement: 'use-case-cta-api',
-    }),
+    withContentAttribution('/docs/api-reference', handoffs.api),
     'seo-use-case',
   );
   const mcpHref = withUtmSource(
-    withContentAttribution('/docs/mcp-quickstart', {
-      campaign: 'verify-breaking-news',
-      destination: 'mcp',
-      placement: 'use-case-cta-mcp',
-    }),
+    withContentAttribution('/docs/mcp-quickstart', handoffs.mcp),
     'seo-use-case',
   );
 
@@ -346,12 +380,12 @@ function renderVerifyBreakingNewsUseCase({ tpl, baseUrl, lastmod }) {
 
       <h2>Exact next action</h2>
       <p>Open the MENA verification map with AIS, flights, fires, outages, hotspots, natural, and military layers for a 24-hour window, then retarget the view to the claimed coordinates.</p>
-      <p><a class="cta" data-use-case-handoff data-dashboard-link href="${escapeHtml(dashboardHref)}">Open verification map layers →</a></p>
+      <p><a class="cta" ${handoffAttributes(handoffs.dashboard, escapeHtml)} data-dashboard-link href="${escapeHtml(dashboardHref)}">Open verification map layers →</a></p>
       <p>Secondary handoffs when they continue this workflow:</p>
       <ul class="related">
-        <li><a data-use-case-handoff href="${escapeHtml(proHref)}">Pro alerting</a></li>
-        <li><a data-use-case-handoff href="${escapeHtml(apiHref)}">API reference</a></li>
-        <li><a data-use-case-handoff href="${escapeHtml(mcpHref)}">MCP quickstart</a></li>
+        <li><a ${handoffAttributes(handoffs.pro, escapeHtml)} href="${escapeHtml(proHref)}">Pro alerting</a></li>
+        <li><a ${handoffAttributes(handoffs.api, escapeHtml)} href="${escapeHtml(apiHref)}">API reference</a></li>
+        <li><a ${handoffAttributes(handoffs.mcp, escapeHtml)} href="${escapeHtml(mcpHref)}">MCP quickstart</a></li>
       </ul>
 
       <h2>Supporting material</h2>
