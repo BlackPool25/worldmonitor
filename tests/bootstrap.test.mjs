@@ -51,10 +51,25 @@ describe('Bootstrap cache key registry', () => {
     );
   });
 
-  it('registers the rendered X feed in bootstrap hydration', () => {
-    assert.equal(CANONICAL_BOOTSTRAP_CACHE_KEYS.xFeed, 'intelligence:x-feed:v1');
-    assert.equal(CANONICAL_BOOTSTRAP_TIERS.xFeed, 'slow');
-    assert.equal(EDGE_BOOTSTRAP_CACHE_KEYS.xFeed, CANONICAL_BOOTSTRAP_CACHE_KEYS.xFeed);
+  // R4 (#6654): the X feed carries post bodies, and every bootstrap tier is
+  // reachable unauthenticated at `?tier=<t>&public=1` with ACAO:* and a 2h CDN
+  // shield — the embed/OEM + server-to-server audience R4 excludes. The panel
+  // fetches post text from /api/x-feed instead, and telegramFeed is kept out of
+  // this registry for the same reason. Registering it here would republish
+  // tweet bodies to anonymous callers.
+  it('keeps the X feed OUT of bootstrap hydration so post bodies stay first-party', () => {
+    assert.equal(CANONICAL_BOOTSTRAP_CACHE_KEYS.xFeed, undefined);
+    assert.equal(CANONICAL_BOOTSTRAP_TIERS.xFeed, undefined);
+    assert.equal(EDGE_BOOTSTRAP_CACHE_KEYS.xFeed, undefined);
+    assert.equal(EDGE_BOOTSTRAP_TIERS.xFeed, undefined);
+    // Same rule, stated against the sibling feed it mirrors.
+    assert.equal(CANONICAL_BOOTSTRAP_CACHE_KEYS.telegramFeed, undefined);
+    for (const tier of ['fast', 'slow', 'on-demand']) {
+      assert.ok(
+        !bootstrapTierKeyNames(tier).includes('xFeed'),
+        `xFeed must not appear in the ${tier} tier`,
+      );
+    }
   });
 
   it('generated edge mirror exactly matches the authored shared registry', () => {

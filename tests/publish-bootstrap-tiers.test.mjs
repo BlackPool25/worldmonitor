@@ -46,7 +46,11 @@ describe('bootstrap tier payload assembly', () => {
       return pipelineResponse([
         raw({ _seed: { fetchedAt: 1 }, data: { value: 1, enrichmentMeta: { secret: true } } }),
         raw({ fireDetections: detections }),
-        raw({ count: 2, items: [{ id: '1' }], pollState: { cursorByAccountId: { '1': '9' } } }),
+        raw({
+          count: 2,
+          items: [{ id: '1', text: 'R4_POST_BODY_MUST_NOT_BE_PUBLISHED', permalink: 'https://x.com/a/status/1' }],
+          pollState: { cursorByAccountId: { '1': '9' } },
+        }),
         { result: null },
         { result: '{not json' },
         raw('__WM_NEG__'),
@@ -58,7 +62,14 @@ describe('bootstrap tier payload assembly', () => {
     assert.deepEqual(Object.keys(payload.data), ['forecasts', 'wildfires', 'xFeed']);
     assert.deepEqual(payload.data.forecasts, { value: 1 });
     assert.equal(payload.data.wildfires.fireDetections.length, 500);
-    assert.deepEqual(payload.data.xFeed, { count: 2, items: [{ id: '1' }] });
+    // R4 (#6654): seed-internal cursor state AND the post body are stripped;
+    // the permalink survives. xFeed is not a registered bootstrap key, so this
+    // exercises the regression guard that keeps bodies out if it is re-added.
+    assert.deepEqual(payload.data.xFeed, {
+      count: 2,
+      items: [{ id: '1', permalink: 'https://x.com/a/status/1' }],
+    });
+    assert.doesNotMatch(JSON.stringify(payload), /R4_POST_BODY_MUST_NOT_BE_PUBLISHED/);
     assert.deepEqual(payload.missing, ['missingValue', 'malformedValue', 'negativeValue']);
   });
 
