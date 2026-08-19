@@ -7447,7 +7447,7 @@ components:
                 count:
                     type: integer
                     format: int32
-                    description: Total count of posts in the current window.
+                    description: Number of posts returned in this response, after the limit is applied.
                 error:
                     type: string
                     description: Detailed error message if the fetch failed.

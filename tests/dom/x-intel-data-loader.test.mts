@@ -81,7 +81,7 @@ describe('X feed DataLoader lifecycle', () => {
   });
 
   it('does not render expired hydrated post bodies after a live failure', async () => {
-    const panel = { setData: vi.fn() };
+    const panel = { setData: vi.fn(), showError: vi.fn() };
     const ctx = { panels: { 'x-intel': panel }, isDestroyed: false } as unknown as AppContext;
     mocks.getHydratedData.mockReset();
     mocks.getHydratedData.mockReturnValue({
@@ -99,7 +99,39 @@ describe('X feed DataLoader lifecycle', () => {
 
     await loader.loadXIntel();
 
+    // The load-bearing assertion: an expired hydrated body must never reach the
+    // panel. Asserted directly now, rather than inferred from the shape of a
+    // blanking setData call.
+    expect(panel.setData).not.toHaveBeenCalled();
+    expect(JSON.stringify(panel.setData.mock.calls)).not.toContain('possibly deleted body');
+    // Nothing good was ever rendered, so the failure must surface rather than
+    // leave the panel stuck on its loading state.
+    expect(panel.showError).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a good live render when a later fetch fails, instead of blanking it', async () => {
+    const panel = { setData: vi.fn(), showError: vi.fn() };
+    const ctx = { panels: { 'x-intel': panel }, isDestroyed: false } as unknown as AppContext;
+    mocks.getHydratedData.mockReset();
+    mocks.getHydratedData.mockReturnValue(undefined);
+    mocks.fetchXFeed.mockReset();
+    mocks.fetchXFeed.mockResolvedValueOnce(feed(4));
+    const { DataLoaderManager } = await import('@/app/data-loader');
+    const loader = new DataLoaderManager(ctx, {
+      renderCriticalBanner: () => undefined,
+      refreshOpenCountryBrief: () => undefined,
+    });
+
+    await loader.loadXIntel();
+    expect(panel.setData).toHaveBeenCalledWith(expect.objectContaining({ count: 4 }));
+
+    // A transient failure on the NEXT poll must not wipe the good posts. The old
+    // code called setData({ enabled: false, items: [] }) here, which rendered the
+    // permanent "relay disabled" copy over live data after a single 502.
+    mocks.fetchXFeed.mockRejectedValueOnce(new Error('network down'));
+    await loader.loadXIntel();
+
     expect(panel.setData).toHaveBeenCalledTimes(1);
-    expect(panel.setData).toHaveBeenCalledWith(expect.objectContaining({ enabled: false, items: [] }));
+    expect(panel.showError).not.toHaveBeenCalled();
   });
 });

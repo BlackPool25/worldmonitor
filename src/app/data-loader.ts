@@ -437,6 +437,10 @@ export class DataLoaderManager implements AppModule {
   private loadAllDataRerunRequested = false;
   private loadAllDataQueuedForceAll = false;
   private xIntelAbortController: AbortController | null = null;
+  // True once a live X fetch has rendered. Gates whether a later transport
+  // failure may blank the panel (it may not) or must surface an error (it must,
+  // when nothing good is on screen yet).
+  private xIntelHasLiveData = false;
 
   private digestBreaker = { state: 'closed' as 'closed' | 'open' | 'half-open', failures: 0, cooldownUntil: 0 };
   private readonly digestRequestTimeoutMs = 8000;
@@ -4527,13 +4531,27 @@ export class DataLoaderManager implements AppModule {
       const result = await fetchXFeed(50, controller.signal);
       if (controller.signal.aborted || this.ctx.isDestroyed) return;
       this.callPanel('x-intel', 'setData', result);
+      this.xIntelHasLiveData = true;
     } catch (error) {
       if (controller.signal.aborted || this.ctx.isDestroyed) return;
       console.error('[App] X news-account fetch failed:', error);
       if (hydratedUsable) return;
-      this.callPanel('x-intel', 'setData', {
-        source: 'x', enabled: false, count: 0, updatedAt: null, items: [],
-      });
+      // A transport failure is NOT `enabled: false`. That sentinel means "the
+      // relay has no X credentials", and reusing it here rendered the permanent
+      // "disabled" copy over a panel that was showing good posts a moment
+      // earlier. With hydration now intentionally absent (xFeed is not a
+      // bootstrap key, R4), `hydratedUsable` is always false, so every transient
+      // 502 hit this path.
+      //
+      // Once a live fetch has succeeded, keep that render: the panel refreshes
+      // every 15 min, so one failed poll should not blank it. Note showError
+      // also calls replaceContent, so it is NOT a "keep what's on screen" path —
+      // hence the explicit early return rather than falling through to it.
+      if (this.xIntelHasLiveData) return;
+      // Nothing good on screen yet (first load, or only expired hydration we
+      // deliberately refused to render): surface the failure rather than leave a
+      // stuck loading state.
+      this.callPanel('x-intel', 'showError');
     } finally {
       if (this.xIntelAbortController === controller) this.xIntelAbortController = null;
     }

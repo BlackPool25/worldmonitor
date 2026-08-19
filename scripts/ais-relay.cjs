@@ -1301,6 +1301,9 @@ const xState = {
   lastError: null,
   rateLimitedUntil: 0,
   rateLimitAttempt: 0,
+  // True when a Redis read failed, so last-good state is present but unreadable.
+  // Blocks polling/publishing until a clean read (see hydrateXState).
+  hydrationFailed: false,
   startedAt: Date.now(),
 };
 
@@ -1328,12 +1331,30 @@ function loadXAccounts() {
 }
 
 async function hydrateXState() {
+  // upstashGet resolves null for BOTH "key absent" and "GET failed" (HTTP error,
+  // timeout, parse failure). Those must not be treated alike: an absent key is a
+  // legitimately empty start, but a failed read means Redis still holds last-good
+  // state we cannot see. Hydrating from a failed read and then publishing would
+  // overwrite that last-good snapshot with a near-empty one — a transient blip
+  // turned into permanent data loss. The onFailure callback is the only place
+  // the distinction survives, so latch it here.
+  let readFailed = false;
   const snapshot = await upstashGet(X_FEED_CACHE_KEY, (reason) => {
+    readFailed = true;
     console.warn(`[Relay] X snapshot hydration failed: ${reason}`);
   });
   const pollState = await upstashGet(X_FEED_POLL_STATE_KEY, (reason) => {
+    readFailed = true;
     console.warn(`[Relay] X poll-state hydration failed: ${reason}`);
   });
+  if (readFailed) {
+    // Fail closed. pollXOnce retries hydration and skips the cycle while this is
+    // set, so we never publish from a state we could not fully read.
+    xState.hydrationFailed = true;
+    console.warn('[Relay] X hydration incomplete — refusing to poll or publish until a clean read');
+    return false;
+  }
+  xState.hydrationFailed = false;
   const hydrated = xNewsAccounts.hydrateXFeedSnapshot(snapshot, {
     maxItems: X_MAX_FEED_ITEMS,
     pollState,
@@ -1355,13 +1376,13 @@ async function hydrateXState() {
   return true;
 }
 
-async function publishXSnapshot(expectedAccounts, { cycleComplete, accountsPolled, lockOwner } = {}) {
-  const snapshot = xNewsAccounts.buildXFeedSnapshot(xState, {
+async function publishXSnapshot(expectedAccounts, { cycleComplete, accountsPolled, lockOwner, state = xState } = {}) {
+  const snapshot = xNewsAccounts.buildXFeedSnapshot(state, {
     enabled: X_ENABLED,
     expectedAccounts,
   });
   const meta = accountsPolled > 0 ? {
-    fetchedAt: xState.lastPollAt,
+    fetchedAt: state.lastPollAt,
     recordCount: snapshot.count,
     generation: snapshot.generation,
     coverage: snapshot.coverage,
@@ -1373,7 +1394,7 @@ async function publishXSnapshot(expectedAccounts, { cycleComplete, accountsPolle
     snapshotKey: X_FEED_CACHE_KEY,
     snapshot,
     pollStateKey: X_FEED_POLL_STATE_KEY,
-    pollState: xNewsAccounts.buildXPollState(xState, { expectedAccounts }),
+    pollState: xNewsAccounts.buildXPollState(state, { expectedAccounts }),
     ttlSeconds: X_FEED_TTL_SECONDS,
     metaKey: X_FEED_META_KEY,
     meta,
@@ -1394,6 +1415,14 @@ async function pollXOnce({ generation, signal, retryAfterLeaseConflict = false }
   const lockResult = await upstashSetNx(X_FEED_POLL_LOCK_KEY, lockOwner, X_FEED_POLL_LOCK_TTL_SECONDS);
   if (lockResult !== 'new') {
     console.warn(`[Relay] X poll skipped: shared lease is ${lockResult}`);
+    // The /x route serves this process's xState.items. A replica that keeps
+    // losing the lease used to hydrate once at boot and then never refresh, so
+    // it served frozen (or, after a failed boot hydrate, empty) data forever
+    // while Redis held last-good — and a load balancer would flip first-party
+    // /api/x-feed between fresh and stale on alternate requests. Re-hydrate on
+    // every lost lease so a non-owner converges, bounding its staleness to one
+    // poll interval instead of the process lifetime.
+    await hydrateXState();
     // One retry only. Passing `true` here would make the retry re-arm itself on
     // the next conflict, and since a lease-conflict return clears the guard's
     // in-flight flag immediately, that self-perpetuated a ~1Hz SETNX + log storm
@@ -1413,6 +1442,42 @@ async function pollXOnce({ generation, signal, retryAfterLeaseConflict = false }
     const accounts = xState.accounts.length ? xState.accounts : loadXAccounts();
     if (!accounts.length) return;
 
+    // A previous cycle's read failure leaves us unable to see last-good state.
+    // Retry once; if Redis is still unreadable, skip rather than publish over it.
+    if (xState.hydrationFailed) {
+      await hydrateXState();
+      if (xState.hydrationFailed) {
+        xState.lastError = 'X hydration still failing; skipped poll to protect last-good Redis state';
+        return;
+      }
+    }
+
+    // Cursors may have advanced under another replica since our boot hydrate.
+    // buildXPollState serialises the WHOLE cursor map, including accounts this
+    // cycle never touches — so polling from stale in-memory cursors and then
+    // publishing would write those stale values back over a peer's newer ones,
+    // rewinding since_id and re-fetching windows that were already consumed.
+    // Re-read under the lock so we start from Redis truth.
+    let pollStateReadFailed = false;
+    const freshPollState = await upstashGet(X_FEED_POLL_STATE_KEY, (reason) => {
+      pollStateReadFailed = true;
+      console.warn(`[Relay] X poll-state re-read failed: ${reason}`);
+    });
+    if (pollStateReadFailed) {
+      xState.lastError = 'poll-state re-read failed; skipped cycle rather than risk a cursor rewind';
+      return;
+    }
+    if (freshPollState) {
+      const refreshed = xNewsAccounts.hydrateXFeedSnapshot(null, { pollState: freshPollState });
+      if (refreshed) {
+        xState.cursorByAccountId = refreshed.cursorByAccountId;
+        xState.accountIdByHandle = refreshed.accountIdByHandle;
+        xState.catchupByAccountId = refreshed.catchupByAccountId;
+        xState.lookupOffset = refreshed.lookupOffset;
+        xState.accountOffset = refreshed.accountOffset;
+      }
+    }
+
     const pollStart = Date.now();
     const next = await xNewsAccounts.pollXFeed({
       accounts,
@@ -1430,33 +1495,52 @@ async function pollXOnce({ generation, signal, retryAfterLeaseConflict = false }
       return;
     }
 
-    xState.cursorByAccountId = next.cursorByAccountId;
-    xState.accountIdByHandle = next.accountIdByHandle;
-    xState.catchupByAccountId = next.catchupByAccountId;
-    xState.items = next.items;
-    xState.lookupOffset = next.lookupOffset || 0;
-    xState.accountOffset = next.accountOffset || 0;
-    xState.lastError = next.lastError;
+    // Rate-limit state is protective and applies whether or not we publish —
+    // dropping it on a publish failure would let the next tick hammer a 429ing
+    // upstream.
     xState.rateLimitedUntil = next.rateLimitedUntil || 0;
     xState.rateLimitAttempt = next.rateLimitAttempt || 0;
-    xState.lastPollAt = Date.now();
-    xState.lastCoverage = {
-      expected: accounts.length,
-      polled: next.accountsPolled,
-      failed: next.accountsFailed,
-      attempted: next.accountsAttempted,
-      complete: next.cycleComplete,
+    xState.lastError = next.lastError;
+
+    const pollCompletedAt = Date.now();
+    const candidate = {
+      ...xState,
+      cursorByAccountId: next.cursorByAccountId,
+      accountIdByHandle: next.accountIdByHandle,
+      catchupByAccountId: next.catchupByAccountId,
+      items: next.items,
+      lookupOffset: next.lookupOffset || 0,
+      accountOffset: next.accountOffset || 0,
+      lastPollAt: pollCompletedAt,
+      lastCoverage: {
+        expected: accounts.length,
+        polled: next.accountsPolled,
+        failed: next.accountsFailed,
+        attempted: next.accountsAttempted,
+        complete: next.cycleComplete,
+      },
+      lastHealthyAt: next.cycleComplete ? pollCompletedAt : xState.lastHealthyAt,
     };
-    if (next.cycleComplete) xState.lastHealthyAt = xState.lastPollAt;
 
-    const elapsed = ((Date.now() - pollStart) / 1000).toFixed(1);
-    console.log(`[Relay] X poll: ${next.accountsPolled}/${accounts.length} accounts, ${next.newCount} new posts, ${xState.items.length} total, ${next.accountsFailed} errors (${elapsed}s)`);
+    const elapsed = ((pollCompletedAt - pollStart) / 1000).toFixed(1);
+    console.log(`[Relay] X poll: ${next.accountsPolled}/${accounts.length} accounts, ${next.newCount} new posts, ${candidate.items.length} total, ${next.accountsFailed} errors (${elapsed}s)`);
 
-    await publishXSnapshot(accounts.length, {
+    // Publish BEFORE committing. Advancing xState first left this process's
+    // cursors ahead of Redis whenever the lease-guarded EVAL failed, so /x here
+    // served data no other replica could see and the seed-meta key silently went
+    // unrefreshed. On failure we keep the previous state and re-poll the same
+    // window next cycle; mergeAndDedup makes that idempotent.
+    const published = await publishXSnapshot(accounts.length, {
       cycleComplete: next.cycleComplete,
       accountsPolled: next.accountsPolled,
       lockOwner,
+      state: candidate,
     });
+    if (!published) {
+      console.warn('[Relay] X publish failed; keeping previous state so Redis stays the source of truth');
+      return;
+    }
+    Object.assign(xState, candidate);
   } finally {
     await upstashReleaseLockIfOwner(X_FEED_POLL_LOCK_KEY, lockOwner);
   }
@@ -10769,6 +10853,9 @@ const server = http.createServer(async (req, res) => {
         lastPollAt: xState.lastPollAt ? new Date(xState.lastPollAt).toISOString() : null,
         hasError: !!xState.lastError,
         lastError: xState.lastError || null,
+        // Distinguishes "Redis unreadable, refusing to publish" from an ordinary
+        // poll error — otherwise both look like a generic lastError string.
+        hydrationFailed: !!xState.hydrationFailed,
         generation: xState.generation,
         coverage: xState.lastCoverage,
         lastHealthyAt: xState.lastHealthyAt ? new Date(xState.lastHealthyAt).toISOString() : null,

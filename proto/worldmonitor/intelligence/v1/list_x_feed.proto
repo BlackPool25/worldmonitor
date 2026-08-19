@@ -21,7 +21,7 @@ message ListXFeedResponse {
   bool enabled = 1;
   // Collection of posts matching the criteria.
   repeated XFeedItem posts = 2;
-  // Total count of posts in the current window.
+  // Number of posts returned in this response, after the limit is applied.
   int32 count = 3;
   // Detailed error message if the fetch failed.
   string error = 4;
