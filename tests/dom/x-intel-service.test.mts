@@ -59,7 +59,9 @@ describe('X feed request lifecycle', () => {
     const signals: AbortSignal[] = [];
     const fetchMock = vi.fn((_url: string, options?: RequestInit) => {
       signals.push(options?.signal as AbortSignal);
-      return responses[signals.length - 1].promise;
+      const response = responses[signals.length - 1];
+      expect(response).toBeDefined();
+      return response!.promise;
     });
     vi.stubGlobal('fetch', fetchMock);
     const { fetchXFeed } = await import('@/services/x-intel');
@@ -68,11 +70,13 @@ describe('X feed request lifecycle', () => {
     const orphaned = fetchXFeed(50, controller.signal);
     controller.abort();
     await expect(orphaned).rejects.toMatchObject({ name: 'AbortError' });
-    expect(signals[0].aborted).toBe(true);
+    expect(signals[0]).toBeDefined();
+    expect(signals[0]!.aborted).toBe(true);
 
     const fresh = fetchXFeed(50);
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    responses[1].resolve(new Response(JSON.stringify({
+    expect(responses[1]).toBeDefined();
+    responses[1]!.resolve(new Response(JSON.stringify({
       source: 'x', earlySignal: true, enabled: true, count: 2, updatedAt: null, items: [],
     }), { status: 200 }));
     await expect(fresh).resolves.toMatchObject({ count: 2 });
