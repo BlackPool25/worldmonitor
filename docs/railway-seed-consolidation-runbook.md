@@ -538,18 +538,29 @@ container.
 
 The probe is strict on every run, but the workflow conclusion is
 transition-based. `scripts/update-seed-health-statuses.mjs` publishes one
-durable `ingestion/seed/<source>` commit status on the exact gated revision.
+durable `ingestion/seed/<source>` status on the historical operational anchor
+`b93afd05d0f4ea2c465e79fd064e87fc1f9fb2f3`. The exact gated revision remains
+the revision being observed, but it does not receive source-health statuses.
+This separation prevents a continuing data incident from making Railway read
+an unrelated deployable commit as a failed check suite.
 A new failure, a changed failure class, an expired acknowledgement, a probe
 transport error, or a malformed observation fails the workflow. The same
-unchanged incident on a later poll keeps its per-source status red but does not
-create another generic failed run. This preserves the alarm while separating
-"still broken" from "broke again".
+unchanged incident remains red on the anchor, appends no new status, and does
+not create another generic failed run. This preserves the alarm while
+separating "still broken" from "broke again".
 
 Recovery is not inferred from a merge, image build, or elapsed time. The
 publisher posts success only after the live compact-health observation stops
 reporting that source. The first run after this status lifecycle is activated
-can fail once to establish the durable status for incidents that already
-exist; later exact repeats are quiet.
+imports the newest trusted legacy projection before it initializes the anchor,
+so an incident that already exists does not become a false new alert. Later
+exact repeats are quiet. The publisher also proves that the anchor is an
+ancestor of the monitored revision before it writes any status.
+
+The acceptance context is the completion marker and is always written last. If
+GitHub accepts only part of a projection, the next poll overlays those trusted
+partial statuses on the last complete projection, repairs the anchor, and does
+not report an already-written source transition again.
 
 Read the separate six-hourly `Railway Native Deploy Health` workflow for
 production source, build, trigger, and deployment conclusions. A red Seed
@@ -565,7 +576,10 @@ run on an ingestion push because Railway may not have deployed or executed
 that revision yet. This is the operational acceptance gate for the "merged and
 green, but production data is still unhealthy" gap. A workflow failure means
 new operational information or an unreadable control plane; the durable source
-statuses remain the current incident inventory between transitions.
+statuses on the operational anchor remain the current incident inventory
+between transitions. A genuinely new or changed incident can still fail one
+scheduled run; persistent incident state cannot be copied onto later main
+commits.
 
 #### Deploy-drift check
 
