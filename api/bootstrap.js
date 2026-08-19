@@ -613,6 +613,10 @@ export default async function handler(req, ctx) {
         const { enrichmentMeta: _stripped, ...rest } = val;
         responseValue = rest;
       }
+      if (names[i] === 'xFeed' && val != null && typeof val === 'object' && 'pollState' in val) {
+        const { pollState: _stripped, ...rest } = val;
+        responseValue = rest;
+      }
       if (names[i] === 'wildfires') responseValue = compactWildfireBootstrapPayload(responseValue);
       data[names[i]] = responseValue;
     } else {

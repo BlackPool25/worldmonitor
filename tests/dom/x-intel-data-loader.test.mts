@@ -60,4 +60,23 @@ describe('X feed DataLoader lifecycle', () => {
 
     expect(panel.setData).toHaveBeenCalledTimes(1);
   });
+
+  it('keeps hydrated X panel data when the live fetch fails', async () => {
+    const panel = { setData: vi.fn() };
+    const ctx = { panels: { 'x-intel': panel }, isDestroyed: false } as unknown as AppContext;
+    mocks.getHydratedData.mockReset();
+    mocks.getHydratedData.mockReturnValue(feed(3));
+    mocks.fetchXFeed.mockReset();
+    mocks.fetchXFeed.mockRejectedValueOnce(new Error('network down'));
+    const { DataLoaderManager } = await import('@/app/data-loader');
+    const loader = new DataLoaderManager(ctx, {
+      renderCriticalBanner: () => undefined,
+      refreshOpenCountryBrief: () => undefined,
+    });
+
+    await loader.loadXIntel();
+
+    expect(panel.setData).toHaveBeenCalledTimes(1);
+    expect(panel.setData).toHaveBeenCalledWith(expect.objectContaining({ count: 3, enabled: true }));
+  });
 });

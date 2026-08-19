@@ -4500,6 +4500,7 @@ export class DataLoaderManager implements AppModule {
     } catch (error) {
       if (controller.signal.aborted || this.ctx.isDestroyed) return;
       console.error('[App] X news-account fetch failed:', error);
+      if (hydrated && Array.isArray(hydrated.items)) return;
       this.callPanel('x-intel', 'setData', {
         source: 'x', enabled: false, count: 0, updatedAt: null, items: [],
       });

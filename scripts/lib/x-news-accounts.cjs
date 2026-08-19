@@ -253,6 +253,20 @@ function normalizeCoverage(value, expectedAccounts = 0) {
   };
 }
 
+function buildXPollState(state, { expectedAccounts = 0 } = {}) {
+  const lastPollAt = Number(state?.lastPollAt) || 0;
+  const coverage = normalizeCoverage(state?.lastCoverage, expectedAccounts);
+  return {
+    cursorByAccountId: copyCursorMap(state?.cursorByAccountId),
+    accountIdByHandle: copyAccountIdMap(state?.accountIdByHandle),
+    lookupOffset: Math.max(0, Math.floor(Number(state?.lookupOffset) || 0)),
+    accountOffset: Math.max(0, Math.floor(Number(state?.accountOffset) || 0)),
+    lastPollAt,
+    lastHealthyAt: Math.max(0, Number(state?.lastHealthyAt) || 0),
+    coverage,
+  };
+}
+
 function buildXFeedSnapshot(state, { enabled = false, expectedAccounts = 0 } = {}) {
   const items = Array.isArray(state?.items) ? state.items.slice(0, DEFAULT_MAX_FEED_ITEMS) : [];
   const lastPollAt = Number(state?.lastPollAt) || 0;
@@ -267,22 +281,15 @@ function buildXFeedSnapshot(state, { enabled = false, expectedAccounts = 0 } = {
     updatedAt: lastPollAt > 0 ? new Date(lastPollAt).toISOString() : null,
     coverage,
     items,
-    pollState: {
-      cursorByAccountId: copyCursorMap(state?.cursorByAccountId),
-      accountIdByHandle: copyAccountIdMap(state?.accountIdByHandle),
-      lookupOffset: Math.max(0, Math.floor(Number(state?.lookupOffset) || 0)),
-      accountOffset: Math.max(0, Math.floor(Number(state?.accountOffset) || 0)),
-      lastPollAt,
-      lastHealthyAt: Math.max(0, Number(state?.lastHealthyAt) || 0),
-      coverage,
-    },
   };
 }
 
-function hydrateXFeedSnapshot(snapshot, { maxItems = DEFAULT_MAX_FEED_ITEMS } = {}) {
+function hydrateXFeedSnapshot(snapshot, { maxItems = DEFAULT_MAX_FEED_ITEMS, pollState: pollStateOverride } = {}) {
   if (!snapshot || snapshot.version !== X_FEED_SNAPSHOT_VERSION || !Array.isArray(snapshot.items)) return null;
-  const pollState = snapshot.pollState;
-  if (!pollState || typeof pollState !== 'object' || Array.isArray(pollState)) return null;
+  const inherited = snapshot.pollState;
+  const pollState = pollStateOverride && typeof pollStateOverride === 'object' && !Array.isArray(pollStateOverride)
+    ? pollStateOverride
+    : (inherited && typeof inherited === 'object' && !Array.isArray(inherited) ? inherited : {});
   const itemLimit = Math.max(1, Math.floor(Number(maxItems) || DEFAULT_MAX_FEED_ITEMS));
   return {
     generation: Math.max(0, Math.floor(Number(snapshot.generation) || 0)),
@@ -328,15 +335,47 @@ function buildUserByUsernameUrl(handle) {
   return url;
 }
 
-function buildUserTimelineUrl({ accountId, sinceId, maxResults, paginationToken }) {
+function buildUserTimelineUrl({ accountId, sinceId, maxResults, paginationToken, startTime }) {
   const id = normalizeAccountId(accountId);
   const url = new URL(`/2/users/${encodeURIComponent(id)}/tweets`, X_API_ORIGIN);
   url.searchParams.set('max_results', String(Math.max(5, Math.min(100, maxResults || DEFAULT_MAX_MESSAGES))));
   url.searchParams.set('tweet.fields', 'created_at,lang,public_metrics,referenced_tweets,attachments,edit_history_tweet_ids');
   url.searchParams.set('exclude', 'retweets,replies');
   if (sinceId) url.searchParams.set('since_id', String(sinceId));
+  else if (startTime) url.searchParams.set('start_time', String(startTime));
   if (paginationToken) url.searchParams.set('pagination_token', String(paginationToken));
   return url;
+}
+
+function lookupErrorResourceId(error) {
+  return normalizeAccountId(error?.resource_id || error?.value);
+}
+
+function isTweetNotFoundLookupError(error) {
+  if (!error || typeof error !== 'object') return false;
+  const type = String(error.type || '');
+  const title = String(error.title || '');
+  const detail = String(error.detail || '');
+  const text = `${title} ${detail} ${type}`;
+  if (/\b(?:authori[sz]ation|forbidden|suspended|protected)\b/i.test(text)) return false;
+  if (type.includes('resource-not-found')) return true;
+  return /\b(?:not found|does not exist|deleted)\b/i.test(text);
+}
+
+function collectDeletedTweetIds(body, requestedIds) {
+  const found = new Set((Array.isArray(body?.data) ? body.data : []).map((row) => String(row.id)));
+  const errorsById = new Map();
+  for (const error of Array.isArray(body?.errors) ? body.errors : []) {
+    const id = lookupErrorResourceId(error);
+    if (id) errorsById.set(id, error);
+  }
+  const deleted = [];
+  for (const id of requestedIds) {
+    const key = String(id);
+    if (found.has(key)) continue;
+    if (isTweetNotFoundLookupError(errorsById.get(key))) deleted.push(key);
+  }
+  return deleted;
 }
 
 function buildTweetsLookupUrl(ids) {
@@ -460,6 +499,7 @@ async function pollXFeed({
           sinceId,
           maxResults: account.maxMessages || DEFAULT_MAX_MESSAGES,
           paginationToken,
+          startTime: sinceId ? '' : new Date(now() - 24 * 60 * 60 * 1000).toISOString(),
         });
         const { response, body } = await xFetchJson(fetchImpl, url, bearerToken, { signal });
         if (response.status === 429) {
@@ -492,7 +532,7 @@ async function pollXFeed({
         await sleep(staggerMs, wait);
         continue;
       }
-      if (!completeWindow) {
+      if (!completeWindow && sinceId) {
         nextState.accountsFailed += 1;
         nextState.lastError = `timeline @${account.handle} exceeded ${pageLimit} page limit`;
         await sleep(staggerMs, wait);
@@ -522,7 +562,7 @@ async function pollXFeed({
     && nextState.accountsFailed === 0
     && !nextState.rateLimitedUntil;
 
-  if (lookupDeletions && nextState.items.length && nextState.cycleComplete) {
+  if (lookupDeletions && nextState.items.length && !nextState.rateLimitedUntil) {
     const activeIds = nextState.items
       .filter((item) => item.contentState !== 'deleted')
       .map((item) => item.postId)
@@ -531,7 +571,6 @@ async function pollXFeed({
     const rotated = activeIds.length
       ? [...activeIds.slice(offset % activeIds.length), ...activeIds.slice(0, offset % activeIds.length)]
       : [];
-    nextState.lookupOffset = activeIds.length ? (offset + MAX_TWEET_LOOKUP_IDS) % activeIds.length : 0;
     if (rotated.length) {
       const { url, ids } = buildTweetsLookupUrl(rotated);
       try {
@@ -541,12 +580,9 @@ async function pollXFeed({
           nextState.lastError = 'rate limited during deletion lookup';
           nextState.cycleComplete = false;
         } else if (response.ok) {
-          const found = new Set((Array.isArray(body?.data) ? body.data : []).map((row) => String(row.id)));
-          const unresolved = new Set((Array.isArray(body?.errors) ? body.errors : [])
-            .map((row) => normalizeAccountId(row?.resource_id || row?.value))
-            .filter(Boolean));
-          const missing = ids.filter((id) => !found.has(String(id)) && !unresolved.has(String(id)));
+          const missing = collectDeletedTweetIds(body, ids);
           if (missing.length) nextState.items = tombstonePosts(nextState.items, missing, now());
+          nextState.lookupOffset = activeIds.length ? (offset + MAX_TWEET_LOOKUP_IDS) % activeIds.length : 0;
         } else {
           nextState.cycleComplete = false;
           nextState.lastError = `deletion lookup failed: HTTP ${response.status}`;
@@ -583,6 +619,7 @@ module.exports = {
   mergeAndDedup,
   tombstonePosts,
   purgeExpiredTombstones,
+  buildXPollState,
   buildXFeedSnapshot,
   hydrateXFeedSnapshot,
   alertSourcePassesTierGate,

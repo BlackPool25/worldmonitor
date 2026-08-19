@@ -204,6 +204,13 @@ describe('since_id poll loop + 429 backoff (#6654)', () => {
       if (parsed.pathname === '/2/tweets') {
         return new Response(JSON.stringify({
           data: [{ id: '101' }],
+          errors: [{
+            resource_id: '50',
+            value: '50',
+            type: 'https://api.twitter.com/2/problems/resource-not-found',
+            title: 'Not Found Error',
+            detail: 'Could not find tweet with ids: [50].',
+          }],
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       throw new Error(`unexpected ${parsed.pathname}`);
@@ -309,6 +316,116 @@ describe('since_id poll loop + 429 backoff (#6654)', () => {
     assert.equal(state.items.length, 0);
   });
 
+  it('establishes since_id from newest pages when the first poll hits the page cap', async () => {
+    const calls = [];
+    const state = await xNews.pollXFeed({
+      accounts: [{ handle: 'Reuters', accountId: '1652541', maxMessages: 10 }],
+      state: { cursorByAccountId: {}, items: [] },
+      bearerToken: 'test-token',
+      maxTimelinePages: 1,
+      lookupDeletions: false,
+      now: () => Date.parse('2026-08-18T12:00:00.000Z'),
+      fetchImpl: async (url) => {
+        const parsed = new URL(url);
+        calls.push(parsed);
+        return new Response(JSON.stringify({
+          data: [{ id: '200', text: 'newest', created_at: '2026-08-18T11:50:00.000Z' }],
+          meta: { next_token: 'more' },
+        }), { status: 200 });
+      },
+      wait: async () => {},
+    });
+    const timeline = calls.find((url) => url.pathname.endsWith('/tweets') && url.pathname !== '/2/tweets');
+    assert.equal(timeline.searchParams.get('since_id'), null);
+    assert.ok(timeline.searchParams.get('start_time'));
+    assert.equal(state.cursorByAccountId['1652541'], '200');
+    assert.equal(state.accountsPolled, 1);
+    assert.equal(state.accountsFailed, 0);
+    assert.equal(state.items.length, 1);
+    assert.equal(state.items[0].postId, '200');
+    assert.equal(state.cycleComplete, true);
+  });
+
+  it('tombstones only resource-not-found lookup errors', async () => {
+    const account = {
+      handle: 'Reuters',
+      accountId: '1652541',
+      label: 'Reuters',
+      sourceName: 'Reuters',
+      topic: 'breaking',
+    };
+    const priorDeleted = xNews.normalizeXPost({
+      id: '50', text: 'deleted post', created_at: '2026-08-18T09:00:00.000Z',
+    }, account);
+    const priorOmitted = xNews.normalizeXPost({
+      id: '60', text: 'silently omitted', created_at: '2026-08-18T09:01:00.000Z',
+    }, account);
+    const priorProtected = xNews.normalizeXPost({
+      id: '70', text: 'protected post', created_at: '2026-08-18T09:02:00.000Z',
+    }, account);
+    const state = await xNews.pollXFeed({
+      accounts: [account],
+      state: {
+        cursorByAccountId: { '1652541': '100' },
+        items: [priorDeleted, priorOmitted, priorProtected],
+        lookupOffset: 0,
+      },
+      bearerToken: 'test-token',
+      fetchImpl: async (url) => {
+        const parsed = new URL(url);
+        if (parsed.pathname.endsWith('/tweets') && parsed.pathname !== '/2/tweets') {
+          return new Response(JSON.stringify({
+            data: [{ id: '101', text: 'new post', created_at: '2026-08-18T12:00:00.000Z' }],
+          }), { status: 200 });
+        }
+        return new Response(JSON.stringify({
+          data: [{ id: '101' }],
+          errors: [
+            {
+              resource_id: '50',
+              type: 'https://api.twitter.com/2/problems/resource-not-found',
+              title: 'Not Found Error',
+              detail: 'Could not find tweet with ids: [50].',
+            },
+            {
+              resource_id: '70',
+              type: 'https://api.twitter.com/2/problems/not-authorized-for-resource',
+              title: 'Authorization Error',
+              detail: 'Not authorized to view this Tweet.',
+            },
+          ],
+        }), { status: 200 });
+      },
+      wait: async () => {},
+    });
+    assert.equal(state.items.find((item) => item.postId === '50').contentState, 'deleted');
+    assert.notEqual(state.items.find((item) => item.postId === '60').contentState, 'deleted');
+    assert.notEqual(state.items.find((item) => item.postId === '70').contentState, 'deleted');
+    assert.equal(state.items.find((item) => item.postId === '60').contentState, 'active');
+  });
+
+  it('does not advance lookupOffset when deletion lookup fails', async () => {
+    const account = { handle: 'Reuters', accountId: '1652541', label: 'Reuters', sourceName: 'Reuters', topic: 'breaking' };
+    const items = ['10', '20', '30'].map((id) => xNews.normalizeXPost({
+      id, text: `post ${id}`, created_at: '2026-08-18T09:00:00.000Z',
+    }, account));
+    const state = await xNews.pollXFeed({
+      accounts: [account],
+      state: { cursorByAccountId: { '1652541': '100' }, items, lookupOffset: 0 },
+      bearerToken: 'test-token',
+      fetchImpl: async (url) => {
+        const parsed = new URL(url);
+        if (parsed.pathname === '/2/tweets') {
+          return new Response('lookup failed', { status: 500 });
+        }
+        return new Response(JSON.stringify({ data: [] }), { status: 200 });
+      },
+      wait: async () => {},
+    });
+    assert.equal(state.lookupOffset, 0);
+    assert.equal(state.items.filter((item) => item.contentState === 'deleted').length, 0);
+  });
+
   it('rotates the next account after a partial 429 cycle', async () => {
     const accounts = [
       { handle: 'Reuters', accountId: '1652541' },
@@ -373,7 +490,7 @@ describe('versioned X feed snapshot', () => {
     const item = xNews.normalizeXPost({ id: '101', text: 'body' }, {
       handle: 'Reuters', accountId: '1652541', label: 'Reuters', sourceName: 'Reuters',
     });
-    const snapshot = xNews.buildXFeedSnapshot({
+    const state = {
       generation: 7,
       cursorByAccountId: { '1652541': '101' },
       accountIdByHandle: { Reuters: '1652541' },
@@ -383,8 +500,11 @@ describe('versioned X feed snapshot', () => {
       lastPollAt: 1_755_521_200_000,
       lastHealthyAt: 1_755_521_200_000,
       lastCoverage: { expected: 64, polled: 64, failed: 0, attempted: 64, complete: true },
-    }, { enabled: true, expectedAccounts: 64 });
-    const hydrated = xNews.hydrateXFeedSnapshot(snapshot);
+    };
+    const snapshot = xNews.buildXFeedSnapshot(state, { enabled: true, expectedAccounts: 64 });
+    const pollState = xNews.buildXPollState(state, { expectedAccounts: 64 });
+    assert.equal(snapshot.pollState, undefined);
+    const hydrated = xNews.hydrateXFeedSnapshot(snapshot, { pollState });
     assert.equal(snapshot.version, xNews.X_FEED_SNAPSHOT_VERSION);
     assert.equal(snapshot.count, 1);
     assert.equal(hydrated.generation, 7);
@@ -392,10 +512,19 @@ describe('versioned X feed snapshot', () => {
     assert.equal(hydrated.accountOffset, 9);
     assert.equal(hydrated.items[0].text, 'body');
     assert.equal(hydrated.lastCoverage.complete, true);
+    const legacy = xNews.hydrateXFeedSnapshot({ ...snapshot, pollState });
+    assert.equal(legacy.cursorByAccountId['1652541'], '101');
+    const servingOnly = xNews.hydrateXFeedSnapshot(snapshot);
+    assert.ok(servingOnly);
+    assert.equal(servingOnly.cursorByAccountId['1652541'], undefined);
+    assert.equal(servingOnly.items[0].text, 'body');
   });
 
   it('rejects an unversioned or malformed snapshot', () => {
     assert.equal(xNews.hydrateXFeedSnapshot({ items: [] }), null);
-    assert.equal(xNews.hydrateXFeedSnapshot({ version: 1, items: [] }), null);
+    assert.equal(xNews.hydrateXFeedSnapshot({ version: 2, items: [] }), null);
+    const empty = xNews.hydrateXFeedSnapshot({ version: xNews.X_FEED_SNAPSHOT_VERSION, items: [] });
+    assert.ok(empty);
+    assert.equal(empty.items.length, 0);
   });
 });

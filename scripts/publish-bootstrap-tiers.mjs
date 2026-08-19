@@ -118,6 +118,16 @@ export async function assembleBootstrapTierPayload(registry, options = {}) {
       const { enrichmentMeta: _stripped, ...rest } = value;
       value = rest;
     }
+    if (
+      names[index] === 'xFeed'
+      && value !== null
+      && typeof value === 'object'
+      && !Array.isArray(value)
+      && Object.hasOwn(value, 'pollState')
+    ) {
+      const { pollState: _stripped, ...rest } = value;
+      value = rest;
+    }
     if (names[index] === 'wildfires') value = compactWildfireDashboardPayload(value);
     data[names[index]] = value;
   }

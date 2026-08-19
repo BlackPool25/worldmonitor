@@ -1240,6 +1240,7 @@ const X_MAX_TEXT_CHARS = Math.max(200, Number(process.env.X_MAX_TEXT_CHARS || 80
 const X_TRACK_A_ACCOUNT_BUDGET = 64;
 const X_FEED_CACHE_KEY = 'intelligence:x-feed:v1';
 const X_FEED_META_KEY = 'seed-meta:intelligence:x-feed:v1';
+const X_FEED_POLL_STATE_KEY = 'intelligence:x-feed:poll-state:v1';
 const X_FEED_TTL_SECONDS = 5400;
 const X_FEED_META_TTL_SECONDS = 3600;
 
@@ -1286,7 +1287,13 @@ async function hydrateXState() {
   const snapshot = await upstashGet(X_FEED_CACHE_KEY, (reason) => {
     console.warn(`[Relay] X snapshot hydration failed: ${reason}`);
   });
-  const hydrated = xNewsAccounts.hydrateXFeedSnapshot(snapshot, { maxItems: X_MAX_FEED_ITEMS });
+  const pollState = await upstashGet(X_FEED_POLL_STATE_KEY, (reason) => {
+    console.warn(`[Relay] X poll-state hydration failed: ${reason}`);
+  });
+  const hydrated = xNewsAccounts.hydrateXFeedSnapshot(snapshot, {
+    maxItems: X_MAX_FEED_ITEMS,
+    pollState,
+  });
   if (!hydrated) return false;
   xState.cursorByAccountId = hydrated.cursorByAccountId;
   xState.accountIdByHandle = hydrated.accountIdByHandle;
@@ -1301,7 +1308,7 @@ async function hydrateXState() {
   return true;
 }
 
-async function publishXSnapshot(expectedAccounts, cycleComplete) {
+async function publishXSnapshot(expectedAccounts, { cycleComplete, accountsPolled } = {}) {
   const snapshot = xNewsAccounts.buildXFeedSnapshot(xState, {
     enabled: X_ENABLED,
     expectedAccounts,
@@ -1311,12 +1318,22 @@ async function publishXSnapshot(expectedAccounts, cycleComplete) {
     xState.lastError = xState.lastError || 'failed to publish X snapshot';
     return false;
   }
-  if (!cycleComplete) return true;
+  const pollStateWritten = await upstashSet(
+    X_FEED_POLL_STATE_KEY,
+    xNewsAccounts.buildXPollState(xState, { expectedAccounts }),
+    X_FEED_TTL_SECONDS,
+  );
+  if (!pollStateWritten) {
+    xState.lastError = xState.lastError || 'failed to publish X poll state';
+    return false;
+  }
+  if (!(accountsPolled > 0)) return true;
   const metaWritten = await upstashSet(X_FEED_META_KEY, {
-    fetchedAt: xState.lastHealthyAt,
+    fetchedAt: xState.lastPollAt,
     recordCount: snapshot.count,
     generation: snapshot.generation,
     coverage: snapshot.coverage,
+    sourceState: cycleComplete ? 'ok' : 'degraded',
   }, X_FEED_META_TTL_SECONDS);
   if (!metaWritten) {
     xState.lastError = xState.lastError || 'failed to publish X seed metadata';
@@ -1369,7 +1386,10 @@ async function pollXOnce({ generation, signal } = {}) {
   const elapsed = ((Date.now() - pollStart) / 1000).toFixed(1);
   console.log(`[Relay] X poll: ${next.accountsPolled}/${accounts.length} accounts, ${next.newCount} new posts, ${xState.items.length} total, ${next.accountsFailed} errors (${elapsed}s)`);
 
-  await publishXSnapshot(accounts.length, next.cycleComplete);
+  await publishXSnapshot(accounts.length, {
+    cycleComplete: next.cycleComplete,
+    accountsPolled: next.accountsPolled,
+  });
 }
 
 let xPollInFlight = false;
@@ -1380,9 +1400,13 @@ function guardedXPoll() {
   if (xPollInFlight) {
     const stuck = Date.now() - xPollStartedAt;
     if (stuck > X_POLL_INTERVAL_MS + 60_000) {
-      console.warn(`[Relay] X poll still in flight after ${Math.round(stuck / 1000)}s — retaining single-writer lock`);
+      console.warn(`[Relay] X poll stuck for ${Math.round(stuck / 1000)}s — force-clearing in-flight flag`);
+      try { xPollAbortController?.abort(); } catch {}
+      xPollInFlight = false;
+      xPollAbortController = null;
+    } else {
+      return;
     }
-    return;
   }
   xPollInFlight = true;
   xPollStartedAt = Date.now();
@@ -1403,6 +1427,11 @@ async function startXPollLoop() {
   await hydrateXState();
   if (!X_ENABLED) {
     console.warn('[Relay] X news-account poll skipped — X_BEARER_TOKEN is not configured on ais-relay');
+    await upstashSet(X_FEED_META_KEY, {
+      fetchedAt: Date.now(),
+      recordCount: 0,
+      sourceState: 'unavailable',
+    }, X_FEED_META_TTL_SECONDS);
     return;
   }
   guardedXPoll();
