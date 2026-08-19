@@ -20,6 +20,10 @@ const DEFAULT_MAX_TEXT_CHARS = 800;
 const DEFAULT_MAX_MESSAGES = 10;
 const DEFAULT_STAGGER_MS = 200;
 const MAX_TWEET_LOOKUP_IDS = 100;
+const MAX_429_BACKOFF_MS = 15 * 60 * 1000;
+// 1000 * 2**10 = 1_024_000ms, the first power of two at or above the 15-min
+// ceiling — so the exponential can actually reach MAX_429_BACKOFF_MS.
+const MAX_429_BACKOFF_EXPONENT = 10;
 const DEFAULT_MAX_TIMELINE_PAGES = 10;
 const X_FEED_SNAPSHOT_VERSION = 1;
 const USER_AGENT = 'WorldMonitor/1.0 (curated news-account monitoring; +https://worldmonitor.app)';
@@ -347,11 +351,34 @@ function parseRetryAfterMs(headers) {
   return 0;
 }
 
-function compute429BackoffMs(headers, attempt = 0) {
+/**
+ * X API v2 signals rate-limit recovery with `x-rate-limit-reset`, an ABSOLUTE
+ * epoch-seconds instant, not a delta. `retry-after` is not sent on every 429,
+ * so without this the caller falls back to the blind exponential below.
+ */
+function parseRateLimitResetMs(headers, now = Date.now) {
+  const raw = headers?.get?.('x-rate-limit-reset')
+    ?? headers?.['x-rate-limit-reset']
+    ?? headers?.['X-Rate-Limit-Reset'];
+  if (raw == null || raw === '') return 0;
+  const epochSeconds = Number(raw);
+  if (!Number.isFinite(epochSeconds) || epochSeconds <= 0) return 0;
+  return Math.max(0, Math.floor(epochSeconds * 1000) - now());
+}
+
+function compute429BackoffMs(headers, attempt = 0, now = Date.now) {
+  // Upstream-declared recovery wins over our guess, bounded so a malformed or
+  // hostile header cannot park the poll loop indefinitely.
   const retryAfter = parseRetryAfterMs(headers);
-  if (retryAfter > 0) return retryAfter;
-  const exp = Math.min(6, Math.max(0, Number(attempt) || 0));
-  return Math.min(15 * 60 * 1000, 1000 * (2 ** exp));
+  if (retryAfter > 0) return Math.min(MAX_429_BACKOFF_MS, retryAfter);
+  const resetIn = parseRateLimitResetMs(headers, now);
+  if (resetIn > 0) return Math.min(MAX_429_BACKOFF_MS, resetIn);
+  // The exponent must be able to REACH the ceiling: 1000 * 2**exp >= 900_000
+  // needs exp >= 10. The previous clamp of 6 topped out at 64s, which is below
+  // even MIN_POLL_INTERVAL_MS, so `rateLimitedUntil` had always elapsed by the
+  // next tick and the backoff could never defer a single poll.
+  const exp = Math.min(MAX_429_BACKOFF_EXPONENT, Math.max(0, Number(attempt) || 0));
+  return Math.min(MAX_429_BACKOFF_MS, 1000 * (2 ** exp));
 }
 
 function buildUserByUsernameUrl(handle) {
@@ -385,8 +412,10 @@ function isTweetNotFoundLookupError(error) {
 
 function recordRateLimit(nextState, headers, now) {
   const attempt = Math.max(0, Math.floor(Number(nextState.rateLimitAttempt) || 0));
-  nextState.rateLimitedUntil = now() + compute429BackoffMs(headers, attempt);
-  nextState.rateLimitAttempt = Math.min(7, attempt + 1);
+  nextState.rateLimitedUntil = now() + compute429BackoffMs(headers, attempt, now);
+  // Must allow the attempt counter to reach MAX_429_BACKOFF_EXPONENT; the old
+  // cap of 7 held the exponential at 128s no matter how long the 429s lasted.
+  nextState.rateLimitAttempt = Math.min(MAX_429_BACKOFF_EXPONENT, attempt + 1);
 }
 
 function collectDeletedTweetIds(body, requestedIds) {
@@ -668,7 +697,10 @@ module.exports = {
   hydrateXFeedSnapshot,
   alertSourcePassesTierGate,
   parseRetryAfterMs,
+  parseRateLimitResetMs,
   compute429BackoffMs,
+  MAX_429_BACKOFF_MS,
+  MAX_429_BACKOFF_EXPONENT,
   buildUserByUsernameUrl,
   buildUserTimelineUrl,
   buildTweetsLookupUrl,

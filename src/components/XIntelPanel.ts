@@ -58,9 +58,14 @@ export class XIntelPanel extends Panel {
     this.relayEnabled = response.enabled !== false;
     this.degraded = response.degraded === true
       || ((response.coverage?.expected ?? 0) > 0 && response.coverage?.complete === false);
-    this.items = (response.items || []).filter(item => item.contentState !== 'deleted');
-
+    // Clear items BEFORE the error branch. Assigning them first left stale
+    // posts in `this.items` behind the error state, and a topic-tab click calls
+    // renderItems() directly — repainting those stale posts over the error with
+    // no indication the feed was unavailable. The relay can serve items with
+    // `enabled: false` (startXPollLoop hydrates from Redis before the
+    // X_ENABLED check), so this is reachable, not theoretical.
     if (!this.relayEnabled || response.error) {
+      this.items = [];
       this.setCount(0);
       this.setContentNodes(
         h('div', { className: 'empty-state error' },
@@ -70,6 +75,7 @@ export class XIntelPanel extends Panel {
       return;
     }
 
+    this.items = (response.items || []).filter(item => item.contentState !== 'deleted');
     this.renderItems();
   }
 

@@ -1272,8 +1272,11 @@ function startTelegramPollLoop() {
 const X_BEARER_TOKEN = String(process.env.X_BEARER_TOKEN || '').trim();
 const X_ENABLED = Boolean(X_BEARER_TOKEN);
 const X_POLL_INTERVAL_MS = xNewsAccounts.clampPollIntervalMs(process.env.X_POLL_INTERVAL_MS || xNewsAccounts.DEFAULT_POLL_INTERVAL_MS);
-const X_MAX_FEED_ITEMS = Math.max(50, Number(process.env.X_MAX_FEED_ITEMS || xNewsAccounts.DEFAULT_MAX_FEED_ITEMS));
-const X_MAX_TEXT_CHARS = Math.max(200, Number(process.env.X_MAX_TEXT_CHARS || 800));
+// `Number('abc')` is NaN, and Math.max(50, NaN) is NaN — which reaches
+// mergeAndDedup as `.slice(0, NaN)` and silently publishes an EMPTY feed every
+// cycle with no error anywhere. Coerce non-numeric env values to the default.
+const X_MAX_FEED_ITEMS = Math.max(50, Number(process.env.X_MAX_FEED_ITEMS) || xNewsAccounts.DEFAULT_MAX_FEED_ITEMS);
+const X_MAX_TEXT_CHARS = Math.max(200, Number(process.env.X_MAX_TEXT_CHARS) || 800);
 const X_TRACK_A_ACCOUNT_BUDGET = 64;
 const X_FEED_CACHE_KEY = 'intelligence:x-feed:v1';
 const X_FEED_META_KEY = 'seed-meta:intelligence:x-feed:v1';
@@ -1391,9 +1394,15 @@ async function pollXOnce({ generation, signal, retryAfterLeaseConflict = false }
   const lockResult = await upstashSetNx(X_FEED_POLL_LOCK_KEY, lockOwner, X_FEED_POLL_LOCK_TTL_SECONDS);
   if (lockResult !== 'new') {
     console.warn(`[Relay] X poll skipped: shared lease is ${lockResult}`);
+    // One retry only. Passing `true` here would make the retry re-arm itself on
+    // the next conflict, and since a lease-conflict return clears the guard's
+    // in-flight flag immediately, that self-perpetuated a ~1Hz SETNX + log storm
+    // for the whole lease TTL (X_FEED_POLL_LOCK_TTL_SECONDS, ~17min) whenever a
+    // peer replica held the lease. If this single retry also loses, the next
+    // scheduled tick picks it up.
     if (retryAfterLeaseConflict) {
       const timer = setTimeout(() => {
-        if (generation === xState.generation) guardedXPoll(true);
+        if (generation === xState.generation) guardedXPoll(false);
       }, 1000);
       timer.unref?.();
     }

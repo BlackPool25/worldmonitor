@@ -180,6 +180,59 @@ describe('since_id poll loop + 429 backoff (#6654)', () => {
     assert.ok(xNews.compute429BackoffMs(new Headers(), 3) >= 8000);
   });
 
+  it('honors x-rate-limit-reset, the header X API v2 actually sends on 429', () => {
+    const now = () => Date.parse('2026-08-18T12:00:00.000Z');
+    // Absolute epoch SECONDS, not a delta — 90s in the future.
+    const resetAt = Math.floor(now() / 1000) + 90;
+    const headers = new Headers({ 'x-rate-limit-reset': String(resetAt) });
+    assert.equal(xNews.compute429BackoffMs(headers, 0, now), 90_000);
+    // retry-after still wins when both are present.
+    const both = new Headers({ 'retry-after': '5', 'x-rate-limit-reset': String(resetAt) });
+    assert.equal(xNews.compute429BackoffMs(both, 0, now), 5_000);
+    // An already-elapsed reset must not produce a negative or zero-forever wait.
+    const past = new Headers({ 'x-rate-limit-reset': String(Math.floor(now() / 1000) - 60) });
+    assert.equal(xNews.parseRateLimitResetMs(past, now), 0);
+  });
+
+  it('escalates the blind backoff to the 15-minute ceiling it advertises', () => {
+    // Regression: the exponent was clamped to 6, topping out at 64s — below
+    // MIN_POLL_INTERVAL_MS, so rateLimitedUntil had always elapsed by the next
+    // tick and the backoff could never defer a poll.
+    assert.ok(
+      xNews.compute429BackoffMs(new Headers(), 6) < xNews.MIN_POLL_INTERVAL_MS,
+      'attempt 6 is the old ceiling and must still be under one poll interval',
+    );
+    const deep = xNews.compute429BackoffMs(new Headers(), xNews.MAX_429_BACKOFF_EXPONENT);
+    assert.equal(deep, xNews.MAX_429_BACKOFF_MS);
+    assert.ok(
+      deep >= xNews.MIN_POLL_INTERVAL_MS,
+      'a sustained 429 must be able to defer at least one full poll interval',
+    );
+    // Never exceeds the advertised ceiling, however many attempts accrue.
+    assert.equal(xNews.compute429BackoffMs(new Headers(), 99), xNews.MAX_429_BACKOFF_MS);
+  });
+
+  it('lets the attempt counter climb far enough to reach that ceiling', async () => {
+    // The counter was capped at 7 (128s), which held the exponential below the
+    // ceiling no matter how long the rate limiting lasted.
+    const account = { handle: 'Reuters', accountId: '1652541' };
+    let state = { items: [], accountOffset: 0 };
+    const fetchImpl = async () => new Response('rate limited', { status: 429 });
+    for (let i = 0; i < 12; i += 1) {
+      state = await xNews.pollXFeed({
+        accounts: [account],
+        state: { ...state, rateLimitedUntil: 0 },
+        bearerToken: 'test-token',
+        fetchImpl,
+        now: () => 1000,
+        wait: async () => {},
+        lookupDeletions: false,
+      });
+    }
+    assert.equal(state.rateLimitAttempt, xNews.MAX_429_BACKOFF_EXPONENT);
+    assert.equal(state.rateLimitedUntil - 1000, xNews.MAX_429_BACKOFF_MS);
+  });
+
   it('polls with since_id, dedups, and tombstones missing IDs', async () => {
     const account = {
       handle: 'Reuters',
