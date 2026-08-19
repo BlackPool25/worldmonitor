@@ -705,6 +705,76 @@ describe('since_id poll loop + 429 backoff (#6654)', () => {
   });
 });
 
+describe('under-lock poll-state merge (multi-replica)', () => {
+  const redisState = {
+    cursorByAccountId: { '1652541': '900' },
+    accountIdByHandle: { Reuters: '1652541' },
+    catchupByAccountId: {},
+    lookupOffset: 7,
+    accountOffset: 3,
+    rateLimitedUntil: 0,
+    rateLimitAttempt: 0,
+  };
+
+  it('takes cursors and offsets from Redis, not from stale in-process state', () => {
+    const stale = {
+      cursorByAccountId: { '1652541': '100' },
+      accountIdByHandle: {},
+      catchupByAccountId: {},
+      lookupOffset: 0,
+      accountOffset: 0,
+    };
+    const merged = xNews.mergeRefreshedPollState(stale, redisState);
+    // The rewind this prevents: buildXPollState writes the WHOLE cursor map, so
+    // polling from '100' would publish '100' back over a peer's '900'.
+    assert.equal(merged.cursorByAccountId['1652541'], '900');
+    assert.equal(merged.accountIdByHandle.Reuters, '1652541');
+    assert.equal(merged.lookupOffset, 7);
+    assert.equal(merged.accountOffset, 3);
+  });
+
+  it('adopts a peer’s active rate-limit backoff — the X bearer is shared', () => {
+    const merged = xNews.mergeRefreshedPollState(
+      { ...redisState, rateLimitedUntil: 0, rateLimitAttempt: 0 },
+      { ...redisState, rateLimitedUntil: 5_000_000, rateLimitAttempt: 4 },
+    );
+    assert.equal(merged.rateLimitedUntil, 5_000_000);
+    assert.equal(merged.rateLimitAttempt, 4);
+  });
+
+  it('does not let an older Redis copy clear a backoff this process just recorded', () => {
+    // The failure a plain assignment would cause: this replica 429s, records a
+    // deadline, then reads a Redis copy written before that 429 and resumes
+    // polling straight into the same rate limit.
+    const merged = xNews.mergeRefreshedPollState(
+      { ...redisState, rateLimitedUntil: 9_000_000, rateLimitAttempt: 6 },
+      { ...redisState, rateLimitedUntil: 1_000_000, rateLimitAttempt: 2 },
+    );
+    assert.equal(merged.rateLimitedUntil, 9_000_000);
+    assert.equal(merged.rateLimitAttempt, 6, 'backoff escalation must not reset');
+  });
+
+  it('keeps current state when the refreshed read is absent or malformed', () => {
+    for (const bad of [null, undefined, 'nope', 42]) {
+      const merged = xNews.mergeRefreshedPollState(
+        { ...redisState, cursorByAccountId: { '1652541': '250' }, rateLimitedUntil: 4_000 },
+        bad,
+      );
+      assert.equal(merged.cursorByAccountId['1652541'], '250');
+      assert.equal(merged.rateLimitedUntil, 4_000);
+    }
+  });
+
+  it('returns only poll bookkeeping, never serving state', () => {
+    const merged = xNews.mergeRefreshedPollState(
+      { ...redisState, items: [{ id: 'keep-me' }] },
+      { ...redisState, items: [{ id: 'clobber' }] },
+    );
+    assert.equal(merged.items, undefined, 'items must not be merged by this path');
+    assert.equal(merged.lastCoverage, undefined);
+  });
+});
+
 describe('versioned X feed snapshot', () => {
   it('round-trips bounded serving state and poll cursors across a restart', () => {
     const item = xNews.normalizeXPost({ id: '101', text: 'body' }, {

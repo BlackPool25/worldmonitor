@@ -1470,12 +1470,19 @@ async function pollXOnce({ generation, signal, retryAfterLeaseConflict = false }
     if (freshPollState) {
       const refreshed = xNewsAccounts.hydrateXFeedSnapshot(null, { pollState: freshPollState });
       if (refreshed) {
-        xState.cursorByAccountId = refreshed.cursorByAccountId;
-        xState.accountIdByHandle = refreshed.accountIdByHandle;
-        xState.catchupByAccountId = refreshed.catchupByAccountId;
-        xState.lookupOffset = refreshed.lookupOffset;
-        xState.accountOffset = refreshed.accountOffset;
+        // Cursors from Redis; rate-limit deadline whichever is LATER. See
+        // mergeRefreshedPollState — the bearer is shared across replicas, so a
+        // peer's 429 backoff applies here too, but it must not clear a backoff
+        // this process recorded moments ago.
+        Object.assign(xState, xNewsAccounts.mergeRefreshedPollState(xState, refreshed));
       }
+    }
+    // Honour a peer's still-active backoff rather than burning shared quota on a
+    // 429 we already know about. The pre-lock check above only saw this
+    // process's own state.
+    if (xState.rateLimitedUntil && Date.now() < xState.rateLimitedUntil) {
+      xState.lastError = 'shared X rate-limit window still open; deferring poll';
+      return;
     }
 
     const pollStart = Date.now();

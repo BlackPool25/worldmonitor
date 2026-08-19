@@ -344,6 +344,52 @@ function hydrateXFeedSnapshot(snapshot, { maxItems = DEFAULT_MAX_FEED_ITEMS, pol
   };
 }
 
+/**
+ * Merge Redis-authoritative poll state into in-process state, under the lock.
+ *
+ * Split by who owns each field:
+ *
+ * - Cursors, id map, catchup and offsets come from REDIS. It is the shared
+ *   source of truth across replicas, and buildXPollState writes the whole cursor
+ *   map back — so starting from stale in-process values is what rewinds a peer's
+ *   since_id.
+ *
+ * - Rate-limit state takes the LATER deadline, not simply the Redis one. Both
+ *   directions matter: a peer's active backoff must be honoured (all replicas
+ *   share one X bearer, so its 429 applies to us too), but a backoff THIS
+ *   process just recorded must not be cleared by an older Redis copy. Plain
+ *   assignment in either direction loses one of those. The attempt counter takes
+ *   the max for the same reason — escalation must not reset when a peer with a
+ *   lower count publishes.
+ *
+ * Returns only the fields to apply, so the caller cannot accidentally clobber
+ * serving state (items, coverage) with poll bookkeeping.
+ */
+function mergeRefreshedPollState(current, refreshed) {
+  const toMs = (value) => Math.max(0, Number(value) || 0);
+  const toCount = (value) => Math.max(0, Math.floor(Number(value) || 0));
+  if (!refreshed || typeof refreshed !== 'object') {
+    return {
+      cursorByAccountId: { ...(current?.cursorByAccountId || {}) },
+      accountIdByHandle: { ...(current?.accountIdByHandle || {}) },
+      catchupByAccountId: { ...(current?.catchupByAccountId || {}) },
+      lookupOffset: toCount(current?.lookupOffset),
+      accountOffset: toCount(current?.accountOffset),
+      rateLimitedUntil: toMs(current?.rateLimitedUntil),
+      rateLimitAttempt: toCount(current?.rateLimitAttempt),
+    };
+  }
+  return {
+    cursorByAccountId: copyCursorMap(refreshed.cursorByAccountId),
+    accountIdByHandle: copyAccountIdMap(refreshed.accountIdByHandle),
+    catchupByAccountId: copyCatchupMap(refreshed.catchupByAccountId),
+    lookupOffset: toCount(refreshed.lookupOffset),
+    accountOffset: toCount(refreshed.accountOffset),
+    rateLimitedUntil: Math.max(toMs(current?.rateLimitedUntil), toMs(refreshed.rateLimitedUntil)),
+    rateLimitAttempt: Math.max(toCount(current?.rateLimitAttempt), toCount(refreshed.rateLimitAttempt)),
+  };
+}
+
 function alertSourcePassesTierGate(sourceName, sourceTiers) {
   const tier = Object.prototype.hasOwnProperty.call(sourceTiers, sourceName)
     ? Number(sourceTiers[sourceName])
@@ -717,6 +763,7 @@ module.exports = {
   buildXFeedSnapshot,
   hydrateXFeedSnapshot,
   alertSourcePassesTierGate,
+  mergeRefreshedPollState,
   parseRetryAfterMs,
   parseRateLimitResetMs,
   compute429BackoffMs,
