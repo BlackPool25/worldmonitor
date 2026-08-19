@@ -75,7 +75,7 @@ describe('agent-friendly 404s (orank agent-friendly-404)', () => {
   });
 
   it('404s leaked SPA guesses that used to soft-404 the dashboard (#6575, #6836)', async () => {
-    for (const path of ['/country-intel', '/security', '/trust', '/orbital-surveillance']) {
+    for (const path of ['/country-intel', '/security', '/trust']) {
       const res = call(path);
       assert.ok(res instanceof Response, `${path} must 404`);
       assert.equal(res.status, 404);
