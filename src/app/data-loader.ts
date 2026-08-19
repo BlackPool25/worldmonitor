@@ -4505,6 +4505,16 @@ export class DataLoaderManager implements AppModule {
 
   async loadXIntel(): Promise<void> {
     if (isDesktopRuntime() && !hasPremiumAccess()) return;
+    // `xFeed` is intentionally NOT a bootstrap tier key (R4, #6654): its items
+    // carry post bodies, and every tier is served unauthenticated at
+    // `?tier=<t>&public=1` with ACAO:*. So this read is inert today and always
+    // returns undefined — the panel gets its data from the fetch below.
+    // Deliberately kept rather than deleted: it is the hydrated-else-fetch
+    // fallback the DOM tests in tests/dom/x-intel-data-loader.test.mts exercise,
+    // and it is what would resume working if the key is ever re-registered with
+    // `text` stripped on the bootstrap path. Note the bootstrap coverage guards
+    // in tests/bootstrap.test.mjs only run key -> consumer, so nothing flags a
+    // consumer whose key is absent.
     const hydrated = getHydratedData('xFeed') as import('@/services/x-intel').XFeedResponse | undefined;
     const hydratedUsable = isUsableHydratedXFeed(hydrated);
     if (hydratedUsable && !this.ctx.isDestroyed) {
