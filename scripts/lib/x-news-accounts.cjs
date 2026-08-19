@@ -25,6 +25,16 @@ const MAX_429_BACKOFF_MS = 15 * 60 * 1000;
 // ceiling — so the exponential can actually reach MAX_429_BACKOFF_MS.
 const MAX_429_BACKOFF_EXPONENT = 10;
 const DEFAULT_MAX_TIMELINE_PAGES = 10;
+// A cold start (no cursor for this account) walks back `start_time` = 24h with
+// no since_id, so an active account pages until the cap. At 64 accounts that is
+// up to 64 * DEFAULT_MAX_TIMELINE_PAGES timeline requests in ONE cycle, ~10x the
+// ~64/cycle the spend model is sized for — and it re-triggers on every relay
+// outage longer than the poll-state TTL, not just the first deploy.
+// One page is all a cold start needs: the newest page establishes the cursor
+// (see "establishes since_id from newest pages when the first poll hits the page
+// cap"), and the next cycle pages forward normally from there. Backfilling 24h
+// of history was never the goal — this is an early-signal feed.
+const DEFAULT_COLD_START_TIMELINE_PAGES = 1;
 const X_FEED_SNAPSHOT_VERSION = 1;
 const USER_AGENT = 'WorldMonitor/1.0 (curated news-account monitoring; +https://worldmonitor.app)';
 
@@ -482,6 +492,7 @@ async function pollXFeed({
   staggerMs = DEFAULT_STAGGER_MS,
   lookupDeletions = true,
   maxTimelinePages = DEFAULT_MAX_TIMELINE_PAGES,
+  coldStartMaxTimelinePages = DEFAULT_COLD_START_TIMELINE_PAGES,
   signal,
 } = {}) {
   const nextState = {
@@ -513,6 +524,11 @@ async function pollXFeed({
     ? [...configuredAccounts.slice(startingOffset), ...configuredAccounts.slice(0, startingOffset)]
     : [];
   const pageLimit = Math.max(1, Math.floor(Number(maxTimelinePages) || DEFAULT_MAX_TIMELINE_PAGES));
+  // Never exceed an explicitly-requested page limit, even for a cold start.
+  const coldStartPageLimit = Math.min(
+    pageLimit,
+    Math.max(1, Math.floor(Number(coldStartMaxTimelinePages) || DEFAULT_COLD_START_TIMELINE_PAGES)),
+  );
   const newItems = [];
   for (const account of orderedAccounts) {
     if (nextState.rateLimitedUntil) break;
@@ -552,7 +568,11 @@ async function pollXFeed({
       const accountItems = [];
       let newestPostId = catchup?.newestPostId || sinceId || '';
       const boundAccount = { ...account, accountId };
-      while (pageCount < pageLimit) {
+      // A cold start only needs enough pages to establish the cursor; a resumed
+      // window pages normally. Keeps the first cycle near the per-cycle spend
+      // budget instead of ~10x it.
+      const effectivePageLimit = sinceId ? pageLimit : coldStartPageLimit;
+      while (pageCount < effectivePageLimit) {
         const url = buildUserTimelineUrl({
           accountId,
           sinceId,
@@ -680,6 +700,7 @@ module.exports = {
   TOMBSTONE_TTL_MS,
   DEFAULT_MAX_FEED_ITEMS,
   DEFAULT_MAX_TIMELINE_PAGES,
+  DEFAULT_COLD_START_TIMELINE_PAGES,
   X_FEED_SNAPSHOT_VERSION,
   loadXAccounts,
   countEnabledAccounts,

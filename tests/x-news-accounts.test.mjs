@@ -475,6 +475,73 @@ describe('since_id poll loop + 429 backoff (#6654)', () => {
     assert.equal(state.cycleComplete, true);
   });
 
+  it('bounds a cold-start cycle to one page per account, but pages a resumed window fully', async () => {
+    // Regression: a cold start (no cursor) walked back 24h with no since_id and
+    // paged to DEFAULT_MAX_TIMELINE_PAGES. Across 64 accounts that is ~640
+    // timeline requests in one cycle against a ~64/cycle spend model, and it
+    // re-triggers after any outage longer than the poll-state TTL.
+    const pagesPerAccount = new Map();
+    const fetchImpl = async (url) => {
+      const parsed = new URL(url);
+      const id = parsed.pathname.split('/')[3];
+      pagesPerAccount.set(id, (pagesPerAccount.get(id) || 0) + 1);
+      return new Response(JSON.stringify({
+        data: [{ id: String(900 + pagesPerAccount.get(id)), text: 'post' }],
+        meta: { next_token: 'always-more' },
+      }), { status: 200 });
+    };
+    const accounts = [
+      { handle: 'Reuters', accountId: '1652541' },
+      { handle: 'AP', accountId: '51241574' },
+    ];
+
+    const cold = await xNews.pollXFeed({
+      accounts,
+      state: { cursorByAccountId: {}, items: [] },
+      bearerToken: 'test-token',
+      fetchImpl,
+      wait: async () => {},
+      lookupDeletions: false,
+      now: () => Date.parse('2026-08-18T12:00:00.000Z'),
+    });
+    assert.deepEqual([...pagesPerAccount.values()], [1, 1], 'cold start must not page past the cold-start cap');
+    assert.equal(cold.accountsPolled, 2);
+    assert.equal(cold.accountsFailed, 0);
+    // The cursor is still established, so the next cycle resumes normally.
+    assert.ok(cold.cursorByAccountId['1652541']);
+
+    // A warm account with a cursor still pages up to the full limit.
+    pagesPerAccount.clear();
+    await xNews.pollXFeed({
+      accounts: [accounts[0]],
+      state: { cursorByAccountId: { '1652541': '100' }, items: [] },
+      bearerToken: 'test-token',
+      fetchImpl,
+      wait: async () => {},
+      lookupDeletions: false,
+      maxTimelinePages: 4,
+    });
+    assert.equal(pagesPerAccount.get('1652541'), 4, 'a resumed window still pages to the full limit');
+  });
+
+  it('never exceeds an explicitly requested page limit on a cold start', async () => {
+    let pages = 0;
+    await xNews.pollXFeed({
+      accounts: [{ handle: 'Reuters', accountId: '1652541' }],
+      state: { cursorByAccountId: {}, items: [] },
+      bearerToken: 'test-token',
+      fetchImpl: async () => {
+        pages += 1;
+        return new Response(JSON.stringify({ data: [{ id: '1' }], meta: { next_token: 'more' } }), { status: 200 });
+      },
+      wait: async () => {},
+      lookupDeletions: false,
+      maxTimelinePages: 1,
+      coldStartMaxTimelinePages: 9,
+    });
+    assert.equal(pages, 1, 'explicit maxTimelinePages must still bound a cold start');
+  });
+
   it('tombstones only resource-not-found lookup errors', async () => {
     const account = {
       handle: 'Reuters',
