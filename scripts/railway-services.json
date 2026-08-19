@@ -27,6 +27,7 @@
       "scripts/generate-inventory-facts.mjs",
       "scripts/lib/llm-model-policy.cjs",
       "scripts/lib/llm-telemetry.cjs",
+      "scripts/lib/poll-generation-guard.cjs",
       "scripts/lib/usni-fleet-parser.cjs",
       "scripts/lib/x-news-accounts.cjs",
       "scripts/package-lock.json",

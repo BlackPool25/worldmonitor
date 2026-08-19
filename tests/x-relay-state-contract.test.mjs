@@ -17,21 +17,24 @@ describe('X relay state and health contract', () => {
     assert.match(functionBody('publishXSnapshot'), /buildXFeedSnapshot/);
     assert.match(functionBody('publishXSnapshot'), /buildXPollState/);
     assert.match(functionBody('publishXSnapshot'), /X_FEED_POLL_STATE_KEY/);
-    assert.match(functionBody('publishXSnapshot'), /if \(!\(accountsPolled > 0\)\) return true/);
-    assert.match(functionBody('startXPollLoop'), /sourceState: 'unavailable'/);
+    assert.match(functionBody('publishXSnapshot'), /accountsPolled > 0/);
+    assert.doesNotMatch(functionBody('startXPollLoop'), /sourceState: 'unavailable'/);
+    assert.match(functionBody('pollXOnce'), /upstashSetNx\(X_FEED_POLL_LOCK_KEY/);
+    assert.match(functionBody('pollXOnce'), /upstashReleaseLockIfOwner\(X_FEED_POLL_LOCK_KEY/);
+    assert.match(functionBody('publishXSnapshot'), /upstashPublishXIfLockOwner/);
+    assert.match(functionBody('startXPollLoop'), /xState\.lastPollAt \+ X_POLL_INTERVAL_MS/);
+    assert.match(functionBody('startXPollLoop'), /xState\.rateLimitedUntil/);
   });
 
   it('aborts and force-clears a stuck in-flight poll before starting a new generation', () => {
-    const guard = functionBody('guardedXPoll');
-    assert.match(guard, /force-clearing in-flight flag/);
-    assert.match(guard, /xPollAbortController\?\.abort/);
-    assert.match(guard, /generation !== xState\.generation/);
+    assert.match(relay, /createPollGenerationGuard/);
+    assert.match(relay, /stuckAfterMs: X_POLL_INTERVAL_MS \+ 60_000/);
   });
 
   it('refreshes seed metadata after any successful account poll', () => {
     assert.match(functionBody('pollXOnce'), /publishXSnapshot\(accounts\.length, \{[\s\S]*cycleComplete: next\.cycleComplete[\s\S]*accountsPolled: next\.accountsPolled/);
     assert.match(functionBody('publishXSnapshot'), /fetchedAt: xState\.lastPollAt/);
-    assert.match(functionBody('publishXSnapshot'), /if \(!\(accountsPolled > 0\)\) return true/);
+    assert.match(functionBody('publishXSnapshot'), /const meta = accountsPolled > 0/);
   });
 
   it('lets RPC request tombstones while the first-party default hides them', () => {

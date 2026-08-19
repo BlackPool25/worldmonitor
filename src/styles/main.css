@@ -23480,6 +23480,16 @@ body.map-width-resizing {
   gap: 1px;
 }
 
+.x-intel-degraded {
+  margin: 6px 8px;
+  padding: 6px 8px;
+  border: 1px solid rgb(245 158 11 / 35%);
+  border-radius: 4px;
+  color: var(--color-warning, #f59e0b);
+  background: rgb(245 158 11 / 8%);
+  font-size: calc(11px * var(--wm-panel-effective-scale, 1));
+}
+
 .x-intel-item {
   display: flex;
   flex-direction: column;

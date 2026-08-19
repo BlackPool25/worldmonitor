@@ -35,12 +35,15 @@ describe('api/x-feed contract normalization', () => {
     globalThis.fetch = async (url, options) => {
       assert.match(String(url), /\/x\/feed\?limit=50$/);
       assert.equal(options?.headers?.Authorization, 'Bearer test-secret');
+      assert.equal(options?.headers?.['User-Agent'], 'WorldMonitor-X-Feed/1.0');
       return new Response(JSON.stringify({
         enabled: true,
         source: 'relay',
         earlySignal: false,
         updatedAt: '2026-08-18T12:00:00Z',
         count: 0,
+        lastHealthyAt: '2026-08-18T11:55:00Z',
+        coverage: { expected: 64, polled: 61, failed: 3, attempted: 64, complete: false },
         items: [{
           id: 'Reuters:123',
           postId: '123',
@@ -78,6 +81,9 @@ describe('api/x-feed contract normalization', () => {
     assert.equal(data.items[0].text, 'Port disruption reported');
     assert.equal(data.items[0].ts, new Date(1_744_000_000_000).toISOString());
     assert.deepEqual(data.items[0].tags, ['42', 'urgent']);
+    assert.equal(data.degraded, true);
+    assert.deepEqual(data.coverage, { expected: 64, polled: 61, failed: 3, attempted: 64, complete: false });
+    assert.equal(data.lastHealthyAt, '2026-08-18T11:55:00Z');
   });
 
   it('drops tombstoned posts from the first-party panel payload', async () => {

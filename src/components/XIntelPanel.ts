@@ -16,6 +16,7 @@ export class XIntelPanel extends Panel {
   private activeTopic = 'all';
   private tabsEl: HTMLElement | null = null;
   private relayEnabled = true;
+  private degraded = false;
 
   constructor() {
     super({
@@ -55,6 +56,8 @@ export class XIntelPanel extends Panel {
 
   public setData(response: XFeedResponse & { error?: string }): void {
     this.relayEnabled = response.enabled !== false;
+    this.degraded = response.degraded === true
+      || ((response.coverage?.expected ?? 0) > 0 && response.coverage?.complete === false);
     this.items = (response.items || []).filter(item => item.contentState !== 'deleted');
 
     if (!this.relayEnabled || response.error) {
@@ -79,15 +82,19 @@ export class XIntelPanel extends Panel {
 
     if (filtered.length === 0) {
       this.setContentNodes(
+        this.degraded
+          ? h('div', { className: 'x-intel-degraded', role: 'status' }, t('components.airlineIntel.degradedResults'))
+          : null,
         h('div', { className: 'empty-state' }, t('components.xIntel.empty')),
       );
       return;
     }
 
     this.setContentNodes(
-      h('div', { className: 'x-intel-items' },
-        ...filtered.map(item => this.buildItem(item)),
-      ),
+      this.degraded
+        ? h('div', { className: 'x-intel-degraded', role: 'status' }, t('components.airlineIntel.degradedResults'))
+        : null,
+      h('div', { className: 'x-intel-items' }, ...filtered.map(item => this.buildItem(item))),
     );
   }
 

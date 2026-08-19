@@ -128,7 +128,7 @@ import { fetchSecurityAdvisories } from '@/services/security-advisories';
 import { fetchThermalEscalations } from '@/services/thermal-escalation';
 import { fetchCrossSourceSignals } from '@/services/cross-source-signals';
 import { fetchTelegramFeed } from '@/services/telegram-intel';
-import { fetchXFeed } from '@/services/x-intel';
+import { fetchXFeed, isUsableHydratedXFeed } from '@/services/x-intel';
 import { fetchOrefAlerts, startOrefPolling, stopOrefPolling, onOrefAlertsUpdate } from '@/services/oref-alerts';
 import { getResilienceRanking } from '@/services/resilience';
 import { buildResilienceChoroplethMap } from '@/components/resilience-choropleth-utils';
@@ -4487,7 +4487,8 @@ export class DataLoaderManager implements AppModule {
   async loadXIntel(): Promise<void> {
     if (isDesktopRuntime() && !hasPremiumAccess()) return;
     const hydrated = getHydratedData('xFeed') as import('@/services/x-intel').XFeedResponse | undefined;
-    if (hydrated && Array.isArray(hydrated.items) && !this.ctx.isDestroyed) {
+    const hydratedUsable = isUsableHydratedXFeed(hydrated);
+    if (hydratedUsable && !this.ctx.isDestroyed) {
       this.callPanel('x-intel', 'setData', hydrated);
     }
     const controller = new AbortController();
@@ -4500,7 +4501,7 @@ export class DataLoaderManager implements AppModule {
     } catch (error) {
       if (controller.signal.aborted || this.ctx.isDestroyed) return;
       console.error('[App] X news-account fetch failed:', error);
-      if (hydrated && Array.isArray(hydrated.items)) return;
+      if (hydratedUsable) return;
       this.callPanel('x-intel', 'setData', {
         source: 'x', enabled: false, count: 0, updatedAt: null, items: [],
       });

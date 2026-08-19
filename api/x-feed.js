@@ -39,6 +39,8 @@ const EPOCH_ISO = new Date(0).toISOString();
  *   source?: string;
  *   earlySignal?: boolean;
  *   updatedAt?: string | null;
+ *   lastHealthyAt?: string | null;
+ *   coverage?: { expected?: number; polled?: number; failed?: number; attempted?: number; complete?: boolean };
  *   count?: number;
  *   posts?: RawXPost[];
  *   items?: RawXPost[];
@@ -140,12 +142,22 @@ function normalizeXFeed(parsed) {
   const items = rawPosts
     .map(normalizeXPost)
     .filter((item) => item.contentState !== 'deleted');
+  const coverage = {
+    expected: Math.max(0, Math.floor(Number(parsed.coverage?.expected) || 0)),
+    polled: Math.max(0, Math.floor(Number(parsed.coverage?.polled) || 0)),
+    failed: Math.max(0, Math.floor(Number(parsed.coverage?.failed) || 0)),
+    attempted: Math.max(0, Math.floor(Number(parsed.coverage?.attempted) || 0)),
+    complete: parsed.coverage?.complete === true,
+  };
   return {
     source: toText(parsed.source).trim() || 'x',
     earlySignal: Boolean(parsed.earlySignal),
     enabled: parsed.enabled !== false,
     count: items.length,
     updatedAt: parsed.updatedAt ?? null,
+    lastHealthyAt: parsed.lastHealthyAt ?? null,
+    degraded: coverage.expected > 0 && !coverage.complete,
+    coverage,
     items,
   };
 }
@@ -180,7 +192,7 @@ export default async function handler(req) {
 
     const relayUrl = `${relayBaseUrl}/x/feed?${params}`;
     const response = await fetchWithTimeout(relayUrl, {
-      headers: getRelayHeaders({ Accept: 'application/json' }),
+      headers: getRelayHeaders({ Accept: 'application/json', 'User-Agent': 'WorldMonitor-X-Feed/1.0' }),
     }, 15000);
 
     const body = await response.text();

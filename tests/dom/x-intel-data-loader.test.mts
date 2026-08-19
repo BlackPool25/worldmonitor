@@ -29,7 +29,7 @@ function deferred<T>() {
 }
 
 const feed = (count: number): XFeedResponse => ({
-  source: 'x', earlySignal: true, enabled: true, count, updatedAt: null, items: [],
+  source: 'x', earlySignal: true, enabled: true, count, updatedAt: new Date().toISOString(), items: [],
 });
 
 describe('X feed DataLoader lifecycle', () => {
@@ -78,5 +78,28 @@ describe('X feed DataLoader lifecycle', () => {
 
     expect(panel.setData).toHaveBeenCalledTimes(1);
     expect(panel.setData).toHaveBeenCalledWith(expect.objectContaining({ count: 3, enabled: true }));
+  });
+
+  it('does not render expired hydrated post bodies after a live failure', async () => {
+    const panel = { setData: vi.fn() };
+    const ctx = { panels: { 'x-intel': panel }, isDestroyed: false } as unknown as AppContext;
+    mocks.getHydratedData.mockReset();
+    mocks.getHydratedData.mockReturnValue({
+      ...feed(1),
+      updatedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+      items: [{ id: 'old', text: 'possibly deleted body' }],
+    });
+    mocks.fetchXFeed.mockReset();
+    mocks.fetchXFeed.mockRejectedValueOnce(new Error('network down'));
+    const { DataLoaderManager } = await import('@/app/data-loader');
+    const loader = new DataLoaderManager(ctx, {
+      renderCriticalBanner: () => undefined,
+      refreshOpenCountryBrief: () => undefined,
+    });
+
+    await loader.loadXIntel();
+
+    expect(panel.setData).toHaveBeenCalledTimes(1);
+    expect(panel.setData).toHaveBeenCalledWith(expect.objectContaining({ enabled: false, items: [] }));
   });
 });

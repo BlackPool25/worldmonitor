@@ -245,6 +245,33 @@ describe('since_id poll loop + 429 backoff (#6654)', () => {
     assert.ok(calls.some((c) => c.includes('since_id=100')));
   });
 
+  it('resolves a missing account ID by username and persists the mapping', async () => {
+    const calls = [];
+    const state = await xNews.pollXFeed({
+      accounts: [{ handle: 'ExampleNews', label: 'Example News', sourceName: 'Example News', topic: 'breaking' }],
+      state: { cursorByAccountId: {}, accountIdByHandle: {}, items: [] },
+      bearerToken: 'test-token',
+      lookupDeletions: false,
+      wait: async () => {},
+      fetchImpl: async (url) => {
+        const parsed = new URL(url);
+        calls.push(parsed.pathname);
+        if (parsed.pathname === '/2/users/by/username/ExampleNews') {
+          return new Response(JSON.stringify({ data: { id: '987654321', username: 'ExampleNews' } }), { status: 200 });
+        }
+        if (parsed.pathname === '/2/users/987654321/tweets') {
+          return new Response(JSON.stringify({ data: [{ id: '101', text: 'resolved account post' }] }), { status: 200 });
+        }
+        throw new Error(`unexpected ${parsed.pathname}`);
+      },
+    });
+
+    assert.deepEqual(calls, ['/2/users/by/username/ExampleNews', '/2/users/987654321/tweets']);
+    assert.equal(state.accountIdByHandle.ExampleNews, '987654321');
+    assert.equal(state.cursorByAccountId['987654321'], '101');
+    assert.equal(state.items[0].accountId, '987654321');
+  });
+
   it('stops the cycle and records backoff on HTTP 429', async () => {
     const fetchImpl = async () => new Response('rate limited', {
       status: 429,
@@ -313,7 +340,56 @@ describe('since_id poll loop + 429 backoff (#6654)', () => {
     assert.equal(state.cursorByAccountId['1652541'], '100');
     assert.equal(state.accountsFailed, 1);
     assert.equal(state.cycleComplete, false);
-    assert.equal(state.items.length, 0);
+    assert.equal(state.items.length, 1);
+    assert.equal(state.items[0].postId, '102');
+  });
+
+  it('resumes a capped later window on the next poll before advancing since_id', async () => {
+    const timelineTokens = [];
+    const fetchImpl = async (url) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === '/2/tweets') {
+        const ids = parsed.searchParams.get('ids')?.split(',') || [];
+        return new Response(JSON.stringify({ data: ids.map((id) => ({ id })) }), { status: 200 });
+      }
+      const token = parsed.searchParams.get('pagination_token') || '';
+      timelineTokens.push(token);
+      if (!token) {
+        return new Response(JSON.stringify({
+          data: [{ id: '105', text: 'newest' }],
+          meta: { next_token: 'page-2' },
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ data: [{ id: '104', text: 'older' }], meta: {} }), { status: 200 });
+    };
+    const account = { handle: 'Reuters', accountId: '1652541', maxMessages: 10 };
+    const first = await xNews.pollXFeed({
+      accounts: [account],
+      state: { cursorByAccountId: { '1652541': '100' }, items: [] },
+      bearerToken: 'test-token',
+      maxTimelinePages: 1,
+      fetchImpl,
+      wait: async () => {},
+      lookupDeletions: false,
+    });
+    assert.equal(first.cursorByAccountId['1652541'], '100');
+    assert.equal(first.catchupByAccountId['1652541'].paginationToken, 'page-2');
+    assert.equal(first.items[0].postId, '105');
+
+    const second = await xNews.pollXFeed({
+      accounts: [account],
+      state: first,
+      bearerToken: 'test-token',
+      maxTimelinePages: 1,
+      fetchImpl,
+      wait: async () => {},
+      lookupDeletions: false,
+    });
+    assert.deepEqual(timelineTokens, ['', 'page-2']);
+    assert.equal(second.cursorByAccountId['1652541'], '105');
+    assert.equal(second.catchupByAccountId['1652541'], undefined);
+    assert.deepEqual(second.items.map((item) => item.postId).sort(), ['104', '105']);
+    assert.equal(second.cycleComplete, true);
   });
 
   it('establishes since_id from newest pages when the first poll hits the page cap', async () => {
@@ -393,6 +469,12 @@ describe('since_id poll loop + 429 backoff (#6654)', () => {
               title: 'Authorization Error',
               detail: 'Not authorized to view this Tweet.',
             },
+            {
+              resource_id: '60',
+              type: 'https://api.twitter.com/2/problems/invalid-request',
+              title: 'Not Found Error',
+              detail: 'This deleted-looking text must not be treated as a resource tombstone.',
+            },
           ],
         }), { status: 200 });
       },
@@ -426,6 +508,22 @@ describe('since_id poll loop + 429 backoff (#6654)', () => {
     assert.equal(state.items.filter((item) => item.contentState === 'deleted').length, 0);
   });
 
+  it('does not advance lookupOffset after a non-200 success response', async () => {
+    const account = { handle: 'Reuters', accountId: '1652541', label: 'Reuters', sourceName: 'Reuters', topic: 'breaking' };
+    const items = ['10', '20'].map((id) => xNews.normalizeXPost({ id, text: `post ${id}` }, account));
+    const state = await xNews.pollXFeed({
+      accounts: [account],
+      state: { cursorByAccountId: { '1652541': '100' }, items, lookupOffset: 1 },
+      bearerToken: 'test-token',
+      fetchImpl: async (url) => new URL(url).pathname === '/2/tweets'
+        ? new Response(null, { status: 204 })
+        : new Response(JSON.stringify({ data: [] }), { status: 200 }),
+      wait: async () => {},
+    });
+    assert.equal(state.lookupOffset, 1);
+    assert.match(state.lastError, /HTTP 204/);
+  });
+
   it('rotates the next account after a partial 429 cycle', async () => {
     const accounts = [
       { handle: 'Reuters', accountId: '1652541' },
@@ -445,7 +543,7 @@ describe('since_id poll loop + 429 backoff (#6654)', () => {
     assert.equal(first.accountOffset, 1);
 
     let firstPath = '';
-    await xNews.pollXFeed({
+    const second = await xNews.pollXFeed({
       accounts,
       state: { ...first, rateLimitedUntil: 0 },
       bearerToken: 'test-token',
@@ -458,6 +556,8 @@ describe('since_id poll loop + 429 backoff (#6654)', () => {
       lookupDeletions: false,
     });
     assert.match(firstPath, /\/2\/users\/51241574\/tweets$/);
+    assert.equal(first.rateLimitAttempt, 1);
+    assert.equal(second.rateLimitAttempt, 2);
   });
 
   it('marks partial account coverage incomplete', async () => {
@@ -497,6 +597,9 @@ describe('versioned X feed snapshot', () => {
       items: [item],
       lookupOffset: 4,
       accountOffset: 9,
+      catchupByAccountId: { '1652541': { sinceId: '100', paginationToken: 'page-3', newestPostId: '101' } },
+      rateLimitedUntil: 1_755_521_260_000,
+      rateLimitAttempt: 3,
       lastPollAt: 1_755_521_200_000,
       lastHealthyAt: 1_755_521_200_000,
       lastCoverage: { expected: 64, polled: 64, failed: 0, attempted: 64, complete: true },
@@ -510,6 +613,9 @@ describe('versioned X feed snapshot', () => {
     assert.equal(hydrated.generation, 7);
     assert.equal(hydrated.cursorByAccountId['1652541'], '101');
     assert.equal(hydrated.accountOffset, 9);
+    assert.equal(hydrated.catchupByAccountId['1652541'].paginationToken, 'page-3');
+    assert.equal(hydrated.rateLimitedUntil, 1_755_521_260_000);
+    assert.equal(hydrated.rateLimitAttempt, 3);
     assert.equal(hydrated.items[0].text, 'body');
     assert.equal(hydrated.lastCoverage.complete, true);
     const legacy = xNews.hydrateXFeedSnapshot({ ...snapshot, pollState });
@@ -518,6 +624,9 @@ describe('versioned X feed snapshot', () => {
     assert.ok(servingOnly);
     assert.equal(servingOnly.cursorByAccountId['1652541'], undefined);
     assert.equal(servingOnly.items[0].text, 'body');
+    const pollStateOnly = xNews.hydrateXFeedSnapshot(null, { pollState });
+    assert.equal(pollStateOnly.cursorByAccountId['1652541'], '101');
+    assert.equal(pollStateOnly.items.length, 0);
   });
 
   it('rejects an unversioned or malformed snapshot', () => {

@@ -239,6 +239,22 @@ function copyAccountIdMap(value) {
   return result;
 }
 
+function copyCatchupMap(value) {
+  const result = Object.create(null);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return result;
+  for (const [rawAccountId, rawCatchup] of Object.entries(value)) {
+    const accountId = normalizeAccountId(rawAccountId);
+    if (!accountId || !rawCatchup || typeof rawCatchup !== 'object' || Array.isArray(rawCatchup)) continue;
+    const sinceId = normalizeAccountId(rawCatchup.sinceId);
+    const paginationToken = String(rawCatchup.paginationToken || '').trim();
+    const newestPostId = normalizeAccountId(rawCatchup.newestPostId) || sinceId;
+    if (sinceId && paginationToken) {
+      result[accountId] = { sinceId, paginationToken, newestPostId };
+    }
+  }
+  return result;
+}
+
 function normalizeCoverage(value, expectedAccounts = 0) {
   const expected = Math.max(0, Math.floor(Number(value?.expected ?? expectedAccounts) || 0));
   const polled = Math.max(0, Math.floor(Number(value?.polled) || 0));
@@ -257,12 +273,16 @@ function buildXPollState(state, { expectedAccounts = 0 } = {}) {
   const lastPollAt = Number(state?.lastPollAt) || 0;
   const coverage = normalizeCoverage(state?.lastCoverage, expectedAccounts);
   return {
+    generation: Math.max(0, Math.floor(Number(state?.generation) || 0)),
     cursorByAccountId: copyCursorMap(state?.cursorByAccountId),
     accountIdByHandle: copyAccountIdMap(state?.accountIdByHandle),
+    catchupByAccountId: copyCatchupMap(state?.catchupByAccountId),
     lookupOffset: Math.max(0, Math.floor(Number(state?.lookupOffset) || 0)),
     accountOffset: Math.max(0, Math.floor(Number(state?.accountOffset) || 0)),
     lastPollAt,
     lastHealthyAt: Math.max(0, Number(state?.lastHealthyAt) || 0),
+    rateLimitedUntil: Math.max(0, Number(state?.rateLimitedUntil) || 0),
+    rateLimitAttempt: Math.max(0, Math.floor(Number(state?.rateLimitAttempt) || 0)),
     coverage,
   };
 }
@@ -279,28 +299,34 @@ function buildXFeedSnapshot(state, { enabled = false, expectedAccounts = 0 } = {
     enabled: Boolean(enabled),
     count: items.length,
     updatedAt: lastPollAt > 0 ? new Date(lastPollAt).toISOString() : null,
+    lastHealthyAt: Number(state?.lastHealthyAt) > 0 ? new Date(Number(state.lastHealthyAt)).toISOString() : null,
     coverage,
     items,
   };
 }
 
 function hydrateXFeedSnapshot(snapshot, { maxItems = DEFAULT_MAX_FEED_ITEMS, pollState: pollStateOverride } = {}) {
-  if (!snapshot || snapshot.version !== X_FEED_SNAPSHOT_VERSION || !Array.isArray(snapshot.items)) return null;
-  const inherited = snapshot.pollState;
+  const validSnapshot = Boolean(snapshot && snapshot.version === X_FEED_SNAPSHOT_VERSION && Array.isArray(snapshot.items));
+  const validOverride = Boolean(pollStateOverride && typeof pollStateOverride === 'object' && !Array.isArray(pollStateOverride));
+  if (!validSnapshot && !validOverride) return null;
+  const inherited = validSnapshot ? snapshot.pollState : null;
   const pollState = pollStateOverride && typeof pollStateOverride === 'object' && !Array.isArray(pollStateOverride)
     ? pollStateOverride
     : (inherited && typeof inherited === 'object' && !Array.isArray(inherited) ? inherited : {});
   const itemLimit = Math.max(1, Math.floor(Number(maxItems) || DEFAULT_MAX_FEED_ITEMS));
   return {
-    generation: Math.max(0, Math.floor(Number(snapshot.generation) || 0)),
+    generation: Math.max(0, Math.floor(Number(validSnapshot ? snapshot.generation : pollState.generation) || 0)),
     cursorByAccountId: copyCursorMap(pollState.cursorByAccountId),
     accountIdByHandle: copyAccountIdMap(pollState.accountIdByHandle),
-    items: snapshot.items.filter((item) => item && typeof item === 'object').slice(0, itemLimit),
+    catchupByAccountId: copyCatchupMap(pollState.catchupByAccountId),
+    items: validSnapshot ? snapshot.items.filter((item) => item && typeof item === 'object').slice(0, itemLimit) : [],
     lookupOffset: Math.max(0, Math.floor(Number(pollState.lookupOffset) || 0)),
     accountOffset: Math.max(0, Math.floor(Number(pollState.accountOffset) || 0)),
     lastPollAt: Math.max(0, Number(pollState.lastPollAt) || 0),
     lastHealthyAt: Math.max(0, Number(pollState.lastHealthyAt) || 0),
-    lastCoverage: normalizeCoverage(pollState.coverage ?? snapshot.coverage),
+    rateLimitedUntil: Math.max(0, Number(pollState.rateLimitedUntil) || 0),
+    rateLimitAttempt: Math.max(0, Math.floor(Number(pollState.rateLimitAttempt) || 0)),
+    lastCoverage: normalizeCoverage(pollState.coverage ?? (validSnapshot ? snapshot.coverage : null)),
   };
 }
 
@@ -353,13 +379,14 @@ function lookupErrorResourceId(error) {
 
 function isTweetNotFoundLookupError(error) {
   if (!error || typeof error !== 'object') return false;
-  const type = String(error.type || '');
-  const title = String(error.title || '');
-  const detail = String(error.detail || '');
-  const text = `${title} ${detail} ${type}`;
-  if (/\b(?:authori[sz]ation|forbidden|suspended|protected)\b/i.test(text)) return false;
-  if (type.includes('resource-not-found')) return true;
-  return /\b(?:not found|does not exist|deleted)\b/i.test(text);
+  const type = String(error.type || '').trim();
+  return /\/2\/problems\/resource-not-found\/?$/i.test(type);
+}
+
+function recordRateLimit(nextState, headers, now) {
+  const attempt = Math.max(0, Math.floor(Number(nextState.rateLimitAttempt) || 0));
+  nextState.rateLimitedUntil = now() + compute429BackoffMs(headers, attempt);
+  nextState.rateLimitAttempt = Math.min(7, attempt + 1);
 }
 
 function collectDeletedTweetIds(body, requestedIds) {
@@ -431,11 +458,13 @@ async function pollXFeed({
   const nextState = {
     cursorByAccountId: { ...(state?.cursorByAccountId || {}) },
     accountIdByHandle: { ...(state?.accountIdByHandle || {}) },
+    catchupByAccountId: copyCatchupMap(state?.catchupByAccountId),
     items: Array.isArray(state?.items) ? [...state.items] : [],
     lookupOffset: Number(state?.lookupOffset) || 0,
     accountOffset: Number(state?.accountOffset) || 0,
     lastError: null,
-    rateLimitedUntil: 0,
+    rateLimitedUntil: Number(state?.rateLimitedUntil) > now() ? Number(state.rateLimitedUntil) : 0,
+    rateLimitAttempt: Math.max(0, Math.floor(Number(state?.rateLimitAttempt) || 0)),
     accountsPolled: 0,
     accountsFailed: 0,
     newCount: 0,
@@ -469,7 +498,7 @@ async function pollXFeed({
           { signal },
         );
         if (response.status === 429) {
-          nextState.rateLimitedUntil = now() + compute429BackoffMs(response.headers, 0);
+          recordRateLimit(nextState, response.headers, now);
           nextState.lastError = `rate limited resolving @${account.handle}`;
           break;
         }
@@ -485,13 +514,14 @@ async function pollXFeed({
 
       // Keep the original cursor fixed throughout pagination. Advancing it
       // mid-window would skip older pages if the later request fails.
-      const sinceId = nextState.cursorByAccountId[accountId];
-      let paginationToken = '';
+      const catchup = nextState.catchupByAccountId[accountId];
+      const sinceId = catchup?.sinceId || nextState.cursorByAccountId[accountId];
+      let paginationToken = catchup?.paginationToken || '';
       let pageCount = 0;
       let completeWindow = false;
       let pageFailed = false;
       const accountItems = [];
-      let newestPostId = sinceId || '';
+      let newestPostId = catchup?.newestPostId || sinceId || '';
       const boundAccount = { ...account, accountId };
       while (pageCount < pageLimit) {
         const url = buildUserTimelineUrl({
@@ -503,7 +533,7 @@ async function pollXFeed({
         });
         const { response, body } = await xFetchJson(fetchImpl, url, bearerToken, { signal });
         if (response.status === 429) {
-          nextState.rateLimitedUntil = now() + compute429BackoffMs(response.headers, 0);
+          recordRateLimit(nextState, response.headers, now);
           nextState.lastError = `rate limited polling @${account.handle}`;
           break;
         }
@@ -527,17 +557,30 @@ async function pollXFeed({
           break;
         }
       }
-      if (nextState.rateLimitedUntil) break;
+      if (nextState.rateLimitedUntil) {
+        if (sinceId && paginationToken) {
+          nextState.catchupByAccountId[accountId] = { sinceId, paginationToken, newestPostId };
+          newItems.push(...accountItems);
+        }
+        break;
+      }
       if (pageFailed) {
+        if (sinceId && paginationToken) {
+          nextState.catchupByAccountId[accountId] = { sinceId, paginationToken, newestPostId };
+          newItems.push(...accountItems);
+        }
         await sleep(staggerMs, wait);
         continue;
       }
       if (!completeWindow && sinceId) {
+        nextState.catchupByAccountId[accountId] = { sinceId, paginationToken, newestPostId };
+        newItems.push(...accountItems);
         nextState.accountsFailed += 1;
         nextState.lastError = `timeline @${account.handle} exceeded ${pageLimit} page limit`;
         await sleep(staggerMs, wait);
         continue;
       }
+      delete nextState.catchupByAccountId[accountId];
       newItems.push(...accountItems);
       if (newestPostId) nextState.cursorByAccountId[accountId] = newestPostId;
       nextState.accountsPolled += 1;
@@ -576,10 +619,10 @@ async function pollXFeed({
       try {
         const { response, body } = await xFetchJson(fetchImpl, url, bearerToken, { signal });
         if (response.status === 429) {
-          nextState.rateLimitedUntil = now() + compute429BackoffMs(response.headers, 0);
+          recordRateLimit(nextState, response.headers, now);
           nextState.lastError = 'rate limited during deletion lookup';
           nextState.cycleComplete = false;
-        } else if (response.ok) {
+        } else if (response.status === 200) {
           const missing = collectDeletedTweetIds(body, ids);
           if (missing.length) nextState.items = tombstonePosts(nextState.items, missing, now());
           nextState.lookupOffset = activeIds.length ? (offset + MAX_TWEET_LOOKUP_IDS) % activeIds.length : 0;
@@ -594,6 +637,7 @@ async function pollXFeed({
     }
   }
 
+  if (nextState.cycleComplete) nextState.rateLimitAttempt = 0;
   nextState.items = purgeExpiredTombstones(nextState.items, now(), TOMBSTONE_TTL_MS);
   return nextState;
 }

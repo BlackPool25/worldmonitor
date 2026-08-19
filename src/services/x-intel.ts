@@ -23,6 +23,15 @@ export interface XFeedResponse {
   enabled: boolean;
   count: number;
   updatedAt: string | null;
+  lastHealthyAt?: string | null;
+  degraded?: boolean;
+  coverage?: {
+    expected: number;
+    polled: number;
+    failed: number;
+    attempted: number;
+    complete: boolean;
+  };
   items: XItem[];
 }
 
@@ -39,8 +48,16 @@ export const X_TOPICS = [
 let cachedResponse: XFeedResponse | null = null;
 let cachedAt = 0;
 let cachedLimit = 0;
-const inFlight = new Map<number, Promise<XFeedResponse>>();
+interface InFlightEntry {
+  promise: Promise<XFeedResponse>;
+  controller: AbortController;
+  subscribers: number;
+  settled: boolean;
+}
+
+const inFlight = new Map<number, InFlightEntry>();
 const CACHE_TTL = 30_000;
+export const X_HYDRATION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const MISSING_TIMESTAMP_ISO = new Date(0).toISOString();
 
 function xFeedUrl(limit: number): string {
@@ -49,30 +66,66 @@ function xFeedUrl(limit: number): string {
 }
 
 export async function fetchXFeed(limit = 50, signal?: AbortSignal): Promise<XFeedResponse> {
+  if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
   if (cachedResponse && cachedLimit >= limit && Date.now() - cachedAt < CACHE_TTL) return cachedResponse;
-  let request = inFlight.get(limit);
-  if (!request) {
-    request = (async () => {
-      const res = await fetch(xFeedUrl(limit));
+  let entry = inFlight.get(limit);
+  if (!entry) {
+    const controller = new AbortController();
+    const newEntry: InFlightEntry = {
+      controller,
+      subscribers: 0,
+      settled: false,
+      promise: undefined as unknown as Promise<XFeedResponse>,
+    };
+    newEntry.promise = (async () => {
+      const res = await fetch(xFeedUrl(limit), { signal: controller.signal });
       if (!res.ok) throw new Error(`X feed ${res.status}`);
 
       const json: XFeedResponse = await res.json();
+      if (controller.signal.aborted) throw controller.signal.reason ?? new DOMException('Aborted', 'AbortError');
       cachedResponse = json;
       cachedAt = Date.now();
       cachedLimit = limit;
       return json;
     })().finally(() => {
-      inFlight.delete(limit);
+      newEntry.settled = true;
+      if (inFlight.get(limit) === newEntry) inFlight.delete(limit);
     });
-    inFlight.set(limit, request);
+    inFlight.set(limit, newEntry);
+    entry = newEntry;
   }
-  if (!signal) return request;
-  if (signal.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+  entry.subscribers += 1;
   return new Promise<XFeedResponse>((resolve, reject) => {
-    const onAbort = () => reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
-    signal.addEventListener('abort', onAbort, { once: true });
-    request.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      entry.subscribers = Math.max(0, entry.subscribers - 1);
+      if (entry.subscribers === 0 && !entry.settled && inFlight.get(limit) === entry) {
+        inFlight.delete(limit);
+        entry.controller.abort();
+      }
+    };
+    const onAbort = () => {
+      release();
+      reject(signal?.reason ?? new DOMException('Aborted', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    const finish = () => {
+      signal?.removeEventListener('abort', onAbort);
+      release();
+    };
+    entry.promise.then(
+      (value) => { finish(); resolve(value); },
+      (error) => { finish(); reject(error); },
+    );
   });
+}
+
+export function isUsableHydratedXFeed(response: XFeedResponse | undefined, now = Date.now()): boolean {
+  if (!response || !Array.isArray(response.items)) return false;
+  const updatedAt = Date.parse(response.updatedAt || '');
+  return Number.isFinite(updatedAt) && updatedAt > 0 && now - updatedAt <= X_HYDRATION_MAX_AGE_MS;
 }
 
 export function formatXTime(ts: string): string {
