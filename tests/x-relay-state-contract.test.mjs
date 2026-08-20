@@ -2,6 +2,41 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
+// scripts/ais-relay.cjs has no module.exports and no require.main guard, so
+// importing it boots the whole relay — nothing here can execute it. What is left
+// in this file is therefore ONLY the wiring that genuinely lives in ais-relay.cjs
+// and cannot be reached any other way: the poll loop's scheduling, the guard's
+// construction, and the /x route.
+//
+// The cycle itself (hydrate / publish / pollOnce) moved to
+// scripts/lib/x-poll-cycle.cjs precisely so it could stop being asserted as
+// source TEXT and start being EXECUTED. Every assertion this file used to make
+// about those three functions now has a real behavioural test in
+// tests/x-poll-cycle.test.mjs, named inline below so the trade is auditable:
+//
+//   fail-closed hydration, no publish over an unread state
+//       -> 'clears the latch and resumes once the read succeeds'
+//   cursors re-read under the lock, no stale cursor-map writeback
+//       -> 'adopts the peer cursor map read under the lock instead of
+//          republishing stale cursors'
+//   serving snapshot re-read with them, peer's posts preserved
+//       -> 'folds a peer post that only exists in Redis back into the published
+//          snapshot'
+//   429 backoff takes the LATER deadline / HIGHER attempt count
+//       -> 'keeps the LATER deadline and the HIGHER attempt count when Redis is
+//          older' and 'adopts a peer backoff that is later than ours'
+//   publish precedes commit; a lost lease leaves state uncommitted
+//       -> 'leaves xState uncommitted when the lease-guarded publish fails'
+//   seed meta only after a real poll
+//       -> 'omits seed metadata when no account was actually polled'
+//   lock-loser re-hydrates and re-arms exactly once
+//       -> 're-hydrates, refuses to poll, and re-arms the guard exactly once'
+//   completed poll fenced on the guard generation
+//       -> 'discards a result that lands after the guard generation moved on'
+//
+// Those replacements are not merely present, they are known to bite: reverting
+// the peer-item fold, the Math.max backoff, the generation fence, or fail-closed
+// hydration each turns that suite red.
 const relay = readFileSync(new URL('../scripts/ais-relay.cjs', import.meta.url), 'utf8');
 
 function functionBody(name) {
@@ -10,9 +45,8 @@ function functionBody(name) {
   // Every function in this file is top-level, but most are `async function`.
   // Terminating only on `\nfunction ` made an async declaration invisible as an
   // end marker, so a body ran on through every async function that followed it
-  // — publishXSnapshot's "body" swallowed pollXOnce, and any assertion here
-  // could be satisfied by code in a different function. Stop at the next
-  // top-level declaration of either kind.
+  // and any assertion here could be satisfied by code in a different function.
+  // Stop at the next top-level declaration of either kind.
   const rest = relay.slice(start + 1);
   const offsets = ['\nfunction ', '\nasync function ']
     .map((marker) => rest.indexOf(marker))
@@ -21,35 +55,51 @@ function functionBody(name) {
   return next >= 0 ? rest.slice(0, next) : rest;
 }
 
-describe('X relay state and health contract', () => {
-  it('hydrates before the first poll and publishes the versioned serving snapshot', () => {
-    assert.match(functionBody('startXPollLoop'), /await hydrateXState\(\)/);
-    assert.match(functionBody('publishXSnapshot'), /buildXFeedSnapshot/);
-    assert.match(functionBody('publishXSnapshot'), /buildXPollState/);
-    assert.match(functionBody('publishXSnapshot'), /X_FEED_POLL_STATE_KEY/);
-    assert.match(functionBody('publishXSnapshot'), /accountsPolled > 0/);
-    assert.doesNotMatch(functionBody('startXPollLoop'), /sourceState: 'unavailable'/);
-    assert.match(functionBody('pollXOnce'), /upstashSetNx\(X_FEED_POLL_LOCK_KEY/);
-    assert.match(functionBody('pollXOnce'), /upstashReleaseLockIfOwner\(X_FEED_POLL_LOCK_KEY/);
-    assert.match(functionBody('publishXSnapshot'), /upstashPublishXIfLockOwner/);
-    assert.match(functionBody('startXPollLoop'), /xState\.lastPollAt \+ X_POLL_INTERVAL_MS/);
-    assert.match(functionBody('startXPollLoop'), /xState\.rateLimitedUntil/);
+describe('X relay wiring contract', () => {
+  it('builds the poll cycle with the real relay collaborators', () => {
+    // The cycle must be constructed from this file's Redis helpers and state, or
+    // the executable tests in x-poll-cycle.test.mjs would be exercising a module
+    // production never actually wires up.
+    assert.match(relay, /const \{ createXPollCycle \} = require\('\.\/lib\/x-poll-cycle\.cjs'\)/);
+    assert.match(relay, /const xPollCycle = createXPollCycle\(\{/);
+    for (const dep of [
+      'xState', 'xNewsAccounts', 'loadXAccounts',
+      'upstashGet', 'upstashSetNx', 'upstashPublishXIfLockOwner', 'upstashReleaseLockIfOwner',
+      'getPollGeneration', 'scheduleRetry',
+      'X_FEED_CACHE_KEY', 'X_FEED_POLL_STATE_KEY', 'X_FEED_POLL_LOCK_KEY', 'X_FEED_META_KEY',
+    ]) {
+      assert.match(relay, new RegExp(`\\n\\s+${dep}[,:]`), `cycle must receive ${dep}`);
+    }
   });
 
-  it('aborts and force-clears a stuck in-flight poll before starting a new generation', () => {
+  it('hydrates once before scheduling the first poll', () => {
+    const loop = functionBody('startXPollLoop');
+    assert.match(loop, /await xPollCycle\.hydrate\(\)/);
+    // Resume on the ORIGINAL cadence rather than polling immediately on every
+    // restart: a crash-looping replica would otherwise re-poll 64 accounts on
+    // each boot, against a bearer shared with company-monitoring-worker.
+    assert.match(loop, /xState\.lastPollAt \+ X_POLL_INTERVAL_MS/);
+    // A restart must not step on a live 429 window either.
+    assert.match(loop, /xState\.rateLimitedUntil/);
+    assert.doesNotMatch(loop, /sourceState: 'unavailable'/);
+  });
+
+  it('fences the guard on its own counter, never the persisted snapshot version', () => {
     assert.match(relay, /createPollGenerationGuard/);
     assert.match(relay, /stuckAfterMs: X_POLL_STUCK_AFTER_MS/);
 
     // The guard's run counter must NOT be xState.generation. That field is the
-    // persisted snapshot version, and hydrateXState rewrites it from Redis in
-    // the middle of a live poll (lease conflict, hydration retry) — which
-    // retired the generation the guard was fencing on, so its `.finally` never
-    // cleared inFlight and the next tick skipped a whole cycle.
+    // persisted snapshot version, and hydrate() rewrites it from Redis in the
+    // middle of a live poll (lease conflict, hydration retry) — which retired the
+    // generation the guard was fencing on, so its `.finally` never cleared
+    // inFlight and the next tick skipped a whole cycle.
     assert.match(relay, /let xPollGeneration = 0;/);
     assert.match(relay, /getGeneration: \(\) => xPollGeneration/);
     assert.match(relay, /setGeneration: \(generation\) => \{ xPollGeneration = generation; \}/);
     assert.doesNotMatch(relay, /getGeneration: \(\) => xState\.generation/);
-    assert.doesNotMatch(functionBody('pollXOnce'), /generation !== xState\.generation/);
+    // The cycle reads the counter through an accessor, so it cannot reach the
+    // module-level mutable and cannot be handed xState.generation by mistake.
+    assert.match(relay, /getPollGeneration: \(\) => xPollGeneration/);
 
     // The abort has to fire while the Redis lease is still held, and the guard is
     // only re-evaluated when a scheduled tick calls it — so the threshold must
@@ -68,54 +118,6 @@ describe('X relay state and health contract', () => {
       assert.ok(stuckAfterMs < intervalMs, `stuck threshold must fire on the next tick at a ${intervalMs}ms cadence`);
       assert.ok(stuckAfterMs < leaseMs, `stuck threshold must fire before the lease lapses at a ${intervalMs}ms cadence`);
     }
-  });
-
-  it('refreshes seed metadata after any successful account poll', () => {
-    assert.match(functionBody('pollXOnce'), /publishXSnapshot\(accounts\.length, \{[\s\S]*cycleComplete: next\.cycleComplete[\s\S]*accountsPolled: next\.accountsPolled/);
-    // fetchedAt still comes from the poll timestamp, now via the candidate state
-    // publishXSnapshot is handed (defaulting to xState) rather than reading the
-    // live object — publish has to run BEFORE the commit, so it cannot read
-    // xState for this value.
-    assert.match(functionBody('publishXSnapshot'), /fetchedAt: state\.lastPollAt/);
-    assert.match(functionBody('publishXSnapshot'), /state = xState/);
-    assert.match(functionBody('publishXSnapshot'), /const meta = accountsPolled > 0/);
-  });
-
-  it('treats Redis as the source of truth, not the in-memory poll state', () => {
-    const poll = functionBody('pollXOnce');
-    const hydrate = functionBody('hydrateXState');
-
-    // A failed GET is not an empty feed: hydration fails closed, and a poll will
-    // not publish over last-good state it could not read.
-    assert.match(hydrate, /readFailed/);
-    assert.match(hydrate, /hydrationFailed = true/);
-    assert.match(poll, /xState\.hydrationFailed/);
-
-    // Cursors are re-read under the lock so a stale replica cannot write its
-    // whole stale cursor map back over a peer's newer one.
-    assert.match(poll, /upstashGet\(X_FEED_POLL_STATE_KEY/);
-
-    // The serving snapshot is re-read with them. Poll state deliberately carries
-    // no items, so without this a replica that lost the lease republishes the
-    // item set it hydrated BEFORE the holder published — dropping that peer's
-    // posts for good, because the cursors it just read have already advanced
-    // past their ids and they are never re-fetched.
-    assert.match(poll, /upstashGet\(X_FEED_CACHE_KEY/);
-    assert.match(poll, /mergeAndDedup\(xState\.items/);
-
-    // A 429 backoff this process just recorded must not be cleared by an older
-    // Redis copy: hydrateXState also runs mid-poll, so it takes the LATER
-    // deadline and the HIGHER attempt count, matching mergeRefreshedPollState.
-    assert.match(hydrate, /rateLimitedUntil = Math\.max\(/);
-    assert.match(hydrate, /rateLimitAttempt = Math\.max\(/);
-
-    // A lock-loser refreshes instead of serving frozen process-local items.
-    assert.match(poll, /shared lease is[\s\S]*?await hydrateXState\(\)/);
-
-    // Publish precedes commit; the old order must not come back.
-    assert.match(poll, /const published = await publishXSnapshot/);
-    assert.match(poll, /Object\.assign\(xState, candidate\)/);
-    assert.doesNotMatch(poll, /xState\.items = next\.items;[\s\S]*?await publishXSnapshot/);
   });
 
   it('lets RPC request tombstones while the first-party default hides them', () => {

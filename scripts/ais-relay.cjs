@@ -33,6 +33,7 @@ const {
 } = require('./lib/llm-model-policy.cjs');
 const xNewsAccounts = require('./lib/x-news-accounts.cjs');
 const { createPollGenerationGuard } = require('./lib/poll-generation-guard.cjs');
+const { createXPollCycle } = require('./lib/x-poll-cycle.cjs');
 const {
   YahooQuoteSummaryClient,
   buildSectorSeedMeta,
@@ -1317,14 +1318,14 @@ const xState = {
   rateLimitedUntil: 0,
   rateLimitAttempt: 0,
   // True when a Redis read failed, so last-good state is present but unreadable.
-  // Blocks polling/publishing until a clean read (see hydrateXState).
+  // Blocks polling/publishing until a clean read (see the cycle's hydrate()).
   hydrationFailed: false,
   startedAt: Date.now(),
 };
 
 // The poll guard's in-process run counter, deliberately NOT xState.generation.
 // The guard stamps each run with this value and, in its `.finally`, only clears
-// the in-flight flag while the stamp still matches. hydrateXState() runs INSIDE
+// the in-flight flag while the stamp still matches. The cycle's hydrate() runs INSIDE
 // a live poll (the lease-conflict and hydration-retry paths) and overwrites the
 // persisted snapshot version from Redis — when both meanings shared one field
 // that overwrite retired the run the guard was fencing on, so inFlight was never
@@ -1355,266 +1356,45 @@ function loadXAccounts() {
   }
 }
 
-async function hydrateXState() {
-  // upstashGet resolves null for BOTH "key absent" and "GET failed" (HTTP error,
-  // timeout, parse failure). Those must not be treated alike: an absent key is a
-  // legitimately empty start, but a failed read means Redis still holds last-good
-  // state we cannot see. Hydrating from a failed read and then publishing would
-  // overwrite that last-good snapshot with a near-empty one — a transient blip
-  // turned into permanent data loss. The onFailure callback is the only place
-  // the distinction survives, so latch it here.
-  let readFailed = false;
-  const snapshot = await upstashGet(X_FEED_CACHE_KEY, (reason) => {
-    readFailed = true;
-    console.warn(`[Relay] X snapshot hydration failed: ${reason}`);
-  });
-  const pollState = await upstashGet(X_FEED_POLL_STATE_KEY, (reason) => {
-    readFailed = true;
-    console.warn(`[Relay] X poll-state hydration failed: ${reason}`);
-  });
-  if (readFailed) {
-    // Fail closed. pollXOnce retries hydration and skips the cycle while this is
-    // set, so we never publish from a state we could not fully read.
-    xState.hydrationFailed = true;
-    console.warn('[Relay] X hydration incomplete — refusing to poll or publish until a clean read');
-    return false;
-  }
-  xState.hydrationFailed = false;
-  const hydrated = xNewsAccounts.hydrateXFeedSnapshot(snapshot, {
-    maxItems: X_MAX_FEED_ITEMS,
-    pollState,
-  });
-  if (!hydrated) return false;
-  xState.cursorByAccountId = hydrated.cursorByAccountId;
-  xState.accountIdByHandle = hydrated.accountIdByHandle;
-  xState.catchupByAccountId = hydrated.catchupByAccountId;
-  xState.items = hydrated.items;
-  xState.lookupOffset = hydrated.lookupOffset;
-  xState.accountOffset = hydrated.accountOffset;
-  xState.generation = hydrated.generation;
-  xState.lastPollAt = hydrated.lastPollAt;
-  xState.lastHealthyAt = hydrated.lastHealthyAt;
-  xState.lastCoverage = hydrated.lastCoverage;
-  // LATER deadline and HIGHER attempt count, never plain assignment — the same
-  // invariant mergeRefreshedPollState enforces under the lock, and this is where
-  // it matters most: hydrateXState also runs mid-poll, so a 429 backoff this
-  // process recorded seconds ago would otherwise be cleared by an older Redis
-  // copy and the next tick would go straight back at a rate-limited upstream.
-  xState.rateLimitedUntil = Math.max(xState.rateLimitedUntil || 0, hydrated.rateLimitedUntil);
-  xState.rateLimitAttempt = Math.max(xState.rateLimitAttempt || 0, hydrated.rateLimitAttempt);
-  console.log(`[Relay] X snapshot hydrated: generation ${xState.generation}, ${xState.items.length} items`);
-  return true;
-}
-
-async function publishXSnapshot(expectedAccounts, { cycleComplete, accountsPolled, lockOwner, state = xState } = {}) {
-  const snapshot = xNewsAccounts.buildXFeedSnapshot(state, {
-    enabled: X_ENABLED,
-    expectedAccounts,
-  });
-  const meta = accountsPolled > 0 ? {
-    fetchedAt: state.lastPollAt,
-    recordCount: snapshot.count,
-    generation: snapshot.generation,
-    coverage: snapshot.coverage,
-    sourceState: cycleComplete ? 'ok' : 'degraded',
-  } : null;
-  const published = await upstashPublishXIfLockOwner({
-    lockKey: X_FEED_POLL_LOCK_KEY,
-    owner: lockOwner,
-    snapshotKey: X_FEED_CACHE_KEY,
-    snapshot,
-    pollStateKey: X_FEED_POLL_STATE_KEY,
-    pollState: xNewsAccounts.buildXPollState(state, { expectedAccounts }),
-    ttlSeconds: X_FEED_TTL_SECONDS,
-    metaKey: X_FEED_META_KEY,
-    meta,
-    metaTtlSeconds: X_FEED_META_TTL_SECONDS,
-  });
-  if (!published) {
-    xState.lastError = xState.lastError || 'lost X poll lease before publication';
-    return false;
-  }
-  return true;
-}
-
-async function pollXOnce({ generation, signal, retryAfterLeaseConflict = false } = {}) {
-  if (!X_ENABLED) return;
-  if (xState.rateLimitedUntil && Date.now() < xState.rateLimitedUntil) return;
-
-  const lockOwner = `ais-relay:${process.pid}:${generation}:${Date.now()}:${crypto.randomBytes(4).toString('hex')}`;
-  const lockResult = await upstashSetNx(X_FEED_POLL_LOCK_KEY, lockOwner, X_FEED_POLL_LOCK_TTL_SECONDS);
-  if (lockResult !== 'new') {
-    console.warn(`[Relay] X poll skipped: shared lease is ${lockResult}`);
-    // The /x route serves this process's xState.items. A replica that keeps
-    // losing the lease used to hydrate once at boot and then never refresh, so
-    // it served frozen (or, after a failed boot hydrate, empty) data forever
-    // while Redis held last-good — and a load balancer would flip first-party
-    // /api/x-feed between fresh and stale on alternate requests. Re-hydrate on
-    // every lost lease so a non-owner converges, bounding its staleness to one
-    // poll interval instead of the process lifetime.
-    await hydrateXState();
-    // One retry only. Passing `true` here would make the retry re-arm itself on
-    // the next conflict, and a lease-conflict return clears the guard's
-    // in-flight flag immediately — the hydrate just above only rewrites the
-    // persisted snapshot version, so this run's xPollGeneration stamp survives it
-    // and the guard's `.finally` still matches. That self-perpetuated a ~1Hz
-    // SETNX + log storm for the whole lease TTL (X_FEED_POLL_LOCK_TTL_SECONDS,
-    // ~17min) whenever a peer replica held the lease. If this single retry also
-    // loses, the next scheduled tick picks it up.
-    if (retryAfterLeaseConflict) {
-      const timer = setTimeout(() => {
-        if (generation === xPollGeneration) guardedXPoll(false);
-      }, 1000);
-      timer.unref?.();
-    }
-    return;
-  }
-
-  try {
-    const accounts = xState.accounts.length ? xState.accounts : loadXAccounts();
-    if (!accounts.length) return;
-
-    // A previous cycle's read failure leaves us unable to see last-good state.
-    // Retry once; if Redis is still unreadable, skip rather than publish over it.
-    if (xState.hydrationFailed) {
-      await hydrateXState();
-      if (xState.hydrationFailed) {
-        xState.lastError = 'X hydration still failing; skipped poll to protect last-good Redis state';
-        return;
-      }
-    }
-
-    // Cursors may have advanced under another replica since our boot hydrate.
-    // buildXPollState serialises the WHOLE cursor map, including accounts this
-    // cycle never touches — so polling from stale in-memory cursors and then
-    // publishing would write those stale values back over a peer's newer ones,
-    // rewinding since_id and re-fetching windows that were already consumed.
-    // Re-read under the lock so we start from Redis truth.
-    //
-    // The serving snapshot has to be re-read with it. mergeRefreshedPollState
-    // returns poll bookkeeping ONLY, on purpose, so items stay at whatever this
-    // process last hydrated — and on the lease-conflict path that hydrate always
-    // ran before the lease holder published, so our copy is missing that peer's
-    // posts. Publishing from it drops them permanently: the cursor map we just
-    // read has already advanced past their ids, so they are never re-fetched.
-    let stateReadFailed = false;
-    const freshPollState = await upstashGet(X_FEED_POLL_STATE_KEY, (reason) => {
-      stateReadFailed = true;
-      console.warn(`[Relay] X poll-state re-read failed: ${reason}`);
-    });
-    const freshSnapshot = await upstashGet(X_FEED_CACHE_KEY, (reason) => {
-      stateReadFailed = true;
-      console.warn(`[Relay] X snapshot re-read failed: ${reason}`);
-    });
-    if (stateReadFailed) {
-      xState.lastError = 'Redis re-read failed under the lock; skipped cycle rather than risk a cursor rewind or item loss';
-      return;
-    }
-    if (freshPollState) {
-      const refreshed = xNewsAccounts.hydrateXFeedSnapshot(null, { pollState: freshPollState });
-      if (refreshed) {
-        // Cursors from Redis; rate-limit deadline whichever is LATER. See
-        // mergeRefreshedPollState — the bearer is shared across replicas, so a
-        // peer's 429 backoff applies here too, but it must not clear a backoff
-        // this process recorded moments ago.
-        Object.assign(xState, xNewsAccounts.mergeRefreshedPollState(xState, refreshed));
-        // The snapshot version is Redis-owned like the cursors and must never go
-        // backwards: a replica that sat out several peer cycles would otherwise
-        // republish a lower number than the one already in Redis.
-        xState.generation = Math.max(xState.generation, refreshed.generation);
-      }
-    }
-    if (freshSnapshot) {
-      const servingItems = xNewsAccounts.hydrateXFeedSnapshot(freshSnapshot, { maxItems: X_MAX_FEED_ITEMS });
-      // mergeAndDedup is id-keyed and order-stable, so folding Redis's items in
-      // is idempotent — the peer's posts come back and ours are still here for
-      // the publish below.
-      if (servingItems) xState.items = xNewsAccounts.mergeAndDedup(xState.items, servingItems.items, X_MAX_FEED_ITEMS);
-    }
-    // Honour a peer's still-active backoff rather than burning shared quota on a
-    // 429 we already know about. The pre-lock check above only saw this
-    // process's own state.
-    if (xState.rateLimitedUntil && Date.now() < xState.rateLimitedUntil) {
-      xState.lastError = 'shared X rate-limit window still open; deferring poll';
-      return;
-    }
-
-    const pollStart = Date.now();
-    const next = await xNewsAccounts.pollXFeed({
-      accounts,
-      state: xState,
-      bearerToken: X_BEARER_TOKEN,
-      fetchImpl: (...args) => globalThis.fetch(...args),
-      now: Date.now,
-      maxFeedItems: X_MAX_FEED_ITEMS,
-      maxTextChars: X_MAX_TEXT_CHARS,
-      signal,
-    });
-
-    if (generation !== xPollGeneration || signal?.aborted) {
-      console.warn(`[Relay] X poll generation ${generation} finished stale; discarding result`);
-      return;
-    }
-
-    // Rate-limit state is protective and applies whether or not we publish —
-    // dropping it on a publish failure would let the next tick hammer a 429ing
-    // upstream.
-    xState.rateLimitedUntil = next.rateLimitedUntil || 0;
-    xState.rateLimitAttempt = next.rateLimitAttempt || 0;
-    xState.lastError = next.lastError;
-
-    const pollCompletedAt = Date.now();
-    const candidate = {
-      ...xState,
-      // The persisted snapshot version advances once per PUBLISHED snapshot. It
-      // used to move only as a side effect of the guard writing its run counter
-      // into this same field; now that the guard fences on xPollGeneration, the
-      // publish path owns it. Built on the value re-read under the lock above, so
-      // it stays monotonic across replicas.
-      generation: xState.generation + 1,
-      cursorByAccountId: next.cursorByAccountId,
-      accountIdByHandle: next.accountIdByHandle,
-      catchupByAccountId: next.catchupByAccountId,
-      items: next.items,
-      lookupOffset: next.lookupOffset || 0,
-      accountOffset: next.accountOffset || 0,
-      lastPollAt: pollCompletedAt,
-      lastCoverage: {
-        expected: accounts.length,
-        polled: next.accountsPolled,
-        failed: next.accountsFailed,
-        attempted: next.accountsAttempted,
-        complete: next.cycleComplete,
-      },
-      lastHealthyAt: next.cycleComplete ? pollCompletedAt : xState.lastHealthyAt,
-    };
-
-    const elapsed = ((pollCompletedAt - pollStart) / 1000).toFixed(1);
-    console.log(`[Relay] X poll: ${next.accountsPolled}/${accounts.length} accounts, ${next.newCount} new posts, ${candidate.items.length} total, ${next.accountsFailed} errors (${elapsed}s)`);
-
-    // Publish BEFORE committing. Advancing xState first left this process's
-    // cursors ahead of Redis whenever the lease-guarded EVAL failed, so /x here
-    // served data no other replica could see and the seed-meta key silently went
-    // unrefreshed. On failure we keep the previous state and re-poll the same
-    // window next cycle; mergeAndDedup makes that idempotent.
-    const published = await publishXSnapshot(accounts.length, {
-      cycleComplete: next.cycleComplete,
-      accountsPolled: next.accountsPolled,
-      lockOwner,
-      state: candidate,
-    });
-    if (!published) {
-      console.warn('[Relay] X publish failed; keeping previous state so Redis stays the source of truth');
-      return;
-    }
-    Object.assign(xState, candidate);
-  } finally {
-    await upstashReleaseLockIfOwner(X_FEED_POLL_LOCK_KEY, lockOwner);
-  }
-}
+// hydrate / publish / pollOnce live in scripts/lib/x-poll-cycle.cjs so a test can
+// EXECUTE them. This file has no module.exports and no require.main guard, so
+// importing it to reach those functions boots the whole relay — which is why the
+// only coverage they ever had was regex-on-source, and why a generation-field
+// collision, a lease handoff that dropped a peer's posts, and a stuck-abort
+// threshold that outlived the Redis lease all shipped unnoticed. Built once here
+// with the relay's real Redis helpers, constants and state object;
+// tests/x-poll-cycle.test.mjs drives the same factory with stubs.
+const xPollCycle = createXPollCycle({
+  xState,
+  xNewsAccounts,
+  loadXAccounts,
+  upstashGet,
+  upstashSetNx,
+  upstashPublishXIfLockOwner,
+  upstashReleaseLockIfOwner,
+  // The guard's run counter, never xState.generation — see the comment on
+  // `let xPollGeneration` above. Passed as an accessor so the cycle module
+  // cannot reach the module-level mutable itself.
+  getPollGeneration: () => xPollGeneration,
+  scheduleRetry: (retryAfterLeaseConflict) => guardedXPoll(retryAfterLeaseConflict),
+  randomId: () => crypto.randomBytes(4).toString('hex'),
+  X_ENABLED,
+  X_BEARER_TOKEN,
+  X_FEED_CACHE_KEY,
+  X_FEED_META_KEY,
+  X_FEED_POLL_STATE_KEY,
+  X_FEED_POLL_LOCK_KEY,
+  X_FEED_TTL_SECONDS,
+  X_FEED_META_TTL_SECONDS,
+  X_FEED_POLL_LOCK_TTL_SECONDS,
+  X_MAX_FEED_ITEMS,
+  X_MAX_TEXT_CHARS,
+  log: (message) => console.log(message),
+  warn: (message) => console.warn(message),
+});
 
 const xPollGuard = createPollGenerationGuard({
-  poll: pollXOnce,
+  poll: (context) => xPollCycle.pollOnce(context),
   getGeneration: () => xPollGeneration,
   setGeneration: (generation) => { xPollGeneration = generation; },
   stuckAfterMs: X_POLL_STUCK_AFTER_MS,
@@ -1633,7 +1413,7 @@ function guardedXPoll(retryAfterLeaseConflict = false) {
 
 async function startXPollLoop() {
   loadXAccounts();
-  await hydrateXState();
+  await xPollCycle.hydrate();
   if (!X_ENABLED) {
     console.warn('[Relay] X news-account poll skipped — X_BEARER_TOKEN is not configured on ais-relay');
     return;
