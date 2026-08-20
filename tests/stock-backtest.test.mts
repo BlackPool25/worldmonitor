@@ -436,8 +436,8 @@ describe('backtestStock provider-work quota', () => {
 
     await assert.rejects(
       () => backtestStock(makeBacktestCtx('user_pro'), {
-        symbol: 'AAPL',
-        name: 'Apple',
+        symbol: 'IBM',
+        name: 'IBM',
         evalWindowDays: 10,
       }),
       (error: unknown) => {
@@ -448,6 +448,54 @@ describe('backtestStock provider-work quota', () => {
       },
     );
     assert.equal(yahooCalls, 0);
+  });
+
+  it('does not consume the provider-work budget without a trusted user id', async () => {
+    process.env.UPSTASH_REDIS_REST_URL = 'https://redis.example';
+    process.env.UPSTASH_REDIS_REST_TOKEN = 'token';
+    const redisFetch = createRedisAwareBacktestFetch(mockChartPayload());
+    globalThis.fetch = redisFetch.fetch;
+
+    const response = await backtestStock(makeBacktestCtx(), {
+      symbol: 'NVDA',
+      name: 'NVIDIA',
+      evalWindowDays: 10,
+    });
+
+    assert.equal(response.available, true);
+    assert.ok(redisFetch.yahooCallCount() > 0);
+    assert.equal(
+      [...redisFetch.redis.keys()].some((key) => key.startsWith('provider:backtest-yahoo:')),
+      false,
+    );
+  });
+
+  it('rolls back the reservation when Yahoo work throws after a cache miss', async () => {
+    process.env.UPSTASH_REDIS_REST_URL = 'https://redis.example';
+    process.env.UPSTASH_REDIS_REST_TOKEN = 'token';
+    const redisFetch = createRedisAwareBacktestFetch(mockChartPayload());
+    let yahooAttempts = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes('query1.finance.yahoo.com')) {
+        yahooAttempts += 1;
+        throw new Error('yahoo unavailable');
+      }
+      return redisFetch.fetch(input, init);
+    }) as typeof fetch;
+
+    const response = await backtestStock(makeBacktestCtx('user_pro'), {
+      symbol: 'AMD',
+      name: 'AMD',
+      evalWindowDays: 10,
+    });
+
+    assert.equal(response.available, false);
+    assert.equal(yahooAttempts, 1);
+    assert.equal(
+      Number(redisFetch.redis.get(backtestStockProviderQuotaKey('user_pro')) || '0'),
+      0,
+    );
   });
 });
 
@@ -482,10 +530,16 @@ describe('backtest-stock rate-limit documentation', () => {
       'utf8',
     );
     assert.match(docs, /GET \/api\/market\/v1\/backtest-stock/);
-    assert.match(docs, /\*\*200\*\* uncached Yahoo-history fetches/);
+    assert.match(
+      docs,
+      new RegExp(`\\*\\*${BACKTEST_STOCK_DAILY_PROVIDER_QUOTA_LIMIT}\\*\\* uncached Yahoo-history fetches`),
+    );
     assert.match(docs, /llm:direct-usage/);
     assert.match(zhDocs, /GET \/api\/market\/v1\/backtest-stock/);
-    assert.match(zhDocs, /\*\*200\*\* 次未缓存 Yahoo 历史抓取/);
+    assert.match(
+      zhDocs,
+      new RegExp(`\\*\\*${BACKTEST_STOCK_DAILY_PROVIDER_QUOTA_LIMIT}\\*\\* 次未缓存 Yahoo 历史抓取`),
+    );
   });
 });
 

@@ -307,23 +307,18 @@ export const backtestStock: MarketServiceHandler['backtestStock'] = async (
     return response;
   };
 
+  const quotaHold: { reservation: { rollback: () => Promise<void> } | null } = { reservation: null };
   try {
-    const peeked = await cachedFetchJsonWithMeta<BacktestStockResponse>(
-      cacheKey,
-      CACHE_TTL_SECONDS,
-      async () => null,
-      120,
-      { shouldFetch: () => false, cacheFailures: false },
-    );
-    if (peeked.source === 'cache' || peeked.source === 'fresh') {
-      return peeked.data ?? unavailableBacktest(symbol, req.name || symbol, evalWindowDays, 'Backtest unavailable for this symbol.');
-    }
-
-    const reservation = await reserveProviderWork(ctx.request);
     const result = await cachedFetchJsonWithMeta<BacktestStockResponse>(
       cacheKey,
       CACHE_TTL_SECONDS,
-      computeBacktest,
+      async () => {
+        // Reserve only once this isolate is the fetch leader. Cache hits and
+        // in-flight followers never enter the fetcher, so they cannot 429 a
+        // same-symbol stampede near the daily cap.
+        quotaHold.reservation = await reserveProviderWork(ctx.request);
+        return computeBacktest();
+      },
       120,
       {
         usage: {
@@ -331,13 +326,17 @@ export const backtestStock: MarketServiceHandler['backtestStock'] = async (
           operation: 'backtest-history',
           host: 'query1.finance.yahoo.com',
         },
+        cacheFetcherErrors: false,
       },
     );
-    if (reservation && (result.source !== 'fresh' || !result.leader)) {
-      await reservation.rollback();
+    if (quotaHold.reservation && (result.source !== 'fresh' || !result.leader)) {
+      await quotaHold.reservation.rollback();
     }
     if (result.data) return result.data;
   } catch (err) {
+    if (quotaHold.reservation) {
+      await quotaHold.reservation.rollback();
+    }
     if (err instanceof ApiError) throw err;
     console.warn(`[backtestStock] ${symbol} failed:`, (err as Error).message);
   }
