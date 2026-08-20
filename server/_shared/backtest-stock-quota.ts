@@ -15,7 +15,6 @@ import { PRO_DAILY_QUOTA_TTL_SECONDS, secondsUntilUtcMidnight } from './pro-mcp-
  */
 export const BACKTEST_STOCK_DAILY_PROVIDER_QUOTA_LIMIT = 200;
 export const BACKTEST_STOCK_REDIS_UNAVAILABLE_RETRY_AFTER_SECONDS = 30;
-export const BACKTEST_STOCK_PROVIDER_QUOTA_PATH = '/api/market/v1/backtest-stock';
 export const BACKTEST_STOCK_PROVIDER_QUOTA_EXCEEDED_MESSAGE =
   'Stock backtest daily provider quota exceeded';
 export const BACKTEST_STOCK_PROVIDER_QUOTA_UNAVAILABLE_MESSAGE =

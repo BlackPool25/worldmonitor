@@ -6,7 +6,6 @@ import { DIRECT_LLM_DAILY_QUOTA_LIMIT } from "../_shared/direct-llm-quota";
 import { TRUSTED_USER_ID_HEADER } from "../_shared/mcp-internal-hmac";
 import {
   BACKTEST_STOCK_DAILY_PROVIDER_QUOTA_LIMIT,
-  BACKTEST_STOCK_PROVIDER_QUOTA_PATH,
   BACKTEST_STOCK_REDIS_UNAVAILABLE_RETRY_AFTER_SECONDS,
   backtestStockProviderQuotaKey,
   backtestStockQuotaUserId,
@@ -23,10 +22,6 @@ describe("backtest-stock provider-work quota", () => {
   test("sizes the daily budget to four full 50-symbol watchlist hydrations", () => {
     expect(BACKTEST_STOCK_DAILY_PROVIDER_QUOTA_LIMIT).toBe(200);
     expect(BACKTEST_STOCK_DAILY_PROVIDER_QUOTA_LIMIT).toBeLessThan(DIRECT_LLM_DAILY_QUOTA_LIMIT);
-  });
-
-  test("does not share the direct-LLM gateway path set", () => {
-    expect(BACKTEST_STOCK_PROVIDER_QUOTA_PATH).toBe("/api/market/v1/backtest-stock");
   });
 
   test("reads the trusted gateway user id and ignores blanks", () => {
