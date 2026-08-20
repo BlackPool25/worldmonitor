@@ -1,12 +1,18 @@
 // @ts-check
 import { getRelayBaseUrl, getRelayHeaders, fetchWithTimeout, buildRelayResponse } from './_relay.js';
 import { getCorsHeaders, isDisallowedOrigin } from './_cors.js';
+import { validateApiKey } from './_api-key.js';
 import { jsonResponse } from './_json-response.js';
 import { captureSilentError } from './_sentry-edge.js';
 
 export const config = { runtime: 'edge' };
 
 const EPOCH_ISO = new Date(0).toISOString();
+
+// Every header validateApiKey can read a credential from, plus Origin (still
+// gated by isDisallowedOrigin). Two callers with different credentials must
+// never share a cache entry.
+const VARY_CREDENTIAL = 'Origin, Cookie, X-WorldMonitor-Key, X-Api-Key, Authorization';
 
 /**
  * @typedef {{
@@ -175,6 +181,25 @@ export default async function handler(req) {
     return jsonResponse({ error: 'Method not allowed' }, 405, corsHeaders);
   }
 
+  // R4 (#6654): this is the ONLY route that serves post bodies, and it must
+  // stay the first-party panel's route. isDisallowedOrigin above cannot hold
+  // that line by itself — it returns false when Origin is absent, so a bare
+  // `curl /api/x-feed?limit=200` collected every body. Origin is not a fix
+  // either: it is client-controlled at the wire level, so a gate built on it
+  // costs an attacker one `-H`. That is the bypass class issue #3541 closed
+  // for validateApiKey, and the reason no header-only browser signal (Origin,
+  // Referer, Sec-Fetch-Site) is trusted anywhere in this file.
+  //
+  // Reuse the credential gate the sibling relay routes already run
+  // (api/rss-proxy.js, _relay.js createRelayHandler({ requireApiKey: true })).
+  // Not forceKey: the panel is anonymous, so the HMAC-signed wms_ session that
+  // the browser mints at boot is the intended credential here; forceKey would
+  // demand user-bound Pro auth and lock the dashboard out of its own panel.
+  const keyCheck = await validateApiKey(req);
+  if (keyCheck.required && !keyCheck.valid) {
+    return jsonResponse({ error: keyCheck.error }, 401, { 'Cache-Control': 'no-store', ...corsHeaders });
+  }
+
   const relayBaseUrl = getRelayBaseUrl();
   if (!relayBaseUrl) {
     return jsonResponse({ error: 'WS_RELAY_URL is not configured' }, 503, corsHeaders);
@@ -197,7 +222,15 @@ export default async function handler(req) {
 
     const body = await response.text();
 
-    let cacheControl = 'public, max-age=30, s-maxage=120, stale-while-revalidate=60, stale-if-error=120';
+    // Availability now depends on a request credential, so a URL-keyed shared
+    // entry would answer for the origin and hand an unauthenticated caller the
+    // authorized payload — a CDN hit precedes handler auth (the #5386 failure
+    // mode on /api/bootstrap). `private` bars every shared cache rather than
+    // fragmenting one: each wms_ token carries a random nonce, so a Vary on the
+    // credential would key roughly one edge entry per browser anyway. The 30s
+    // browser window is preserved because the panel already assumes it
+    // (CACHE_TTL in src/services/x-intel.ts).
+    let cacheControl = 'private, max-age=30';
     if (!response.ok) {
       return buildRelayResponse(response, body, {
         'Cache-Control': 'no-store',
@@ -209,11 +242,14 @@ export default async function handler(req) {
       const parsed = /** @type {RawXFeedResponse} */ (JSON.parse(body));
       const normalized = normalizeXFeed(parsed);
       if (normalized.count === 0) {
-        cacheControl = 'public, max-age=0, s-maxage=15, stale-while-revalidate=10';
+        cacheControl = 'private, max-age=0';
       }
       return buildRelayResponse(response, JSON.stringify(normalized), {
         'Cache-Control': cacheControl,
         ...corsHeaders,
+        // Overrides the plain `Vary: Origin` from getCorsHeaders. Declares the
+        // real cache key for any intermediary that stores despite `private`.
+        'Vary': VARY_CREDENTIAL,
       });
     } catch (normalizeError) {
       console.warn('[x-feed] normalization failed:', normalizeError?.message || String(normalizeError));
@@ -223,6 +259,7 @@ export default async function handler(req) {
     return buildRelayResponse(response, body, {
       'Cache-Control': cacheControl,
       ...corsHeaders,
+      'Vary': VARY_CREDENTIAL,
     });
   } catch (error) {
     const isTimeout = error?.name === 'AbortError';
