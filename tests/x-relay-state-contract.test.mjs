@@ -38,7 +38,36 @@ describe('X relay state and health contract', () => {
 
   it('aborts and force-clears a stuck in-flight poll before starting a new generation', () => {
     assert.match(relay, /createPollGenerationGuard/);
-    assert.match(relay, /stuckAfterMs: X_POLL_INTERVAL_MS \+ 60_000/);
+    assert.match(relay, /stuckAfterMs: X_POLL_STUCK_AFTER_MS/);
+
+    // The guard's run counter must NOT be xState.generation. That field is the
+    // persisted snapshot version, and hydrateXState rewrites it from Redis in
+    // the middle of a live poll (lease conflict, hydration retry) — which
+    // retired the generation the guard was fencing on, so its `.finally` never
+    // cleared inFlight and the next tick skipped a whole cycle.
+    assert.match(relay, /let xPollGeneration = 0;/);
+    assert.match(relay, /getGeneration: \(\) => xPollGeneration/);
+    assert.match(relay, /setGeneration: \(generation\) => \{ xPollGeneration = generation; \}/);
+    assert.doesNotMatch(relay, /getGeneration: \(\) => xState\.generation/);
+    assert.doesNotMatch(functionBody('pollXOnce'), /generation !== xState\.generation/);
+
+    // The abort has to fire while the Redis lease is still held, and the guard is
+    // only re-evaluated when a scheduled tick calls it — so the threshold must
+    // sit below the CADENCE, not merely below the lease TTL: nothing evaluates it
+    // in between, so a value in that gap never fires at all. Execute the two
+    // definitions we actually ship across the clamp range instead of pinning
+    // their literals, so a re-tune of either cannot drift them apart.
+    const leaseExpression = /const X_FEED_POLL_LOCK_TTL_SECONDS = ([^;]+);/.exec(relay);
+    const stuckExpression = /const X_POLL_STUCK_AFTER_MS = ([^;]+);/.exec(relay);
+    assert.ok(leaseExpression && stuckExpression, 'lease TTL and stuck threshold must both be named constants');
+    const evaluate = (expression, intervalMs) => new Function('X_POLL_INTERVAL_MS', `return (${expression});`)(intervalMs);
+    for (const intervalMs of [5 * 60_000, 10 * 60_000, 15 * 60_000]) {
+      const stuckAfterMs = evaluate(stuckExpression[1], intervalMs);
+      const leaseMs = evaluate(leaseExpression[1], intervalMs) * 1000;
+      assert.ok(stuckAfterMs > 0, `stuck threshold must stay positive at a ${intervalMs}ms cadence`);
+      assert.ok(stuckAfterMs < intervalMs, `stuck threshold must fire on the next tick at a ${intervalMs}ms cadence`);
+      assert.ok(stuckAfterMs < leaseMs, `stuck threshold must fire before the lease lapses at a ${intervalMs}ms cadence`);
+    }
   });
 
   it('refreshes seed metadata after any successful account poll', () => {
@@ -65,6 +94,20 @@ describe('X relay state and health contract', () => {
     // Cursors are re-read under the lock so a stale replica cannot write its
     // whole stale cursor map back over a peer's newer one.
     assert.match(poll, /upstashGet\(X_FEED_POLL_STATE_KEY/);
+
+    // The serving snapshot is re-read with them. Poll state deliberately carries
+    // no items, so without this a replica that lost the lease republishes the
+    // item set it hydrated BEFORE the holder published — dropping that peer's
+    // posts for good, because the cursors it just read have already advanced
+    // past their ids and they are never re-fetched.
+    assert.match(poll, /upstashGet\(X_FEED_CACHE_KEY/);
+    assert.match(poll, /mergeAndDedup\(xState\.items/);
+
+    // A 429 backoff this process just recorded must not be cleared by an older
+    // Redis copy: hydrateXState also runs mid-poll, so it takes the LATER
+    // deadline and the HIGHER attempt count, matching mergeRefreshedPollState.
+    assert.match(hydrate, /rateLimitedUntil = Math\.max\(/);
+    assert.match(hydrate, /rateLimitAttempt = Math\.max\(/);
 
     // A lock-loser refreshes instead of serving frozen process-local items.
     assert.match(poll, /shared lease is[\s\S]*?await hydrateXState\(\)/);
