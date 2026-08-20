@@ -54,12 +54,21 @@ We share personal data only with service providers that process it on our behalf
 | Sentry | Error and crash monitoring |
 | DebugBear | Real-user page-performance monitoring (10% sample) |
 | Umami (self-hosted, `abacus.worldmonitor.app`) | Product analytics on our own infrastructure — no third party receives this data |
+| Upstash | Rate-limit and cache store; rate-limit keys are derived from your IP address |
+| Railway | Container hosting for our analytics service and for notification delivery |
+| Mintlify | Documentation site hosting (`worldmonitor.app/docs`, including this page) |
 | Vercel | Application hosting and web analytics |
-| Cloudflare | Content delivery, edge security, and web analytics |
+| Cloudflare | Content delivery, edge security, bot challenges (Turnstile), and web analytics |
 | Axiom | Application logging and observability |
 | Anthropic | AI model provider for analysis and briefings |
 | OpenRouter | AI model routing for analysis and forecasts |
 | Resend | Transactional email delivery |
+
+## Where your alerts go
+
+If you connect an alert or digest channel, we transmit the alert content you asked for to the destination **you** chose: Telegram, Slack, Discord, a webhook URL of yours, email, or a browser push endpoint. To do that we store the identifiers that channel needs — a chat or channel id, a webhook URL, or the OAuth token you granted us — and nothing more.
+
+Those destinations are not our subprocessors: they receive your alerts because you directed them to, and what they do with the content is governed by your own relationship with them. Disconnecting a channel deletes the identifiers we hold for it.
 
 ## How we use information
 
