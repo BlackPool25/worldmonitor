@@ -705,6 +705,298 @@ describe('since_id poll loop + 429 backoff (#6654)', () => {
   });
 });
 
+describe('per-cycle request budget (#6654)', () => {
+  // 64 warm accounts whose windows never end — the outage-catch-up shape. The
+  // poll-state key lives 90 minutes, so any outage shorter than that leaves
+  // every cursor intact and every account takes the warm branch at the full
+  // page limit.
+  const catchupAccounts = () => Array.from({ length: 64 }, (_, i) => ({
+    handle: `News${i}`,
+    accountId: String(1000 + i),
+    maxMessages: 10,
+  }));
+  const catchupState = () => ({
+    cursorByAccountId: Object.fromEntries(catchupAccounts().map((a) => [a.accountId, '500'])),
+    items: [],
+  });
+  const endlessPages = async () => new Response(JSON.stringify({
+    data: [{ id: '900', text: 'post', created_at: '2026-08-20T11:00:00.000Z' }],
+    meta: { next_token: 'always-more' },
+  }), { status: 200 });
+
+  it('caps a catch-up cycle at the aggregate budget instead of pages-per-account', async () => {
+    // Regression: pages were capped PER ACCOUNT with no cycle-wide counter, so
+    // 64 accounts x DEFAULT_MAX_TIMELINE_PAGES spent ~640 timeline requests in
+    // ONE cycle against a model sized for ~64.
+    const accounts = catchupAccounts();
+    let requests = 0;
+    const state = await xNews.pollXFeed({
+      accounts,
+      state: catchupState(),
+      bearerToken: 'test-token',
+      fetchImpl: async (url) => { requests += 1; return endlessPages(url); },
+      wait: async () => {},
+      lookupDeletions: false,
+    });
+    const budget = accounts.length * xNews.DEFAULT_CYCLE_REQUESTS_PER_ACCOUNT;
+    assert.equal(requests, budget, 'the cycle must stop at the aggregate budget');
+    assert.equal(state.requestsUsed, budget);
+    assert.ok(requests < accounts.length * xNews.DEFAULT_MAX_TIMELINE_PAGES, 'must be far under the per-account worst case');
+    // Ends cleanly and partially, never by throwing.
+    assert.equal(state.cycleComplete, false);
+    assert.ok(state.accountsAttempted < accounts.length, 'the remaining accounts are deferred, not attempted');
+    assert.match(state.lastError, /budget/);
+  });
+
+  it('defers the truncated remainder through catchup and resumes it next cycle', async () => {
+    const accounts = catchupAccounts();
+    const first = await xNews.pollXFeed({
+      accounts,
+      state: catchupState(),
+      bearerToken: 'test-token',
+      fetchImpl: endlessPages,
+      wait: async () => {},
+      lookupDeletions: false,
+    });
+    // The account stopped mid-window keeps its cursor and hands the page token
+    // to catchup, so nothing is re-paged and nothing is lost.
+    const stopped = accounts[first.accountsAttempted - 1];
+    assert.ok(first.catchupByAccountId[stopped.accountId], 'the mid-window account resumes from a catchup token');
+    assert.equal(first.cursorByAccountId[stopped.accountId], '500', 'a truncated window must not advance since_id');
+    assert.equal(first.accountOffset, first.accountsAttempted, 'the rotation starts beyond the last attempted account');
+
+    const seen = [];
+    const second = await xNews.pollXFeed({
+      accounts,
+      state: first,
+      bearerToken: 'test-token',
+      fetchImpl: async (url) => { seen.push(new URL(url).pathname); return endlessPages(url); },
+      wait: async () => {},
+      lookupDeletions: false,
+    });
+    // Like the 429 break, the rotation starts BEYOND the account that consumed
+    // the quota — otherwise one account with a deep backlog would eat the budget
+    // every cycle and starve the other 63. Its catchup token simply waits for
+    // the rotation to come back around.
+    assert.equal(seen[0], `/2/users/${accounts[first.accountsAttempted].accountId}/tweets`, 'the deferred accounts run next');
+    assert.deepEqual(
+      second.catchupByAccountId[stopped.accountId],
+      first.catchupByAccountId[stopped.accountId],
+      'the deferred window survives untouched until its turn',
+    );
+  });
+
+  it('leaves an ordinary cold start and steady state untouched', async () => {
+    // Sizing check: the worst honest cycle is the first poll — 47 of 64 accounts
+    // also need a username lookup — and it must fit whole, or the feed would
+    // never establish its cursors.
+    const accounts = Array.from({ length: 64 }, (_, i) => ({
+      handle: `News${i}`,
+      accountId: i < 17 ? String(1000 + i) : '',
+    }));
+    let requests = 0;
+    const cold = await xNews.pollXFeed({
+      accounts,
+      state: { cursorByAccountId: {}, accountIdByHandle: {}, items: [] },
+      bearerToken: 'test-token',
+      fetchImpl: async (url) => {
+        requests += 1;
+        const handle = new URL(url).pathname.match(/^\/2\/users\/by\/username\/News(\d+)$/);
+        if (handle) return new Response(JSON.stringify({ data: { id: String(2000 + Number(handle[1])) } }), { status: 200 });
+        return new Response(JSON.stringify({ data: [{ id: '900', text: 'p' }], meta: { next_token: 'more' } }), { status: 200 });
+      },
+      wait: async () => {},
+      lookupDeletions: false,
+      now: () => Date.parse('2026-08-20T12:00:00.000Z'),
+    });
+    assert.equal(requests, 111, '47 username lookups + 64 one-page cold-start timelines');
+    assert.ok(requests < accounts.length * xNews.DEFAULT_CYCLE_REQUESTS_PER_ACCOUNT, 'the cold start must fit inside the budget');
+    assert.equal(cold.accountsPolled, 64);
+    assert.equal(cold.cycleComplete, true);
+  });
+
+  it('never counts a budget deferral as an account failure', async () => {
+    const state = await xNews.pollXFeed({
+      accounts: [{ handle: 'Reuters', accountId: '1652541', maxMessages: 10 }],
+      state: { cursorByAccountId: { 1652541: '100' }, items: [] },
+      bearerToken: 'test-token',
+      fetchImpl: endlessPages,
+      wait: async () => {},
+      lookupDeletions: false,
+      maxCycleRequests: 3,
+    });
+    assert.equal(state.requestsUsed, 3, 'an explicit budget binds literally');
+    assert.equal(state.accountsFailed, 0, 'deferred work is not failed work');
+    assert.equal(state.cursorByAccountId['1652541'], '100');
+    assert.equal(state.catchupByAccountId['1652541'].paginationToken, 'always-more');
+  });
+
+  it('does not mark an account polled when the budget ran out before its first page', async () => {
+    // The username lookup bills the same quota, so it can consume the last unit
+    // and leave zero timeline pages fetched. Counting that account as polled
+    // would advance coverage over an account we never actually read.
+    const state = await xNews.pollXFeed({
+      accounts: [{ handle: 'FreshHandle' }],
+      state: { cursorByAccountId: {}, accountIdByHandle: {}, items: [] },
+      bearerToken: 'test-token',
+      fetchImpl: async (url) => (new URL(url).pathname.startsWith('/2/users/by/')
+        ? new Response(JSON.stringify({ data: { id: '4242' } }), { status: 200 })
+        : new Response(JSON.stringify({ data: [{ id: '5' }] }), { status: 200 })),
+      wait: async () => {},
+      lookupDeletions: false,
+      maxCycleRequests: 1,
+    });
+    assert.equal(state.accountsAttempted, 1);
+    assert.equal(state.accountsPolled, 0);
+    assert.equal(state.accountsFailed, 0);
+    assert.equal(state.cycleComplete, false);
+    // The lookup we already paid for is still cached for the next cycle.
+    assert.equal(state.accountIdByHandle.FreshHandle, '4242');
+  });
+});
+
+describe('401/403 circuit breaker (#6654)', () => {
+  const accounts = Array.from({ length: 64 }, (_, i) => ({
+    handle: `News${i}`,
+    accountId: i < 17 ? String(1000 + i) : '',
+  }));
+  const now = () => Date.parse('2026-08-20T12:00:00.000Z');
+
+  for (const status of [401, 403]) {
+    it(`stops the whole cycle on the first HTTP ${status} and backs off`, async () => {
+      // Regression: only 429 broke the loop. A bearer that is absent, wrong-scope
+      // or revoked rejected every account, so one bad token cost 64 rejected
+      // requests every 15 minutes — ~6.1k/day — indefinitely and with no backoff.
+      let requests = 0;
+      const state = await xNews.pollXFeed({
+        accounts,
+        state: { cursorByAccountId: {}, accountIdByHandle: {}, items: [] },
+        bearerToken: 'test-token',
+        fetchImpl: async () => { requests += 1; return new Response('nope', { status }); },
+        now,
+        wait: async () => {},
+      });
+      assert.equal(requests, 1, 'the breaker must trip on the first rejection');
+      assert.equal(state.accountsAttempted, 1);
+      assert.equal(state.cycleComplete, false);
+      assert.equal(state.rateLimitedUntil, now() + xNews.AUTH_FAILURE_BACKOFF_MS);
+      // An auth failure needs a different operator response than a 429, so the
+      // message must not read as a rate limit.
+      assert.match(state.lastError, /auth failed/i);
+      assert.match(state.lastError, /X_BEARER_TOKEN/);
+      assert.doesNotMatch(state.lastError, /rate limited/i);
+      // Must be long enough to actually skip a cycle at the slowest cadence.
+      assert.ok(
+        xNews.AUTH_FAILURE_BACKOFF_MS > xNews.MAX_POLL_INTERVAL_MS,
+        'a backoff at or under one poll interval defers nothing',
+      );
+      // The 429 exponential is a different failure mode and must not escalate.
+      assert.equal(state.rateLimitAttempt, 0);
+    });
+  }
+
+  it('trips on the username-lookup leg too, where 47 of 64 accounts start', async () => {
+    const state = await xNews.pollXFeed({
+      accounts: accounts.map((account) => ({ ...account, accountId: '' })),
+      state: { cursorByAccountId: {}, accountIdByHandle: {}, items: [] },
+      bearerToken: 'test-token',
+      fetchImpl: async () => new Response('nope', { status: 401 }),
+      now,
+      wait: async () => {},
+    });
+    assert.equal(state.accountsAttempted, 1);
+    assert.equal(state.accountsFailed, 0, 'a credential fault is a cycle fault, not an account fault');
+    assert.match(state.lastError, /resolving @News0/);
+    assert.equal(state.rateLimitedUntil, now() + xNews.AUTH_FAILURE_BACKOFF_MS);
+  });
+
+  it('still reports a 429 as a rate limit, with its own escalating backoff', async () => {
+    const state = await xNews.pollXFeed({
+      accounts: [accounts[0]],
+      state: { cursorByAccountId: { 1000: '5' }, items: [] },
+      bearerToken: 'test-token',
+      fetchImpl: async () => new Response('slow down', { status: 429, headers: { 'retry-after': '30' } }),
+      now,
+      wait: async () => {},
+      lookupDeletions: false,
+    });
+    assert.match(state.lastError, /rate limited/);
+    assert.doesNotMatch(state.lastError, /auth failed/i);
+    assert.equal(state.rateLimitedUntil, now() + 30_000);
+    assert.equal(state.rateLimitAttempt, 1);
+  });
+});
+
+describe('cycleComplete failure tolerance (#6654)', () => {
+  const roster = (size) => Array.from({ length: size }, (_, i) => ({
+    handle: `News${i}`,
+    accountId: String(1000 + i),
+  }));
+  const withDeadHandles = (deadCount) => async (url) => {
+    const path = new URL(url).pathname;
+    const id = path.match(/^\/2\/users\/(\d+)\/tweets/);
+    // A renamed or suspended handle 404s forever.
+    if (id && Number(id[1]) - 1000 < deadCount) return new Response('gone', { status: 404 });
+    return new Response(JSON.stringify({ data: [] }), { status: 200 });
+  };
+  const poll = (accounts, deadCount) => xNews.pollXFeed({
+    accounts,
+    state: {
+      cursorByAccountId: Object.fromEntries(accounts.map((a) => [a.accountId, '500'])),
+      items: [],
+    },
+    bearerToken: 'test-token',
+    fetchImpl: withDeadHandles(deadCount),
+    wait: async () => {},
+    lookupDeletions: false,
+  });
+
+  it('tolerates a few dead handles out of 64 instead of pinning the feed at SEED_ERROR', async () => {
+    // Regression: cycleComplete demanded accountsFailed === 0. ais-relay maps
+    // that to sourceState 'degraded' and api/health.js maps it to SEED_ERROR, so
+    // ONE renamed handle out of 64 made every cycle degraded forever — and only
+    // xFeed:EMPTY is acknowledged in seed-freshness-baseline.json, so it also
+    // reds the fleet-wide ingestion-acceptance gate for every other source.
+    const accounts = roster(64);
+    const one = await poll(accounts, 1);
+    assert.equal(one.cycleComplete, true);
+    // Tolerated, never hidden: an operator still sees 63/64 with 1 failure.
+    assert.equal(one.accountsPolled, 63);
+    assert.equal(one.accountsFailed, 1);
+    assert.equal(one.accountsAttempted, 64);
+    assert.match(one.lastError, /HTTP 404/);
+
+    const atBudget = await poll(accounts, xNews.MAX_TOLERATED_FAILED_ACCOUNTS);
+    assert.equal(atBudget.cycleComplete, true, 'the tolerance boundary itself must still be complete');
+
+    const overBudget = await poll(accounts, xNews.MAX_TOLERATED_FAILED_ACCOUNTS + 1);
+    assert.equal(overBudget.cycleComplete, false, 'a systemic failure must still degrade the source');
+    assert.equal(overBudget.accountsFailed, xNews.MAX_TOLERATED_FAILED_ACCOUNTS + 1);
+  });
+
+  it('keeps zero tolerance on a roster too small for the fraction', async () => {
+    // 5% of 2 accounts is 0, so a half-dead operator override still degrades.
+    const half = await poll(roster(2), 1);
+    assert.equal(half.accountsFailed, 1);
+    assert.equal(half.cycleComplete, false);
+  });
+
+  it('does not call a rate-limited or budget-truncated cycle complete', async () => {
+    const accounts = roster(64);
+    const limited = await xNews.pollXFeed({
+      accounts,
+      state: { cursorByAccountId: Object.fromEntries(accounts.map((a) => [a.accountId, '500'])), items: [] },
+      bearerToken: 'test-token',
+      fetchImpl: async () => new Response('slow down', { status: 429, headers: { 'retry-after': '30' } }),
+      now: () => 1000,
+      wait: async () => {},
+      lookupDeletions: false,
+    });
+    assert.equal(limited.accountsFailed, 0, 'zero failures alone must not imply a complete cycle');
+    assert.equal(limited.cycleComplete, false, 'accounts were never attempted — that is partial, not degraded');
+  });
+});
+
 describe('under-lock poll-state merge (multi-replica)', () => {
   const redisState = {
     cursorByAccountId: { '1652541': '900' },

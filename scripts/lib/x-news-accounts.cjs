@@ -35,6 +35,35 @@ const DEFAULT_MAX_TIMELINE_PAGES = 10;
 // cap"), and the next cycle pages forward normally from there. Backfilling 24h
 // of history was never the goal — this is an early-signal feed.
 const DEFAULT_COLD_START_TIMELINE_PAGES = 1;
+// The per-account page cap bounds one account and nothing in aggregate. The
+// realistic trigger is outage catch-up, not an organic burst: the poll-state key
+// lives 90 minutes, so any outage between the poll interval and that TTL leaves
+// every cursor intact, every account takes the WARM branch at the full page
+// limit, and one cycle can spend ~640 timeline requests against a model sized
+// for ~64. Two requests per account is the worst honest cycle we ever expect —
+// the very first poll, where 47 of the 64 accounts also need a username lookup,
+// costs 111 — so the budget absorbs a cold start while cutting the catch-up
+// spike ~5x. Timeline pages, username lookups and the deletion lookup all draw
+// on it: they bill the same shared X quota.
+const DEFAULT_CYCLE_REQUESTS_PER_ACCOUNT = 2;
+// `cycleComplete === false` becomes sourceState 'degraded' in ais-relay, which
+// api/health.js reports as xFeed SEED_ERROR. Demanding zero failures let ONE
+// renamed or suspended handle out of 64 pin the feed at SEED_ERROR forever, and
+// only xFeed:EMPTY is acknowledged in seed-freshness-baseline.json — so that one
+// handle also reds the fleet-wide ingestion-acceptance gate and masks every
+// other source's incidents. Tolerate the SMALLER of 5% of the roster and 3
+// accounts: enough for ordinary editorial drift, never enough to hide a systemic
+// failure (on a 2-account operator override the budget is 0, so half-dead still
+// reports degraded). Only the binary verdict softens — the real
+// polled/failed/attempted counts stay in coverage for the operator.
+const MAX_TOLERATED_FAILED_ACCOUNTS = 3;
+const TOLERATED_FAILED_ACCOUNT_FRACTION = 0.05;
+// 401/403 is not a transient upstream hiccup and does not heal on API time: an
+// absent, wrong-scope or revoked bearer rejects EVERY account until an operator
+// provisions or rotates the token. Two full poll intervals guarantees at least
+// one whole cycle is skipped even at the slowest cadence, while keeping recovery
+// automatic within 30 minutes of the token landing.
+const AUTH_FAILURE_BACKOFF_MS = 2 * MAX_POLL_INTERVAL_MS;
 const X_FEED_SNAPSHOT_VERSION = 1;
 const USER_AGENT = 'WorldMonitor/1.0 (curated news-account monitoring; +https://worldmonitor.app)';
 
@@ -474,6 +503,28 @@ function recordRateLimit(nextState, headers, now) {
   nextState.rateLimitAttempt = Math.min(MAX_429_BACKOFF_EXPONENT, attempt + 1);
 }
 
+function isAuthFailureStatus(status) {
+  return status === 401 || status === 403;
+}
+
+/**
+ * An auth rejection stops the whole cycle, not just one account.
+ *
+ * Only 429 used to break the loop; every other status incremented accountsFailed
+ * and moved on. One bad bearer therefore cost ~111 rejected requests per cycle
+ * (64 timelines + 47 uncached username lookups) — ~10.6k/day, indefinitely, with
+ * no backoff. Park the cycle on the same deadline a 429 uses: the poll loop and
+ * the cross-replica merge already honour it, and one shared bearer means a
+ * peer's auth failure is ours too. The message must NOT read as a rate limit —
+ * the operator response is to provision or rotate X_BEARER_TOKEN, not to wait
+ * for quota — and the 429 attempt counter is deliberately untouched, since an
+ * auth failure neither escalates nor resolves the exponential.
+ */
+function recordAuthFailure(nextState, status, context, now) {
+  nextState.rateLimitedUntil = now() + AUTH_FAILURE_BACKOFF_MS;
+  nextState.lastError = `X auth failed (HTTP ${status}) ${context}: check X_BEARER_TOKEN — deferring polls for ${Math.round(AUTH_FAILURE_BACKOFF_MS / 60000)}m`;
+}
+
 function collectDeletedTweetIds(body, requestedIds) {
   const found = new Set((Array.isArray(body?.data) ? body.data : []).map((row) => String(row.id)));
   const errorsById = new Map();
@@ -539,6 +590,8 @@ async function pollXFeed({
   lookupDeletions = true,
   maxTimelinePages = DEFAULT_MAX_TIMELINE_PAGES,
   coldStartMaxTimelinePages = DEFAULT_COLD_START_TIMELINE_PAGES,
+  maxCycleRequests = null,
+  maxFailedAccounts = null,
   signal,
 } = {}) {
   const nextState = {
@@ -555,6 +608,7 @@ async function pollXFeed({
     accountsFailed: 0,
     newCount: 0,
     accountsAttempted: 0,
+    requestsUsed: 0,
     cycleComplete: false,
   };
   if (!bearerToken) {
@@ -575,22 +629,52 @@ async function pollXFeed({
     pageLimit,
     Math.max(1, Math.floor(Number(coldStartMaxTimelinePages) || DEFAULT_COLD_START_TIMELINE_PAGES)),
   );
+  // One budget for the whole cycle. An explicit override wins outright, the way
+  // an explicit page limit does; the derived value carries a floor of one
+  // account's full window plus the deletion lookup, because a budget smaller
+  // than that would let the head of the rotation starve every cycle and no
+  // catchup window would ever drain.
+  const cycleRequestBudget = maxCycleRequests == null
+    ? Math.max(pageLimit + 1, configuredAccounts.length * DEFAULT_CYCLE_REQUESTS_PER_ACCOUNT)
+    : Math.max(1, Math.floor(Number(maxCycleRequests) || 0));
+  const failureBudget = maxFailedAccounts == null
+    ? Math.min(
+      MAX_TOLERATED_FAILED_ACCOUNTS,
+      Math.floor(configuredAccounts.length * TOLERATED_FAILED_ACCOUNT_FRACTION),
+    )
+    : Math.max(0, Math.floor(Number(maxFailedAccounts) || 0));
+  let requestsUsed = 0;
+  let budgetTruncated = false;
+  // Every X call in the cycle goes through here: timeline pages, username
+  // lookups and the deletion lookup all bill the same quota, so all three must
+  // draw on one counter for the budget to mean anything.
+  const countedFetch = (url) => {
+    requestsUsed += 1;
+    return xFetchJson(fetchImpl, url, bearerToken, { signal });
+  };
   const newItems = [];
   for (const account of orderedAccounts) {
     if (nextState.rateLimitedUntil) break;
+    if (requestsUsed >= cycleRequestBudget) {
+      // Same shape as the rate-limit break: stop admitting work and leave the
+      // untouched accounts to the rotation below, which starts the next cycle
+      // beyond the last account we attempted.
+      budgetTruncated = true;
+      nextState.lastError = `cycle request budget ${cycleRequestBudget} exhausted; deferred ${orderedAccounts.length - nextState.accountsAttempted} accounts to the next cycle`;
+      break;
+    }
     nextState.accountsAttempted += 1;
     let accountId = normalizeAccountId(account.accountId) || nextState.accountIdByHandle[account.handle];
     try {
       if (!accountId) {
-        const { response, body } = await xFetchJson(
-          fetchImpl,
-          buildUserByUsernameUrl(account.handle),
-          bearerToken,
-          { signal },
-        );
+        const { response, body } = await countedFetch(buildUserByUsernameUrl(account.handle));
         if (response.status === 429) {
           recordRateLimit(nextState, response.headers, now);
           nextState.lastError = `rate limited resolving @${account.handle}`;
+          break;
+        }
+        if (isAuthFailureStatus(response.status)) {
+          recordAuthFailure(nextState, response.status, `resolving @${account.handle}`, now);
           break;
         }
         if (!response.ok || !body?.data?.id) {
@@ -611,6 +695,7 @@ async function pollXFeed({
       let pageCount = 0;
       let completeWindow = false;
       let pageFailed = false;
+      let budgetStopped = false;
       const accountItems = [];
       let newestPostId = catchup?.newestPostId || sinceId || '';
       const boundAccount = { ...account, accountId };
@@ -619,6 +704,10 @@ async function pollXFeed({
       // budget instead of ~10x it.
       const effectivePageLimit = sinceId ? pageLimit : coldStartPageLimit;
       while (pageCount < effectivePageLimit) {
+        if (requestsUsed >= cycleRequestBudget) {
+          budgetStopped = true;
+          break;
+        }
         const url = buildUserTimelineUrl({
           accountId,
           sinceId,
@@ -626,10 +715,14 @@ async function pollXFeed({
           paginationToken,
           startTime: sinceId ? '' : new Date(now() - 24 * 60 * 60 * 1000).toISOString(),
         });
-        const { response, body } = await xFetchJson(fetchImpl, url, bearerToken, { signal });
+        const { response, body } = await countedFetch(url);
         if (response.status === 429) {
           recordRateLimit(nextState, response.headers, now);
           nextState.lastError = `rate limited polling @${account.handle}`;
+          break;
+        }
+        if (isAuthFailureStatus(response.status)) {
+          recordAuthFailure(nextState, response.status, `polling @${account.handle}`, now);
           break;
         }
         if (!response.ok) {
@@ -657,6 +750,20 @@ async function pollXFeed({
           nextState.catchupByAccountId[accountId] = { sinceId, paginationToken, newestPostId };
           newItems.push(...accountItems);
         }
+        break;
+      }
+      if (budgetStopped) {
+        // Mirror of the rate-limit break: hand the unfinished window to catchup
+        // so the next cycle resumes exactly here instead of re-paging it, then
+        // stop admitting accounts. Deferred work is NOT a failure, so
+        // accountsFailed stays untouched — this account is attempted-but-not-
+        // polled, which coverage already reports accurately.
+        if (sinceId && paginationToken) {
+          nextState.catchupByAccountId[accountId] = { sinceId, paginationToken, newestPostId };
+          newItems.push(...accountItems);
+        }
+        budgetTruncated = true;
+        nextState.lastError = `cycle request budget ${cycleRequestBudget} exhausted mid-window on @${account.handle}; resuming next cycle`;
         break;
       }
       if (pageFailed) {
@@ -695,12 +802,22 @@ async function pollXFeed({
   nextState.items = mergeAndDedup(nextState.items, newItems, maxFeedItems);
   nextState.newCount = newItems.length;
 
+  // "Complete" means every configured account was ATTEMPTED and the failures
+  // stayed inside the budget — not that every one succeeded. See
+  // MAX_TOLERATED_FAILED_ACCOUNTS: zero-tolerance let one dead handle out of 64
+  // hold the feed at SEED_ERROR forever. Deferrals are excluded on purpose: a
+  // rate-limited or budget-truncated cycle left real accounts unattempted, so it
+  // is genuinely partial rather than tolerably degraded.
   nextState.cycleComplete = configuredAccounts.length > 0
-    && nextState.accountsPolled === configuredAccounts.length
-    && nextState.accountsFailed === 0
+    && nextState.accountsAttempted === configuredAccounts.length
+    && nextState.accountsFailed <= failureBudget
+    && !budgetTruncated
     && !nextState.rateLimitedUntil;
 
-  if (lookupDeletions && nextState.items.length && !nextState.rateLimitedUntil) {
+  // The deletion lookup bills the same quota, so it only runs while the budget
+  // still has room. A truncated cycle is already `complete: false`, so skipping
+  // it never changes the health verdict.
+  if (lookupDeletions && nextState.items.length && !nextState.rateLimitedUntil && requestsUsed < cycleRequestBudget) {
     const activeIds = nextState.items
       .filter((item) => item.contentState !== 'deleted')
       .map((item) => item.postId)
@@ -712,10 +829,13 @@ async function pollXFeed({
     if (rotated.length) {
       const { url, ids } = buildTweetsLookupUrl(rotated);
       try {
-        const { response, body } = await xFetchJson(fetchImpl, url, bearerToken, { signal });
+        const { response, body } = await countedFetch(url);
         if (response.status === 429) {
           recordRateLimit(nextState, response.headers, now);
           nextState.lastError = 'rate limited during deletion lookup';
+          nextState.cycleComplete = false;
+        } else if (isAuthFailureStatus(response.status)) {
+          recordAuthFailure(nextState, response.status, 'during deletion lookup', now);
           nextState.cycleComplete = false;
         } else if (response.status === 200) {
           const missing = collectDeletedTweetIds(body, ids);
@@ -733,6 +853,7 @@ async function pollXFeed({
   }
 
   if (nextState.cycleComplete) nextState.rateLimitAttempt = 0;
+  nextState.requestsUsed = requestsUsed;
   nextState.items = purgeExpiredTombstones(nextState.items, now(), TOMBSTONE_TTL_MS);
   return nextState;
 }
@@ -747,6 +868,10 @@ module.exports = {
   DEFAULT_MAX_FEED_ITEMS,
   DEFAULT_MAX_TIMELINE_PAGES,
   DEFAULT_COLD_START_TIMELINE_PAGES,
+  DEFAULT_CYCLE_REQUESTS_PER_ACCOUNT,
+  MAX_TOLERATED_FAILED_ACCOUNTS,
+  TOLERATED_FAILED_ACCOUNT_FRACTION,
+  AUTH_FAILURE_BACKOFF_MS,
   X_FEED_SNAPSHOT_VERSION,
   loadXAccounts,
   countEnabledAccounts,
@@ -767,6 +892,7 @@ module.exports = {
   parseRetryAfterMs,
   parseRateLimitResetMs,
   compute429BackoffMs,
+  isAuthFailureStatus,
   MAX_429_BACKOFF_MS,
   MAX_429_BACKOFF_EXPONENT,
   buildUserByUsernameUrl,
