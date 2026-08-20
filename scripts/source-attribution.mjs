@@ -122,6 +122,12 @@ export const PROVIDER_IDENTITY_GROUPS = Object.freeze({
     reason: 'The public data host and dataset landing host belong to one Our World in Data provider identity.',
     reviewReference: 'PR #6250',
   }),
+  'tps-open-data': Object.freeze({
+    provider: 'Toronto Police Service Open Data',
+    memberHosts: Object.freeze(['data.tps.ca', 'services.arcgis.com', 'www.tps.ca']),
+    reason: 'The TPS Open Data page and Public Safety Data Portal licence the ArcGIS Major Crime Indicators and Calls for Service Attended services.',
+    reviewReference: 'Issue #7012',
+  }),
   'uspto-open-data': Object.freeze({
     provider: 'USPTO Open Data Portal',
     memberHosts: Object.freeze(['api.uspto.gov', 'data.uspto.gov']),
@@ -446,6 +452,33 @@ const PROVIDER_OVERRIDES = {
     provider: 'Global Energy Monitor',
     license: 'CC BY 4.0 for published datasets unless the dataset page states otherwise',
     attribution: 'Global Energy Monitor; link to the dataset page.',
+    status: 'reviewed',
+  },
+  'gtaupdate.com': {
+    provider: 'GTA Update',
+    license: 'No public reuse licence. Public reachability, CORS Allow-Origin *, and robots.txt Allow: / are not redistribution permission. Rights-gate blocker (#7012): written permission covering automated fetching and rate, caching and retention, modification/normalization, public display, commercial use, redistribution through WorldMonitor APIs and MCP tools, required attribution, and downstream use of the underlying TPS/TFS data is required before any production fetcher, cache, API/MCP response, or public display is enabled. Official TPS/TFS upstream provenance is unidentified; prefer #6682 when those endpoints can provide the requested signal.',
+    attribution: 'GTA Update (unofficial third-party TPS/TFS dispatch mirror; not official, not verified, entertainment-only per publisher). Disabled pending written permission. https://gtaupdate.com/about.php',
+    status: 'terms-review',
+  },
+  'www.tps.ca': {
+    provider: 'Toronto Police Service Open Data',
+    identityGroup: 'tps-open-data',
+    license: 'Custom licence based on the Open Government Licence - Ontario. The Major Crime Indicators FeatureServer (serviceItemId 0a239a5563a344a3bbf8452504ed8d68) and Calls for Service Attended table (serviceItemId 46c7581a136445c78831acb657a4fb0d) require: "Contains information licensed under the Open Government Licence - Ontario." Credit Toronto Police Service without crests, logos, flags, or official marks. No TPS endorsement. Locations are deliberately offset; do not present them as precise addresses. Do not merge or link the data with other databases for the purpose of identifying a person, business, or organization. Do not fill privacy exclusions from GTA Update, news, radio, or another source. Evidence: https://www.tps.ca/data-maps/open-data/ and the item-level FeatureServer descriptions on https://data.tps.ca/.',
+    attribution: 'Contains information licensed under the Open Government Licence - Ontario. Toronto Police Service Open Data (https://www.tps.ca/data-maps/open-data/, https://data.tps.ca/). Coordinates are approximate offset intersection nodes. No TPS endorsement.',
+    status: 'reviewed',
+  },
+  'data.tps.ca': {
+    provider: 'Toronto Police Service Open Data',
+    identityGroup: 'tps-open-data',
+    license: 'Custom licence based on the Open Government Licence - Ontario. The Major Crime Indicators FeatureServer (serviceItemId 0a239a5563a344a3bbf8452504ed8d68) and Calls for Service Attended table (serviceItemId 46c7581a136445c78831acb657a4fb0d) require: "Contains information licensed under the Open Government Licence - Ontario." Credit Toronto Police Service without crests, logos, flags, or official marks. No TPS endorsement. Locations are deliberately offset; do not present them as precise addresses. Do not merge or link the data with other databases for the purpose of identifying a person, business, or organization. Do not fill privacy exclusions from GTA Update, news, radio, or another source. Evidence: https://www.tps.ca/data-maps/open-data/ and the item-level FeatureServer descriptions on https://data.tps.ca/.',
+    attribution: 'Contains information licensed under the Open Government Licence - Ontario. Toronto Police Service Open Data (https://www.tps.ca/data-maps/open-data/, https://data.tps.ca/). Coordinates are approximate offset intersection nodes. No TPS endorsement.',
+    status: 'reviewed',
+  },
+  'services.arcgis.com': {
+    provider: 'Toronto Police Service Open Data',
+    identityGroup: 'tps-open-data',
+    license: 'Custom licence based on the Open Government Licence - Ontario. The Major Crime Indicators FeatureServer (serviceItemId 0a239a5563a344a3bbf8452504ed8d68) and Calls for Service Attended table (serviceItemId 46c7581a136445c78831acb657a4fb0d) require: "Contains information licensed under the Open Government Licence - Ontario." Credit Toronto Police Service without crests, logos, flags, or official marks. No TPS endorsement. Locations are deliberately offset; do not present them as precise addresses. Do not merge or link the data with other databases for the purpose of identifying a person, business, or organization. Do not fill privacy exclusions from GTA Update, news, radio, or another source. Evidence: https://www.tps.ca/data-maps/open-data/ and the item-level FeatureServer descriptions on https://data.tps.ca/.',
+    attribution: 'Contains information licensed under the Open Government Licence - Ontario. Toronto Police Service Open Data (https://www.tps.ca/data-maps/open-data/, https://data.tps.ca/). Coordinates are approximate offset intersection nodes. No TPS endorsement.',
     status: 'reviewed',
   },
   'gtfsrt.ttc.ca': {
@@ -781,13 +814,13 @@ const PROVIDER_OVERRIDES = {
 // a provider-bearing override a separate, explicit lifecycle event instead of
 // something `--write` can silently normalize into the manifest.
 export const PROVIDER_IDENTITY_REVIEW = Object.freeze({
-  sha256: '356db342addedfd023ab50429959d28f4036e8bef7ab62889573c36ab78f9667',
-  reason: 'Collapse the reviewed BBC feed and language-edition hosts into one publisher while retaining prior provider identities.',
+  sha256: 'db912d6302941e077a5a0df7b087de37f4adb93e42c63240b540f7f41d494aa6',
+  reason: 'Add GTA Update (terms-review rights-gate) and group TPS Open Data ArcGIS/portal/open-data hosts as one official Ontario publisher.',
   // A URL cited here is scanned like any other: this file sits inside
   // SOURCE_ROOTS, so citing a host that is not already a registered source
   // invents a provider row for it. The B.C. catalogue URLs above are safe
   // because that host is itself an observed source; parallel.ai is not.
-  reviewReference: 'Issue #7000 publisher-centric source catalog; plus Issue #7001, Issue #6437, Issue #6622, Issue #6659, and PR #6447 identity reviews.',
+  reviewReference: 'Issue #7012 Toronto safety qualification; plus Issue #7000 publisher-centric source catalog; plus Issue #7001, Issue #6437, Issue #6622, Issue #6659, and PR #6447 identity reviews.',
 });
 
 export function providerIdentityDigest(providerOverrides = PROVIDER_OVERRIDES) {

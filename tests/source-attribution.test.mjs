@@ -358,6 +358,8 @@ test('the issue audit providers are represented by named attribution rows', () =
     'ReliefWeb (UN OCHA)',
     'NSIDC',
     'Fintraffic Digitraffic',
+    'Toronto Police Service Open Data',
+    'GTA Update',
   ]) {
     assert.ok(names.has(provider), `missing named provider row: ${provider}`);
   }
@@ -372,6 +374,35 @@ test('City of Toronto CART host stays terms-review while CKAN licence_id is nots
   assert.ok(entry, 'secure.toronto.ca must have a generated attribution row');
   assert.equal(entry.status, 'terms-review');
   assert.equal(entry.provider, 'City of Toronto Open Data');
+});
+
+test('GTA Update stays terms-review with the rights-gate blocker recorded', () => {
+  const inventory = scanUpstreamHosts(rootDir);
+  const manifest = loadManifest(rootDir);
+  const observed = inventory.find((entry) => entry.host === 'gtaupdate.com');
+  assert.ok(observed, 'gtaupdate.com must be observed from the GTA Update adapter');
+  const entry = [...manifest.entries, ...manifest.logicalEntries].find((row) => row.host === 'gtaupdate.com');
+  assert.ok(entry, 'gtaupdate.com must have a generated attribution row');
+  assert.equal(entry.status, 'terms-review');
+  assert.equal(entry.provider, 'GTA Update');
+  assert.match(entry.license, /Rights-gate blocker/);
+  assert.notEqual(entry.status, 'reviewed');
+});
+
+test('TPS Open Data records the exact OGL-Ontario licence before reviewed', () => {
+  const inventory = scanUpstreamHosts(rootDir);
+  const manifest = loadManifest(rootDir);
+  for (const host of ['services.arcgis.com', 'data.tps.ca', 'www.tps.ca']) {
+    assert.ok(inventory.some((entry) => entry.host === host), `${host} must be observed`);
+    const entry = [...manifest.entries, ...manifest.logicalEntries].find((row) => row.host === host);
+    assert.ok(entry, `${host} must have a generated attribution row`);
+    assert.equal(entry.status, 'reviewed');
+    assert.equal(entry.provider, 'Toronto Police Service Open Data');
+    assert.match(entry.license, /Open Government Licence - Ontario/);
+    assert.match(entry.attribution, /Contains information licensed under the Open Government Licence - Ontario/);
+    assert.match(entry.license, /0a239a5563a344a3bbf8452504ed8d68/);
+    assert.match(entry.license, /46c7581a136445c78831acb657a4fb0d/);
+  }
 });
 
 test('uppercase URL constants are included in the upstream inventory', () => {
