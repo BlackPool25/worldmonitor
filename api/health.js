@@ -882,11 +882,36 @@ const SEED_META = {
   progressData:     { key: 'seed-meta:economic:worldbank-progress:v1',     maxStaleMin: 10080 },
   renewableEnergy:  { key: 'seed-meta:economic:worldbank-renewable:v1',    maxStaleMin: 10080 },
   intlDelays:       { key: 'seed-meta:aviation:intl',           maxStaleMin: 90 },
-  // faaDelays has no SEED_META entry by design: it is in EMPTY_DATA_OK_KEYS, so a
-  // quiet FAA window is a valid state and needs no seed clock to excuse it. It no
-  // longer shares a meta key with flightDelays — that sharing was the #6987 bug,
-  // because it leaked FAA's allowed-empty count into the aggregate probe, which
-  // is NOT allowed to be empty.
+  // #6987: faaDelays used to have no entry here, on the grounds that it "shares
+  // flightDelays's meta key". That sharing WAS the bug — it leaked FAA's
+  // allowed-empty count into the aggregate probe, which is not allowed to be
+  // empty. Now that flightDelays reads the aggregate's own meta, the FAA sidecar
+  // gets an explicit entry rather than an implicit one (ported from #6988).
+  //
+  // faaDelays stays in EMPTY_DATA_OK_KEYS, so a quiet FAA window remains a VALID
+  // state; this entry adds the staleness coverage it never had, which is the
+  // half that was genuinely missing.
+  faaDelays:        {
+    key: 'seed-meta:aviation:faa',
+    maxStaleMin: 90,
+    // Pre-seed, not an acknowledgement: the key itself has existed for a long
+    // time (it was registered under flightDelays), so classifyKey against the
+    // live value already returns OK. recordCount=0 is VALID here because
+    // faaDelays is in EMPTY_DATA_OK_KEYS.
+    cutover: {
+      mode: 'preseed',
+      fromKey: null,
+      issue: 6987,
+      verifiedAt: '2026-08-20T10:36:00.000Z',
+      evidence: {
+        platform: 'railway',
+        service: 'seed-aviation',
+        probeKey: 'seed-meta:aviation:faa',
+        compactHealthStatus: 'OK',
+        reference: 'https://github.com/koala73/worldmonitor/issues/6987#issuecomment-5354967398',
+      },
+    },
+  },
   theaterPosture:   { key: 'seed-meta:theater-posture',         maxStaleMin: 60 },
   correlationCards: { key: 'seed-meta:correlation:cards',       maxStaleMin: 30 }, // 5min cron (seed-bundle-derived-signals); 30min = 6× interval. Was 15 (3× = gold-standard floor) — overnight UptimeRobot flips when bundle jitter spaced two consecutive runs ~9-10min apart, producing 15-19min gaps that tripped STALE_SEED briefly. See WM 2026-05-10 health:failure-log.
   portwatch:           { key: 'seed-meta:supply_chain:portwatch',            maxStaleMin: 720 },

@@ -28,6 +28,7 @@ const {
   SEED_META,
   ON_DEMAND_KEYS,
   ZERO_RECORD_DATA_OK_KEYS,
+  EMPTY_DATA_OK_KEYS,
 } = __testing__;
 
 const NOW = 1_700_000_000_000;
@@ -2063,4 +2064,43 @@ test('#6987 — health and seed-aviation agree on the aggregate meta key', () =>
   // repoints, this fails instead of both sides drifting quietly.
   assert.equal(BOOTSTRAP_KEYS.flightDelays, AVIATION_BOOTSTRAP_KEY);
   assert.equal(SEED_META.flightDelays.key, AVIATION_BOOTSTRAP_META_KEY);
+});
+
+// The other half of #6987. faaDelays had no SEED_META entry at all, on the
+// grounds that it "shares flightDelays's meta key" — the sharing that caused the
+// bug. It now has an explicit one (ported from #6988), which must ADD staleness
+// coverage without withdrawing the quiet-window allowance that makes an empty
+// FAA feed a valid state rather than a fault.
+const classifyFaaDelays = (over = {}) => classifyKey(
+  'faaDelays',
+  STANDALONE_KEYS.faaDelays,
+  { allowOnDemand: false },
+  makeCtx({
+    strens: { [STANDALONE_KEYS.faaDelays]: 13 }, // {"alerts":[]}
+    metaValues: { [SEED_META.faaDelays.key]: seedMeta(over) },
+  }),
+);
+
+test('#6987 — a quiet FAA window stays valid for the sidecar probe', () => {
+  assert.ok(
+    EMPTY_DATA_OK_KEYS.has('faaDelays'),
+    'an empty FAA feed is a normal state; withdrawing that turns quiet nights into alarms',
+  );
+  assert.equal(classifyFaaDelays({ recordCount: 0 }).status, 'OK');
+});
+
+test('#6987 — the sidecar probe gains the staleness coverage it never had', () => {
+  // The point of giving faaDelays its own entry: allowed-to-be-empty must not
+  // also mean allowed-to-stop. 200min against maxStaleMin 90.
+  assert.equal(
+    classifyFaaDelays({ recordCount: 0, fetchedAt: NOW - 200 * ONE_MIN_MS }).status,
+    'STALE_SEED',
+  );
+});
+
+test('#6987 — the two aviation probes no longer share a meta key', () => {
+  // The regression in one line: sharing let FAA's allowed-empty count decide the
+  // aggregate probe, which is not allowed to be empty.
+  assert.notEqual(SEED_META.flightDelays.key, SEED_META.faaDelays.key);
+  assert.equal(SEED_META.faaDelays.key, 'seed-meta:aviation:faa');
 });
