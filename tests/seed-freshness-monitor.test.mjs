@@ -702,11 +702,25 @@ describe('scheduled seed freshness monitor', () => {
         assert.equal(entry.cutover?.firstScheduledRunAt, expiresAt);
         assert.equal(entry.cutover?.probeKey, probeKey);
         const service = readRailwayServices().find((item) => item.service === serviceName);
-        assert.equal(service?.cronSchedule, cron);
-        assert.equal(service?.lifecycle, 'planned');
+        // Prove the row EXISTS before asserting a field is absent from it —
+        // `Object.hasOwn({}, 'lifecycle')` is false for a deleted row too, so
+        // the absence assertion below would pass vacuously without this.
+        assert.ok(service, `${serviceName} must remain in the Railway registry`);
+        assert.equal(service.cronSchedule, cron);
+        // ACTIVE, not planned. Service 6285c37b was provisioned on
+        // 2026-08-19 and published bundle:heartbeat:static-ref-heavy at
+        // 2026-08-20T04:01:04Z, so `planned` — which removes the entry from the
+        // live audit AND from `--apply` — would exempt a running daily cron
+        // from the watch-path and deploy-drift checks. Asserting the ABSENCE of
+        // the field is what stops it being reinstated to quiet a red gate.
+        assert.equal(
+          Object.hasOwn(service, 'lifecycle'),
+          false,
+          `${serviceName} is provisioned and must not carry a lifecycle field`,
+        );
       }
       // The consolidation is the point: Railway caps a project at 100 services
-      // and the fleet is at 81. Three low-cadence members do not get three.
+      // and the fleet is at 82. Three low-cadence members do not get three.
       for (const retired of ['seed-bundle-arms-suppliers', 'seed-bundle-military-bases']) {
         assert.equal(
           readRailwayServices().find((item) => item.service === retired),
