@@ -175,23 +175,20 @@ function confirmAncestry({ git, commit, ref, defaultBranch, shouldRetry, sleep }
   return last;
 }
 
-function defaultIssues(gh, repository) {
+export function createGithubIssueClient({ gh, repository }) {
   return {
     search(title) {
+      // Recent open issues, exact title. Search indexing lags; a retry of the
+      // same monitor run has to see the issue it just opened.
       const raw = gh([
-        'issue',
-        'list',
-        '--repo',
-        repository,
-        '--state',
-        'all',
-        '--search',
-        `${title} in:title`,
-        '--json',
-        'number,title,url',
+        'api',
+        '--paginate',
+        '--slurp',
+        `repos/${repository}/issues?state=open&per_page=100`,
       ]);
-      const parsed = JSON.parse(raw || '[]');
-      return Array.isArray(parsed) ? parsed.filter((issue) => issue?.title === title) : [];
+      return flattenGhPages(raw).filter((issue) => (
+        issue?.title === title && issue.pull_request == null
+      ));
     },
     create(issue) {
       const raw = gh(
@@ -223,7 +220,7 @@ export function checkStackedMerge({
 
   const repository = repositoryFromEvent(event);
   const defaultBranch = defaultBranchFromEvent(event);
-  const eventName = event?.eventName || event?.action && 'pull_request';
+  const eventName = event?.eventName;
 
   if (mode === 'pre-merge' && eventName === 'push') {
     return { ok: true, reason: 'push-to-default', exitCode: 0 };
@@ -279,7 +276,11 @@ export function checkStackedMerge({
 
   let mergedParents = [];
   if (typeof gh === 'function' && baseRef && baseRef !== defaultBranch) {
-    mergedParents = listPullsByHead({ gh, repository, owner, headRef: baseRef }).filter(isMergedPull);
+    try {
+      mergedParents = listPullsByHead({ gh, repository, owner, headRef: baseRef }).filter(isMergedPull);
+    } catch {
+      mergedParents = [];
+    }
   }
 
   const alarm = formatOrphanIssue({
@@ -289,7 +290,7 @@ export function checkStackedMerge({
     mergedParents,
     reason: verdict.reason,
   });
-  const comment = formatOrphanComment({
+  const commentBody = formatOrphanComment({
     pull,
     mergeSha,
     defaultBranch,
@@ -297,18 +298,23 @@ export function checkStackedMerge({
     reason: verdict.reason,
   });
 
-  const issueClient = issues || (typeof gh === 'function' ? defaultIssues(gh, repository) : null);
+  const issueClient = issues || (typeof gh === 'function' ? createGithubIssueClient({ gh, repository }) : null);
   let existingIssue;
+  let alarmError;
   if (issueClient) {
-    const found = issueClient.search(alarm.title);
-    if (Array.isArray(found) && found.length > 0) {
-      existingIssue = found[0].number;
-    } else {
-      const created = issueClient.create(alarm);
-      existingIssue = created?.number;
-    }
-    if (pull.number != null) {
-      issueClient.comment(pull.number, comment);
+    try {
+      const found = issueClient.search(alarm.title);
+      if (Array.isArray(found) && found.length > 0) {
+        existingIssue = found[0].number;
+      } else {
+        const created = issueClient.create(alarm);
+        existingIssue = created?.number;
+      }
+      if (pull.number != null) {
+        issueClient.comment(pull.number, commentBody);
+      }
+    } catch (error) {
+      alarmError = error instanceof Error ? error.message : String(error);
     }
   }
 
@@ -316,6 +322,7 @@ export function checkStackedMerge({
     ...verdict,
     mergedPrs: mergedParents,
     existingIssue,
+    alarmError,
     exitCode: 1,
     annotation: postMergeAnnotation(verdict, mergeSha, defaultBranch),
   };

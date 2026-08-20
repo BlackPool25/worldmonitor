@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import {
   ISSUE_TITLE_PREFIX,
   checkStackedMerge,
+  createGithubIssueClient,
   evaluatePostMergeAncestry,
   evaluatePreMergeGuard,
   flattenGhPages,
@@ -206,6 +207,22 @@ describe('GitHub pull listing helpers', () => {
     assert.match(path, /repos\/koala73\/worldmonitor\/pulls\?/);
     assert.match(path, /state=all/);
     assert.match(path, /head=koala73%3Afix%2Faviation-budget-binds-v2/);
+  });
+
+  it('matches an open alarm issue by exact title and ignores pull requests', () => {
+    const title = `${ISSUE_TITLE_PREFIX} #6997 never reached main`;
+    const client = createGithubIssueClient({
+      repository: 'koala73/worldmonitor',
+      gh: (args) => {
+        assert.ok(String(args.join(' ')).includes('issues?state=open'));
+        return JSON.stringify([
+          { number: 12, title, pull_request: { url: 'https://api.github.com/repos/koala73/worldmonitor/pulls/12' } },
+          { number: 7007, title },
+          { number: 9, title: 'unrelated' },
+        ]);
+      },
+    });
+    assert.deepEqual(client.search(title).map((issue) => issue.number), [7007]);
   });
 });
 
@@ -408,6 +425,31 @@ describe('checkStackedMerge orchestrator', () => {
     assert.equal(result.ok, true);
     assert.equal(result.reason, 'merge-on-default');
     assert.equal(created, 0);
+  });
+
+  it('still fails the job when filing the alarm issue throws', () => {
+    const result = checkStackedMerge({
+      mode: 'post-merge',
+      event: pullEvent(CHILD_6997, { action: 'closed' }),
+      gh: () => JSON.stringify([PARENT_6996]),
+      git: (args) => {
+        if (args[0] === 'fetch') return '';
+        const error = new Error('git merge-base --is-ancestor failed (1)');
+        error.status = 1;
+        throw error;
+      },
+      issues: {
+        search: () => [],
+        create: () => {
+          throw new Error('GitHub Issues API 503');
+        },
+        comment: () => {},
+      },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'orphaned-merge');
+    assert.equal(result.exitCode, 1);
+    assert.match(result.alarmError, /503/);
   });
 });
 
