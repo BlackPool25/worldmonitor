@@ -575,7 +575,17 @@ const SEED_META = {
   stablecoinMarkets:{ key: 'seed-meta:market:stablecoins',      maxStaleMin: 60 },
   naturalEvents:    { key: 'seed-meta:natural:events',          maxStaleMin: 540 }, // 3h Railway climate bundle; 3x cadence preserves a full missed run.
   hkoWarnings:      { key: 'seed-meta:weather:hko-warnings',    maxStaleMin: 540 }, // successful HKO responses publish a snapshot even when no tropical-cyclone warning is active.
-  flightDelays:     { key: 'seed-meta:aviation:faa',            maxStaleMin: 90 }, // CACHE_TTL=7200s; matches notamClosures from same cron
+  // #6987: moved off seed-meta:aviation:faa, which carries the FAA-ONLY alert
+  // count. This probe's data key is the combined page-load aggregate, so a quiet
+  // FAA window published recordCount=0 while 115 alerts were still being served
+  // and classifyKey read that zero as EMPTY_DATA. seed-aviation now publishes a
+  // meta from the aggregate's own payload, so the probe counts the population it
+  // actually serves — and an aggregate that is genuinely empty still alarms.
+  flightDelays:     {
+    key: 'seed-meta:aviation:delays-bootstrap',
+    maxStaleMin: 90, // CACHE_TTL=7200s; matches notamClosures from same cron
+    cutover: { mode: 'expiring-ack', fromKey: 'seed-meta:aviation:faa', issue: 6987, status: 'STALE_SEED' },
+  },
   notamClosures:    { key: 'seed-meta:aviation:notam',          maxStaleMin: 240 }, // 2h interval; 240min = 2x interval
   predictionMarkets: {
     key: 'seed-meta:prediction:markets',
@@ -872,7 +882,11 @@ const SEED_META = {
   progressData:     { key: 'seed-meta:economic:worldbank-progress:v1',     maxStaleMin: 10080 },
   renewableEnergy:  { key: 'seed-meta:economic:worldbank-renewable:v1',    maxStaleMin: 10080 },
   intlDelays:       { key: 'seed-meta:aviation:intl',           maxStaleMin: 90 },
-  // faaDelays shares seed-meta key with flightDelays — no duplicate entry needed here
+  // faaDelays has no SEED_META entry by design: it is in EMPTY_DATA_OK_KEYS, so a
+  // quiet FAA window is a valid state and needs no seed clock to excuse it. It no
+  // longer shares a meta key with flightDelays — that sharing was the #6987 bug,
+  // because it leaked FAA's allowed-empty count into the aggregate probe, which
+  // is NOT allowed to be empty.
   theaterPosture:   { key: 'seed-meta:theater-posture',         maxStaleMin: 60 },
   correlationCards: { key: 'seed-meta:correlation:cards',       maxStaleMin: 30 }, // 5min cron (seed-bundle-derived-signals); 30min = 6× interval. Was 15 (3× = gold-standard floor) — overnight UptimeRobot flips when bundle jitter spaced two consecutive runs ~9-10min apart, producing 15-19min gaps that tripped STALE_SEED briefly. See WM 2026-05-10 health:failure-log.
   portwatch:           { key: 'seed-meta:supply_chain:portwatch',            maxStaleMin: 720 },

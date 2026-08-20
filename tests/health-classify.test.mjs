@@ -17,6 +17,7 @@ import { readFileSync } from 'node:fs';
 
 import { __testing__ } from '../api/health.js';
 import { BUNDLE_HEARTBEAT_TTL_SECONDS, bundleHeartbeatKey } from '../scripts/_bundle-runner.mjs';
+import { BOOTSTRAP_KEY as AVIATION_BOOTSTRAP_KEY, BOOTSTRAP_META_KEY as AVIATION_BOOTSTRAP_META_KEY } from '../scripts/seed-aviation.mjs';
 
 const {
   classifyKey,
@@ -2011,4 +2012,55 @@ test('overall: crit above ~3% of total → UNHEALTHY / 200', () => {
   // 5/150 = 0.033 > 0.03
   assert.deepEqual(computeOverall(5, 0, 150), { status: 'UNHEALTHY', http: 200 });
   assert.deepEqual(computeOverall(20, 2, 150), { status: 'UNHEALTHY', http: 200 });
+});
+
+// #6987. flightDelays serves the combined page-load aggregate but read its
+// record count from seed-meta:aviation:faa, which carries the FAA-ONLY count
+// (seed-aviation.mjs writes it as faa.alerts.length). On 2026-08-20 a quiet FAA
+// window published recordCount=0 while the aggregate still served 115 alerts --
+// 14 of them FAA-sourced -- and classifyKey read that zero as EMPTY_DATA,
+// blocking the seed-freshness monitor with a healthy panel.
+const classifyFlightDelays = (over = {}, strlen = 57_608) => classifyKey(
+  'flightDelays',
+  BOOTSTRAP_KEYS.flightDelays,
+  { allowOnDemand: false },
+  makeCtx({
+    strens: { [BOOTSTRAP_KEYS.flightDelays]: strlen },
+    metaValues: { [SEED_META.flightDelays.key]: seedMeta(over) },
+  }),
+);
+
+test('#6987 — a quiet FAA window does not empty the aggregate flightDelays serves', () => {
+  // The exact production shape: aggregate full, FAA contributing nothing.
+  assert.equal(classifyFlightDelays({ recordCount: 115 }).status, 'OK');
+});
+
+test('#6987 — an aggregate that is genuinely empty still alarms', () => {
+  // The counterweight. Fixing the false alarm must not blind the probe: this is
+  // the state the EMPTY_DATA verdict exists for, and it must survive.
+  assert.equal(classifyFlightDelays({ recordCount: 0 }).status, 'EMPTY_DATA');
+});
+
+test('#6987 — flightDelays counts its own data key, not a contributing source', () => {
+  // The regression itself, asserted structurally so it cannot creep back via a
+  // key swap that the two behavioural tests above would still pass.
+  assert.notEqual(
+    SEED_META.flightDelays.key,
+    'seed-meta:aviation:faa',
+    'seed-meta:aviation:faa counts FAA alerts only — strictly smaller than the aggregate served',
+  );
+  // writeSeedMeta derives `seed-meta:<dataKey without :vN>`; pinning health to
+  // that derivation is what keeps the count and the payload the same population.
+  assert.equal(
+    SEED_META.flightDelays.key,
+    `seed-meta:${BOOTSTRAP_KEYS.flightDelays.replace(/:v\d+$/, '')}`,
+  );
+});
+
+test('#6987 — health and seed-aviation agree on the aggregate meta key', () => {
+  // Cross-file, against the seeder's REAL exported constants rather than a
+  // regex over its source: if the producer renames the key it writes, or health
+  // repoints, this fails instead of both sides drifting quietly.
+  assert.equal(BOOTSTRAP_KEYS.flightDelays, AVIATION_BOOTSTRAP_KEY);
+  assert.equal(SEED_META.flightDelays.key, AVIATION_BOOTSTRAP_META_KEY);
 });
