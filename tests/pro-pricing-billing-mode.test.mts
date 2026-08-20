@@ -59,4 +59,17 @@ describe('PricingSection wiring (source contract)', () => {
     assert.ok(src.includes("pricing.billedMonthlyNote"),
       'billed-monthly note copy key missing');
   });
+
+  it('catalog fetch uses the checkout-transport timeout helper, not AbortSignal.timeout', () => {
+    const src = read('pro-test/src/components/PricingSection.tsx');
+    assert.equal(
+      src.includes('AbortSignal.timeout'),
+      false,
+      'WORLDMONITOR-109: catalog fetch must not call AbortSignal.timeout (Chrome 101 throws TypeError before fetch)',
+    );
+    assert.ok(
+      src.includes('createTimeoutSignal(5000)'),
+      'catalog fetch must reuse checkout-transport createTimeoutSignal',
+    );
+  });
 });

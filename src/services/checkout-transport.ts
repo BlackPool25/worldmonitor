@@ -42,13 +42,25 @@ export interface CreateCheckoutArgs {
   payload: unknown;
 }
 
+/**
+ * AbortSignal.timeout is Baseline 2024 (Chrome 103+). Chrome Mobile 101
+ * still reaches /pro (WORLDMONITOR-109) and throws TypeError before fetch.
+ * Same fallback as src/services/ollama-models.ts makeTimeout.
+ */
+export function createTimeoutSignal(ms: number): AbortSignal {
+  if (typeof AbortSignal.timeout === 'function') return AbortSignal.timeout(ms);
+  const ctrl = new AbortController();
+  setTimeout(() => ctrl.abort(), ms);
+  return ctrl.signal;
+}
+
 /** Browser-default deps; split out so tests can inject deterministic ones. */
 export function createDefaultCheckoutTransportDeps(): CreateCheckoutTransportDeps {
   return {
     fetch: (url, init) => globalThis.fetch(url, init),
     delay: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     generateIdempotencyKey: () => crypto.randomUUID(),
-    createTimeoutSignal: (ms) => AbortSignal.timeout(ms),
+    createTimeoutSignal,
   };
 }
 
