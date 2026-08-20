@@ -34,7 +34,7 @@ function section(label) {
   return found;
 }
 
-test('declares exactly the eight Canada members', () => {
+test('declares exactly the ten Canada members', () => {
   assert.deepEqual(
     sections.map((s) => s.label).sort(),
     [
@@ -45,6 +45,8 @@ test('declares exactly the eight Canada members', () => {
       'SaskAlert',
       'TTC-Alerts',
       'Toronto-Roads',
+      'Toronto-TFS',
+      'Toronto-TPS',
       'VIA-Rail-Live',
     ],
     'a member added to the bundle without a decision here is a slot nobody agreed to',
@@ -64,6 +66,8 @@ test('per-member cadence is the declared one, not TTC\'s cron inherited', () => 
     ['SaskAlert', 15 * MIN],
     ['VIA-Rail-Live', 15 * MIN],
     ['TTC-Alerts', 5 * MIN],
+    ['Toronto-TFS', 5 * MIN],
+    ['Toronto-TPS', 15 * MIN],
   ];
   for (const [label, intervalMs] of expected) {
     assert.equal(
@@ -134,6 +138,8 @@ test('seed-meta keys follow runSeed(domain, resource), not the canonical key', (
     // 'ttc-alerts', so the meta key takes a HYPHEN. api/health.js watched
     // seed-meta:transit:ttc:alerts and would never have seen a publish.
     'TTC-Alerts': ['seed-meta:transit:ttc-alerts', 'transit:ttc:alerts:v1'],
+    'Toronto-TFS': ['seed-meta:safety:toronto-tfs', 'safety:toronto-tfs:v1'],
+    'Toronto-TPS': ['seed-meta:safety:toronto-tps', 'safety:toronto-tps:v1'],
   };
   // The shared parser does not expose these fields, so read them off the section
   // literal — anchored on the label so a key can never be matched against the
@@ -274,7 +280,7 @@ test('every member’s TTL and health staleness budget cover its bundle interval
     checked += 1;
   }
 
-  assert.equal(checked, 8, 'all eight members must be checked, or this guard is partly vacuous');
+  assert.equal(checked, 10, 'all ten members must be checked, or this guard is partly vacuous');
 });
 
 describe('per-member kill switch (#6711)', () => {

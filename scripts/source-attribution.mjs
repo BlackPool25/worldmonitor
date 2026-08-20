@@ -256,6 +256,18 @@ const PROVIDER_OVERRIDES = {
     attribution: 'City of Toronto, Road Restrictions. https://open.toronto.ca/dataset/road-restrictions/',
     status: 'terms-review',
   },
+  'www.toronto.ca': {
+    provider: 'Toronto Fire Services',
+    license: 'City of Toronto Open Government Licence exists city-wide but is not data-bound to the live CAD XML. No CKAN package for toronto-fire-active-incidents or livecad.xml (package_search 2026-08-20). The official page publishes TFS CAD at /data/fire/livecad.xml under City of Toronto copyright (DC.Rights) and the Fire Services routine-disclosure plan. Not the historical fire-incidents CKAN datasets.',
+    attribution: 'Toronto Fire Services, Active Incidents (CAD). https://www.toronto.ca/community-people/public-safety-alerts/alerts-notifications/toronto-fire-active-incidents/',
+    status: 'terms-review',
+  },
+  'services.arcgis.com': {
+    provider: 'Toronto Police Service',
+    license: 'Open Government Licence – Ontario as published on the TPS Calls for Service Experience item a22f5295933e48a5b0a4c90cd3c4cae1 (licenseInfo), plus TPS Public Safety Data Portal terms on that item: no identification of individuals, no TPS marks. Layer C4S_Public_NoGO is the privacy-filtered public Calls-for-Service map (refresh ~20 min). Not Major Crime Indicators / YTD.',
+    attribution: 'Toronto Police Service, Calls for Service. Contains information licensed under the Open Government Licence – Ontario.',
+    status: 'reviewed',
+  },
   'api.open511.gov.bc.ca': {
     provider: 'BC Open511',
     license: 'Open Government Licence - British Columbia (OGL-BC). Confirmed on https://api.open511.gov.bc.ca/help. API Terms of Use for OGL-BC information also apply.',
@@ -781,13 +793,13 @@ const PROVIDER_OVERRIDES = {
 // a provider-bearing override a separate, explicit lifecycle event instead of
 // something `--write` can silently normalize into the manifest.
 export const PROVIDER_IDENTITY_REVIEW = Object.freeze({
-  sha256: '356db342addedfd023ab50429959d28f4036e8bef7ab62889573c36ab78f9667',
-  reason: 'Collapse the reviewed BBC feed and language-edition hosts into one publisher while retaining prior provider identities.',
+  sha256: '80ee3ff85aa167b46b86ad4e41282aeb805f8d318c7e753bca267b567c462610',
+  reason: 'Add official Toronto Fire Services live CAD and Toronto Police Service Calls-for-Service hosts for #6682.',
   // A URL cited here is scanned like any other: this file sits inside
   // SOURCE_ROOTS, so citing a host that is not already a registered source
   // invents a provider row for it. The B.C. catalogue URLs above are safe
   // because that host is itself an observed source; parallel.ai is not.
-  reviewReference: 'Issue #7000 publisher-centric source catalog; plus Issue #7001, Issue #6437, Issue #6622, Issue #6659, and PR #6447 identity reviews.',
+  reviewReference: 'Issue #6682 official Toronto Fire CAD + TPS Calls for Service; plus Issue #7000, Issue #7001, Issue #6437, Issue #6622, Issue #6659, and PR #6447 identity reviews.',
 });
 
 export function providerIdentityDigest(providerOverrides = PROVIDER_OVERRIDES) {

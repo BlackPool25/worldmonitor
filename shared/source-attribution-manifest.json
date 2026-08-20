@@ -8022,6 +8022,20 @@
       ]
     },
     {
+      "host": "services.arcgis.com",
+      "provider": "Toronto Police Service",
+      "kind": "structured",
+      "observed": true,
+      "license": "Open Government Licence – Ontario as published on the TPS Calls for Service Experience item a22f5295933e48a5b0a4c90cd3c4cae1 (licenseInfo), plus TPS Public Safety Data Portal terms on that item: no identification of individuals, no TPS marks. Layer C4S_Public_NoGO is the privacy-filtered public Calls-for-Service map (refresh ~20 min). Not Major Crime Indicators / YTD.",
+      "attribution": "Toronto Police Service, Calls for Service. Contains information licensed under the Open Government Licence – Ontario.",
+      "status": "reviewed",
+      "references": [
+        {
+          "path": "scripts/lib/toronto-official-cad.mjs"
+        }
+      ]
+    },
+    {
       "host": "services6.arcgis.com",
       "provider": "B.C. Evacuation Orders and Alerts",
       "kind": "structured",
@@ -13630,6 +13644,20 @@
         },
         {
           "path": "src/config/variants/tech.ts"
+        }
+      ]
+    },
+    {
+      "host": "www.toronto.ca",
+      "provider": "Toronto Fire Services",
+      "kind": "structured",
+      "observed": true,
+      "license": "City of Toronto Open Government Licence exists city-wide but is not data-bound to the live CAD XML. No CKAN package for toronto-fire-active-incidents or livecad.xml (package_search 2026-08-20). The official page publishes TFS CAD at /data/fire/livecad.xml under City of Toronto copyright (DC.Rights) and the Fire Services routine-disclosure plan. Not the historical fire-incidents CKAN datasets.",
+      "attribution": "Toronto Fire Services, Active Incidents (CAD). https://www.toronto.ca/community-people/public-safety-alerts/alerts-notifications/toronto-fire-active-incidents/",
+      "status": "terms-review",
+      "references": [
+        {
+          "path": "scripts/lib/toronto-official-cad.mjs"
         }
       ]
     },

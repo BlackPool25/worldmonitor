@@ -541,6 +541,10 @@ const STANDALONE_KEYS = {
   viarailLive:           'transit:viarail:live',
   // Seeded and health-monitored; no transit panel yet (#6623).
   ttcAlerts: 'transit:ttc:alerts:v1',
+  // Official Toronto live-CAD / public-safety (#6682). Own keys; not folded
+  // into canadaAlerts / canadaRoads / torontoRoads. No map panel yet.
+  torontoTfs: 'safety:toronto-tfs:v1',
+  torontoTps: 'safety:toronto-tps:v1',
 };
 
 const SEED_META = {
@@ -858,6 +862,8 @@ const SEED_META = {
   // :v1 stripped. The colon form probed a key the seeder never writes, which reads
   // absent forever no matter how healthy the seeder is.
   ttcAlerts:        { key: 'seed-meta:transit:ttc-alerts',         maxStaleMin: 30, cutover: { mode: 'expiring-ack', fromKey: null, issue: 6623, status: 'EMPTY' } }, // 5min bundle member; 30 = 6× interval. Empty until first Railway tick is an expiring acknowledgement, not a crit.
+  torontoTfs:       { key: 'seed-meta:safety:toronto-tfs',         maxStaleMin: 15, cutover: { mode: 'expiring-ack', fromKey: null, issue: 6682, status: 'EMPTY' } }, // TFS CAD every 5min; 15 = 3× interval
+  torontoTps:       { key: 'seed-meta:safety:toronto-tps',         maxStaleMin: 45, cutover: { mode: 'expiring-ack', fromKey: null, issue: 6682, status: 'EMPTY' } }, // TPS public map 15–20min; 45 = 3× interval
   spending:         { key: 'seed-meta:economic:spending',          maxStaleMin: 120 },
   globalTenders:    { key: 'seed-meta:economic:global-tenders',   maxStaleMin: 180 },
   globalTendersSam:             { key: 'seed-meta:economic:global-tenders:sam',              maxStaleMin: 240 }, // 150min request pacing + hourly member gate yields ~180min publishes; 240min leaves one gate of scheduling jitter without raising the 10/day SAM budget.
@@ -1497,7 +1503,7 @@ function parseFredRatesRolloutUntil(results) {
 }
 
 const EMPTY_DATA_OK_KEYS = new Set([
-  'notamClosures', 'faaDelays', 'intlDelays', 'gpsjam', 'positiveGeoEvents', 'weatherAlerts', 'canadaRoads', 'albertaRoads', 'manitobaRoads', 'torontoRoads', 'bcOpen511', 'canadaAlerts', 'canadaAlertsAbSource', 'canadaAlertsBcSource', 'canadaAlertsSkSource',
+  'notamClosures', 'faaDelays', 'intlDelays', 'gpsjam', 'positiveGeoEvents', 'weatherAlerts', 'canadaRoads', 'albertaRoads', 'manitobaRoads', 'torontoRoads', 'bcOpen511', 'canadaAlerts', 'canadaAlertsAbSource', 'canadaAlertsBcSource', 'canadaAlertsSkSource', 'torontoTfs', 'torontoTps',
   'earningsCalendar', 'econCalendar', 'cotPositioning',
   'usniFleet', // usniFleetStale covers the fallback; relay outages → WARN not CRIT
   'newsThreatSummary', // only written when classify produces country matches; quiet news periods = 0 countries, no write
@@ -1555,6 +1561,12 @@ const MISSING_DATA_IS_FAILURE_KEYS = new Set([
   'canadaAlertsAbSource',
   'canadaAlertsBcSource',
   'canadaAlertsSkSource',
+  // Official Toronto Fire / Police live-CAD (#6682). Each seeder publishes an
+  // explicit {records:[]} envelope on a quiet tick (zeroIsValid). Fresh meta
+  // plus a vanished key is a failed publish, not a quiet period. One source
+  // failing must not wipe the other — they are independent keys.
+  'torontoTfs',
+  'torontoTps',
 ]);
 
 // Keys where a present payload with meta recordCount=0 is valid, but the data
