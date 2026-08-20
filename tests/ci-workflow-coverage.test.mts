@@ -67,13 +67,14 @@ const TIMEOUT_CAPPED_TEST_JOBS = [
   'desktop-rust',
 ] as const;
 
-const REQUIRED_GATE_WORKFLOWS = ['Test', 'Typecheck', 'Lint Code', 'Security Audit'] as const;
+const REQUIRED_GATE_WORKFLOWS = ['Test', 'Typecheck', 'Lint Code', 'Security Audit', 'Stacked Merge Guard'] as const;
 
 const REQUIRED_NON_TEST_GATE_CHECKS = [
   'typecheck',
   'biome',
   'public-docs',
   'security-audit',
+  'stacked-merge-guard',
 ] as const;
 
 // Jobs the deploy gate cannot require under their own name, and the check that
@@ -680,7 +681,7 @@ describe('CI workflow coverage', () => {
     }
 
     // Every gated job's effective name has to be in `required` (asserted
-    // above), so keying off `required` still covers all four gated workflows
+    // above), so keying off `required` still covers all gated workflows
     // while leaving harmless duplicates alone — two cron-only workflows may
     // both call a job `monitor` without the gate ever reading either.
     //
