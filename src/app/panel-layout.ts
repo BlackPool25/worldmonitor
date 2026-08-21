@@ -240,6 +240,7 @@ export const DEFERRED_PANEL_NATURAL_FOOTPRINTS: Readonly<Record<string, Deferred
   'strategic-posture': { rowSpan: 2 },
   'supply-chain': { rowSpan: 2 },
   'telegram-intel': { rowSpan: 2 },
+  'x-intel': { rowSpan: 2 },
   'threat-timeline': { rowSpan: 2 },
   'trade-policy': { rowSpan: 2 },
   'ucdp-events': { rowSpan: 2 },
@@ -2358,6 +2359,14 @@ export class PanelLayoutManager implements AppModule {
       'TelegramIntelPanel',
       undefined,
       _lockPanels ? [t('premium.features.telegramIntel1'), t('premium.features.telegramIntel2')] : undefined,
+    );
+
+    this.lazyDefaultPanel(
+      'x-intel',
+      () => import('@/components/XIntelPanel'),
+      'XIntelPanel',
+      undefined,
+      _lockPanels ? [t('premium.features.xIntel1'), t('premium.features.xIntel2')] : undefined,
     );
 
     this.lazyPanel('gcc-investments', async () => {
