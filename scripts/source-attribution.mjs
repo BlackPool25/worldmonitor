@@ -124,9 +124,9 @@ export const PROVIDER_IDENTITY_GROUPS = Object.freeze({
   }),
   'tps-open-data': Object.freeze({
     provider: 'Toronto Police Service Open Data',
-    memberHosts: Object.freeze(['data.tps.ca', 'services.arcgis.com', 'www.tps.ca']),
-    reason: 'The TPS Open Data page and Public Safety Data Portal licence the ArcGIS Major Crime Indicators, Calls for Service Attended, and privacy-filtered live Calls-for-Service services.',
-    reviewReference: 'Issue #7012 and issue #6682',
+    memberHosts: Object.freeze(['data.tps.ca', 'www.tps.ca']),
+    reason: 'The TPS Open Data landing page and Public Safety Data Portal licence the Major Crime Indicators and Calls for Service Attended datasets. They are not the live C4S CAD identity.',
+    reviewReference: 'Issue #7012',
   }),
   'uspto-open-data': Object.freeze({
     provider: 'USPTO Open Data Portal',
@@ -482,10 +482,9 @@ const PROVIDER_OVERRIDES = {
     status: 'reviewed',
   },
   'services.arcgis.com': {
-    provider: 'Toronto Police Service Open Data',
-    identityGroup: 'tps-open-data',
-    license: 'Open Government Licence - Ontario and TPS Public Safety Data Portal terms. The Major Crime Indicators FeatureServer (serviceItemId 0a239a5563a344a3bbf8452504ed8d68), Calls for Service Attended table (serviceItemId 46c7581a136445c78831acb657a4fb0d), and Calls for Service Experience item a22f5295933e48a5b0a4c90cd3c4cae1 require attribution to Toronto Police Service without crests, logos, flags, or official marks. No TPS endorsement. The C4S_Public_NoGO layer is the privacy-filtered public live Calls-for-Service map. MCI locations are deliberately offset; do not present them as precise addresses. Do not merge or link the data for reidentification, and do not fill privacy exclusions from GTA Update, news, radio, or another source. Evidence: https://www.tps.ca/data-maps/open-data/, https://data.tps.ca/, and the item-level ArcGIS descriptions.',
-    attribution: 'Contains information licensed under the Open Government Licence - Ontario. Toronto Police Service Open Data and Calls for Service (https://www.tps.ca/data-maps/open-data/, https://data.tps.ca/). Coordinates can be approximate or privacy-filtered. No TPS endorsement.',
+    provider: 'Toronto Police Service',
+    license: 'Open Government Licence – Ontario as published on the TPS Calls for Service Experience item a22f5295933e48a5b0a4c90cd3c4cae1 (licenseInfo), plus TPS Public Safety Data Portal terms on that item: no identification of individuals, no TPS marks. Layer C4S_Public_NoGO is the privacy-filtered public Calls-for-Service map (refresh ~20 min). Not Major Crime Indicators / YTD.',
+    attribution: 'Toronto Police Service, Calls for Service. Contains information licensed under the Open Government Licence – Ontario.',
     status: 'reviewed',
   },
   'gtfsrt.ttc.ca': {
@@ -821,8 +820,8 @@ const PROVIDER_OVERRIDES = {
 // a provider-bearing override a separate, explicit lifecycle event instead of
 // something `--write` can silently normalize into the manifest.
 export const PROVIDER_IDENTITY_REVIEW = Object.freeze({
-  sha256: 'ab4620a7ad3c1cf3f35f2d2aaf3f8616d67821f8cf5a424bf38a3c25b058214f',
-  reason: 'Record owner-confirmed GTA Update and Toronto Fire Services rights, keep GTA Update inactive pending separate activation gates, and group all official TPS Open Data and Calls-for-Service hosts as one Ontario publisher.',
+  sha256: 'a7ab631b0e17d681791f6978832fb0a8c4f8567bfa1c90d9e79a747b5a7dfbfe',
+  reason: 'Keep Toronto Police Service C4S live-dispatch on services.arcgis.com distinct from Toronto Police Service Open Data on data.tps.ca and www.tps.ca, so live CAD is not catalogued as Open Data / geopolitics.',
   // A URL cited here is scanned like any other: this file sits inside
   // SOURCE_ROOTS, so citing a host that is not already a registered source
   // invents a provider row for it. The B.C. catalogue URLs above are safe

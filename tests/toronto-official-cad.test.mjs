@@ -437,10 +437,15 @@ test('own canonical keys stay off canadaAlerts / canadaRoads / torontoRoads', ()
 test('attribution records TFS and TPS licences and credits the agencies', () => {
   assert.match(ATTRIBUTION, /'www\.toronto\.ca':/);
   assert.match(ATTRIBUTION, /Toronto Fire Services/);
-  assert.match(ATTRIBUTION, /'services\.arcgis\.com':/);
-  assert.match(ATTRIBUTION, /Toronto Police Service/);
+  assert.match(ATTRIBUTION, /'services\.arcgis\.com': \{[\s\S]*?provider: 'Toronto Police Service'/);
+  assert.match(ATTRIBUTION, /Not Major Crime Indicators \/ YTD/);
   assert.match(ATTRIBUTION, /Open Government Licence/);
   assert.match(ATTRIBUTION, /C4S_Public_NoGO|Calls for Service/);
+  const arcgisOverride = ATTRIBUTION.match(/'services\.arcgis\.com': \{[\s\S]*?\n  \},/);
+  assert.ok(arcgisOverride, 'services.arcgis.com must have a dedicated provider override');
+  assert.doesNotMatch(arcgisOverride[0], /Open Data/);
+  assert.doesNotMatch(arcgisOverride[0], /identityGroup/);
+  assert.doesNotMatch(arcgisOverride[0], /0a239a5563a344a3bbf8452504ed8d68/);
   assert.match(ATTRIBUTION, /Direct permission: World Monitor\\'s owner confirmed on 2026-08-21/);
   assert.match(ATTRIBUTION, /'www\.toronto\.ca': \{[\s\S]*?status: 'reviewed'/);
   assert.doesNotMatch(TFS_SEEDER, /code-disabled|TFS_RIGHTS_APPROVED/);

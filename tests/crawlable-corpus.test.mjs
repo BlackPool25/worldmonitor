@@ -126,6 +126,36 @@ describe('sources catalog domain assignment', () => {
     assert.equal(catalog[0].domainId, 'environment');
   });
 
+  it('keeps C4S CAD and TPS Open Data on distinct catalog domains', () => {
+    const catalog = buildSourceCatalog([
+      {
+        provider: 'Toronto Police Service',
+        host: 'services.arcgis.com',
+        kind: 'structured',
+        references: [{ path: 'scripts/lib/toronto-official-cad.mjs' }],
+      },
+      {
+        provider: 'Toronto Police Service Open Data',
+        host: 'data.tps.ca',
+        kind: 'structured',
+        references: [{ path: 'scripts/lib/tps-open-data.mjs' }],
+      },
+      {
+        provider: 'Toronto Police Service Open Data',
+        host: 'www.tps.ca',
+        kind: 'structured',
+        references: [{ path: 'scripts/lib/tps-open-data.mjs' }],
+      },
+    ]);
+    assert.deepEqual(
+      Object.fromEntries(catalog.map((row) => [row.provider, row.domainId])),
+      {
+        'Toronto Police Service': 'environment',
+        'Toronto Police Service Open Data': 'geopolitics',
+      },
+    );
+  });
+
   it('assigns Manitoba 511 to infrastructure instead of failing the corpus build', () => {
     const catalog = buildSourceCatalog([
       {
