@@ -862,8 +862,8 @@ const SEED_META = {
   // :v1 stripped. The colon form probed a key the seeder never writes, which reads
   // absent forever no matter how healthy the seeder is.
   ttcAlerts:        { key: 'seed-meta:transit:ttc-alerts',         maxStaleMin: 30, cutover: { mode: 'expiring-ack', fromKey: null, issue: 6623, status: 'EMPTY' } }, // 5min bundle member; 30 = 6× interval. Empty until first Railway tick is an expiring acknowledgement, not a crit.
-  torontoTfs:       { key: 'seed-meta:safety:toronto-tfs',         maxStaleMin: 15, cutover: { mode: 'expiring-ack', fromKey: null, issue: 6682, status: 'EMPTY' } }, // TFS CAD every 5min; 15 = 3× interval
-  torontoTps:       { key: 'seed-meta:safety:toronto-tps',         maxStaleMin: 45, cutover: { mode: 'expiring-ack', fromKey: null, issue: 6682, status: 'EMPTY' } }, // TPS public map 15–20min; 45 = 3× interval
+  torontoTfs:       { key: 'seed-meta:safety:toronto-tfs',         maxStaleMin: 15, cutover: { mode: 'expiring-ack', fromKey: null, issue: 7037, status: 'EMPTY' } }, // TFS CAD every 5min; 15 = 3× interval
+  torontoTps:       { key: 'seed-meta:safety:toronto-tps',         maxStaleMin: 45, cutover: { mode: 'expiring-ack', fromKey: null, issue: 7038, status: 'EMPTY' } }, // TPS public map 15–20min; 45 = 3× interval
   spending:         { key: 'seed-meta:economic:spending',          maxStaleMin: 120 },
   globalTenders:    { key: 'seed-meta:economic:global-tenders',   maxStaleMin: 180 },
   globalTendersSam:             { key: 'seed-meta:economic:global-tenders:sam',              maxStaleMin: 240 }, // 150min request pacing + hourly member gate yields ~180min publishes; 240min leaves one gate of scheduling jitter without raising the 10/day SAM budget.
