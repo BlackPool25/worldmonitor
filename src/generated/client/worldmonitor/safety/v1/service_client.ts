@@ -9,6 +9,7 @@ export interface GetTorontoSafetyRequest {
   offence: string;
   year: number;
 }
+
 export interface GetTorontoSafetyResponse {
   semantic: string;
   source: string;
@@ -149,3 +150,4 @@ export class SafetyServiceClient {
     throw new ApiError(resp.status, `Request failed with status ${resp.status}`, body);
   }
 }
+

@@ -9,6 +9,7 @@ export interface GetTorontoSafetyRequest {
   offence: string;
   year: number;
 }
+
 export interface GetTorontoSafetyResponse {
   semantic: string;
   source: string;
@@ -163,3 +164,4 @@ export function createSafetyServiceRoutes(
     },
   ];
 }
+
