@@ -47,6 +47,30 @@
         "activatedAt": "2026-08-20T13:15:00.000Z",
         "firstScheduledRunAt": "2026-08-21T13:15:00.000Z"
       }
+    },
+    {
+      "name": "tpsMci",
+      "status": "EMPTY",
+      "issue": 7035,
+      "reason": "New on-demand Toronto Police Open Data probe (tpsMci). seed-meta:safety:tps-mci cannot exist until the first on-demand fetch after deploy. EMPTY after that first scheduled window is a dead producer, not a deploy window.",
+      "expiresAt": "2026-08-22T04:05:00.000Z",
+      "cutover": {
+        "probeKey": "seed-meta:safety:tps-mci",
+        "activatedAt": "2026-08-21T04:05:00.000Z",
+        "firstScheduledRunAt": "2026-08-22T04:05:00.000Z"
+      }
+    },
+    {
+      "name": "tpsCallsAttended",
+      "status": "EMPTY",
+      "issue": 7036,
+      "reason": "New on-demand Toronto Police Open Data probe (tpsCallsAttended). seed-meta:safety:tps-calls-attended cannot exist until the first on-demand fetch after deploy. EMPTY after that first scheduled window is a dead producer, not a deploy window.",
+      "expiresAt": "2026-08-22T04:05:00.000Z",
+      "cutover": {
+        "probeKey": "seed-meta:safety:tps-calls-attended",
+        "activatedAt": "2026-08-21T04:05:00.000Z",
+        "firstScheduledRunAt": "2026-08-22T04:05:00.000Z"
+      }
     }
   ]
 }
