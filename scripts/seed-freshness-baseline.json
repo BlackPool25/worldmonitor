@@ -53,11 +53,11 @@
       "status": "EMPTY",
       "issue": 7037,
       "reason": "New official Toronto Fire live-CAD seeder. seed-meta:safety:toronto-tfs cannot exist until seed-bundle-canada's next 5-minute member tick after deploy. EMPTY after that first scheduled poll is a dead producer, not a deploy window.",
-      "expiresAt": "2026-08-21T23:55:00.000Z",
+      "expiresAt": "2026-08-21T04:20:00.000Z",
       "cutover": {
         "probeKey": "seed-meta:safety:toronto-tfs",
         "activatedAt": "2026-08-21T04:15:00.000Z",
-        "firstScheduledRunAt": "2026-08-21T23:55:00.000Z"
+        "firstScheduledRunAt": "2026-08-21T04:20:00.000Z"
       }
     },
     {
@@ -65,11 +65,11 @@
       "status": "EMPTY",
       "issue": 7038,
       "reason": "New official TPS Calls-for-Service seeder. seed-meta:safety:toronto-tps cannot exist until seed-bundle-canada's next 15-minute member tick after deploy. EMPTY after that first scheduled poll is a dead producer, not a deploy window.",
-      "expiresAt": "2026-08-21T23:45:00.000Z",
+      "expiresAt": "2026-08-21T04:20:00.000Z",
       "cutover": {
         "probeKey": "seed-meta:safety:toronto-tps",
         "activatedAt": "2026-08-21T04:15:00.000Z",
-        "firstScheduledRunAt": "2026-08-21T23:45:00.000Z"
+        "firstScheduledRunAt": "2026-08-21T04:20:00.000Z"
       }
     }
   ]
