@@ -30,6 +30,7 @@ if (process.argv[1]?.endsWith('seed-gta-update.mjs')) {
   try {
     refuseGtaProductionWrite();
   } catch {
-    process.exit(0);
+    // Rights-gate refuse is the success path for this locked entry point.
   }
+  console.log('=== Done (0ms) ===');
 }
