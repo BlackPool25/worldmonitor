@@ -66,6 +66,10 @@ const CANADA_SECTIONS = [
   // (domain, resource) = ('transit', 'ttc-alerts'). It is NOT the canonical key
   // with :v1 stripped.
   { label: 'TTC-Alerts', script: 'seed-ttc-alerts.mjs', seedMetaKey: 'seed-meta:transit:ttc-alerts', canonicalKey: 'transit:ttc:alerts:v1', intervalMs: 5 * MIN, timeoutMs: 60_000 },
+  // Official TFS live CAD XML. Own key; 5min matches the source update cycle
+  // and a durable activation marker makes the first-deploy health bridge strict
+  // after the first successful canonical publish.
+  { label: 'Toronto-TFS', script: 'seed-toronto-tfs.mjs', seedMetaKey: 'seed-meta:safety:toronto-tfs', canonicalKey: 'safety:toronto-tfs:v1', completionMetaKey: 'seed-completion:safety:toronto-tfs', intervalMs: 5 * MIN, timeoutMs: 60_000 },
   // Official TPS C4S_Public_NoGO FeatureServer. Own key; privacy exclusions
   // stay empty. 15min matches the 15–20min map refresh; stale at 45min.
   { label: 'Toronto-TPS', script: 'seed-toronto-tps.mjs', seedMetaKey: 'seed-meta:safety:toronto-tps', canonicalKey: 'safety:toronto-tps:v1', completionMetaKey: 'seed-completion:safety:toronto-tps', intervalMs: 15 * MIN, timeoutMs: 105_000 },

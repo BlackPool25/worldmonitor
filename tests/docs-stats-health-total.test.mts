@@ -340,8 +340,8 @@ describe('/api/health probed-key count doc gate (#6300)', () => {
     const source = mutate(
       // Anchored on the LAST entry of STANDALONE_KEYS, because the mutation
       // appends a non-conforming spread just before the closing brace. The
-      // #6682 appended torontoTps after ttcAlerts, so this fixture tracks the
-      // last STANDALONE_KEYS entry. If a later change
+      // #6682 appended torontoTfs and torontoTps after ttcAlerts, so this
+      // fixture tracks the last STANDALONE_KEYS entry. If a later change
       // reorders that registry, this string has to follow it or mutate() throws
       // on a snippet that no longer exists.
       "  torontoTps: 'safety:toronto-tps:v1',\n};",

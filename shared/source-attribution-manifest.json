@@ -13655,9 +13655,9 @@
       "provider": "Toronto Fire Services",
       "kind": "structured",
       "observed": true,
-      "license": "Excluded candidate: City of Toronto Open Government Licence exists city-wide but is not data-bound to the live CAD XML. No CKAN package for toronto-fire-active-incidents or livecad.xml (package_search 2026-08-20). The official page publishes TFS CAD at /data/fire/livecad.xml under City of Toronto copyright (DC.Rights) and the Fire Services routine-disclosure plan. Production execution remains code-disabled until redistribution and display rights are documented. Not the historical fire-incidents CKAN datasets.",
+      "license": "Direct permission: World Monitor's owner confirmed on 2026-08-21 that World Monitor holds redistribution and public-display rights for the Toronto Fire Services live CAD XML. This does not claim that the feed is licensed under the City of Toronto Open Government Licence: no data-bound CKAN package was found for toronto-fire-active-incidents or livecad.xml. City of Toronto copyright and the source-specific permission still apply. Not the historical fire-incidents CKAN datasets.",
       "attribution": "Toronto Fire Services, Active Incidents (CAD). https://www.toronto.ca/community-people/public-safety-alerts/alerts-notifications/toronto-fire-active-incidents/",
-      "status": "excluded",
+      "status": "reviewed",
       "references": [
         {
           "path": "scripts/lib/toronto-official-cad.mjs"

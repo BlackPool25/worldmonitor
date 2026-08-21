@@ -108,14 +108,14 @@ function classifyCad(name, {
   });
 }
 
-function classifyMissingTps(activated) {
-  const redisKey = STANDALONE_KEYS.torontoTps;
-  return classifyKey('torontoTps', redisKey, { allowOnDemand: true }, {
+function classifyMissingCad(name, activated) {
+  const redisKey = STANDALONE_KEYS[name];
+  return classifyKey(name, redisKey, { allowOnDemand: true }, {
     keyStrens: new Map([[redisKey, 0]]),
     keyErrors: new Map(),
     keyMetaValues: new Map(),
     keyMetaErrors: new Map(),
-    activationStates: new Map([['torontoTps', activated]]),
+    activationStates: new Map([[name, activated]]),
     now: NOW,
   });
 }
@@ -351,22 +351,39 @@ test('TPS fetch accepts a genuine empty source', async () => {
   assert.equal(snapshot.updatedAt, TPS_UPDATED_AT);
 });
 
-test('health monitors active TPS freshness and activation without probing rights-pending TFS', () => {
-  assert.equal(SEED_META.torontoTfs, undefined);
+test('health monitors TFS and TPS freshness with durable activation', () => {
+  assert.equal(SEED_META.torontoTfs.key, 'seed-meta:safety:toronto-tfs');
+  assert.equal(SEED_META.torontoTfs.maxStaleMin, 15);
   assert.equal(SEED_META.torontoTps.key, 'seed-meta:safety:toronto-tps');
   assert.equal(SEED_META.torontoTps.maxStaleMin, 45);
   assert.equal(TFS_MAX_STALE_MIN, 15);
   assert.equal(TPS_MAX_STALE_MIN, 45);
-  assert.equal(STANDALONE_KEYS.torontoTfs, undefined);
+  assert.equal(STANDALONE_KEYS.torontoTfs, TFS_KEY);
   assert.equal(STANDALONE_KEYS.torontoTps, TPS_KEY);
+  assert.equal(SEED_META.torontoTfs.cutover.mode, 'activation-marker');
+  assert.equal(SEED_META.torontoTfs.cutover.activationKey, 'seed-activated:safety:toronto-tfs');
   assert.equal(SEED_META.torontoTps.cutover.mode, 'activation-marker');
   assert.equal(SEED_META.torontoTps.cutover.activationKey, 'seed-activated:safety:toronto-tps');
+  assert.equal(ACTIVATION_MARKERS.torontoTfs, 'seed-activated:safety:toronto-tfs');
   assert.equal(ACTIVATION_MARKERS.torontoTps, 'seed-activated:safety:toronto-tps');
+  assert.ok(ON_DEMAND_KEYS.has('torontoTfs'));
   assert.ok(ON_DEMAND_KEYS.has('torontoTps'));
 
+  assert.equal(classifyCad('torontoTfs', { fetchedAgeMin: 14 }).status, 'OK');
+  assert.equal(classifyCad('torontoTfs', { fetchedAgeMin: 16 }).status, 'STALE_SEED');
   assert.equal(classifyCad('torontoTps', { fetchedAgeMin: 44 }).status, 'OK');
   assert.equal(classifyCad('torontoTps', { fetchedAgeMin: 46 }).status, 'STALE_SEED');
 
+  assert.equal(classifyCad('torontoTfs', {
+    fetchedAgeMin: 1,
+    contentAgeMin: 14,
+    maxContentAgeMin: TFS_MAX_STALE_MIN,
+  }).status, 'OK');
+  assert.equal(classifyCad('torontoTfs', {
+    fetchedAgeMin: 1,
+    contentAgeMin: 16,
+    maxContentAgeMin: TFS_MAX_STALE_MIN,
+  }).status, 'STALE_CONTENT');
   assert.equal(classifyCad('torontoTps', {
     fetchedAgeMin: 1,
     contentAgeMin: 44,
@@ -377,8 +394,10 @@ test('health monitors active TPS freshness and activation without probing rights
     contentAgeMin: 46,
     maxContentAgeMin: TPS_MAX_STALE_MIN,
   }).status, 'STALE_CONTENT');
-  assert.equal(classifyMissingTps(false).status, 'EMPTY_ON_DEMAND');
-  assert.equal(classifyMissingTps(true).status, 'EMPTY');
+  for (const name of ['torontoTfs', 'torontoTps']) {
+    assert.equal(classifyMissingCad(name, false).status, 'EMPTY_ON_DEMAND');
+    assert.equal(classifyMissingCad(name, true).status, 'EMPTY');
+  }
 });
 
 test('content metadata uses authoritative provider clocks', () => {
@@ -403,11 +422,11 @@ test('own canonical keys stay off canadaAlerts / canadaRoads / torontoRoads', ()
   assert.doesNotMatch(TPS_SEEDER, /alerts:canada|infra:toronto-roads|infra:ontario-511/);
   assert.doesNotMatch(TFS_SEEDER, /TPS_KEY|safety:toronto-tps/);
   assert.doesNotMatch(TPS_SEEDER, /TFS_KEY|safety:toronto-tfs/);
-  assert.doesNotMatch(BUNDLE, /seed-toronto-tfs\.mjs/);
+  assert.match(BUNDLE, /seed-toronto-tfs\.mjs/);
   assert.match(BUNDLE, /seed-toronto-tps\.mjs/);
-  assert.doesNotMatch(BUNDLE, /seed-meta:safety:toronto-tfs/);
+  assert.match(BUNDLE, /seed-meta:safety:toronto-tfs/);
   assert.match(BUNDLE, /seed-meta:safety:toronto-tps/);
-  assert.match(TFS_SEEDER, /TFS_RIGHTS_APPROVED\s*=\s*false/);
+  assert.match(TFS_SEEDER, /afterPublish:\s*markTfsActivated/);
   assert.match(TPS_SEEDER, /afterPublish:\s*markTpsActivated/);
   assert.ok(TFS_TTL_SECONDS * 1000 > 5 * 60_000);
   assert.ok(TPS_TTL_SECONDS * 1000 > 15 * 60_000);
@@ -422,12 +441,14 @@ test('attribution records TFS and TPS licences and credits the agencies', () => 
   assert.match(ATTRIBUTION, /Toronto Police Service/);
   assert.match(ATTRIBUTION, /Open Government Licence/);
   assert.match(ATTRIBUTION, /C4S_Public_NoGO|Calls for Service/);
-  assert.match(ATTRIBUTION, /Production execution remains code-disabled/);
-  assert.match(ATTRIBUTION, /status: 'excluded'/);
+  assert.match(ATTRIBUTION, /Direct permission: World Monitor\\'s owner confirmed on 2026-08-21/);
+  assert.match(ATTRIBUTION, /'www\.toronto\.ca': \{[\s\S]*?status: 'reviewed'/);
+  assert.doesNotMatch(TFS_SEEDER, /code-disabled|TFS_RIGHTS_APPROVED/);
   assert.equal(EMPTY_DATA_OK_KEYS.has('torontoTfs'), false);
   assert.equal(EMPTY_DATA_OK_KEYS.has('torontoTps'), false);
   assert.equal(MISSING_DATA_IS_FAILURE_KEYS.has('torontoTfs'), false);
   assert.equal(MISSING_DATA_IS_FAILURE_KEYS.has('torontoTps'), false);
+  assert.ok(ZERO_RECORD_DATA_OK_KEYS.has('torontoTfs'));
   assert.ok(ZERO_RECORD_DATA_OK_KEYS.has('torontoTps'));
 });
 

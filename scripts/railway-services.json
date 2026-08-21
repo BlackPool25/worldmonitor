@@ -404,6 +404,7 @@
       "scripts/seed-open511.mjs",
       "scripts/seed-provincial-511.mjs",
       "scripts/seed-toronto-road-restrictions.mjs",
+      "scripts/seed-toronto-tfs.mjs",
       "scripts/seed-toronto-tps.mjs",
       "scripts/seed-ttc-alerts.mjs",
       "scripts/seed-viarail-live.mjs",
