@@ -2,6 +2,7 @@ import { beforeEach, afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { listTelegramFeed } from '../server/worldmonitor/intelligence/v1/list-telegram-feed.ts';
+import { issueSessionToken } from '../api/_session.js';
 
 const originalFetch = globalThis.fetch;
 const originalEnv = { ...process.env };
@@ -13,10 +14,19 @@ function restoreEnv() {
   Object.assign(process.env, originalEnv);
 }
 
-function makeRequest(path = '/api/telegram-feed?limit=50') {
+const SESSION_SECRET = 'x'.repeat(48);
+
+/**
+ * What a real first-party panel call looks like on the wire: an allowed Origin
+ * PLUS the wms_ session token the browser mints at boot and the wm-session
+ * interceptor attaches to every /api/ call (src/services/wm-session.ts).
+ * Origin alone is no longer sufficient — see the first-party boundary suite.
+ */
+async function makeRequest(path = '/api/telegram-feed?limit=50') {
+  const { token } = await issueSessionToken();
   return new Request(`https://worldmonitor.app${path}`, {
     method: 'GET',
-    headers: { origin: 'https://worldmonitor.app' },
+    headers: { origin: 'https://worldmonitor.app', 'X-WorldMonitor-Key': token },
   });
 }
 
@@ -24,6 +34,7 @@ describe('api/telegram-feed contract normalization', () => {
   beforeEach(() => {
     process.env.WS_RELAY_URL = 'https://relay.example.com';
     process.env.RELAY_SHARED_SECRET = 'test-secret';
+    process.env.WM_SESSION_SECRET = SESSION_SECRET;
   });
 
   afterEach(() => {
@@ -59,9 +70,15 @@ describe('api/telegram-feed contract normalization', () => {
     };
 
     const handler = (await import(`../api/telegram-feed.js?t=${Date.now()}`)).default;
-    const res = await handler(makeRequest());
+    const res = await handler(await makeRequest());
     assert.equal(res.status, 200);
-    assert.match(res.headers.get('cache-control') || '', /s-maxage=120/);
+    // The payload is credential-gated now, so it must never be stored by a
+    // shared cache: a CDN hit precedes handler auth and would answer an
+    // unauthenticated caller with the authorized bodies.
+    const cacheControl = res.headers.get('cache-control') || '';
+    assert.match(cacheControl, /private/);
+    assert.doesNotMatch(cacheControl, /public|s-maxage/);
+    assert.match(res.headers.get('vary') || '', /X-WorldMonitor-Key/);
 
     const data = await res.json();
     assert.equal(data.source, 'relay');
@@ -91,7 +108,7 @@ describe('api/telegram-feed contract normalization', () => {
     });
 
     const handler = (await import(`../api/telegram-feed.js?t=${Date.now()}`)).default;
-    const res = await handler(makeRequest());
+    const res = await handler(await makeRequest());
     const data = await res.json();
     assert.equal(data.count, 1);
     assert.equal(data.items[0].ts, '1970-01-01T00:00:00.000Z');
@@ -113,7 +130,7 @@ describe('api/telegram-feed contract normalization', () => {
     });
 
     const handler = (await import(`../api/telegram-feed.js?t=${Date.now()}`)).default;
-    const res = await handler(makeRequest());
+    const res = await handler(await makeRequest());
     const data = await res.json();
     assert.equal(data.items[0].ts, new Date(1_000_000_000_000).toISOString());
   });
@@ -128,7 +145,7 @@ describe('api/telegram-feed contract normalization', () => {
     });
 
     const handler = (await import(`../api/telegram-feed.js?t=${Date.now()}`)).default;
-    const res = await handler(makeRequest());
+    const res = await handler(await makeRequest());
     assert.equal(res.status, 429);
     assert.equal(res.headers.get('cache-control'), 'no-store');
 
@@ -146,7 +163,7 @@ describe('api/telegram-feed contract normalization', () => {
     });
 
     const handler = (await import(`../api/telegram-feed.js?t=${Date.now()}`)).default;
-    const res = await handler(makeRequest());
+    const res = await handler(await makeRequest());
     assert.equal(res.status, 503);
     assert.equal(res.headers.get('cache-control'), 'no-store');
 
@@ -155,6 +172,98 @@ describe('api/telegram-feed contract normalization', () => {
       error: 'Upstream error: HTTP 503',
       status: 503,
     });
+  });
+});
+
+describe('api/telegram-feed first-party boundary', () => {
+  // A LIVE relay stub, so every rejection below is proven against a route that
+  // WOULD have served bodies. Without it a 502 would satisfy the "no text"
+  // assertions for the wrong reason and the suite would be inert.
+  const RELAY_BODY = JSON.stringify({
+    enabled: true,
+    source: 'relay',
+    messages: [{
+      id: 'warintel:1',
+      channel: 'warintel',
+      url: 'https://t.me/warintel/1',
+      text: 'SECRET BODY must not leave the panel route',
+    }],
+  });
+
+  beforeEach(() => {
+    process.env.WS_RELAY_URL = 'https://relay.example.com';
+    process.env.RELAY_SHARED_SECRET = 'test-secret';
+    process.env.WM_SESSION_SECRET = SESSION_SECRET;
+    globalThis.fetch = async () => new Response(RELAY_BODY, {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    restoreEnv();
+  });
+
+  async function get(headers) {
+    const handler = (await import(`../api/telegram-feed.js?t=${Date.now()}`)).default;
+    return handler(new Request('https://worldmonitor.app/api/telegram-feed?limit=200', {
+      method: 'GET',
+      headers,
+    }));
+  }
+
+  // Positive control for every rejection below: the same stub, a real
+  // credential, and the bodies DO come back. If this ever goes red the
+  // rejections stop proving anything.
+  it('serves post bodies to a credentialed first-party caller', async () => {
+    const { token } = await issueSessionToken();
+    const res = await get({ origin: 'https://worldmonitor.app', 'X-WorldMonitor-Key': token });
+    assert.equal(res.status, 200);
+    assert.match(await res.text(), /SECRET BODY/);
+  });
+
+  it('rejects a credential-less request that sends no Origin at all', async () => {
+    // The reported hole: isDisallowedOrigin returns false on an absent Origin,
+    // so `curl https://worldmonitor.app/api/telegram-feed?limit=200` collected
+    // every body. CORS is browser-enforced only and never gated this.
+    const res = await get({});
+    assert.equal(res.status, 401);
+    assert.doesNotMatch(await res.text(), /SECRET BODY/);
+  });
+
+  it('rejects a credential-less request that forges an allowed Origin', async () => {
+    // The reason the gate is not Origin-based: Origin is client-controlled at
+    // the wire level, so an Origin-only fix costs an attacker one curl -H.
+    const res = await get({ origin: 'https://worldmonitor.app' });
+    assert.equal(res.status, 401);
+    assert.doesNotMatch(await res.text(), /SECRET BODY/);
+  });
+
+  it('rejects a credential-less request that forges Sec-Fetch-Site: same-origin', async () => {
+    // Issue #3541 / closed PR #3554: no header-only browser signal is trusted.
+    const res = await get({ origin: 'https://worldmonitor.app', 'sec-fetch-site': 'same-origin' });
+    assert.equal(res.status, 401);
+    assert.doesNotMatch(await res.text(), /SECRET BODY/);
+  });
+
+  it('rejects a tampered session token', async () => {
+    const { token } = await issueSessionToken();
+    const tampered = `${token.slice(0, -2)}${token.slice(-2) === 'AA' ? 'BB' : 'AA'}`;
+    const res = await get({ origin: 'https://worldmonitor.app', 'X-WorldMonitor-Key': tampered });
+    assert.equal(res.status, 401);
+    assert.doesNotMatch(await res.text(), /SECRET BODY/);
+  });
+
+  it('still answers the CORS preflight without a credential', async () => {
+    // The gate sits after the OPTIONS branch on purpose: a browser cannot
+    // attach credentials to a preflight, so gating it would break the panel.
+    const handler = (await import(`../api/telegram-feed.js?t=${Date.now()}`)).default;
+    const res = await handler(new Request('https://worldmonitor.app/api/telegram-feed', {
+      method: 'OPTIONS',
+      headers: { origin: 'https://worldmonitor.app' },
+    }));
+    assert.equal(res.status, 204);
   });
 });
 
