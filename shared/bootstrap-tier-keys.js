@@ -168,23 +168,15 @@ const SLOW_KEY_NAMES = new Set([
   'lngVulnerability',
   'fuelShortages',
   'energyCrisisPolicies',
-  // Moved off FAST (#7046): consumed only after the slow-tier checkpoint in
-  // loadAllData / primeVisiblePanelData, so they are not first-paint data.
-  // Keeping them in FAST was deadline freight for the 1,200 ms web abort.
-  'marketQuotes',
-  'commodityQuotes',
-  'forecasts',
-  'correlationCards',
-  'socialVelocity',
   'aaiiSentiment',
   'breadthHistory',
 ]);
 
 const FAST_KEY_NAMES = new Set([
   'earthquakes', 'outages', 'serviceStatuses', 'ddosAttacks', 'trafficAnomalies', 'macroSignals', 'chokepoints',
-  'positiveGeoEvents', 'riskScores', 'insights', 'predictions',
+  'marketQuotes', 'commodityQuotes', 'positiveGeoEvents', 'riskScores', 'insights', 'predictions',
   'iranEvents', 'temporalAnomalies', 'weatherAlerts', 'spending', 'theaterPosture', 'gdeltIntel', 'canadaAlerts',
-  'shippingRates', 'shippingStress',
+  'shippingRates', 'shippingStress', 'socialVelocity',
 ]);
 
 const ON_DEMAND_KEY_NAMES = new Set([
@@ -213,6 +205,12 @@ const ON_DEMAND_KEY_NAMES = new Set([
   'flightDelays',
   // Premium WSB scanner — not a default-startup surface.
   'wsbTickers',
+  // The minimum further FAST demotion needed by #7046. Both consumers are
+  // demand-gated and read the credential-less per-key URL. Putting them in
+  // SLOW would erase the energy-registry reduction; moving additional FAST
+  // keys would add default-startup requests after the 20% target is met.
+  'forecasts',
+  'correlationCards',
   // Both back the opt-in FX panel (#6199). On-demand rather than tiered
   // because that panel ships disabled by default: neither payload should ride
   // a tier every visitor downloads to render a surface almost nobody has on.

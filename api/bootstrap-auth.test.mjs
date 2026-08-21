@@ -808,6 +808,29 @@ test('public on-demand key URL is CDN-shielded and anonymous', async () => {
   });
 });
 
+test('FAST-demoted keys serve anonymously with publisher-sized shields', async () => {
+  const expected = {
+    correlationCards: 300,
+    forecasts: 3600,
+  };
+  await withMockedBootstrapAuth({
+    entitlement: null,
+    bootstrapPipelineBody: presentOnDemandPipelineBody(),
+  }, async () => {
+    for (const [key, sMaxAge] of Object.entries(expected)) {
+      const resp = await handler(makePublicOnDemandRequest(key));
+      assert.equal(resp.status, 200, `keys=${key} must serve without credentials`);
+      assertSharedCacheHeaders(resp);
+      assertPublicCorsHeaders(resp);
+      assert.match(
+        resp.headers.get('cdn-cache-control') || '',
+        new RegExp(`s-maxage=${sMaxAge}\\b`),
+        `keys=${key} must use its explicit cache profile`,
+      );
+    }
+  });
+});
+
 test('public on-demand URL keeps ONE contract even when credentials are attached', async () => {
   // A CDN hit precedes handler auth, so the response must not vary by caller —
   // same invariant the tier URLs carry (#5250).
@@ -825,7 +848,7 @@ test('public on-demand URL keeps ONE contract even when credentials are attached
 test('every Canada road key serves anonymously with a shield sized to its publisher', async () => {
   // #6763 moved canadaRoads and albertaRoads off the fast tier so they stop
   // riding a payload every visitor downloads. A TIERED key is rejected on this
-  // URL — the next test proves marketQuotes and wildfires draw a 401 — so the
+  // URL — the next test proves tiered keys such as wildfires draw a 401 — so the
   // move only works if these same requests now qualify. Asserted through the
   // handler rather than by reading the registry: the registry is what the tier
   // move edits, so checking it against itself would pass either way.
@@ -882,8 +905,8 @@ test('public on-demand URL does not widen into a CDN-amplification vector', asyn
   await withMockedBootstrapAuth({ entitlement: null }, async () => {
     for (const keys of [
       'cyberThreats,marketQuotes',   // multi-key
-      'marketQuotes',                // a real key, but not on-demand
       'wildfires',                   // slow-tier key, not on-demand
+      'earthquakes',                 // fast-tier key, not on-demand
       'notARealKey',                 // unknown
       '',                            // empty
     ]) {

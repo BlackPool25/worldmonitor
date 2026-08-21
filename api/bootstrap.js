@@ -106,6 +106,18 @@ const TIER_CDN_CACHE = {
 // budget guarantees the shield outlives a complete seed cycle.
 // tests/bootstrap-on-demand-cache-budget.test.mts enforces the ceiling.
 const ON_DEMAND_CACHE_PROFILES = {
+  // Correlation cards publish every 5 minutes and have a 30-minute health
+  // budget. The conservative complete CDN window is 11m.
+  correlationCards: {
+    browser: 'max-age=60, stale-while-revalidate=60, stale-if-error=300',
+    cdn: 'public, s-maxage=300, stale-while-revalidate=60, stale-if-error=300',
+  },
+  // Hourly publisher, 90-minute health budget. The conservative full CDN
+  // serving window is 80m, so one failed refresh cannot be hidden past health.
+  forecasts: {
+    browser: 'max-age=300, stale-while-revalidate=300, stale-if-error=1800',
+    cdn: 'public, s-maxage=3600, stale-while-revalidate=300, stale-if-error=900',
+  },
   // Seeded every 15 minutes. Keep the caller-invariant public URL from
   // outliving a complete seed interval; per-group stale/unavailable states
   // remain part of the payload contract.

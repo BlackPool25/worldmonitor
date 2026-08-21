@@ -232,10 +232,11 @@ export class PipelineStatusPanel extends Panel {
       // Shared store: rolling-deploy leftover first, then one on-demand
       // fetch. A response that arrives before this panel is inserted still
       // lands in the store and is replayed via runWhenConnected.
-      // First paint skips RPC. Later fetchData ticks (24h scheduler) ask
-      // the store for a CDN-shielded refresh.
+      // First paint skips RPC when hydration yields the complete gas + oil
+      // pair. Later fetchData ticks (24h scheduler) ask the store for a
+      // CDN-shielded refresh.
       let { gas, oil } = getCachedPipelineRegistries();
-      if (!gas && !oil) {
+      if (!gas || !oil) {
         const hydratedRegistries = await ensurePipelineRegistriesHydrated({
           refresh: this.usedHydrationPaint,
         });
@@ -246,7 +247,9 @@ export class PipelineStatusPanel extends Panel {
         gas = hydratedRegistries.gas;
         oil = hydratedRegistries.oil;
       }
-      const hydrated = buildBootstrapResponse(gas, oil);
+      // The RPC returns the combined registry. Do not let a rolling-deploy
+      // cache containing only one commodity become a terminal first paint.
+      const hydrated = gas && oil ? buildBootstrapResponse(gas, oil) : null;
       if (hydrated) {
         const apply = (): void => {
           this.data = hydrated;
@@ -270,6 +273,7 @@ export class PipelineStatusPanel extends Panel {
           gas: { pipelines: toRecord('gas'), classifierVersion: live.classifierVersion, updatedAt: live.fetchedAt },
           oil: { pipelines: toRecord('oil'), classifierVersion: live.classifierVersion, updatedAt: live.fetchedAt },
         });
+        this.usedHydrationPaint = true;
       }
       const applyLive = (): void => {
         if (live.upstreamUnavailable || !live.pipelines?.length) {

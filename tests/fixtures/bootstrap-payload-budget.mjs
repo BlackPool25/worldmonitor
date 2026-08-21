@@ -1,19 +1,17 @@
 /**
- * Deterministic bootstrap payload-budget fixtures for #7046.
+ * Frozen bootstrap byte ledger for #7046 / PR #7049.
  *
- * U1 of #7045 is supposed to land the production-shaped ledger first. This
- * issue still has to ratchet the ceilings, so the fixtures are built from
- * repository-owned samples (energy seed JSON) plus field-complete
- * representative records for the demoted fast keys. Shrinking those records
- * fails the self-check below; removing the energy keys or the demoted fast
- * keys is the only way the post-change totals drop.
+ * Provenance: one complete, credential-free production response per tier,
+ * captured with `Origin: https://worldmonitor.app` on 2026-08-21. Both bodies
+ * parsed as `{ data, missing: [] }`. The response bytes and SHA-256 hashes are
+ * recorded below; payload values are deliberately not checked in.
+ *
+ * This is a single auditable pre-change snapshot. It is not the full daily
+ * U1/RUM baseline required by #7047 and proves no transfer-time distribution.
+ * It does prove the decoded byte effect of membership-only changes at this
+ * complete production shape. Any unmeasured key or ledger shrinkage fails the
+ * tests instead of being replaced by a generic stub.
  */
-
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 
 export const ENERGY_ON_DEMAND_KEYS = Object.freeze([
   'pipelinesGas',
@@ -22,11 +20,8 @@ export const ENERGY_ON_DEMAND_KEYS = Object.freeze([
 ]);
 
 export const DEMOTED_FAST_KEYS = Object.freeze([
-  'marketQuotes',
-  'commodityQuotes',
   'forecasts',
   'correlationCards',
-  'socialVelocity',
   'flightDelays',
   'wsbTickers',
 ]);
@@ -37,6 +32,8 @@ export const FAST_FIRST_PAINT_JUSTIFICATION = Object.freeze({
   serviceStatuses: 'Paired with the outages first-wave status strip.',
   ddosAttacks: 'Loaded with the default-on outages wave.',
   trafficAnomalies: 'Loaded with the default-on outages wave.',
+  marketQuotes: 'Default markets panel data; retained once the 20% target is met to avoid a new startup request.',
+  commodityQuotes: 'Default commodities and energy tapes; retained once the 20% target is met to avoid a new startup request.',
   macroSignals: 'Immediate macro tiles on finance/full first paint.',
   chokepoints: 'Chokepoint strip and default supply-chain map markers.',
   positiveGeoEvents: 'Happy/full positive-events first wave.',
@@ -52,175 +49,169 @@ export const FAST_FIRST_PAINT_JUSTIFICATION = Object.freeze({
   canadaAlerts: 'Default-on Canada alerts layer on full desktop.',
   shippingRates: 'Supply-chain first-wave rates.',
   shippingStress: 'Supply-chain first-wave stress.',
+  socialVelocity: 'Retained once the 20% target is met to avoid another default dashboard request.',
 });
 
-function readJson(rel) {
-  return JSON.parse(readFileSync(join(root, rel), 'utf8'));
-}
-
-export function utf8Bytes(value) {
-  return Buffer.byteLength(JSON.stringify(value), 'utf8');
-}
-
-export function publicPayloadBytes(data, missing = []) {
-  return utf8Bytes({ data, missing });
-}
-
-export function loadEnergyRegistryPayloads() {
-  return {
-    pipelinesGas: readJson('scripts/data/pipelines-gas.json'),
-    pipelinesOil: readJson('scripts/data/pipelines-oil.json'),
-    storageFacilities: readJson('scripts/data/storage-facilities.json'),
-  };
-}
-
-function quoteRecord(symbol, index) {
-  return {
-    symbol,
-    name: `Index ${index}`,
-    price: 100 + index,
-    change: 0.25,
-    changePercent: 0.4,
-    volume: 1_000_000 + index,
-    marketCap: 50_000_000_000 + index,
-    currency: 'USD',
-    exchange: 'NYSE',
-    updatedAt: '2026-08-21T08:00:00Z',
-  };
-}
-
-function delayRecord(index) {
-  return {
-    id: `delay-${index}`,
-    iata: `A${String(index).padStart(2, '0')}`,
-    severity: 'moderate',
-    type: 'departure_delay',
-    summary: `Airport ${index} departure delays from weather and volume.`,
-    updatedAt: '2026-08-21T08:00:00Z',
-  };
-}
-
-export function representativeDemotedFastPayloads() {
-  const marketQuotes = {
-    quotes: Array.from({ length: 80 }, (_, i) => quoteRecord(`EQ${i}`, i)),
-  };
-  const commodityQuotes = {
-    quotes: Array.from({ length: 40 }, (_, i) => quoteRecord(`CM${i}`, i)),
-  };
-  const forecasts = {
-    predictions: Array.from({ length: 24 }, (_, i) => ({
-      id: `fc-${i}`,
-      title: `Forecast ${i}`,
-      probability: 0.4,
-      generatedAt: 1_724_000_000 + i,
-    })),
-    generatedAt: 1_724_000_000,
-  };
-  const correlationCards = {
-    geopolitics: Array.from({ length: 12 }, (_, i) => ({
-      id: `cc-${i}`,
-      score: 70 + i,
-      title: `Convergence ${i}`,
-      summary: 'Cross-domain convergence card used by the correlation panel.',
-    })),
-  };
-  const socialVelocity = {
-    items: Array.from({ length: 30 }, (_, i) => ({
-      id: `sv-${i}`,
-      subreddit: 'worldnews',
-      score: 100 + i,
-      title: `Velocity item ${i}`,
-    })),
-  };
-  const flightDelays = {
-    alerts: Array.from({ length: 40 }, (_, i) => delayRecord(i)),
-  };
-  const wsbTickers = {
-    tickers: Array.from({ length: 25 }, (_, i) => ({
-      symbol: `T${i}`,
-      mentionCount: 10 + i,
-      uniquePosts: 4 + i,
-      totalScore: 200 + i,
-      avgUpvoteRatio: 0.8,
-      subreddits: ['wallstreetbets'],
-      velocityScore: 1.2,
-    })),
-  };
-  return {
-    marketQuotes,
-    commodityQuotes,
-    forecasts,
-    correlationCards,
-    socialVelocity,
-    flightDelays,
-    wsbTickers,
-  };
-}
-
-export function remainingFastStubPayloads() {
-  return Object.fromEntries(
-    Object.keys(FAST_FIRST_PAINT_JUSTIFICATION).map((key) => [
-      key,
-      { key, records: [{ id: `${key}-1`, title: `${key} first-paint record` }] },
-    ]),
-  );
-}
-
-export function otherSlowStubPayloads() {
-  return {
-    wildfires: { fires: Array.from({ length: 20 }, (_, i) => ({ id: `wf-${i}` })) },
-    naturalEvents: { events: Array.from({ length: 20 }, (_, i) => ({ id: `ne-${i}` })) },
-    sectors: { valuations: { XLE: { name: 'Energy', changePercent: 0.2 } } },
-  };
-}
-
-export function buildSlowPayload({ includeEnergy }) {
-  const data = { ...otherSlowStubPayloads() };
-  if (includeEnergy) Object.assign(data, loadEnergyRegistryPayloads());
-  return { data, missing: [] };
-}
-
-export function buildFastPayload({ includeDemoted }) {
-  const data = { ...remainingFastStubPayloads() };
-  if (includeDemoted) Object.assign(data, representativeDemotedFastPayloads());
-  return { data, missing: [] };
-}
-
-export function energyRegistrySelfCheck(payloads = loadEnergyRegistryPayloads()) {
-  const gasCount = Object.keys(payloads.pipelinesGas.pipelines ?? {}).length;
-  const oilCount = Object.keys(payloads.pipelinesOil.pipelines ?? {}).length;
-  const storageCount = Object.keys(payloads.storageFacilities.facilities ?? {}).length;
-  return { gasCount, oilCount, storageCount };
-}
-
-export function demotedFastSelfCheck(payloads = representativeDemotedFastPayloads()) {
-  return {
-    marketQuotes: payloads.marketQuotes.quotes.length,
-    commodityQuotes: payloads.commodityQuotes.quotes.length,
-    forecasts: payloads.forecasts.predictions.length,
-    correlationCards: payloads.correlationCards.geopolitics.length,
-    socialVelocity: payloads.socialVelocity.items.length,
-    flightDelays: payloads.flightDelays.alerts.length,
-    wsbTickers: payloads.wsbTickers.tickers.length,
-  };
-}
-
-export const FIXTURE_MINIMUMS = Object.freeze({
-  gasCount: 20,
-  oilCount: 20,
-  storageCount: 15,
-  marketQuotes: 80,
-  commodityQuotes: 40,
-  forecasts: 24,
-  correlationCards: 12,
-  socialVelocity: 30,
-  flightDelays: 40,
-  wsbTickers: 25,
+export const PRODUCTION_CAPTURE = Object.freeze({
+  capturedAt: '2026-08-21T14:51:50Z',
+  origin: 'https://worldmonitor.app',
+  requestShape: 'GET https://api.worldmonitor.app/api/bootstrap?tier=<tier>&public=1',
+  completeness: 'Both responses were HTTP 200, parsed successfully, and declared missing: [].',
+  limitation: 'Single complete public capture; not the full daily #7047 U1/RUM baseline.',
+  tiers: Object.freeze({
+    fast: Object.freeze({
+      decodedBytes: 921_832,
+      sha256: '9723bf77e7a88323e58e747977c64d8ba1bcee77b72b9db06fe5d37c2773d3de',
+    }),
+    slow: Object.freeze({
+      decodedBytes: 1_977_154,
+      sha256: '0d4caebf63182d1f816ec41bfc47b0f5e30efc378722b0cab785ebd70d85bcdb',
+    }),
+  }),
 });
 
-// DebugBear analysis 86158947 cited by #7046. The constructed fixtures are
-// not a full production ledger (that is U1 / #7047); these baselines keep
-// the energy 25% claim honest against the measured slow payload even when
-// the leftover slow stubs in this file are small.
-export const PRODUCTION_SLOW_DECODED_BYTES = 1_940_000;
-export const PRODUCTION_FAST_DECODED_BYTES = 766_645;
+export const CAPTURED_BASE_TIER_KEYS = Object.freeze({
+  fast: Object.freeze([
+    'earthquakes', 'outages', 'serviceStatuses', 'ddosAttacks', 'trafficAnomalies',
+    'marketQuotes', 'commodityQuotes', 'macroSignals', 'shippingRates', 'chokepoints',
+    'positiveGeoEvents', 'theaterPosture', 'riskScores', 'flightDelays', 'insights',
+    'predictions', 'temporalAnomalies', 'weatherAlerts', 'canadaAlerts', 'spending',
+    'gdeltIntel', 'correlationCards', 'forecasts', 'shippingStress', 'socialVelocity',
+    'wsbTickers',
+  ]),
+  slow: Object.freeze([
+    'sectors', 'etfFlows', 'bisPolicy', 'bisExchange', 'bisCredit', 'chinaMacro',
+    'chinaReleaseCalendar', 'chinaCorporateDisclosures', 'minerals', 'giving',
+    'climateAnomalies', 'climateDisasters', 'co2Monitoring', 'oceanIce', 'climateNews',
+    'radiationWatch', 'thermalEscalation', 'crossSourceSignals', 'wildfires',
+    'techReadiness', 'progressData', 'renewableEnergy', 'naturalEvents', 'cryptoQuotes',
+    'cryptoSectors', 'defiTokens', 'aiTokens', 'otherTokens', 'gulfQuotes',
+    'stablecoinMarkets', 'unrestEvents', 'ucdpEvents', 'techEvents',
+    'crossStraitActivity', 'securityAdvisories', 'customsRevenue', 'sanctionsPressure',
+    'consumerPricesOverview', 'consumerPricesCategories', 'consumerPricesMovers',
+    'consumerPricesSpread', 'groceryBasket', 'bigmac', 'fuelPrices', 'faoFoodPriceIndex',
+    'nationalDebt', 'euGasStorage', 'eurostatCountryData', 'marketImplications',
+    'fearGreedIndex', 'hyperliquidFlow', 'crudeInventories', 'natGasStorage',
+    'ecbFxRates', 'euFsi', 'pizzint', 'diseaseOutbreaks', 'economicStress',
+    'oilStocksAnalysis', 'lngVulnerability', 'pipelinesGas', 'pipelinesOil',
+    'storageFacilities', 'fuelShortages', 'energyCrisisPolicies', 'aaiiSentiment',
+    'breadthHistory',
+  ]),
+});
+
+/** Exact UTF-8 bytes of JSON.stringify(data[key]) from the frozen responses. */
+export const CAPTURED_KEY_DECODED_BYTES = Object.freeze({
+  earthquakes: 48_361,
+  outages: 3_702,
+  serviceStatuses: 6_583,
+  ddosAttacks: 744,
+  trafficAnomalies: 3_045,
+  marketQuotes: 296_547,
+  commodityQuotes: 116_985,
+  macroSignals: 3_112,
+  shippingRates: 8_180,
+  chokepoints: 13_837,
+  positiveGeoEvents: 25_682,
+  theaterPosture: 1_302,
+  riskScores: 10_352,
+  flightDelays: 57_826,
+  insights: 10_115,
+  predictions: 24_493,
+  temporalAnomalies: 98,
+  weatherAlerts: 52_633,
+  canadaAlerts: 61_389,
+  spending: 4_762,
+  gdeltIntel: 24_612,
+  correlationCards: 87_842,
+  forecasts: 40_048,
+  shippingStress: 4_288,
+  socialVelocity: 10_574,
+  wsbTickers: 4_275,
+  sectors: 4_086,
+  etfFlows: 1_848,
+  bisPolicy: 1_395,
+  bisExchange: 1_354,
+  bisCredit: 1_310,
+  chinaMacro: 44_014,
+  chinaReleaseCalendar: 58_122,
+  chinaCorporateDisclosures: 18_932,
+  minerals: 2_132,
+  giving: 12_544,
+  climateAnomalies: 5_031,
+  climateDisasters: 21_205,
+  co2Monitoring: 822,
+  oceanIce: 970,
+  climateNews: 51_058,
+  radiationWatch: 5_727,
+  thermalEscalation: 18_616,
+  crossSourceSignals: 9_057,
+  wildfires: 165_622,
+  techReadiness: 45_451,
+  progressData: 6_791,
+  renewableEnergy: 1_893,
+  naturalEvents: 200_792,
+  cryptoQuotes: 9_713,
+  cryptoSectors: 414,
+  defiTokens: 831,
+  aiTokens: 885,
+  otherTokens: 848,
+  gulfQuotes: 47_557,
+  stablecoinMarkets: 1_550,
+  unrestEvents: 85_902,
+  ucdpEvents: 130_821,
+  techEvents: 34_580,
+  crossStraitActivity: 13_601,
+  securityAdvisories: 70_091,
+  customsRevenue: 6_124,
+  sanctionsPressure: 17_603,
+  consumerPricesOverview: 1_216,
+  consumerPricesCategories: 1_074,
+  consumerPricesMovers: 892,
+  consumerPricesSpread: 825,
+  groceryBasket: 52_344,
+  bigmac: 9_506,
+  fuelPrices: 11_592,
+  faoFoodPriceIndex: 1_285,
+  nationalDebt: 45_401,
+  euGasStorage: 452,
+  eurostatCountryData: 2_197,
+  marketImplications: 5_963,
+  fearGreedIndex: 2_557,
+  hyperliquidFlow: 55_977,
+  crudeInventories: 558,
+  natGasStorage: 519,
+  ecbFxRates: 514,
+  euFsi: 13_146,
+  pizzint: 3_495,
+  diseaseOutbreaks: 68_863,
+  economicStress: 620,
+  oilStocksAnalysis: 4_057,
+  lngVulnerability: 2_501,
+  pipelinesGas: 193_403,
+  pipelinesOil: 221_043,
+  storageFacilities: 113_540,
+  fuelShortages: 22_020,
+  energyCrisisPolicies: 28_423,
+  aaiiSentiment: 4_623,
+  breadthHistory: 8_059,
+});
+
+// Absolute final ceilings are the required reductions applied to the complete
+// capture, not to a hand-picked subset: FAST <= 80%, SLOW <= 75% of base.
+export const FINAL_TIER_DECODED_BYTE_CEILINGS = Object.freeze({
+  fast: 737_465,
+  slow: 1_482_865,
+});
+
+export function tierPayloadBytesFromLedger(keys) {
+  let bytes = Buffer.byteLength('{"data":{', 'utf8');
+  keys.forEach((key, index) => {
+    const valueBytes = CAPTURED_KEY_DECODED_BYTES[key];
+    if (!Number.isInteger(valueBytes) || valueBytes < 0) {
+      throw new Error(`No production byte evidence for bootstrap key: ${key}`);
+    }
+    if (index > 0) bytes += 1;
+    bytes += Buffer.byteLength(JSON.stringify(key), 'utf8') + 1 + valueBytes;
+  });
+  return bytes + Buffer.byteLength('},"missing":[]}', 'utf8');
+}

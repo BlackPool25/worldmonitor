@@ -140,7 +140,7 @@ import { isDesktopRuntime, toApiUrl } from '@/services/runtime';
 import { filterFeedsByLanguage } from '@/services/feed-language';
 import { getAiFlowSettings } from '@/services/ai-flow-settings';
 import { t, getCurrentLanguage } from '@/services/i18n';
-import { getHydratedData } from '@/services/bootstrap';
+import { ensureHydrated, getHydratedData } from '@/services/bootstrap';
 import { ensurePipelineRegistriesHydrated } from '@/shared/pipeline-registry-store';
 import { ensureStorageFacilityRegistryHydrated } from '@/shared/storage-facility-registry-store';
 import { publicRpcFetch } from '@/services/public-rpc-fetch';
@@ -2744,7 +2744,7 @@ export class DataLoaderManager implements AppModule {
 
   async loadForecasts(): Promise<void> {
     try {
-      const hydrated = getHydratedData('forecasts') as { predictions?: import('@/generated/client/worldmonitor/forecast/v1/service_client').Forecast[]; generatedAt?: number } | undefined;
+      const hydrated = await ensureHydrated('forecasts') as { predictions?: import('@/generated/client/worldmonitor/forecast/v1/service_client').Forecast[]; generatedAt?: number } | undefined;
       if (hydrated?.predictions?.length) {
         this.callPanel('forecast', 'updateForecasts', hydrated.predictions, {
           generatedAt: hydrated.generatedAt || 0,
@@ -2754,14 +2754,15 @@ export class DataLoaderManager implements AppModule {
         });
         return;
       }
-      const { fetchForecastFeed } = await import('@/services/forecast');
-      const feed = await fetchForecastFeed();
-      this.callPanel('forecast', 'updateForecasts', feed.forecasts, {
-        generatedAt: feed.generatedAt,
-        degraded: feed.degraded,
-        stale: feed.stale,
-        error: feed.error,
+      // The unfiltered dashboard projection is the same shared seed payload.
+      // Keep a public-bootstrap miss from falling through to an origin RPC.
+      this.callPanel('forecast', 'updateForecasts', [], {
+        generatedAt: hydrated?.generatedAt || 0,
+        degraded: false,
+        stale: false,
+        error: 'forecast_bootstrap_unavailable',
       });
+      this.callPanel('forecast', 'showError', t('common.failedToLoad'), () => void this.loadForecasts());
     } catch {
       this.callPanel('forecast', 'updateForecasts', [], {
         generatedAt: 0,
@@ -2769,6 +2770,7 @@ export class DataLoaderManager implements AppModule {
         stale: false,
         error: 'forecast_request_failed',
       });
+      this.callPanel('forecast', 'showError', t('common.failedToLoad'), () => void this.loadForecasts());
     }
   }
 

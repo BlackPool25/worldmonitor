@@ -60,6 +60,14 @@ const TIER_CDN_CACHE = {
   fast: 'public, s-maxage=600, stale-while-revalidate=120, stale-if-error=900',
 };
 const ON_DEMAND_CACHE_PROFILES = {
+  correlationCards: {
+    browser: 'max-age=60, stale-while-revalidate=60, stale-if-error=300',
+    cdn: 'public, s-maxage=300, stale-while-revalidate=60, stale-if-error=300',
+  },
+  forecasts: {
+    browser: 'max-age=300, stale-while-revalidate=300, stale-if-error=1800',
+    cdn: 'public, s-maxage=3600, stale-while-revalidate=300, stale-if-error=900',
+  },
   chinaDecisionSignals: {
     browser: 'max-age=60, stale-while-revalidate=120, stale-if-error=900',
     cdn: 'public, s-maxage=900, stale-while-revalidate=120, stale-if-error=900',

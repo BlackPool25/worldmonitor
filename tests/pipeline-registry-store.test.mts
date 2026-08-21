@@ -128,6 +128,31 @@ describe('pipeline-registry-store', () => {
     assert.equal(loaderCalls, 2, 'resolved value is reused; no second fetch');
   });
 
+  test('failed on-demand hydration clears the in-flight guard so a retry can succeed', async () => {
+    const { reader } = countingReader({});
+    __setBootstrapReaderForTests(reader);
+    const requestedKeys: string[] = [];
+    let failing = true;
+    __setOnDemandLoaderForTests(async (key) => {
+      requestedKeys.push(key);
+      if (failing) throw new Error(`temporary ${key} failure`);
+      return key === 'pipelinesGas' ? GAS_FIXTURE : OIL_FIXTURE;
+    });
+
+    await assert.rejects(ensurePipelineRegistriesHydrated(), /temporary pipelines/);
+    failing = false;
+
+    const retried = await ensurePipelineRegistriesHydrated();
+    assert.equal(retried.gas, GAS_FIXTURE);
+    assert.equal(retried.oil, OIL_FIXTURE);
+    assert.deepEqual(requestedKeys, [
+      'pipelinesGas',
+      'pipelinesOil',
+      'pipelinesGas',
+      'pipelinesOil',
+    ], 'the retry must issue one new request for each still-missing key');
+  });
+
   test('refresh re-fetches even when the store already has data', async () => {
     const { reader } = countingReader({
       pipelinesGas: GAS_FIXTURE,
@@ -151,16 +176,16 @@ describe('pipeline-registry-store', () => {
   test('partial leftover still fetches the missing commodity', async () => {
     const { reader } = countingReader({ pipelinesGas: GAS_FIXTURE });
     __setBootstrapReaderForTests(reader);
-    let loaderCalls = 0;
+    const requestedKeys: string[] = [];
     __setOnDemandLoaderForTests(async (key) => {
-      loaderCalls += 1;
+      requestedKeys.push(key);
       return key === 'pipelinesOil' ? OIL_FIXTURE : undefined;
     });
 
     const result = await ensurePipelineRegistriesHydrated();
     assert.equal(result.gas, GAS_FIXTURE);
     assert.equal(result.oil, OIL_FIXTURE);
-    assert.equal(loaderCalls, 1);
+    assert.deepEqual(requestedKeys, ['pipelinesOil'], 'only the missing new-tier key is requested');
   });
 
   test('rolling-deploy leftover wins and skips the on-demand fetch', async () => {

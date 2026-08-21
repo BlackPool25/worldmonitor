@@ -260,6 +260,7 @@ export class StorageFacilityMapPanel extends Panel {
           classifierVersion: live.classifierVersion,
           updatedAt: live.fetchedAt,
         });
+        this.usedHydrationPaint = true;
       }
       const applyLive = (): void => {
         if (live.upstreamUnavailable || !live.facilities?.length) {

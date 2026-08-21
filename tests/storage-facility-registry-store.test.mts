@@ -97,6 +97,29 @@ describe('storage-facility-registry-store', () => {
     assert.equal(loaderCalls, 1);
   });
 
+  test('failed on-demand hydration clears the in-flight guard so a retry can succeed', async () => {
+    const { reader } = countingReader({});
+    __setBootstrapReaderForTests(reader);
+    const requestedKeys: string[] = [];
+    let failing = true;
+    __setOnDemandLoaderForTests(async (key) => {
+      requestedKeys.push(key);
+      if (failing) throw new Error('temporary storage failure');
+      return FIXTURE;
+    });
+
+    await assert.rejects(ensureStorageFacilityRegistryHydrated(), /temporary storage failure/);
+    failing = false;
+
+    const retried = await ensureStorageFacilityRegistryHydrated();
+    assert.equal(retried.registry, FIXTURE);
+    assert.deepEqual(
+      requestedKeys,
+      ['storageFacilities', 'storageFacilities'],
+      'retry must issue exactly one new request after the failed attempt',
+    );
+  });
+
   test('refresh re-fetches even when the store already has data', async () => {
     const { reader } = countingReader({ storageFacilities: FIXTURE });
     __setBootstrapReaderForTests(reader);
