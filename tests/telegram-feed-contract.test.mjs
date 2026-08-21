@@ -93,6 +93,26 @@ describe('api/telegram-feed contract normalization', () => {
     assert.deepEqual(data.items[0].mediaUrls, ['https://cdn.example.com/image.jpg']);
   });
 
+  it('uses private max-age=0 when the normalized feed is empty', async () => {
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      enabled: true,
+      items: [],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    const handler = (await import(`../api/telegram-feed.js?t=${Date.now()}`)).default;
+    const res = await handler(await makeRequest());
+    assert.equal(res.status, 200);
+    const cacheControl = res.headers.get('cache-control') || '';
+    assert.equal(cacheControl, 'private, max-age=0');
+    assert.doesNotMatch(cacheControl, /public|s-maxage/);
+    const data = await res.json();
+    assert.equal(data.count, 0);
+    assert.deepEqual(data.items, []);
+  });
+
   it('returns a non-null timestamp string when relay items omit timestamps', async () => {
     globalThis.fetch = async () => new Response(JSON.stringify({
       enabled: true,
@@ -229,6 +249,7 @@ describe('api/telegram-feed first-party boundary', () => {
     // every body. CORS is browser-enforced only and never gated this.
     const res = await get({});
     assert.equal(res.status, 401);
+    assert.equal(res.headers.get('cache-control'), 'no-store');
     assert.doesNotMatch(await res.text(), /SECRET BODY/);
   });
 
