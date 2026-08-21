@@ -17,26 +17,36 @@ import {
   TPS_LAYER_NAME,
   TPS_LAYER_URL,
   TPS_MAX_STALE_MIN,
+  TPS_METADATA_URL,
   TPS_QUERY_URL,
   TPS_SOURCE,
   TPS_TTL_SECONDS,
   declareTfsRecords,
   declareTpsRecords,
-  fetchTorontoOfficialCad,
   fetchTorontoTfs,
   fetchTorontoTps,
   isAllowedTfsHost,
   isAllowedTpsHost,
   isTpsPrivacyExcluded,
-  mergeTorontoCadLastGood,
   parseTfsLivecadXml,
   parseTpsFeatureServer,
   parseTorontoLocalMs,
+  torontoTfsContentMeta,
+  torontoTpsContentMeta,
   validateTfsEnvelope,
   validateTpsEnvelope,
 } from '../scripts/lib/toronto-official-cad.mjs';
 
-const { classifyKey, SEED_META, STANDALONE_KEYS, EMPTY_DATA_OK_KEYS, MISSING_DATA_IS_FAILURE_KEYS } = __testing__;
+const {
+  ACTIVATION_MARKERS,
+  EMPTY_DATA_OK_KEYS,
+  MISSING_DATA_IS_FAILURE_KEYS,
+  ON_DEMAND_KEYS,
+  SEED_META,
+  STANDALONE_KEYS,
+  ZERO_RECORD_DATA_OK_KEYS,
+  classifyKey,
+} = __testing__;
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const TFS_FIXTURE = readFileSync(join(root, 'tests/fixtures/toronto-tfs-livecad.xml'), 'utf8');
@@ -50,6 +60,7 @@ const HEALTH = readFileSync(join(root, 'api/health.js'), 'utf8');
 const RELAY = readFileSync(join(root, 'scripts/ais-relay.cjs'), 'utf8');
 
 const NOW = Date.parse('2026-08-20T22:00:00.000Z');
+const TPS_UPDATED_AT = Date.parse('2026-08-20T21:55:00.000Z');
 
 function jsonResponse(body, { status = 200, headers = {} } = {}) {
   const payload = typeof body === 'string' ? body : JSON.stringify(body);
@@ -66,17 +77,45 @@ function xmlResponse(body, { status = 200 } = {}) {
   });
 }
 
-function classifyCad(name, { ageMin, length = 128 } = {}) {
+function tpsMetadata(updatedAt = TPS_UPDATED_AT) {
+  return { editingInfo: { dataLastEditDate: updatedAt } };
+}
+
+function tpsSnapshot(body = TPS_FIXTURE, updatedAt = TPS_UPDATED_AT) {
+  return parseTpsFeatureServer({ ...body, updatedAt });
+}
+
+function classifyCad(name, {
+  fetchedAgeMin,
+  contentAgeMin = 1,
+  maxContentAgeMin,
+  length = 128,
+} = {}) {
   const redisKey = STANDALONE_KEYS[name];
   const seedCfg = SEED_META[name];
   return classifyKey(name, redisKey, { allowOnDemand: false }, {
     keyStrens: new Map([[redisKey, length]]),
     keyErrors: new Map(),
     keyMetaValues: new Map([[seedCfg.key, JSON.stringify({
-      fetchedAt: NOW - ageMin * 60_000,
+      fetchedAt: NOW - fetchedAgeMin * 60_000,
       recordCount: 3,
+      newestItemAt: NOW - contentAgeMin * 60_000,
+      oldestItemAt: NOW - contentAgeMin * 60_000,
+      maxContentAgeMin,
     })]]),
     keyMetaErrors: new Map(),
+    now: NOW,
+  });
+}
+
+function classifyMissingTps(activated) {
+  const redisKey = STANDALONE_KEYS.torontoTps;
+  return classifyKey('torontoTps', redisKey, { allowOnDemand: true }, {
+    keyStrens: new Map([[redisKey, 0]]),
+    keyErrors: new Map(),
+    keyMetaValues: new Map(),
+    keyMetaErrors: new Map(),
+    activationStates: new Map([['torontoTps', activated]]),
     now: NOW,
   });
 }
@@ -119,16 +158,29 @@ test('TFS parser keeps incident number, type, streets, dispatch time, alarm, are
 test('TFS parser rejects non-CAD HTML and empty junk', () => {
   assert.throws(() => parseTfsLivecadXml('<html>no feed</html>'), /livecad XML/);
   assert.throws(() => parseTfsLivecadXml(''), /livecad XML/);
+  assert.throws(
+    () => parseTfsLivecadXml('<tfs_active_incidents><event></event></tfs_active_incidents>'),
+    /update_from_db_time/,
+  );
+  assert.throws(
+    () => parseTfsLivecadXml(TFS_FIXTURE.replace('<event_num>F26129800</event_num>', '<event_num></event_num>')),
+    /event 1 is missing required fields/,
+  );
+  assert.throws(
+    () => parseTfsLivecadXml('<tfs_active_incidents><update_from_db_time>2026-08-20 17:45:01</update_from_db_time><event></tfs_active_incidents>'),
+    /malformed event structure/,
+  );
   const empty = parseTfsLivecadXml('<tfs_active_incidents><update_from_db_time>2026-08-20 17:45:01</update_from_db_time></tfs_active_incidents>');
   assert.deepEqual(empty.records, []);
   assert.equal(validateTfsEnvelope(empty), true);
 });
 
 test('TPS FeatureServer parser keeps coords, intersection, type, time, source', () => {
-  const snapshot = parseTpsFeatureServer(TPS_FIXTURE);
+  const snapshot = tpsSnapshot();
   assert.equal(validateTpsEnvelope(snapshot), true);
   assert.equal(snapshot.source, TPS_SOURCE);
   assert.equal(snapshot.feedUrl, TPS_LAYER_URL);
+  assert.equal(snapshot.updatedAt, TPS_UPDATED_AT);
   assert.match(TPS_LAYER_URL, /C4S_Public_NoGO\/FeatureServer\/0/);
   assert.equal(declareTpsRecords(snapshot), 2);
 
@@ -145,7 +197,7 @@ test('TPS FeatureServer parser keeps coords, intersection, type, time, source', 
 });
 
 test('TPS privacy-excluded categories remain absent and are not backfilled', () => {
-  const snapshot = parseTpsFeatureServer(TPS_FIXTURE);
+  const snapshot = tpsSnapshot();
   const types = snapshot.records.map((r) => r.callType);
   assert.equal(types.includes('DOMESTIC'), false);
   assert.equal(types.includes('SEXUAL ASSAULT'), false);
@@ -155,11 +207,37 @@ test('TPS privacy-excluded categories remain absent and are not backfilled', () 
   assert.ok(isTpsPrivacyExcluded('SEXUAL ASSAULT', 'SEXAS'));
   assert.ok(isTpsPrivacyExcluded('MEDICAL', 'MEDIC'));
   assert.ok(isTpsPrivacyExcluded('ACTIVE OPS', 'ACTOP'));
+  assert.ok(isTpsPrivacyExcluded('', 'DOMVI'));
+  assert.ok(isTpsPrivacyExcluded(null, 'SEXAS'));
+  assert.ok(isTpsPrivacyExcluded('', 'medic'));
+  assert.ok(isTpsPrivacyExcluded(null, ' ACTOP '));
   assert.equal(isTpsPrivacyExcluded('BREAK & ENTER', 'BREEN'), false);
   assert.equal(isTpsPrivacyExcluded('SEE AMBULANCE', 'SEEAMB'), false);
   assert.match(LIB_SOURCE, /Do not backfill privacy/);
   assert.doesNotMatch(TFS_SEEDER, /tpscalls\.live|broadcastify|citizen\.com/i);
   assert.doesNotMatch(TPS_SEEDER, /tpscalls\.live|broadcastify|citizen\.com/i);
+});
+
+test('TPS parser rejects malformed public rows but permits private-only and empty feeds', () => {
+  const publicFeature = TPS_FIXTURE.features[0];
+  const malformedPublic = {
+    ...publicFeature,
+    attributes: { ...publicFeature.attributes, OCCURRENCE_TIME: null, OCCURRENCE_TIME_AGOL: null },
+  };
+  assert.throws(
+    () => tpsSnapshot({ features: [malformedPublic] }),
+    /feature 1 is missing required fields/,
+  );
+  assert.throws(
+    () => parseTpsFeatureServer({ features: [], updatedAt: null }),
+    /edit timestamp/,
+  );
+
+  const privateOnly = tpsSnapshot({ features: TPS_FIXTURE.features.slice(2) });
+  assert.deepEqual(privateOnly.records, []);
+  const empty = tpsSnapshot({ features: [] });
+  assert.deepEqual(empty.records, []);
+  assert.equal(validateTpsEnvelope(empty), true);
 });
 
 test('fetchTorontoTfs uses the discovered XML URL and Chrome UA', async () => {
@@ -189,71 +267,133 @@ test('fetchTorontoTps queries only C4S_Public_NoGO and drops privacy rows', asyn
   const result = await fetchTorontoTps({
     fetchFn: async (url, init) => {
       urls.push({ url: String(url), init });
+      if (String(url) === TPS_METADATA_URL) return jsonResponse(tpsMetadata());
       return jsonResponse({ ...TPS_FIXTURE, exceededTransferLimit: false });
     },
   });
   assert.equal(result.records.length, 2);
-  assert.ok(urls[0].url.startsWith(TPS_QUERY_URL));
-  assert.match(urls[0].url, /C4S_Public_NoGO/);
-  assert.doesNotMatch(urls[0].url, /Major.?Crime|MCI|YTD/i);
-  assert.equal(isAllowedTpsHost(urls[0].url), true);
+  assert.equal(result.updatedAt, TPS_UPDATED_AT);
+  assert.equal(urls[0].url, TPS_METADATA_URL);
+  assert.ok(urls[1].url.startsWith(TPS_QUERY_URL));
+  assert.match(urls[1].url, /C4S_Public_NoGO/);
+  assert.doesNotMatch(urls[1].url, /Major.?Crime|MCI|YTD/i);
+  assert.equal(isAllowedTpsHost(urls[1].url), true);
   assert.equal(isAllowedTpsHost('https://services.arcgis.com/S9th0jAJ7bqgIRjw/arcgis/rest/services/Major_Crime_Indicators/FeatureServer/0/query'), false);
 });
 
-test('last-good: one source failing must not wipe the other', async () => {
-  const incoming = await fetchTorontoOfficialCad({
-    tfs: {
-      fetchFn: async () => xmlResponse(TFS_FIXTURE),
-    },
-    tps: {
-      fetchFn: async () => new Response('nope', { status: 503 }),
-    },
-  });
-  assert.equal(incoming.tfs.ok, true);
-  assert.equal(incoming.tps.ok, false);
-  assert.equal(incoming.tfs.snapshot.records.length, 3);
-
-  const previousTps = parseTpsFeatureServer({
-    features: [TPS_FIXTURE.features[0]],
-  });
-  const merged = mergeTorontoCadLastGood(incoming, { tps: previousTps });
-  assert.equal(merged.tfs.records.length, 3);
-  assert.equal(merged.tps.records.length, 1);
-  assert.equal(merged.tps.records[0].id, 'tps-69');
-
-  const tpsOnly = await fetchTorontoOfficialCad({
-    tfs: { fetchFn: async () => new Response('down', { status: 500 }) },
-    tps: { fetchFn: async () => jsonResponse({ ...TPS_FIXTURE, exceededTransferLimit: false }) },
-  });
-  assert.equal(tpsOnly.tfs.ok, false);
-  assert.equal(tpsOnly.tps.ok, true);
-  const mergedTfs = mergeTorontoCadLastGood(tpsOnly, { tfs: incoming.tfs.snapshot });
-  assert.equal(mergedTfs.tfs.records[0].incidentNumber, incoming.tfs.snapshot.records[0].incidentNumber);
-  assert.equal(mergedTfs.tps.records.length, 2);
-
+test('Toronto fetchers reject their own upstream failures independently', async () => {
   await assert.rejects(
-    () => fetchTorontoOfficialCad({
-      tfs: { fetchFn: async () => new Response('down', { status: 500 }) },
-      tps: { fetchFn: async () => new Response('down', { status: 500 }) },
+    () => fetchTorontoTfs({ fetchFn: async () => new Response('down', { status: 503 }) }),
+    /toronto-tfs: HTTP 503/,
+  );
+  await assert.rejects(
+    () => fetchTorontoTps({ fetchFn: async () => new Response('down', { status: 503 }) }),
+    /metadata HTTP 503/,
+  );
+  await assert.rejects(
+    () => fetchTorontoTps({ fetchFn: async () => jsonResponse({ editingInfo: {} }) }),
+    /no valid edit timestamp/,
+  );
+  await assert.rejects(
+    () => fetchTorontoTps({
+      metadataUrl: 'https://services.arcgis.com/other-org/arcgis/rest/services/C4S_Public_NoGO/FeatureServer/0?f=pjson',
+      fetchFn: async () => jsonResponse(tpsMetadata()),
     }),
-    /both sources failed/,
+    /exact layer allowlist/,
   );
 });
 
-test('health: TFS stale after 15 min, TPS stale after 45 min', () => {
-  assert.equal(SEED_META.torontoTfs.key, 'seed-meta:safety:toronto-tfs');
+test('TPS fetch follows offsets, deduplicates across pages, and keeps the metadata watermark', async () => {
+  const offsets = [];
+  const first = TPS_FIXTURE.features[0];
+  const second = TPS_FIXTURE.features[1];
+  const result = await fetchTorontoTps({
+    fetchFn: async (url) => {
+      if (String(url) === TPS_METADATA_URL) return jsonResponse(tpsMetadata());
+      const offset = Number(new URL(url).searchParams.get('resultOffset'));
+      offsets.push(offset);
+      if (offset === 0) {
+        return jsonResponse({ features: [first, second], exceededTransferLimit: true });
+      }
+      return jsonResponse({ features: [first], exceededTransferLimit: false });
+    },
+  });
+
+  assert.deepEqual(offsets, [0, 2]);
+  assert.deepEqual(result.records.map((record) => record.id).sort(), ['tps-51', 'tps-69']);
+  assert.equal(result.updatedAt, TPS_UPDATED_AT);
+});
+
+test('TPS fetch rejects pagination exhaustion', async () => {
+  let queryCount = 0;
+  await assert.rejects(
+    () => fetchTorontoTps({
+      fetchFn: async (url) => {
+        if (String(url) === TPS_METADATA_URL) return jsonResponse(tpsMetadata());
+        queryCount += 1;
+        const feature = structuredClone(TPS_FIXTURE.features[0]);
+        feature.attributes.OBJECTID = 100 + queryCount;
+        return jsonResponse({ features: [feature], exceededTransferLimit: true });
+      },
+    }),
+    /pagination remains incomplete after 6 pages/,
+  );
+  assert.equal(queryCount, 6);
+});
+
+test('TPS fetch accepts a genuine empty source', async () => {
+  const snapshot = await fetchTorontoTps({
+    fetchFn: async (url) => String(url) === TPS_METADATA_URL
+      ? jsonResponse(tpsMetadata())
+      : jsonResponse({ features: [], exceededTransferLimit: false }),
+  });
+  assert.deepEqual(snapshot.records, []);
+  assert.equal(snapshot.updatedAt, TPS_UPDATED_AT);
+});
+
+test('health monitors active TPS freshness and activation without probing rights-pending TFS', () => {
+  assert.equal(SEED_META.torontoTfs, undefined);
   assert.equal(SEED_META.torontoTps.key, 'seed-meta:safety:toronto-tps');
-  assert.equal(SEED_META.torontoTfs.maxStaleMin, 15);
   assert.equal(SEED_META.torontoTps.maxStaleMin, 45);
   assert.equal(TFS_MAX_STALE_MIN, 15);
   assert.equal(TPS_MAX_STALE_MIN, 45);
-  assert.equal(STANDALONE_KEYS.torontoTfs, TFS_KEY);
+  assert.equal(STANDALONE_KEYS.torontoTfs, undefined);
   assert.equal(STANDALONE_KEYS.torontoTps, TPS_KEY);
+  assert.equal(SEED_META.torontoTps.cutover.mode, 'activation-marker');
+  assert.equal(SEED_META.torontoTps.cutover.activationKey, 'seed-activated:safety:toronto-tps');
+  assert.equal(ACTIVATION_MARKERS.torontoTps, 'seed-activated:safety:toronto-tps');
+  assert.ok(ON_DEMAND_KEYS.has('torontoTps'));
 
-  assert.equal(classifyCad('torontoTfs', { ageMin: 14 }).status, 'OK');
-  assert.equal(classifyCad('torontoTfs', { ageMin: 16 }).status, 'STALE_SEED');
-  assert.equal(classifyCad('torontoTps', { ageMin: 44 }).status, 'OK');
-  assert.equal(classifyCad('torontoTps', { ageMin: 46 }).status, 'STALE_SEED');
+  assert.equal(classifyCad('torontoTps', { fetchedAgeMin: 44 }).status, 'OK');
+  assert.equal(classifyCad('torontoTps', { fetchedAgeMin: 46 }).status, 'STALE_SEED');
+
+  assert.equal(classifyCad('torontoTps', {
+    fetchedAgeMin: 1,
+    contentAgeMin: 44,
+    maxContentAgeMin: TPS_MAX_STALE_MIN,
+  }).status, 'OK');
+  assert.equal(classifyCad('torontoTps', {
+    fetchedAgeMin: 1,
+    contentAgeMin: 46,
+    maxContentAgeMin: TPS_MAX_STALE_MIN,
+  }).status, 'STALE_CONTENT');
+  assert.equal(classifyMissingTps(false).status, 'EMPTY_ON_DEMAND');
+  assert.equal(classifyMissingTps(true).status, 'EMPTY');
+});
+
+test('content metadata uses authoritative provider clocks', () => {
+  const tfs = parseTfsLivecadXml(TFS_FIXTURE);
+  const tps = tpsSnapshot();
+  assert.deepEqual(torontoTfsContentMeta(tfs), {
+    newestItemAt: tfs.updatedAt,
+    oldestItemAt: tfs.updatedAt,
+  });
+  assert.deepEqual(torontoTpsContentMeta(tps), {
+    newestItemAt: TPS_UPDATED_AT,
+    oldestItemAt: TPS_UPDATED_AT,
+  });
+  assert.equal(torontoTfsContentMeta({ updatedAt: null }), null);
+  assert.equal(torontoTpsContentMeta({}), null);
 });
 
 test('own canonical keys stay off canadaAlerts / canadaRoads / torontoRoads', () => {
@@ -263,10 +403,12 @@ test('own canonical keys stay off canadaAlerts / canadaRoads / torontoRoads', ()
   assert.doesNotMatch(TPS_SEEDER, /alerts:canada|infra:toronto-roads|infra:ontario-511/);
   assert.doesNotMatch(TFS_SEEDER, /TPS_KEY|safety:toronto-tps/);
   assert.doesNotMatch(TPS_SEEDER, /TFS_KEY|safety:toronto-tfs/);
-  assert.match(BUNDLE, /seed-toronto-tfs\.mjs/);
+  assert.doesNotMatch(BUNDLE, /seed-toronto-tfs\.mjs/);
   assert.match(BUNDLE, /seed-toronto-tps\.mjs/);
-  assert.match(BUNDLE, /seed-meta:safety:toronto-tfs/);
+  assert.doesNotMatch(BUNDLE, /seed-meta:safety:toronto-tfs/);
   assert.match(BUNDLE, /seed-meta:safety:toronto-tps/);
+  assert.match(TFS_SEEDER, /TFS_RIGHTS_APPROVED\s*=\s*false/);
+  assert.match(TPS_SEEDER, /afterPublish:\s*markTpsActivated/);
   assert.ok(TFS_TTL_SECONDS * 1000 > 5 * 60_000);
   assert.ok(TPS_TTL_SECONDS * 1000 > 15 * 60_000);
   assert.ok(TFS_TTL_SECONDS > TFS_MAX_STALE_MIN * 60);
@@ -280,16 +422,22 @@ test('attribution records TFS and TPS licences and credits the agencies', () => 
   assert.match(ATTRIBUTION, /Toronto Police Service/);
   assert.match(ATTRIBUTION, /Open Government Licence/);
   assert.match(ATTRIBUTION, /C4S_Public_NoGO|Calls for Service/);
-  assert.ok(EMPTY_DATA_OK_KEYS.has('torontoTfs'));
-  assert.ok(EMPTY_DATA_OK_KEYS.has('torontoTps'));
-  assert.ok(MISSING_DATA_IS_FAILURE_KEYS.has('torontoTfs'));
-  assert.ok(MISSING_DATA_IS_FAILURE_KEYS.has('torontoTps'));
+  assert.match(ATTRIBUTION, /Production execution remains code-disabled/);
+  assert.match(ATTRIBUTION, /status: 'excluded'/);
+  assert.equal(EMPTY_DATA_OK_KEYS.has('torontoTfs'), false);
+  assert.equal(EMPTY_DATA_OK_KEYS.has('torontoTps'), false);
+  assert.equal(MISSING_DATA_IS_FAILURE_KEYS.has('torontoTfs'), false);
+  assert.equal(MISSING_DATA_IS_FAILURE_KEYS.has('torontoTps'), false);
+  assert.ok(ZERO_RECORD_DATA_OK_KEYS.has('torontoTps'));
 });
 
 test('host allowlists and isolation from the relay', () => {
   assert.equal(isAllowedTfsHost(TFS_FEED_URL), true);
   assert.equal(isAllowedTfsHost('https://secure.toronto.ca/data/fire/livecad.xml'), false);
   assert.equal(isAllowedTpsHost(TPS_QUERY_URL + '?f=json'), true);
+  assert.equal(isAllowedTpsHost(TPS_METADATA_URL), true);
+  assert.equal(isAllowedTpsHost('https://services.arcgis.com/other-org/arcgis/rest/services/C4S_Public_NoGO/FeatureServer/0/query'), false);
+  assert.equal(isAllowedTpsHost(`${TPS_LAYER_URL}-copy/query`), false);
   assert.equal(isAllowedTpsHost('https://services6.arcgis.com/ubm4tcTYICKBpist/arcgis/rest/services/Evacuation_Orders_and_Alerts/FeatureServer/0/query'), false);
   assert.doesNotMatch(RELAY, /livecad\.xml|C4S_Public_NoGO|toronto-tfs|toronto-tps/);
   assert.match(LIB_SOURCE, new RegExp(TFS_HOST.replace(/\./g, '\\.')));

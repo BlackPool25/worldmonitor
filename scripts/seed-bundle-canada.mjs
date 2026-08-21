@@ -66,12 +66,9 @@ const CANADA_SECTIONS = [
   // (domain, resource) = ('transit', 'ttc-alerts'). It is NOT the canonical key
   // with :v1 stripped.
   { label: 'TTC-Alerts', script: 'seed-ttc-alerts.mjs', seedMetaKey: 'seed-meta:transit:ttc-alerts', canonicalKey: 'transit:ttc:alerts:v1', intervalMs: 5 * MIN, timeoutMs: 60_000 },
-  // Official TFS live CAD XML at /data/fire/livecad.xml. Own key; not roads or
-  // canadaAlerts. 5min matches the CAD refresh; stale at 15min.
-  { label: 'Toronto-TFS', script: 'seed-toronto-tfs.mjs', seedMetaKey: 'seed-meta:safety:toronto-tfs', canonicalKey: 'safety:toronto-tfs:v1', intervalMs: 5 * MIN, timeoutMs: 60_000 },
   // Official TPS C4S_Public_NoGO FeatureServer. Own key; privacy exclusions
   // stay empty. 15min matches the 15–20min map refresh; stale at 45min.
-  { label: 'Toronto-TPS', script: 'seed-toronto-tps.mjs', seedMetaKey: 'seed-meta:safety:toronto-tps', canonicalKey: 'safety:toronto-tps:v1', intervalMs: 15 * MIN, timeoutMs: 60_000 },
+  { label: 'Toronto-TPS', script: 'seed-toronto-tps.mjs', seedMetaKey: 'seed-meta:safety:toronto-tps', canonicalKey: 'safety:toronto-tps:v1', completionMetaKey: 'seed-completion:safety:toronto-tps', intervalMs: 15 * MIN, timeoutMs: 105_000 },
 ];
 
 // This bundle is registered before its members merge, so on an intermediate

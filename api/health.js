@@ -541,9 +541,8 @@ const STANDALONE_KEYS = {
   viarailLive:           'transit:viarail:live',
   // Seeded and health-monitored; no transit panel yet (#6623).
   ttcAlerts: 'transit:ttc:alerts:v1',
-  // Official Toronto live-CAD / public-safety (#6682). Own keys; not folded
+  // Official TPS public-safety calls for service (#6682). Own key; not folded
   // into canadaAlerts / canadaRoads / torontoRoads. No map panel yet.
-  torontoTfs: 'safety:toronto-tfs:v1',
   torontoTps: 'safety:toronto-tps:v1',
 };
 
@@ -862,8 +861,17 @@ const SEED_META = {
   // :v1 stripped. The colon form probed a key the seeder never writes, which reads
   // absent forever no matter how healthy the seeder is.
   ttcAlerts:        { key: 'seed-meta:transit:ttc-alerts',         maxStaleMin: 30, cutover: { mode: 'expiring-ack', fromKey: null, issue: 6623, status: 'EMPTY' } }, // 5min bundle member; 30 = 6× interval. Empty until first Railway tick is an expiring acknowledgement, not a crit.
-  torontoTfs:       { key: 'seed-meta:safety:toronto-tfs',         maxStaleMin: 15, cutover: { mode: 'expiring-ack', fromKey: null, issue: 7037, status: 'EMPTY' } }, // TFS CAD every 5min; 15 = 3× interval
-  torontoTps:       { key: 'seed-meta:safety:toronto-tps',         maxStaleMin: 45, cutover: { mode: 'expiring-ack', fromKey: null, issue: 7038, status: 'EMPTY' } }, // TPS public map 15–20min; 45 = 3× interval
+  torontoTps: {
+    key: 'seed-meta:safety:toronto-tps',
+    maxStaleMin: 45, // TPS public map 15–20min; 45 = 3× interval
+    activationKey: 'seed-activated:safety:toronto-tps',
+    cutover: {
+      mode: 'activation-marker',
+      fromKey: null,
+      issue: 7038,
+      activationKey: 'seed-activated:safety:toronto-tps',
+    },
+  },
   spending:         { key: 'seed-meta:economic:spending',          maxStaleMin: 120 },
   globalTenders:    { key: 'seed-meta:economic:global-tenders',   maxStaleMin: 180 },
   globalTendersSam:             { key: 'seed-meta:economic:global-tenders:sam',              maxStaleMin: 240 }, // 150min request pacing + hourly member gate yields ~180min publishes; 240min leaves one gate of scheduling jitter without raising the 10/day SAM budget.
@@ -1352,6 +1360,10 @@ const ON_DEMAND_KEYS = new Set([
   // Softening lifts once the durable activation marker exists.
   'bocValet',
   'statcanWds',
+  // Scheduled TPS producer deployment bridge. The seeder writes a permanent
+  // marker after its first successful canonical publish; health is strict from
+  // that point onward.
+  'torontoTps',
   // Scheduled producer. The marker is written only after a successful
   // publish of the canonical snapshot. Before that first publish, absence is
   // pending activation; after it, missing or stale data is strict.
@@ -1428,6 +1440,7 @@ const ACTIVATION_MARKERS = {
   cbrRates: 'seed-activated:economic:cbr-rates',
   bocValet: 'seed-activated:economic:boc-valet',
   statcanWds: 'seed-activated:economic:statcan-wds',
+  torontoTps: SEED_META.torontoTps.activationKey,
   physicalPremiums: SEED_META.physicalPremiums.activationKey,
   newsFeedHealth: 'seed-activated:news:feed-health',
   newsRecallBenchmark: 'seed-activated:news:recall-benchmark',
@@ -1503,7 +1516,7 @@ function parseFredRatesRolloutUntil(results) {
 }
 
 const EMPTY_DATA_OK_KEYS = new Set([
-  'notamClosures', 'faaDelays', 'intlDelays', 'gpsjam', 'positiveGeoEvents', 'weatherAlerts', 'canadaRoads', 'albertaRoads', 'manitobaRoads', 'torontoRoads', 'bcOpen511', 'canadaAlerts', 'canadaAlertsAbSource', 'canadaAlertsBcSource', 'canadaAlertsSkSource', 'torontoTfs', 'torontoTps',
+  'notamClosures', 'faaDelays', 'intlDelays', 'gpsjam', 'positiveGeoEvents', 'weatherAlerts', 'canadaRoads', 'albertaRoads', 'manitobaRoads', 'torontoRoads', 'bcOpen511', 'canadaAlerts', 'canadaAlertsAbSource', 'canadaAlertsBcSource', 'canadaAlertsSkSource',
   'earningsCalendar', 'econCalendar', 'cotPositioning',
   'usniFleet', // usniFleetStale covers the fallback; relay outages → WARN not CRIT
   'newsThreatSummary', // only written when classify produces country matches; quiet news periods = 0 countries, no write
@@ -1561,18 +1574,15 @@ const MISSING_DATA_IS_FAILURE_KEYS = new Set([
   'canadaAlertsAbSource',
   'canadaAlertsBcSource',
   'canadaAlertsSkSource',
-  // Official Toronto Fire / Police live-CAD (#6682). Each seeder publishes an
-  // explicit {records:[]} envelope on a quiet tick (zeroIsValid). Fresh meta
-  // plus a vanished key is a failed publish, not a quiet period. One source
-  // failing must not wipe the other — they are independent keys.
-  'torontoTfs',
-  'torontoTps',
 ]);
 
 // Keys where a present payload with meta recordCount=0 is valid, but the data
 // key itself must still exist. Do not use this set in the missing-key branch.
 const ZERO_RECORD_DATA_OK_KEYS = new Set([
   ...EMPTY_DATA_OK_KEYS,
+  // TPS publishes an explicit {records:[]} envelope on a quiet tick. Keep zero
+  // valid without softening a missing payload after its activation marker exists.
+  'torontoTps',
   'globalTendersSam', 'globalTendersTed', 'globalTendersContractsFinder', 'globalTendersCanadaBuys', 'globalTendersGets', 'globalTendersWorldBank',
   // retailer-spread is SUPPRESSED to an explicit 0 by the aggregate job when a
   // market's retailers share < MIN_SPREAD_ITEMS (4) common basket items —

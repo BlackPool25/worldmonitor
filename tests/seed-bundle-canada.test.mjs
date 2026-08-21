@@ -20,6 +20,8 @@ import { bundleDisableEnvVar, disabledMembersFromEnv } from '../scripts/_bundle-
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const src = readFileSync(join(root, 'scripts/seed-bundle-canada.mjs'), 'utf8');
 const RUNNER_SRC = readFileSync(join(root, 'scripts/_bundle-runner.mjs'), 'utf8');
+const TORONTO_TFS_SEEDER_SRC = readFileSync(join(root, 'scripts/seed-toronto-tfs.mjs'), 'utf8');
+const TORONTO_TPS_SEEDER_SRC = readFileSync(join(root, 'scripts/seed-toronto-tps.mjs'), 'utf8');
 const ACCEPTANCE_BASELINE = JSON.parse(
   readFileSync(join(root, 'scripts/seed-freshness-baseline.json'), 'utf8'),
 );
@@ -34,7 +36,7 @@ function section(label) {
   return found;
 }
 
-test('declares exactly the ten Canada members', () => {
+test('declares exactly the nine active Canada members', () => {
   assert.deepEqual(
     sections.map((s) => s.label).sort(),
     [
@@ -45,7 +47,6 @@ test('declares exactly the ten Canada members', () => {
       'SaskAlert',
       'TTC-Alerts',
       'Toronto-Roads',
-      'Toronto-TFS',
       'Toronto-TPS',
       'VIA-Rail-Live',
     ],
@@ -66,7 +67,6 @@ test('per-member cadence is the declared one, not TTC\'s cron inherited', () => 
     ['SaskAlert', 15 * MIN],
     ['VIA-Rail-Live', 15 * MIN],
     ['TTC-Alerts', 5 * MIN],
-    ['Toronto-TFS', 5 * MIN],
     ['Toronto-TPS', 15 * MIN],
   ];
   for (const [label, intervalMs] of expected) {
@@ -138,7 +138,6 @@ test('seed-meta keys follow runSeed(domain, resource), not the canonical key', (
     // 'ttc-alerts', so the meta key takes a HYPHEN. api/health.js watched
     // seed-meta:transit:ttc:alerts and would never have seen a publish.
     'TTC-Alerts': ['seed-meta:transit:ttc-alerts', 'transit:ttc:alerts:v1'],
-    'Toronto-TFS': ['seed-meta:safety:toronto-tfs', 'safety:toronto-tfs:v1'],
     'Toronto-TPS': ['seed-meta:safety:toronto-tps', 'safety:toronto-tps:v1'],
   };
   // The shared parser does not expose these fields, so read them off the section
@@ -161,6 +160,70 @@ test('every member declares a timeout, and none can exceed the wall budget', () 
     assert.ok(Number.isFinite(timeoutMs) && timeoutMs > 0, `${s.label} must declare a timeoutMs`);
     assert.ok(timeoutMs < maxBundleMs, `${s.label} timeout ${timeoutMs} cannot fit the ${maxBundleMs}ms budget`);
   }
+});
+
+test('Toronto sources use provider freshness, bounded TPS execution, and rights-safe activation', () => {
+  const expected = [
+    {
+      label: 'Toronto-TFS',
+      seederSrc: TORONTO_TFS_SEEDER_SRC,
+      contentMeta: 'torontoTfsContentMeta',
+      maxContentAgeMin: 'TFS_MAX_STALE_MIN',
+      fetchPhaseTimeoutMs: 45_000,
+      parentTimeoutMs: null,
+    },
+    {
+      label: 'Toronto-TPS',
+      seederSrc: TORONTO_TPS_SEEDER_SRC,
+      contentMeta: 'torontoTpsContentMeta',
+      maxContentAgeMin: 'TPS_MAX_STALE_MIN',
+      fetchPhaseTimeoutMs: 90_000,
+      parentTimeoutMs: 105_000,
+    },
+  ];
+
+  for (const contract of expected) {
+    assert.match(
+      contract.seederSrc,
+      new RegExp(`contentMeta:\\s*${contract.contentMeta}`),
+      `${contract.label} must derive freshness from the provider payload`,
+    );
+    assert.match(
+      contract.seederSrc,
+      new RegExp(`maxContentAgeMin:\\s*${contract.maxContentAgeMin}`),
+      `${contract.label} content age must use its declared source freshness budget`,
+    );
+
+    const fetchTimeout = /fetchPhaseTimeoutMs:\s*([\d_]+)/.exec(contract.seederSrc);
+    assert.ok(fetchTimeout, `${contract.label} must declare fetchPhaseTimeoutMs`);
+    const fetchPhaseTimeoutMs = Number(fetchTimeout[1].replaceAll('_', ''));
+    assert.equal(fetchPhaseTimeoutMs, contract.fetchPhaseTimeoutMs, `${contract.label} fetch deadline changed`);
+
+    if (contract.label === 'Toronto-TFS') {
+      assert.match(contract.seederSrc, /TFS_RIGHTS_APPROVED\s*=\s*false/);
+      assert.doesNotMatch(src, /seed-toronto-tfs\.mjs|seed-meta:safety:toronto-tfs/);
+      continue;
+    }
+
+    const parentTimeoutMs = resolveExpr(src, section(contract.label).timeoutMsExpr);
+    assert.equal(parentTimeoutMs, contract.parentTimeoutMs, `${contract.label} parent deadline changed`);
+    assert.ok(
+      fetchPhaseTimeoutMs < parentTimeoutMs,
+      `${contract.label} fetch deadline must leave the bundle runner time to terminate cleanly`,
+    );
+    const tpsLine = src.split('\n').find((line) => line.includes("label: 'Toronto-TPS'"));
+    assert.match(
+      tpsLine,
+      /completionMetaKey: 'seed-completion:safety:toronto-tps'/,
+      'Toronto-TPS must attest that activation work completed after the canonical write',
+    );
+  }
+
+  assert.match(TORONTO_TPS_SEEDER_SRC, /afterPublish:\s*markTpsActivated/);
+  assert.match(TORONTO_TPS_SEEDER_SRC, /seed-activated:safety:toronto-tps/);
+  const acknowledged = new Set(ACCEPTANCE_BASELINE.acknowledged.map((entry) => entry.name));
+  assert.equal(acknowledged.has('torontoTfs'), false);
+  assert.equal(acknowledged.has('torontoTps'), false);
 });
 
 test('skips a member whose script is absent instead of failing the whole bundle', () => {
@@ -280,7 +343,7 @@ test('every member’s TTL and health staleness budget cover its bundle interval
     checked += 1;
   }
 
-  assert.equal(checked, 10, 'all ten members must be checked, or this guard is partly vacuous');
+  assert.equal(checked, 9, 'all nine active members must be checked, or this guard is partly vacuous');
 });
 
 describe('per-member kill switch (#6711)', () => {

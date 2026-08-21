@@ -258,9 +258,9 @@ const PROVIDER_OVERRIDES = {
   },
   'www.toronto.ca': {
     provider: 'Toronto Fire Services',
-    license: 'City of Toronto Open Government Licence exists city-wide but is not data-bound to the live CAD XML. No CKAN package for toronto-fire-active-incidents or livecad.xml (package_search 2026-08-20). The official page publishes TFS CAD at /data/fire/livecad.xml under City of Toronto copyright (DC.Rights) and the Fire Services routine-disclosure plan. Not the historical fire-incidents CKAN datasets.',
+    license: 'Excluded candidate: City of Toronto Open Government Licence exists city-wide but is not data-bound to the live CAD XML. No CKAN package for toronto-fire-active-incidents or livecad.xml (package_search 2026-08-20). The official page publishes TFS CAD at /data/fire/livecad.xml under City of Toronto copyright (DC.Rights) and the Fire Services routine-disclosure plan. Production execution remains code-disabled until redistribution and display rights are documented. Not the historical fire-incidents CKAN datasets.',
     attribution: 'Toronto Fire Services, Active Incidents (CAD). https://www.toronto.ca/community-people/public-safety-alerts/alerts-notifications/toronto-fire-active-incidents/',
-    status: 'terms-review',
+    status: 'excluded',
   },
   'services.arcgis.com': {
     provider: 'Toronto Police Service',

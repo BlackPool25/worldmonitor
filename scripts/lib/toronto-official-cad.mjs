@@ -28,6 +28,7 @@ export const TPS_HOST = 'services.arcgis.com';
 export const TPS_ORG_ID = 'S9th0jAJ7bqgIRjw';
 export const TPS_LAYER_NAME = 'C4S_Public_NoGO';
 export const TPS_LAYER_URL = 'https://services.arcgis.com/S9th0jAJ7bqgIRjw/arcgis/rest/services/C4S_Public_NoGO/FeatureServer/0';
+export const TPS_METADATA_URL = `${TPS_LAYER_URL}?f=pjson`;
 export const TPS_QUERY_URL = 'https://services.arcgis.com/S9th0jAJ7bqgIRjw/arcgis/rest/services/C4S_Public_NoGO/FeatureServer/0/query';
 export const TPS_SOURCE = 'toronto-tps';
 export const TPS_KEY = 'safety:toronto-tps:v1';
@@ -69,6 +70,12 @@ export const TPS_PRIVACY_EXCLUSION_PATTERNS = Object.freeze([
   /\bsick\s+person\b/i,
   /active\s+(shooter|op|ops|operation|incident)\b/i,
 ]);
+const TPS_PRIVACY_EXCLUSION_CODES = new Set([
+  'DOMVI',
+  'SEXAS',
+  'MEDIC',
+  'ACTOP',
+]);
 
 function isHttpsHost(url, host) {
   try {
@@ -96,7 +103,8 @@ export function isAllowedTpsHost(url) {
   if (!isHttpsHost(url, TPS_HOST)) return false;
   try {
     const parsed = new URL(url);
-    return parsed.pathname.includes(`/arcgis/rest/services/${TPS_LAYER_NAME}/FeatureServer/0`);
+    const layerPath = `/${TPS_ORG_ID}/arcgis/rest/services/${TPS_LAYER_NAME}/FeatureServer/0`;
+    return parsed.pathname === layerPath || parsed.pathname === `${layerPath}/query`;
   } catch {
     return false;
   }
@@ -120,7 +128,7 @@ function extractTag(block, tagName) {
  */
 export function parseTorontoLocalMs(raw) {
   const match = String(raw || '').trim().match(
-    /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})/,
+    /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})$/,
   );
   if (!match) return null;
   const iso = `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6]}`;
@@ -142,11 +150,11 @@ export function parseTorontoLocalMs(raw) {
     const wall = `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}:${get('second')}`;
     if (wall === iso) return ms;
   }
-  const fallback = Date.parse(`${iso}-04:00`);
-  return Number.isFinite(fallback) ? fallback : null;
+  return null;
 }
 
 function finiteCoord(value) {
+  if (value == null || value === '') return null;
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
 }
@@ -158,27 +166,37 @@ function torontoPoint(lon, lat) {
 }
 
 export function parseTfsLivecadXml(xml) {
-  if (typeof xml !== 'string' || !xml.includes('<tfs_active_incidents')) {
+  if (typeof xml !== 'string'
+    || !/<tfs_active_incidents\b[^>]*>[\s\S]*<\/tfs_active_incidents>/i.test(xml)) {
     throw new Error('toronto-tfs: body is not TFS livecad XML');
   }
   const updatedRaw = cleanText(extractTag(xml, 'update_from_db_time'));
   const updatedAt = parseTorontoLocalMs(updatedRaw);
+  if (!updatedRaw || updatedAt == null) {
+    throw new Error('toronto-tfs: missing or invalid update_from_db_time');
+  }
   const records = [];
   const eventRe = /<event\b[^>]*>[\s\S]*?<\/event>/gi;
+  const eventOpenCount = (xml.match(/<event\b/gi) || []).length;
   let match;
+  let eventIndex = 0;
   while ((match = eventRe.exec(xml)) !== null) {
+    eventIndex += 1;
     const block = match[0];
     const incidentNumber = cleanText(extractTag(block, 'event_num'));
-    if (!incidentNumber) continue;
     const primeStreet = cleanText(extractTag(block, 'prime_street'));
     const crossStreet = cleanText(extractTag(block, 'cross_streets'));
     const dispatchRaw = cleanText(extractTag(block, 'dispatch_time'));
     const dispatchMs = parseTorontoLocalMs(dispatchRaw);
+    const type = cleanText(extractTag(block, 'event_type'));
+    if (!incidentNumber || !type || dispatchMs == null || (!primeStreet && !crossStreet)) {
+      throw new Error(`toronto-tfs: event ${eventIndex} is missing required fields`);
+    }
     const unitsRaw = cleanText(extractTag(block, 'units_disp'));
     records.push({
       id: incidentNumber,
       incidentNumber,
-      type: cleanText(extractTag(block, 'event_type')),
+      type,
       primeStreet,
       crossStreet,
       dispatchTime: dispatchRaw || null,
@@ -193,6 +211,9 @@ export function parseTfsLivecadXml(xml) {
       throw new Error(`toronto-tfs: incident count exceeds ${TFS_MAX_RECORDS}`);
     }
   }
+  if (eventIndex !== eventOpenCount) {
+    throw new Error('toronto-tfs: malformed event structure');
+  }
   records.sort((a, b) => (b.dispatchMs ?? 0) - (a.dispatchMs ?? 0) || a.id.localeCompare(b.id));
   return {
     schemaVersion: 1,
@@ -206,6 +227,8 @@ export function parseTfsLivecadXml(xml) {
 }
 
 export function isTpsPrivacyExcluded(callType, callTypeCode) {
+  const normalizedCode = cleanText(callTypeCode).toUpperCase();
+  if (TPS_PRIVACY_EXCLUSION_CODES.has(normalizedCode)) return true;
   const haystack = `${callType || ''} ${callTypeCode || ''}`;
   return TPS_PRIVACY_EXCLUSION_PATTERNS.some((pattern) => pattern.test(haystack));
 }
@@ -229,33 +252,45 @@ function featureCoords(feature, attributes) {
   return torontoPoint(finiteCoord(attributes?.LONGITUDE), finiteCoord(attributes?.LATITUDE));
 }
 
-export function normalizeTpsFeature(feature) {
+function classifyTpsFeature(feature) {
   const attributes = featureAttributes(feature);
-  if (!attributes) return null;
+  if (!attributes) return { kind: 'malformed', record: null };
   const callType = cleanText(attributes.CALL_TYPE);
   const callTypeCode = cleanText(attributes.CALL_TYPE_CODE);
-  if (isTpsPrivacyExcluded(callType, callTypeCode)) return null;
+  if (isTpsPrivacyExcluded(callType, callTypeCode)) {
+    return { kind: 'privacy-excluded', record: null };
+  }
 
   const objectId = attributes.OBJECTID;
   const occurrenceMs = Number(attributes.OCCURRENCE_TIME_AGOL ?? attributes.OCCURRENCE_TIME);
-  const timeMs = Number.isFinite(occurrenceMs) && occurrenceMs > 0 ? occurrenceMs : null;
+  const timeMs = Number.isFinite(occurrenceMs)
+    && occurrenceMs > 0
+    && Number.isFinite(new Date(occurrenceMs).getTime())
+    ? occurrenceMs
+    : null;
   const { lat, lon } = featureCoords(feature, attributes);
   const crossStreets = cleanText(attributes.CROSS_STREETS);
-  if (lat == null && lon == null && !crossStreets) return null;
+  if (objectId == null || objectId === '' || (!callType && !callTypeCode) || timeMs == null
+    || (lat == null && lon == null && !crossStreets)) {
+    return { kind: 'malformed', record: null };
+  }
 
   return {
-    id: objectId != null ? `tps-${objectId}` : `tps-${callTypeCode}-${timeMs ?? 'na'}`,
-    type: callType || callTypeCode || 'unknown',
-    callType,
-    callTypeCode,
-    crossStreets,
-    division: cleanText(attributes.DIVISION),
-    occurrenceTime: timeMs != null ? new Date(timeMs).toISOString() : null,
-    occurrenceMs: timeMs,
-    lat,
-    lon,
-    source: TPS_SOURCE,
-    jurisdiction: TORONTO_CAD_JURISDICTION,
+    kind: 'record',
+    record: {
+      id: `tps-${objectId}`,
+      type: callType || callTypeCode,
+      callType,
+      callTypeCode,
+      crossStreets,
+      division: cleanText(attributes.DIVISION),
+      occurrenceTime: new Date(timeMs).toISOString(),
+      occurrenceMs: timeMs,
+      lat,
+      lon,
+      source: TPS_SOURCE,
+      jurisdiction: TORONTO_CAD_JURISDICTION,
+    },
   };
 }
 
@@ -276,11 +311,20 @@ export function parseTpsFeatureServer(body) {
   if (!features) {
     throw new Error('toronto-tps: body is not a FeatureServer feature list');
   }
+  const updatedAt = Number(data.updatedAt);
+  if (!Number.isFinite(updatedAt) || updatedAt <= 0) {
+    throw new Error('toronto-tps: missing or invalid layer edit timestamp');
+  }
   const records = [];
   const seen = new Set();
-  for (const feature of features) {
-    const record = normalizeTpsFeature(feature);
-    if (!record || seen.has(record.id)) continue;
+  for (let index = 0; index < features.length; index += 1) {
+    const classified = classifyTpsFeature(features[index]);
+    if (classified.kind === 'privacy-excluded') continue;
+    if (classified.kind === 'malformed') {
+      throw new Error(`toronto-tps: feature ${index + 1} is missing required fields`);
+    }
+    const { record } = classified;
+    if (seen.has(record.id)) continue;
     seen.add(record.id);
     records.push(record);
     if (records.length > TPS_MAX_RECORDS) {
@@ -293,8 +337,23 @@ export function parseTpsFeatureServer(body) {
     agency: 'tps',
     source: TPS_SOURCE,
     feedUrl: TPS_LAYER_URL,
+    updatedAt,
     records,
   };
+}
+
+export function torontoTfsContentMeta(snapshot) {
+  const updatedAt = Number(snapshot?.updatedAt);
+  return Number.isFinite(updatedAt) && updatedAt > 0
+    ? { newestItemAt: updatedAt, oldestItemAt: updatedAt }
+    : null;
+}
+
+export function torontoTpsContentMeta(snapshot) {
+  const updatedAt = Number(snapshot?.updatedAt);
+  return Number.isFinite(updatedAt) && updatedAt > 0
+    ? { newestItemAt: updatedAt, oldestItemAt: updatedAt }
+    : null;
 }
 
 async function readLimitedText(resp, maxBytes, label) {
@@ -327,8 +386,8 @@ export async function fetchTorontoTfs(opts = {}) {
   return parseTfsLivecadXml(await readLimitedText(resp, maxBytes, 'toronto-tfs'));
 }
 
-function buildTpsQueryUrl(offset) {
-  const url = new URL(TPS_QUERY_URL);
+function buildTpsQueryUrl(offset, baseUrl = TPS_QUERY_URL) {
+  const url = new URL(baseUrl);
   url.searchParams.set('where', '1=1');
   url.searchParams.set('outFields', QUERY_FIELDS);
   url.searchParams.set('returnGeometry', 'true');
@@ -345,14 +404,36 @@ export async function fetchTorontoTps(opts = {}) {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxBytes = opts.maxBytes ?? MAX_PAYLOAD_BYTES;
   const userAgent = opts.userAgent || CHROME_UA;
+  const metadataUrl = opts.metadataUrl ?? TPS_METADATA_URL;
+  if (!isAllowedTpsHost(metadataUrl) || new URL(metadataUrl).pathname.endsWith('/query')) {
+    throw new Error(`toronto-tps: metadata URL is not on the exact layer allowlist (${TPS_ORG_ID} ${TPS_LAYER_NAME})`);
+  }
+  const metadataResp = await fetchFn(metadataUrl, {
+    headers: { Accept: 'application/json', 'User-Agent': userAgent },
+    signal: AbortSignal.timeout(timeoutMs),
+    redirect: 'error',
+  });
+  if (!metadataResp.ok) throw new Error(`toronto-tps: metadata HTTP ${metadataResp.status}`);
+  const metadataText = await readLimitedText(metadataResp, maxBytes, 'toronto-tps metadata');
+  let metadata;
+  try { metadata = JSON.parse(metadataText); } catch {
+    throw new Error('toronto-tps: layer metadata is not parseable JSON');
+  }
+  if (metadata?.error) {
+    throw new Error(`toronto-tps: layer metadata error ${metadata.error.message || metadata.error.code || 'unknown'}`);
+  }
+  const updatedAt = Number(metadata?.editingInfo?.dataLastEditDate ?? metadata?.editingInfo?.lastEditDate);
+  if (!Number.isFinite(updatedAt) || updatedAt <= 0) {
+    throw new Error('toronto-tps: layer metadata has no valid edit timestamp');
+  }
   const features = [];
   let offset = 0;
   let exceededTransferLimit = false;
 
   for (let page = 0; page < TPS_MAX_PAGES; page += 1) {
-    const url = opts.url ?? buildTpsQueryUrl(offset);
-    if (!isAllowedTpsHost(url)) {
-      throw new Error(`toronto-tps: host is not on the allowlist (${TPS_HOST} ${TPS_LAYER_NAME})`);
+    const url = buildTpsQueryUrl(offset, opts.url ?? TPS_QUERY_URL);
+    if (!isAllowedTpsHost(url) || !new URL(url).pathname.endsWith('/query')) {
+      throw new Error(`toronto-tps: query URL is not on the exact layer allowlist (${TPS_ORG_ID} ${TPS_LAYER_NAME})`);
     }
     const resp = await fetchFn(url, {
       headers: { Accept: 'application/json', 'User-Agent': userAgent },
@@ -381,39 +462,7 @@ export async function fetchTorontoTps(opts = {}) {
     throw new Error(`toronto-tps: pagination remains incomplete after ${TPS_MAX_PAGES} pages`);
   }
 
-  return parseTpsFeatureServer({ features });
-}
-
-export async function fetchTorontoOfficialCad(opts = {}) {
-  const [tfs, tps] = await Promise.allSettled([
-    fetchTorontoTfs(opts.tfs ?? opts),
-    fetchTorontoTps(opts.tps ?? opts),
-  ]);
-  const result = {
-    tfs: tfs.status === 'fulfilled'
-      ? { ok: true, snapshot: tfs.value, error: null }
-      : { ok: false, snapshot: null, error: tfs.reason },
-    tps: tps.status === 'fulfilled'
-      ? { ok: true, snapshot: tps.value, error: null }
-      : { ok: false, snapshot: null, error: tps.reason },
-  };
-  if (!result.tfs.ok && !result.tps.ok) {
-    const tfsMsg = result.tfs.error?.message || result.tfs.error;
-    const tpsMsg = result.tps.error?.message || result.tps.error;
-    throw new Error(`toronto-cad: both sources failed (tfs: ${tfsMsg}; tps: ${tpsMsg})`);
-  }
-  return result;
-}
-
-/**
- * One source failing must not wipe the other. Used by tests and any union
- * consumer. Each seeder still publishes through its own runSeed last-good.
- */
-export function mergeTorontoCadLastGood(incoming, lastGood = {}) {
-  return {
-    tfs: incoming?.tfs?.ok ? incoming.tfs.snapshot : (lastGood.tfs ?? null),
-    tps: incoming?.tps?.ok ? incoming.tps.snapshot : (lastGood.tps ?? null),
-  };
+  return parseTpsFeatureServer({ features, updatedAt });
 }
 
 export function validateTfsEnvelope(data) {
@@ -422,6 +471,8 @@ export function validateTfsEnvelope(data) {
     && data.schemaVersion === 1
     && data.agency === 'tfs'
     && data.source === TFS_SOURCE
+    && Number.isFinite(data.updatedAt)
+    && data.updatedAt > 0
     && Array.isArray(data.records);
 }
 
@@ -431,6 +482,8 @@ export function validateTpsEnvelope(data) {
     && data.schemaVersion === 1
     && data.agency === 'tps'
     && data.source === TPS_SOURCE
+    && Number.isFinite(data.updatedAt)
+    && data.updatedAt > 0
     && Array.isArray(data.records);
 }
 
