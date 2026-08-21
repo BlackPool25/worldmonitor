@@ -88,6 +88,18 @@ export const MARKETING_IGNORE_ERRORS: RegExp[] = [
   // all, so this can never come from our own bundle, minified or not
   // (WORLDMONITOR-102).
   /\bzaloJSV2\b/,
+  // iOS in-app WebView native bridge. The host app injects `sendDataToNative` /
+  // `sendPageHideMessage` into the document and they dereference
+  // `window.webkit.messageHandlers`, which only exists when a WKWebView host
+  // registered a script-message handler — so it is undefined in the plain
+  // browsers those in-app views also run. Neither identifier appears anywhere
+  // in either bundle, and this array's sibling `WKWebView API client did not
+  // respond to this postMessage` entry covers the same injected bridge from
+  // the other direction. Already suppressed on the dashboard since
+  // WORLDMONITOR-KJ (`src/bootstrap/sentry-init.ts`); the two surfaces run
+  // separate Sentry clients, so the marketing copy was the gap that let
+  // WORLDMONITOR-108 through.
+  /webkit\.messageHandlers/,
 ];
 
 /** Sentry's own hashed SDK chunk — infrastructure, never evidence of our code. */

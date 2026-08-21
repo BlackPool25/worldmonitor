@@ -66,6 +66,21 @@ describe('marketing ignoreErrors', () => {
     assert.equal(isIgnored('ReferenceError', 'zaloJSV2 is not defined'), true);
   });
 
+  it('drops the iOS in-app WebView native bridge (WORLDMONITOR-108)', () => {
+    // Verbatim production value: Safari phrases the missing bridge this way,
+    // thrown from the host app's injected `sendDataToNative`.
+    assert.equal(
+      isIgnored('TypeError', "undefined is not an object (evaluating 'window.webkit.messageHandlers')"),
+      true,
+    );
+    // Chrome/Android in-app views phrase the same dereference differently.
+    assert.equal(
+      isIgnored('TypeError', "Cannot read properties of undefined (reading 'messageHandlers')"),
+      false,
+      'the pattern keys on the webkit-qualified path, not a bare `messageHandlers` read',
+    );
+  });
+
   // Positive control for the `\b` bounds on the Zalo entry: the pattern must
   // key on the identifier, not on a substring that a longer word contains.
   it('keeps an error that merely mentions a similar word', () => {
