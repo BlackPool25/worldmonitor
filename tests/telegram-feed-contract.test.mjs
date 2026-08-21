@@ -113,6 +113,33 @@ describe('api/telegram-feed contract normalization', () => {
     assert.deepEqual(data.items, []);
   });
 
+  it('keeps the private cache posture on the raw-body fallthrough when normalization throws', async () => {
+    // The one 200 path that returns the UN-normalized relay body. JSON.parse
+    // succeeds on `null`, then normalizeTelegramFeed dereferences `parsed.messages`
+    // and throws, so execution falls through to the raw-body return. That branch
+    // carries its own Cache-Control/Vary pair; without this case, deleting either
+    // one (or restoring `public, s-maxage=...` there) leaves the suite green.
+    globalThis.fetch = async () => new Response('null', {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    const handler = (await import(`../api/telegram-feed.js?t=${Date.now()}`)).default;
+    const res = await handler(await makeRequest());
+    assert.equal(res.status, 200);
+    const cacheControl = res.headers.get('cache-control') || '';
+    assert.equal(cacheControl, 'private, max-age=30');
+    assert.doesNotMatch(cacheControl, /public|s-maxage/);
+    // Assert the FULL Vary value, not just one member: a substring check on
+    // X-WorldMonitor-Key alone stays green if Origin is dropped, which would make
+    // the per-Origin Access-Control-Allow-Origin unsafe for any intermediary
+    // that stores the response.
+    assert.equal(res.headers.get('vary'), 'Origin, Cookie, X-WorldMonitor-Key, X-Api-Key, Authorization');
+    // Proves the fallthrough actually ran: the body is the raw relay payload,
+    // not a normalized envelope.
+    assert.equal(await res.text(), 'null');
+  });
+
   it('returns a non-null timestamp string when relay items omit timestamps', async () => {
     globalThis.fetch = async () => new Response(JSON.stringify({
       enabled: true,

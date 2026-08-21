@@ -2,6 +2,7 @@
 import { getRelayBaseUrl, getRelayHeaders, fetchWithTimeout, buildRelayResponse } from './_relay.js';
 import { getCorsHeaders, isDisallowedOrigin } from './_cors.js';
 import { validateApiKey } from './_api-key.js';
+import { checkRateLimit } from './_rate-limit.js';
 import { jsonResponse } from './_json-response.js';
 import { captureSilentError } from './_sentry-edge.js';
 
@@ -185,6 +186,22 @@ export default async function handler(req) {
   if (keyCheck.required && !keyCheck.valid) {
     return jsonResponse({ error: keyCheck.error }, 401, { 'Cache-Control': 'no-store', ...corsHeaders });
   }
+
+  // The credential above is attributable, not scarce: POST /api/wm-session mints
+  // an anonymous wms_ token to anyone (30/min/IP, 12h TTL), so without a volume
+  // ceiling one token drives unbounded ?limit=200 reads of the R4 corpus for half
+  // a day. Pair the gate with a limit the way the sibling credentialed relay
+  // proxies already do (api/polymarket.js requireApiKey+requireRateLimit,
+  // api/rss-proxy.js's direct checkRateLimit call). 60/min/IP is double the
+  // panel's own 60s refresh cadence (REFRESH_INTERVALS.telegramIntel), so a real
+  // dashboard tab — including a burst of topic-tab switches — never trips it.
+  // Fails open when Upstash is unconfigured, matching rss-proxy.
+  const rateLimitResponse = await checkRateLimit(req, corsHeaders, {
+    scope: 'telegram-feed',
+    limit: 60,
+    window: '60 s',
+  });
+  if (rateLimitResponse) return rateLimitResponse;
 
   const relayBaseUrl = getRelayBaseUrl();
   if (!relayBaseUrl) {
