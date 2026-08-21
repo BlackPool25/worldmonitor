@@ -14,7 +14,7 @@ import {
   GTA_UPDATE_HOST,
   GTA_UPDATE_LAST_INGEST_URL,
   GTA_UPDATE_PRODUCTION_ENABLED,
-  GTA_UPDATE_RIGHTS_GATE,
+  GTA_UPDATE_RIGHTS_STATUS,
   GTA_UPDATE_SITE_URL,
   GTA_UPDATE_WRITER_ENABLED,
   classifyGtaDescription,
@@ -172,7 +172,7 @@ describe('GTA Update parser contract (#7012)', () => {
   it('refuses the production writer', () => {
     assert.equal(GTA_UPDATE_WRITER_ENABLED, false);
     assert.equal(GTA_UPDATE_PRODUCTION_ENABLED, false);
-    assert.equal(GTA_UPDATE_RIGHTS_GATE, 'terms-review');
+    assert.equal(GTA_UPDATE_RIGHTS_STATUS, 'permission-held');
     assert.throws(() => refuseGtaProductionWrite(), /disabled/);
     assert.equal(declareGtaRecords({ records: [] }), 0);
     assert.match(GTA_UPDATE_SITE_URL, /gtaupdate\.com/);

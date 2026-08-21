@@ -1,11 +1,11 @@
 /**
  * GTA Update third-party TPS/TFS dispatch mirror (#7012).
  *
- * Unofficial, delayed, incomplete, entertainment-only. No public reuse
- * licence was found. Parser + denylist + ID contract are locked here; the
- * production writer stays disabled until written permission covers automated
- * fetch, cache, modification, public display, commercial use, API/MCP
- * redistribution, attribution, and downstream TPS/TFS rights.
+ * Unofficial, delayed, incomplete, entertainment-only. WorldMonitor holds
+ * reuse permission, confirmed by the repository owner on 2026-08-21. The
+ * private grant is not stored in this public repository. Parser + denylist +
+ * ID contracts are locked here; the production writer stays disabled until
+ * upstream provenance and the remaining product activation gates are accepted.
  *
  * Do not geocode location strings. Do not fold into canadaAlerts /
  * canadaRoads / weather / news / official live-CAD (#6682).
@@ -38,13 +38,13 @@ export function gtaFireSnapshotUrl(hours = 1) {
 
 export const GTA_UPDATE_WRITER_ENABLED = false;
 export const GTA_UPDATE_PRODUCTION_ENABLED = false;
-export const GTA_UPDATE_RIGHTS_GATE = 'terms-review';
-export const GTA_UPDATE_RIGHTS_BLOCKER = [
-  'No public reuse licence or terms page grants automated fetch, caching,',
-  'modification, public display, commercial use, or API/MCP redistribution.',
-  'Public reachability, CORS *, and robots.txt Allow are not permission.',
-  'Official TPS/TFS upstream provenance is unidentified; prefer #6682 when',
-  'those endpoints can provide the requested signal.',
+export const GTA_UPDATE_RIGHTS_STATUS = 'permission-held';
+export const GTA_UPDATE_ACTIVATION_BLOCKER = [
+  'WorldMonitor holds reuse permission; the private grant is not stored in',
+  'this public repository. Production remains disabled while official TPS/TFS',
+  'upstream provenance is unidentified and the remaining safety, cadence,',
+  'capacity, and product activation gates in issue #7012 are unaccepted.',
+  'Prefer #6682 when official endpoints can provide the requested signal.',
 ].join(' ');
 
 export const GTA_SEMANTIC = 'live_dispatch';
@@ -305,8 +305,8 @@ export function buildGtaSnapshot({
     official: false,
     verified: false,
     writerEnabled: GTA_UPDATE_WRITER_ENABLED,
-    rightsGate: GTA_UPDATE_RIGHTS_GATE,
-    rightsBlocker: GTA_UPDATE_RIGHTS_BLOCKER,
+    rightsStatus: GTA_UPDATE_RIGHTS_STATUS,
+    activationBlocker: GTA_UPDATE_ACTIVATION_BLOCKER,
     windowHours,
     fetchedAt,
     publisherTime: lastIngest?.publisherTime ?? null,
@@ -371,13 +371,13 @@ export function resolveGtaPublish(fetchResult, lastGood) {
 
 export function assertGtaWriterDisabled() {
   if (GTA_UPDATE_WRITER_ENABLED || GTA_UPDATE_PRODUCTION_ENABLED) {
-    throw new Error('gta-update: production writer must stay disabled until the rights-gate clears (#7012)');
+    throw new Error('gta-update: production writer must stay disabled until the activation gates clear (#7012)');
   }
 }
 
 export function refuseGtaProductionWrite() {
   assertGtaWriterDisabled();
-  throw new Error('gta-update: production writer is disabled (terms-review / rights-gate #7012)');
+  throw new Error('gta-update: production writer is disabled (upstream-provenance / activation gates #7012)');
 }
 
 async function readBoundedText(response, maxBytes) {

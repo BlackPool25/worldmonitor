@@ -17,6 +17,27 @@
  */
 
 import { CHROME_UA, MAX_PAYLOAD_BYTES } from '../_seed-utils.mjs';
+import {
+  TPS_CALLS_KEY,
+  TPS_CALLS_META_KEY,
+  TPS_CALLS_SEMANTIC,
+  TPS_CALLS_SOURCE,
+  TPS_MCI_KEY,
+  TPS_MCI_META_KEY,
+  TPS_MCI_SEMANTIC,
+  TPS_MCI_SOURCE,
+} from '../shared/toronto-safety.mjs';
+
+export {
+  TPS_CALLS_KEY,
+  TPS_CALLS_META_KEY,
+  TPS_CALLS_SEMANTIC,
+  TPS_CALLS_SOURCE,
+  TPS_MCI_KEY,
+  TPS_MCI_META_KEY,
+  TPS_MCI_SEMANTIC,
+  TPS_MCI_SOURCE,
+};
 
 export const TPS_ARCGIS_HOST = 'services.arcgis.com';
 export const TPS_OPEN_DATA_HOST = 'www.tps.ca';
@@ -36,14 +57,6 @@ export const TPS_CALLS_PAGE_CAP = 1000;
 export const TPS_MCI_SERVICE_ITEM_ID = TPS_MCI_CATALOG_ITEM;
 export const TPS_CALLS_SERVICE_ITEM_ID = TPS_CALLS_CATALOG_ITEM;
 
-export const TPS_MCI_SEMANTIC = 'reported_occurrence';
-export const TPS_CALLS_SEMANTIC = 'annual_aggregate';
-export const TPS_MCI_SOURCE = 'tps-mci';
-export const TPS_CALLS_SOURCE = 'tps-calls-attended';
-export const TPS_MCI_KEY = 'safety:toronto:tps-mci:v1';
-export const TPS_CALLS_KEY = 'safety:toronto:tps-calls-attended:v1';
-export const TPS_MCI_META_KEY = 'seed-meta:safety:tps-mci';
-export const TPS_CALLS_META_KEY = 'seed-meta:safety:tps-calls-attended';
 export const TPS_MCI_ID_NS = 'tps-mci';
 export const TPS_CALLS_ID_NS = 'tps-calls';
 
@@ -51,6 +64,8 @@ export const TPS_SCHEMA_VERSION = 1;
 export const TPS_SOURCE_VERSION = 'tps-open-data-ondemand-v1';
 export const TPS_TTL_SECONDS = 24 * 60 * 60;
 export const TPS_MAX_STALE_MIN = 20_160; // 14d — retrospective batch, not live CAD
+export const TPS_MCI_MAX_CONTENT_AGE_MIN = 120 * 24 * 60;
+export const TPS_CALLS_MAX_CONTENT_AGE_MIN = 400 * 24 * 60;
 export const TPS_REQUEST_TIMEOUT_MS = 30_000;
 export const TPS_DEFAULT_MCI_MAX_PAGES = 3;
 export const TPS_DEFAULT_CALLS_MAX_PAGES = 12;
@@ -311,10 +326,14 @@ export function tpsContentMeta(snapshot) {
   const contentMs = finiteNumber(snapshot?.newestContentAt);
   const year = finiteNumber(snapshot?.newestContentYear);
   const yearMs = year != null ? Date.UTC(year, 11, 31) : null;
-  const candidates = [editMs, contentMs, yearMs].filter((value) => Number.isFinite(value) && value > 0);
-  if (candidates.length === 0) return null;
+  const sourceContentMs = snapshot?.semantic === TPS_MCI_SEMANTIC ? contentMs : yearMs;
+  if (!Number.isFinite(editMs) || editMs <= 0 || !Number.isFinite(sourceContentMs) || sourceContentMs <= 0) {
+    return null;
+  }
+  const readinessClock = Math.min(editMs, sourceContentMs);
   return {
-    newestItemAt: Math.max(...candidates),
+    newestItemAt: readinessClock,
+    oldestItemAt: readinessClock,
     dataLastEditDate: editMs,
     newestContentAt: contentMs,
     newestContentYear: year,
@@ -378,24 +397,74 @@ export function interpretArcGisPage({ body, pageSize, label }) {
   };
 }
 
+function buildObjectIdsUrl(baseUrl, { where }) {
+  const url = new URL(baseUrl);
+  url.searchParams.set('where', where);
+  url.searchParams.set('returnIdsOnly', 'true');
+  url.searchParams.set('returnGeometry', 'false');
+  url.searchParams.set('f', 'json');
+  return url.toString();
+}
+
 function buildQueryUrl(baseUrl, {
-  offset,
+  objectIds,
   pageSize,
-  where,
   outFields,
   orderByFields,
   returnGeometry,
 }) {
   const url = new URL(baseUrl);
-  url.searchParams.set('where', where);
+  url.searchParams.set('objectIds', objectIds.join(','));
   url.searchParams.set('outFields', outFields);
   url.searchParams.set('returnGeometry', returnGeometry ? 'true' : 'false');
   url.searchParams.set('outSR', '4326');
-  url.searchParams.set('resultOffset', String(offset));
   url.searchParams.set('resultRecordCount', String(pageSize));
   url.searchParams.set('orderByFields', orderByFields);
   url.searchParams.set('f', 'json');
   return url.toString();
+}
+
+async function fetchArcGisJson(url, { fetchImpl, timeoutMs, maxBytes, label }) {
+  if (!isAllowedTpsHost(url)) throw new TpsOpenDataError(`host_not_allowlisted:${label}`);
+  let resp;
+  try {
+    resp = await fetchImpl(url, {
+      headers: { Accept: 'application/json', 'User-Agent': CHROME_UA },
+      signal: AbortSignal.timeout(timeoutMs),
+      redirect: 'error',
+    });
+  } catch (err) {
+    const message = `${err?.message || err}`;
+    if (err?.name === 'TimeoutError' || /timeout|aborted/i.test(message)) {
+      throw new TpsOpenDataError(`timeout:${label}`, { cause: err });
+    }
+    throw new TpsOpenDataError(`fetch_failed:${label}`, { cause: err });
+  }
+  if (!resp.ok) throw new TpsOpenDataError(`http_${resp.status}:${label}`, { status: resp.status });
+  return readLimitedJson(resp, maxBytes, label);
+}
+
+function featureObjectId(feature, objectIdField) {
+  const value = finiteNumber(feature?.attributes?.[objectIdField] ?? feature?.properties?.[objectIdField]);
+  return Number.isInteger(value) ? value : null;
+}
+
+function sortArcGisFeatures(features, orderByFields) {
+  const clauses = String(orderByFields || '').split(',').map((part) => {
+    const [field, direction] = part.trim().split(/\s+/);
+    return { field, direction: direction?.toUpperCase() === 'DESC' ? -1 : 1 };
+  }).filter((clause) => clause.field);
+  return [...features].sort((left, right) => {
+    for (const clause of clauses) {
+      const a = left?.attributes?.[clause.field] ?? left?.properties?.[clause.field];
+      const b = right?.attributes?.[clause.field] ?? right?.properties?.[clause.field];
+      if (a == null && b != null) return 1;
+      if (a != null && b == null) return -1;
+      if (a < b) return -1 * clause.direction;
+      if (a > b) return 1 * clause.direction;
+    }
+    return 0;
+  });
 }
 
 async function readLimitedJson(resp, maxBytes, label) {
@@ -418,6 +487,7 @@ export async function queryArcGisPages({
   where = '1=1',
   outFields = '*',
   orderByFields,
+  objectIdField = 'OBJECTID',
   returnGeometry = false,
   fetchImpl = DEFAULT_FETCH,
   timeoutMs = TPS_REQUEST_TIMEOUT_MS,
@@ -427,51 +497,62 @@ export async function queryArcGisPages({
   if (!isAllowedTpsHost(queryUrl)) {
     throw new TpsOpenDataError(`host_not_allowlisted:${label}`);
   }
-  const features = [];
-  let offset = 0;
-  let lastExceeded = false;
+  const idsBody = await fetchArcGisJson(buildObjectIdsUrl(queryUrl, { where }), {
+    fetchImpl, timeoutMs, maxBytes, label: `${label}:ids`,
+  });
+  if (idsBody?.error) throw new TpsOpenDataError(`upstream_error:${label}:ids:${idsBody.error?.message || 'error'}`);
+  if (!Array.isArray(idsBody?.objectIds)) throw new TpsOpenDataError(`schema_drift:${label}:object_ids_not_array`);
+  if (idsBody.objectIdFieldName && idsBody.objectIdFieldName !== objectIdField) {
+    throw new TpsOpenDataError(`schema_drift:${label}:object_id_field_${idsBody.objectIdFieldName}`);
+  }
+  const objectIds = idsBody.objectIds.map((value) => finiteNumber(value));
+  if (objectIds.some((value) => !Number.isInteger(value))) {
+    throw new TpsOpenDataError(`schema_drift:${label}:invalid_object_id`);
+  }
+  if (new Set(objectIds).size !== objectIds.length) {
+    throw new TpsOpenDataError(`schema_drift:${label}:duplicate_object_id_snapshot`);
+  }
+  if (objectIds.length > pageSize * maxPages) {
+    throw new TpsOpenDataError(`pagination_incomplete:${label}:max_pages_${maxPages}`);
+  }
+  if (objectIds.length === 0) return { features: [], truncated: false, pages: 0 };
 
-  for (let page = 0; page < maxPages; page += 1) {
+  const features = [];
+  for (let page = 0; page * pageSize < objectIds.length; page += 1) {
+    const pageIds = objectIds.slice(page * pageSize, (page + 1) * pageSize);
     const url = buildQueryUrl(queryUrl, {
-      offset,
+      objectIds: pageIds,
       pageSize,
-      where,
       outFields,
       orderByFields,
       returnGeometry,
     });
-    if (!isAllowedTpsHost(url)) throw new TpsOpenDataError(`host_not_allowlisted:${label}`);
-    let resp;
-    try {
-      resp = await fetchImpl(url, {
-        headers: { Accept: 'application/json', 'User-Agent': CHROME_UA },
-        signal: AbortSignal.timeout(timeoutMs),
-        redirect: 'error',
-      });
-    } catch (err) {
-      const message = `${err?.message || err}`;
-      if (err?.name === 'TimeoutError' || /timeout|aborted/i.test(message)) {
-        throw new TpsOpenDataError(`timeout:${label}`, { cause: err });
-      }
-      throw new TpsOpenDataError(`fetch_failed:${label}`, { cause: err });
+    const body = await fetchArcGisJson(url, { fetchImpl, timeoutMs, maxBytes, label });
+    if (body?.error) throw new TpsOpenDataError(`upstream_error:${label}:${body.error?.message || 'error'}`);
+    const pageFeatures = extractFeatures(body);
+    if (!Array.isArray(pageFeatures)) throw new TpsOpenDataError(`schema_drift:${label}:features_not_array`);
+    if (exceededTransferLimit(body)) throw new TpsOpenDataError(`partial_page:${label}`);
+    const returnedIds = pageFeatures.map((feature) => featureObjectId(feature, objectIdField));
+    if (returnedIds.some((value) => value == null) || new Set(returnedIds).size !== returnedIds.length) {
+      throw new TpsOpenDataError(`schema_drift:${label}:invalid_page_object_ids`);
     }
-    if (!resp.ok) {
-      throw new TpsOpenDataError(`http_${resp.status}:${label}`, { status: resp.status });
+    const pageIdSet = new Set(pageIds);
+    if (returnedIds.length !== pageIds.length || returnedIds.some((id) => !pageIdSet.has(id))) {
+      throw new TpsOpenDataError(`pagination_incomplete:${label}:object_id_mismatch`);
     }
-    const body = await readLimitedJson(resp, maxBytes, label);
-    const pageResult = interpretArcGisPage({ body, pageSize, label });
-    features.push(...pageResult.features);
-    offset += pageResult.features.length;
-    lastExceeded = pageResult.exceeded;
-    if (pageResult.done) {
-      return { features, truncated: false, pages: page + 1 };
-    }
+    features.push(...pageFeatures);
   }
-
-  if (lastExceeded) {
-    throw new TpsOpenDataError(`pagination_incomplete:${label}:max_pages_${maxPages}`);
+  const fetchedIds = features.map((feature) => featureObjectId(feature, objectIdField));
+  const fetchedIdSet = new Set(fetchedIds);
+  if (fetchedIds.length !== objectIds.length || fetchedIdSet.size !== objectIds.length
+      || objectIds.some((id) => !fetchedIdSet.has(id))) {
+    throw new TpsOpenDataError(`pagination_incomplete:${label}:object_id_set_mismatch`);
   }
-  return { features, truncated: false, pages: maxPages };
+  return {
+    features: sortArcGisFeatures(features, orderByFields),
+    truncated: false,
+    pages: Math.ceil(objectIds.length / pageSize),
+  };
 }
 
 export async function fetchTpsLayerMetadata(layerUrl, {
@@ -506,6 +587,9 @@ export async function fetchTpsMci({
 } = {}) {
   try {
     const layerMeta = metadata ?? await fetchTpsLayerMetadata(TPS_MCI_LAYER_URL, { fetchImpl });
+    if (layerMeta.serviceItemId !== TPS_MCI_SERVICE_ITEM_ID) {
+      throw new TpsOpenDataError(`service_item_mismatch:mci:${layerMeta.serviceItemId || 'missing'}`);
+    }
     if (layerMeta.maxRecordCount != null && pageSize > layerMeta.maxRecordCount) {
       throw new TpsOpenDataError(`page_exceeds_cap:mci:${layerMeta.maxRecordCount}`);
     }
@@ -520,6 +604,7 @@ export async function fetchTpsMci({
       where: where ?? mciLookbackWhere(now, lookbackDays),
       outFields: [...TPS_MCI_REQUIRED_FIELDS, 'OBJECTID', 'HOOD_140', 'NEIGHBOURHOOD_140'].join(','),
       orderByFields: 'REPORT_DATE DESC,OBJECTID',
+      objectIdField: 'OBJECTID',
       returnGeometry: false,
       fetchImpl,
       label: 'mci',
@@ -553,6 +638,9 @@ export async function fetchTpsCallsAttended({
 } = {}) {
   try {
     const layerMeta = metadata ?? await fetchTpsLayerMetadata(TPS_CALLS_LAYER_URL, { fetchImpl });
+    if (layerMeta.serviceItemId !== TPS_CALLS_SERVICE_ITEM_ID) {
+      throw new TpsOpenDataError(`service_item_mismatch:calls:${layerMeta.serviceItemId || 'missing'}`);
+    }
     if (layerMeta.maxRecordCount != null && pageSize > layerMeta.maxRecordCount) {
       throw new TpsOpenDataError(`page_exceeds_cap:calls:${layerMeta.maxRecordCount}`);
     }
@@ -567,6 +655,7 @@ export async function fetchTpsCallsAttended({
       where: '1=1',
       outFields: [...TPS_CALLS_REQUIRED_FIELDS, 'ObjectId', 'INDEX_'].join(','),
       orderByFields: 'EVENT_YEAR DESC,ObjectId',
+      objectIdField: 'ObjectId',
       returnGeometry: false,
       fetchImpl,
       label: 'calls',

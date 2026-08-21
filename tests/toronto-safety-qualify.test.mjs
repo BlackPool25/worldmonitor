@@ -8,7 +8,17 @@ import { __testing__ as healthTesting } from '../api/health.js';
 import { extractBundleSections } from './helpers/bundle-section-parser.mjs';
 import { bootstrapTierKeyNames } from '../shared/bootstrap-tier-keys.js';
 import { GTA_FIRE_KEY, GTA_POLICE_KEY, GTA_UPDATE_WRITER_ENABLED } from '../scripts/lib/gta-update.mjs';
-import { TPS_CALLS_KEY, TPS_MCI_KEY } from '../scripts/lib/tps-open-data.mjs';
+import {
+  TPS_CALLS_KEY,
+  TPS_CALLS_META_KEY,
+  TPS_CALLS_SEMANTIC,
+  TPS_CALLS_SOURCE,
+  TPS_MCI_KEY,
+  TPS_MCI_META_KEY,
+  TPS_MCI_SEMANTIC,
+  TPS_MCI_SOURCE,
+} from '../scripts/lib/tps-open-data.mjs';
+import { TORONTO_SAFETY_SOURCES } from '../shared/toronto-safety.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (rel) => readFileSync(join(root, rel), 'utf8');
@@ -21,42 +31,6 @@ const SAFETY_KEYS = [
 ];
 
 const SAFETY_HINT = /gta-update|gtaupdate|tps-mci|tps-calls-attended|tps-open-data/i;
-
-// Runtime contract lives in .mjs so node:test never imports TypeScript.
-const TORONTO_SAFETY_SOURCES = Object.freeze([
-  {
-    id: 'gta-update-police',
-    semantic: 'live_dispatch',
-    canonicalKey: GTA_POLICE_KEY,
-    productionWriter: 'disabled',
-    bootstrap: 'none',
-    geocode: false,
-  },
-  {
-    id: 'gta-update-fire',
-    semantic: 'live_dispatch',
-    canonicalKey: GTA_FIRE_KEY,
-    productionWriter: 'disabled',
-    bootstrap: 'none',
-    geocode: false,
-  },
-  {
-    id: 'tps-mci',
-    semantic: 'reported_occurrence',
-    canonicalKey: TPS_MCI_KEY,
-    productionWriter: 'on-demand',
-    bootstrap: 'none',
-    geocode: false,
-  },
-  {
-    id: 'tps-calls-attended',
-    semantic: 'annual_aggregate',
-    canonicalKey: TPS_CALLS_KEY,
-    productionWriter: 'on-demand',
-    bootstrap: 'none',
-    geocode: false,
-  },
-]);
 
 describe('Toronto safety qualification wiring (#7012)', () => {
   it('keeps live_dispatch, reported_occurrence, and annual_aggregate distinct', () => {
@@ -82,7 +56,7 @@ describe('Toronto safety qualification wiring (#7012)', () => {
       true,
     );
 
-    const coreSrc = read('src/services/toronto-safety-core.ts');
+    const coreSrc = read('shared/toronto-safety.js');
     assert.match(coreSrc, /live_dispatch/);
     assert.match(coreSrc, /reported_occurrence/);
     assert.match(coreSrc, /annual_aggregate/);
@@ -93,6 +67,22 @@ describe('Toronto safety qualification wiring (#7012)', () => {
     assert.match(coreSrc, /productionWriter: 'disabled'/);
     assert.match(coreSrc, /productionWriter: 'on-demand'/);
     assert.equal(/safety:toronto-tfs:v1|safety:toronto-tps:v1/.test(coreSrc), false);
+    assert.match(read('src/services/toronto-safety.ts'), /SafetyServiceClient/);
+    assert.match(read('src/components/TorontoSafetyPanel.ts'), /reported occurrences/i);
+    assert.match(read('server/worldmonitor/safety/v1/get-toronto-safety.ts'), /MAX_LIMIT = 100/);
+  });
+
+  it('keeps the scripts-only Railway contract aligned with the shared API contract', () => {
+    const mci = TORONTO_SAFETY_SOURCES.find((source) => source.id === TPS_MCI_SOURCE);
+    const calls = TORONTO_SAFETY_SOURCES.find((source) => source.id === TPS_CALLS_SOURCE);
+    assert.ok(mci);
+    assert.ok(calls);
+    assert.equal(TPS_MCI_SEMANTIC, mci.semantic);
+    assert.equal(TPS_CALLS_SEMANTIC, calls.semantic);
+    assert.equal(TPS_MCI_KEY, mci.canonicalKey);
+    assert.equal(TPS_CALLS_KEY, calls.canonicalKey);
+    assert.equal(TPS_MCI_META_KEY, mci.seedMetaKey);
+    assert.equal(TPS_CALLS_META_KEY, calls.seedMetaKey);
   });
 
   it('does not add GTA or TPS to seed-bundle-canada', () => {

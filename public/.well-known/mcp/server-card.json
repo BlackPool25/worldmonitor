@@ -33,6 +33,20 @@
   },
   "tools": [
     {
+      "name": "get_toronto_reported_occurrences",
+      "description": "Bounded Toronto Police Service Major Crime Indicators rows. Retrospective reported occurrences only; coordinates are approximate and this is not live dispatch.",
+      "_meta": {
+        "worldmonitor/access": "free-account"
+      }
+    },
+    {
+      "name": "get_toronto_calls_attended",
+      "description": "Bounded Toronto Police Service Calls for Service Attended annual aggregates. These are neighbourhood and division counts, not incident points.",
+      "_meta": {
+        "worldmonitor/access": "free-account"
+      }
+    },
+    {
       "name": "get_market_data",
       "description": "Real-time equity quotes, commodity prices (including SGE physical-vs-COMEX gold and silver premiums), crypto prices, forex FX rates, sector performance and valuation coverage, ETF flows, and Gulf market quotes from WorldMonitor's curated bootstrap cache. Covers the curated symbol universe only — it filters that snapshot rather than looking up arbitrary tickers.",
       "_meta": {

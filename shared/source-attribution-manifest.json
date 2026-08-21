@@ -4634,9 +4634,10 @@
       "provider": "GTA Update",
       "kind": "structured",
       "observed": true,
-      "license": "No public reuse licence. Public reachability, CORS Allow-Origin *, and robots.txt Allow: / are not redistribution permission. Rights-gate blocker (#7012): written permission covering automated fetching and rate, caching and retention, modification/normalization, public display, commercial use, redistribution through WorldMonitor APIs and MCP tools, required attribution, and downstream use of the underlying TPS/TFS data is required before any production fetcher, cache, API/MCP response, or public display is enabled. Official TPS/TFS upstream provenance is unidentified; prefer #6682 when those endpoints can provide the requested signal.",
-      "attribution": "GTA Update (unofficial third-party TPS/TFS dispatch mirror; not official, not verified, entertainment-only per publisher). Disabled pending written permission. https://gtaupdate.com/about.php",
-      "status": "terms-review",
+      "license": "Reuse permission held by WorldMonitor, as confirmed by the repository owner on 2026-08-21. The private grant is not stored in this public repository. Production activation remains separately blocked on official TPS/TFS upstream provenance and the safety, cadence, capacity, and product acceptance gates in issue #7012.",
+      "attribution": "GTA Update (unofficial third-party TPS/TFS dispatch mirror; not official, not verified, entertainment-only per publisher). Used with permission. Production disabled pending upstream provenance and product activation. https://gtaupdate.com/about.php",
+      "status": "reviewed",
+      "catalogActive": false,
       "references": [
         {
           "path": "scripts/lib/gta-update.mjs"

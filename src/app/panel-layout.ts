@@ -2222,6 +2222,7 @@ export class PanelLayoutManager implements AppModule {
     this.lazyDefaultPanel('satellite-fires', () => import('@/components/SatelliteFiresPanel'), 'SatelliteFiresPanel');
 
     this.lazyDefaultPanel('defense-patents', () => import('@/components/DefensePatentsPanel'), 'DefensePatentsPanel');
+    this.lazyDefaultPanel('toronto-safety', () => import('@/components/TorontoSafetyPanel'), 'TorontoSafetyPanel');
 
     // Correlation engine panels
     this.lazyImportedPanel('military-correlation', () => import('@/components/MilitaryCorrelationPanel'), 'MilitaryCorrelationPanel', (MilitaryCorrelationPanel) => {

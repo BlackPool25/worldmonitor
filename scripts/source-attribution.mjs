@@ -456,9 +456,10 @@ const PROVIDER_OVERRIDES = {
   },
   'gtaupdate.com': {
     provider: 'GTA Update',
-    license: 'No public reuse licence. Public reachability, CORS Allow-Origin *, and robots.txt Allow: / are not redistribution permission. Rights-gate blocker (#7012): written permission covering automated fetching and rate, caching and retention, modification/normalization, public display, commercial use, redistribution through WorldMonitor APIs and MCP tools, required attribution, and downstream use of the underlying TPS/TFS data is required before any production fetcher, cache, API/MCP response, or public display is enabled. Official TPS/TFS upstream provenance is unidentified; prefer #6682 when those endpoints can provide the requested signal.',
-    attribution: 'GTA Update (unofficial third-party TPS/TFS dispatch mirror; not official, not verified, entertainment-only per publisher). Disabled pending written permission. https://gtaupdate.com/about.php',
-    status: 'terms-review',
+    license: 'Reuse permission held by WorldMonitor, as confirmed by the repository owner on 2026-08-21. The private grant is not stored in this public repository. Production activation remains separately blocked on official TPS/TFS upstream provenance and the safety, cadence, capacity, and product acceptance gates in issue #7012.',
+    attribution: 'GTA Update (unofficial third-party TPS/TFS dispatch mirror; not official, not verified, entertainment-only per publisher). Used with permission. Production disabled pending upstream provenance and product activation. https://gtaupdate.com/about.php',
+    status: 'reviewed',
+    catalogActive: false,
   },
   'www.tps.ca': {
     provider: 'Toronto Police Service Open Data',
@@ -815,7 +816,7 @@ const PROVIDER_OVERRIDES = {
 // something `--write` can silently normalize into the manifest.
 export const PROVIDER_IDENTITY_REVIEW = Object.freeze({
   sha256: 'db912d6302941e077a5a0df7b087de37f4adb93e42c63240b540f7f41d494aa6',
-  reason: 'Add GTA Update (terms-review rights-gate) and group TPS Open Data ArcGIS/portal/open-data hosts as one official Ontario publisher.',
+  reason: 'Record the owner-confirmed GTA Update permission while keeping it inactive pending separate activation gates, and group TPS Open Data ArcGIS/portal/open-data hosts as one official Ontario publisher.',
   // A URL cited here is scanned like any other: this file sits inside
   // SOURCE_ROOTS, so citing a host that is not already a registered source
   // invents a provider row for it. The B.C. catalogue URLs above are safe
@@ -1288,6 +1289,9 @@ export function validateSourceAttributionLedger(manifest) {
     if (typeof entry.observed !== 'boolean') errors.push(`manifest entry ${label} observed must be boolean`);
     if (typeof entry.kind !== 'string' || !MANIFEST_KIND_RE.test(entry.kind)) errors.push(`invalid manifest kind for ${label}`);
     if (typeof entry.status !== 'string' || !MANIFEST_STATUSES.has(entry.status)) errors.push(`invalid manifest status for ${label}`);
+    if (entry.catalogActive !== undefined && typeof entry.catalogActive !== 'boolean') {
+      errors.push(`manifest entry ${label} catalogActive must be boolean when present`);
+    }
     if (typeof entry.provider !== 'string' || !entry.provider.trim() || typeof entry.license !== 'string' || !entry.license.trim() || typeof entry.attribution !== 'string' || !entry.attribution.trim()) {
       errors.push(`incomplete attribution metadata for ${label}`);
     }
@@ -1533,7 +1537,7 @@ export function validateProviderIdentityGroups(
 }
 
 export function isActiveSourceAttributionEntry(entry) {
-  return entry?.observed === true && CREDIT_BEARING_STATUSES.has(entry.status);
+  return entry?.observed === true && entry.catalogActive !== false && CREDIT_BEARING_STATUSES.has(entry.status);
 }
 
 export function activeSourceAttributionEntries(manifest) {

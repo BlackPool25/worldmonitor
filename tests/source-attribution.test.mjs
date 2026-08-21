@@ -5,6 +5,7 @@ import test from 'node:test';
 import {
   PROVIDER_IDENTITY_GROUPS,
   PROVIDER_IDENTITY_REVIEW,
+  activeSourceAttributionEntries,
   buildManifest,
   buildSourceAttributionStats,
   checkSourceAttribution,
@@ -298,7 +299,7 @@ test('single-host provider identity changes require a reviewed lifecycle epoch',
 test('the independent raw-manifest oracle catches an active-predicate mutation', async () => {
   const sourcePath = join(rootDir, 'scripts/source-attribution.mjs');
   const source = readFileSync(sourcePath, 'utf8');
-  const originalPredicate = "return entry?.observed === true && CREDIT_BEARING_STATUSES.has(entry.status);";
+  const originalPredicate = "return entry?.observed === true && entry.catalogActive !== false && CREDIT_BEARING_STATUSES.has(entry.status);";
   assert.equal(source.split(originalPredicate).length - 1, 1, 'mutation target must identify the canonical predicate once');
   const mutantDir = mkdtempSync(join(tmpdir(), 'source-attribution-mutant-'));
   const mutantPath = join(mutantDir, 'source-attribution-mutant.mjs');
@@ -376,17 +377,20 @@ test('City of Toronto CART host stays terms-review while CKAN licence_id is nots
   assert.equal(entry.provider, 'City of Toronto Open Data');
 });
 
-test('GTA Update stays terms-review with the rights-gate blocker recorded', () => {
+test('GTA Update records permission but stays inactive pending activation gates', () => {
   const inventory = scanUpstreamHosts(rootDir);
   const manifest = loadManifest(rootDir);
   const observed = inventory.find((entry) => entry.host === 'gtaupdate.com');
   assert.ok(observed, 'gtaupdate.com must be observed from the GTA Update adapter');
   const entry = [...manifest.entries, ...manifest.logicalEntries].find((row) => row.host === 'gtaupdate.com');
   assert.ok(entry, 'gtaupdate.com must have a generated attribution row');
-  assert.equal(entry.status, 'terms-review');
+  assert.equal(entry.status, 'reviewed');
   assert.equal(entry.provider, 'GTA Update');
-  assert.match(entry.license, /Rights-gate blocker/);
-  assert.notEqual(entry.status, 'reviewed');
+  assert.match(entry.license, /Reuse permission held by WorldMonitor/);
+  assert.match(entry.license, /upstream provenance/);
+  assert.equal(entry.catalogActive, false);
+  assert.equal(activeSourceAttributionEntries(manifest).some((row) => row.host === 'gtaupdate.com'), false);
+  assert.equal(rawManifestActiveEntries(manifest).some((row) => row.host === 'gtaupdate.com'), false);
 });
 
 test('TPS Open Data records the exact OGL-Ontario licence before reviewed', () => {

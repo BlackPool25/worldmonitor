@@ -3,11 +3,15 @@ import { describe, it } from 'node:test';
 
 import {
   TPS_CALLS_KEY,
+  TPS_CALLS_MAX_CONTENT_AGE_MIN,
   TPS_CALLS_PAGE_CAP,
+  TPS_CALLS_SERVICE_ITEM_ID,
   TPS_CALLS_SEMANTIC,
   TPS_MCI_KEY,
+  TPS_MCI_MAX_CONTENT_AGE_MIN,
   TPS_MCI_PAGE_CAP,
   TPS_MCI_REQUIRED_FIELDS,
+  TPS_MCI_SERVICE_ITEM_ID,
   TPS_MCI_SEMANTIC,
   TPS_OGL_ATTRIBUTION,
   buildTpsCallsSnapshot,
@@ -25,6 +29,8 @@ import {
   validateTpsCallsSnapshot,
   validateTpsMciSnapshot,
 } from '../scripts/lib/tps-open-data.mjs';
+import { runTpsSeed } from '../scripts/lib/tps-seed-runner.mjs';
+import { TPS_ON_DEMAND_SECTIONS } from '../scripts/seed-tps-open-data.mjs';
 
 const REPORT = Date.UTC(2026, 5, 30, 0, 0, 0);
 const OCC = Date.UTC(2026, 5, 29, 12, 0, 0);
@@ -89,16 +95,18 @@ function metadataBody({ maxRecordCount, fields, dataLastEditDate = 1784207489712
   };
 }
 
-function pagedFetch(pages, metadata) {
-  let queryCalls = 0;
+function stableFetch(features, metadata = null, objectIdField = 'OBJECTID') {
   return async (url) => {
     const parsed = new URL(url);
-    if (!parsed.searchParams.has('where')) {
-      return jsonResponse(metadata);
+    if (parsed.searchParams.get('returnIdsOnly') === 'true') {
+      return jsonResponse({
+        objectIdFieldName: objectIdField,
+        objectIds: features.map((row) => row.attributes[objectIdField]),
+      });
     }
-    const body = pages[queryCalls] ?? pageBody([]);
-    queryCalls += 1;
-    return jsonResponse(body);
+    if (!parsed.searchParams.has('objectIds')) return jsonResponse(metadata);
+    const ids = parsed.searchParams.get('objectIds').split(',').map(Number);
+    return jsonResponse(pageBody(features.filter((row) => ids.includes(row.attributes[objectIdField]))));
   };
 }
 
@@ -111,11 +119,8 @@ describe('TPS Open Data pagination and semantics (#7012)', () => {
       pageSize: TPS_MCI_PAGE_CAP,
       maxPages: 3,
       orderByFields: 'OBJECTID',
-      fetchImpl: pagedFetch([pageBody(first, { exceeded: true }), pageBody(second)], metadataBody({
-        maxRecordCount: 2000,
-        fields: ['OBJECTID'],
-        serviceItemId: '0a239a5563a344a3bbf8452504ed8d68',
-      })),
+      objectIdField: 'OBJECTID',
+      fetchImpl: stableFetch([...first, ...second]),
       label: 'mci',
     });
     assert.equal(result.features.length, 2250);
@@ -131,7 +136,8 @@ describe('TPS Open Data pagination and semantics (#7012)', () => {
       pageSize: TPS_CALLS_PAGE_CAP,
       maxPages: 4,
       orderByFields: 'ObjectId',
-      fetchImpl: pagedFetch([pageBody(first, { exceeded: true }), pageBody(second)]),
+      objectIdField: 'ObjectId',
+      fetchImpl: stableFetch([...first, ...second], null, 'ObjectId'),
       label: 'calls',
     });
     assert.equal(result.features.length, 1200);
@@ -174,14 +180,14 @@ describe('TPS Open Data pagination and semantics (#7012)', () => {
     );
 
     const http502 = await fetchTpsMci({
-      metadata: { maxRecordCount: 2000, fields: TPS_MCI_REQUIRED_FIELDS, editingInfo: { dataLastEditDate: 1 } },
+      metadata: { maxRecordCount: 2000, fields: TPS_MCI_REQUIRED_FIELDS, editingInfo: { dataLastEditDate: 1 }, serviceItemId: TPS_MCI_SERVICE_ITEM_ID },
       fetchImpl: async () => jsonResponse({ error: 'no' }, { status: 502 }),
     });
     assert.equal(http502.ok, false);
     assert.match(http502.reason, /http_502/);
 
     const malformed = await fetchTpsMci({
-      metadata: { maxRecordCount: 2000, fields: TPS_MCI_REQUIRED_FIELDS, editingInfo: { dataLastEditDate: 1 } },
+      metadata: { maxRecordCount: 2000, fields: TPS_MCI_REQUIRED_FIELDS, editingInfo: { dataLastEditDate: 1 }, serviceItemId: TPS_MCI_SERVICE_ITEM_ID },
       fetchImpl: async () => new Response('{not json', { status: 200, headers: { 'content-type': 'application/json' } }),
     });
     assert.equal(malformed.ok, false);
@@ -198,7 +204,8 @@ describe('TPS Open Data pagination and semantics (#7012)', () => {
     assert.equal(meta.dataLastEditDate, 1784207489712);
     assert.equal(meta.newestContentAt, REPORT);
     assert.notEqual(meta.newestItemAt, Date.parse(snapshot.fetchedAt));
-    assert.ok(meta.newestItemAt === 1784207489712 || meta.newestItemAt === REPORT);
+    assert.equal(meta.newestItemAt, Math.min(1784207489712, REPORT));
+    assert.equal(meta.oldestItemAt, meta.newestItemAt);
 
     const calls = buildTpsCallsSnapshot({
       records: [{ eventYear: 2025 }],
@@ -208,6 +215,10 @@ describe('TPS Open Data pagination and semantics (#7012)', () => {
     const callsMeta = tpsContentMeta(calls);
     assert.equal(callsMeta.newestContentYear, 2025);
     assert.equal(callsMeta.dataLastEditDate, 1784654305769);
+    assert.equal(callsMeta.newestItemAt, Math.min(1784654305769, Date.UTC(2025, 11, 31)));
+    assert.equal(tpsContentMeta(buildTpsMciSnapshot({ records: [], editingInfo: { dataLastEditDate: 1 } })), null);
+    assert.equal(TPS_MCI_MAX_CONTENT_AGE_MIN, 120 * 24 * 60);
+    assert.equal(TPS_CALLS_MAX_CONTENT_AGE_MIN, 400 * 24 * 60);
   });
 
   it('one source failing keeps the other last-good snapshot', async () => {
@@ -256,5 +267,100 @@ describe('TPS Open Data pagination and semantics (#7012)', () => {
     assert.equal(TPS_CALLS_KEY, 'safety:toronto:tps-calls-attended:v1');
     assert.ok(TPS_MCI_REQUIRED_FIELDS.includes('EVENT_UNIQUE_ID'));
     assert.ok(TPS_MCI_REQUIRED_FIELDS.includes('LONG_WGS84'));
+  });
+
+  it('freezes object IDs before paging so live insertions cannot duplicate or omit rows', async () => {
+    const original = [4, 3, 2, 1].map((id) => feature(mciAttrs({ OBJECTID: id, REPORT_DATE: REPORT + id })));
+    let idsSnapshotted = false;
+    const fetchImpl = async (url) => {
+      const parsed = new URL(url);
+      if (parsed.searchParams.get('returnIdsOnly') === 'true') {
+        idsSnapshotted = true;
+        return jsonResponse({ objectIdFieldName: 'OBJECTID', objectIds: [4, 3, 2, 1] });
+      }
+      assert.equal(idsSnapshotted, true);
+      const requested = parsed.searchParams.get('objectIds').split(',').map(Number);
+      const liveRows = [feature(mciAttrs({ OBJECTID: 5, REPORT_DATE: REPORT + 5 })), ...original];
+      return jsonResponse(pageBody(liveRows.filter((row) => requested.includes(row.attributes.OBJECTID))));
+    };
+    const result = await queryArcGisPages({
+      queryUrl: 'https://services.arcgis.com/S9th0jAJ7bqgIRjw/arcgis/rest/services/Major_Crime_Indicators_Open_Data/FeatureServer/0/query',
+      pageSize: 2,
+      maxPages: 2,
+      orderByFields: 'REPORT_DATE DESC,OBJECTID',
+      objectIdField: 'OBJECTID',
+      fetchImpl,
+      label: 'mci',
+    });
+    assert.deepEqual(result.features.map((row) => row.attributes.OBJECTID), [4, 3, 2, 1]);
+  });
+
+  it('fails closed before paging when the frozen ID set exceeds the page budget', async () => {
+    await assert.rejects(
+      queryArcGisPages({
+        queryUrl: 'https://services.arcgis.com/S9th0jAJ7bqgIRjw/arcgis/rest/services/Major_Crime_Indicators_Open_Data/FeatureServer/0/query',
+        pageSize: 2,
+        maxPages: 2,
+        orderByFields: 'OBJECTID',
+        objectIdField: 'OBJECTID',
+        fetchImpl: async () => jsonResponse({ objectIdFieldName: 'OBJECTID', objectIds: [1, 2, 3, 4, 5] }),
+        label: 'mci',
+      }),
+      /pagination_incomplete:mci:max_pages_2/,
+    );
+  });
+
+  it('fails closed when a page does not return the exact frozen IDs', async () => {
+    let call = 0;
+    await assert.rejects(
+      queryArcGisPages({
+        queryUrl: 'https://services.arcgis.com/S9th0jAJ7bqgIRjw/arcgis/rest/services/Major_Crime_Indicators_Open_Data/FeatureServer/0/query',
+        pageSize: 2,
+        maxPages: 1,
+        orderByFields: 'OBJECTID',
+        objectIdField: 'OBJECTID',
+        fetchImpl: async () => {
+          call += 1;
+          return call === 1
+            ? jsonResponse({ objectIdFieldName: 'OBJECTID', objectIds: [1, 2] })
+            : jsonResponse(pageBody([feature(mciAttrs({ OBJECTID: 1 }))]));
+        },
+        label: 'mci',
+      }),
+      /object_id_mismatch/,
+    );
+  });
+
+  it('runs each TPS resource with its own canonical key and fail-closed hooks', async () => {
+    const calls = [];
+    const runSeedImpl = async (domain, resource, key, fetchSnapshot, options) => {
+      calls.push({ domain, resource, key, snapshot: await fetchSnapshot(), options });
+    };
+    await runTpsSeed('mci', {
+      runSeedImpl,
+      fetchMci: async () => ({ ok: false, reason: 'http_503' }),
+    });
+    await runTpsSeed('calls', {
+      runSeedImpl,
+      fetchCalls: async () => ({ ok: false, reason: 'timeout' }),
+    });
+    assert.deepEqual(calls.map((entry) => entry.key), [TPS_MCI_KEY, TPS_CALLS_KEY]);
+    assert.deepEqual(calls.map((entry) => entry.resource), ['tps-mci', 'tps-calls-attended']);
+    assert.equal(calls[0].snapshot.sourceUnavailable, true);
+    assert.equal(calls[0].options.validateFn(calls[0].snapshot), false);
+    assert.equal((await calls[0].options.afterValidationSkip(calls[0].snapshot)).freshnessMetaPatch.sourceState, 'degraded');
+    assert.equal(calls[0].options.contentMeta, tpsContentMeta);
+    assert.equal(TPS_ON_DEMAND_SECTIONS.length, 2);
+    assert.deepEqual(TPS_ON_DEMAND_SECTIONS.map((section) => section.canonicalKey), [TPS_MCI_KEY, TPS_CALLS_KEY]);
+  });
+
+  it('pins each fetched layer to its official ArcGIS service item', async () => {
+    const mci = await fetchTpsMci({
+      metadata: { maxRecordCount: 2000, fields: TPS_MCI_REQUIRED_FIELDS, editingInfo: { dataLastEditDate: 1 }, serviceItemId: 'wrong' },
+      fetchImpl: async () => jsonResponse({}),
+    });
+    assert.match(mci.reason, /service_item_mismatch/);
+    assert.equal(TPS_MCI_SERVICE_ITEM_ID, '0a239a5563a344a3bbf8452504ed8d68');
+    assert.equal(TPS_CALLS_SERVICE_ITEM_ID, '46c7581a136445c78831acb657a4fb0d');
   });
 });

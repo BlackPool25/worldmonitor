@@ -167,7 +167,7 @@ const PANEL_CLUSTER: Record<string, PanelChunkName> = {
   SocialVelocity: 'panels-risk', SpeciesComeback: 'panels-risk',
   TechEvents: 'panels-risk',
   ThreatTimeline: 'panels-risk',
-  TechHubs: 'panels-risk', TechReadiness: 'panels-risk',
+  TechHubs: 'panels-risk', TechReadiness: 'panels-risk', TorontoSafety: 'panels-risk',
   WorldClock: 'panels-risk',
 };
 
