@@ -52,24 +52,24 @@
       "name": "torontoTfs",
       "status": "EMPTY",
       "issue": 6682,
-      "reason": "New official Toronto Fire live-CAD seeder. seed-meta:safety:toronto-tfs cannot exist until seed-bundle-canada's next 5-minute member tick after deploy. EMPTY after that first scheduled poll is a dead producer, not a deploy window.",
-      "expiresAt": "2026-08-22T04:05:00.000Z",
+      "reason": "New official Toronto Fire live-CAD seeder. seed-meta:safety:toronto-tfs cannot exist until seed-bundle-canada's next */5 cron tick after deploy. EMPTY after that first scheduled poll is a dead producer, not a deploy window.",
+      "expiresAt": "2026-08-21T04:10:00.000Z",
       "cutover": {
         "probeKey": "seed-meta:safety:toronto-tfs",
         "activatedAt": "2026-08-21T04:05:00.000Z",
-        "firstScheduledRunAt": "2026-08-22T04:05:00.000Z"
+        "firstScheduledRunAt": "2026-08-21T04:10:00.000Z"
       }
     },
     {
       "name": "torontoTps",
       "status": "EMPTY",
       "issue": 6682,
-      "reason": "New official TPS Calls-for-Service seeder. seed-meta:safety:toronto-tps cannot exist until seed-bundle-canada's next 15-minute member tick after deploy. EMPTY after that first scheduled poll is a dead producer, not a deploy window.",
-      "expiresAt": "2026-08-22T04:15:00.000Z",
+      "reason": "New official TPS Calls-for-Service seeder. seed-meta:safety:toronto-tps cannot exist until seed-bundle-canada's next */5 cron tick after deploy (new member, no seed-meta yet). EMPTY after that first scheduled poll is a dead producer, not a deploy window.",
+      "expiresAt": "2026-08-21T04:10:00.000Z",
       "cutover": {
         "probeKey": "seed-meta:safety:toronto-tps",
-        "activatedAt": "2026-08-21T04:15:00.000Z",
-        "firstScheduledRunAt": "2026-08-22T04:15:00.000Z"
+        "activatedAt": "2026-08-21T04:05:00.000Z",
+        "firstScheduledRunAt": "2026-08-21T04:10:00.000Z"
       }
     }
   ]
