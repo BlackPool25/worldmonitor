@@ -545,6 +545,12 @@ const STANDALONE_KEYS = {
   tpsCallsAttended: 'safety:toronto:tps-calls-attended:v1',
   // Seeded and health-monitored; no transit panel yet (#6623).
   ttcAlerts: 'transit:ttc:alerts:v1',
+  // Official Toronto Fire Services live CAD (#6682). Own key; not folded into
+  // canadaAlerts / canadaRoads / torontoRoads. No map panel yet.
+  torontoTfs: 'safety:toronto-tfs:v1',
+  // Official TPS public-safety calls for service (#6682). Own key; not folded
+  // into canadaAlerts / canadaRoads / torontoRoads. No map panel yet.
+  torontoTps: 'safety:toronto-tps:v1',
 };
 
 const SEED_META = {
@@ -867,6 +873,28 @@ const SEED_META = {
   // intentionally absent: its writer is disabled pending the rights gate.
   tpsMci:           { key: 'seed-meta:safety:tps-mci',             maxStaleMin: 20160, cutover: { mode: 'expiring-ack', fromKey: null, issue: 7035, status: 'EMPTY' } },
   tpsCallsAttended: { key: 'seed-meta:safety:tps-calls-attended',  maxStaleMin: 20160, cutover: { mode: 'expiring-ack', fromKey: null, issue: 7036, status: 'EMPTY' } },
+  torontoTfs: {
+    key: 'seed-meta:safety:toronto-tfs',
+    maxStaleMin: 15, // TFS live CAD refreshes every ~5min; 15 = 3× interval
+    activationKey: 'seed-activated:safety:toronto-tfs',
+    cutover: {
+      mode: 'activation-marker',
+      fromKey: null,
+      issue: 7037,
+      activationKey: 'seed-activated:safety:toronto-tfs',
+    },
+  },
+  torontoTps: {
+    key: 'seed-meta:safety:toronto-tps',
+    maxStaleMin: 45, // TPS public map 15–20min; 45 = 3× interval
+    activationKey: 'seed-activated:safety:toronto-tps',
+    cutover: {
+      mode: 'activation-marker',
+      fromKey: null,
+      issue: 7038,
+      activationKey: 'seed-activated:safety:toronto-tps',
+    },
+  },
   spending:         { key: 'seed-meta:economic:spending',          maxStaleMin: 120 },
   globalTenders:    { key: 'seed-meta:economic:global-tenders',   maxStaleMin: 180 },
   globalTendersSam:             { key: 'seed-meta:economic:global-tenders:sam',              maxStaleMin: 240 }, // 150min request pacing + hourly member gate yields ~180min publishes; 240min leaves one gate of scheduling jitter without raising the 10/day SAM budget.
@@ -1355,6 +1383,11 @@ const ON_DEMAND_KEYS = new Set([
   // Softening lifts once the durable activation marker exists.
   'bocValet',
   'statcanWds',
+  // Scheduled Toronto CAD producer deployment bridges. Each seeder writes a
+  // permanent marker after its first successful canonical publish; health is
+  // strict from that point onward.
+  'torontoTfs',
+  'torontoTps',
   // Scheduled producer. The marker is written only after a successful
   // publish of the canonical snapshot. Before that first publish, absence is
   // pending activation; after it, missing or stale data is strict.
@@ -1435,6 +1468,8 @@ const ACTIVATION_MARKERS = {
   cbrRates: 'seed-activated:economic:cbr-rates',
   bocValet: 'seed-activated:economic:boc-valet',
   statcanWds: 'seed-activated:economic:statcan-wds',
+  torontoTfs: SEED_META.torontoTfs.activationKey,
+  torontoTps: SEED_META.torontoTps.activationKey,
   physicalPremiums: SEED_META.physicalPremiums.activationKey,
   newsFeedHealth: 'seed-activated:news:feed-health',
   newsRecallBenchmark: 'seed-activated:news:recall-benchmark',
@@ -1574,6 +1609,11 @@ const MISSING_DATA_IS_FAILURE_KEYS = new Set([
 // key itself must still exist. Do not use this set in the missing-key branch.
 const ZERO_RECORD_DATA_OK_KEYS = new Set([
   ...EMPTY_DATA_OK_KEYS,
+  // Both Toronto CAD sources publish an explicit {records:[]} envelope on a
+  // quiet tick. Keep zero valid without softening a missing payload after each
+  // activation marker exists.
+  'torontoTfs',
+  'torontoTps',
   'globalTendersSam', 'globalTendersTed', 'globalTendersContractsFinder', 'globalTendersCanadaBuys', 'globalTendersGets', 'globalTendersWorldBank',
   // retailer-spread is SUPPRESSED to an explicit 0 by the aggregate job when a
   // market's retailers share < MIN_SPREAD_ITEMS (4) common basket items —

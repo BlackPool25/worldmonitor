@@ -125,8 +125,8 @@ export const PROVIDER_IDENTITY_GROUPS = Object.freeze({
   'tps-open-data': Object.freeze({
     provider: 'Toronto Police Service Open Data',
     memberHosts: Object.freeze(['data.tps.ca', 'services.arcgis.com', 'www.tps.ca']),
-    reason: 'The TPS Open Data page and Public Safety Data Portal licence the ArcGIS Major Crime Indicators and Calls for Service Attended services.',
-    reviewReference: 'Issue #7012',
+    reason: 'The TPS Open Data page and Public Safety Data Portal licence the ArcGIS Major Crime Indicators, Calls for Service Attended, and privacy-filtered live Calls-for-Service services.',
+    reviewReference: 'Issue #7012 and issue #6682',
   }),
   'uspto-open-data': Object.freeze({
     provider: 'USPTO Open Data Portal',
@@ -261,6 +261,12 @@ const PROVIDER_OVERRIDES = {
     license: 'CKAN package_show for road-restrictions: license_id=notspecified, license_title="License not specified" (https://ckan0.cf.opendata.inter.prod-toronto.ca/api/3/action/package_show?id=road-restrictions). Portal dataset page chrome links OGL-Toronto but is not data-bound to this dataset.',
     attribution: 'City of Toronto, Road Restrictions. https://open.toronto.ca/dataset/road-restrictions/',
     status: 'terms-review',
+  },
+  'www.toronto.ca': {
+    provider: 'Toronto Fire Services',
+    license: 'Direct permission: World Monitor\'s owner confirmed on 2026-08-21 that World Monitor holds redistribution and public-display rights for the Toronto Fire Services live CAD XML. This does not claim that the feed is licensed under the City of Toronto Open Government Licence: no data-bound CKAN package was found for toronto-fire-active-incidents or livecad.xml. City of Toronto copyright and the source-specific permission still apply. Not the historical fire-incidents CKAN datasets.',
+    attribution: 'Toronto Fire Services, Active Incidents (CAD). https://www.toronto.ca/community-people/public-safety-alerts/alerts-notifications/toronto-fire-active-incidents/',
+    status: 'reviewed',
   },
   'api.open511.gov.bc.ca': {
     provider: 'BC Open511',
@@ -478,8 +484,8 @@ const PROVIDER_OVERRIDES = {
   'services.arcgis.com': {
     provider: 'Toronto Police Service Open Data',
     identityGroup: 'tps-open-data',
-    license: 'Custom licence based on the Open Government Licence - Ontario. The Major Crime Indicators FeatureServer (serviceItemId 0a239a5563a344a3bbf8452504ed8d68) and Calls for Service Attended table (serviceItemId 46c7581a136445c78831acb657a4fb0d) require: "Contains information licensed under the Open Government Licence - Ontario." Credit Toronto Police Service without crests, logos, flags, or official marks. No TPS endorsement. Locations are deliberately offset; do not present them as precise addresses. Do not merge or link the data with other databases for the purpose of identifying a person, business, or organization. Do not fill privacy exclusions from GTA Update, news, radio, or another source. Evidence: https://www.tps.ca/data-maps/open-data/ and the item-level FeatureServer descriptions on https://data.tps.ca/.',
-    attribution: 'Contains information licensed under the Open Government Licence - Ontario. Toronto Police Service Open Data (https://www.tps.ca/data-maps/open-data/, https://data.tps.ca/). Coordinates are approximate offset intersection nodes. No TPS endorsement.',
+    license: 'Open Government Licence - Ontario and TPS Public Safety Data Portal terms. The Major Crime Indicators FeatureServer (serviceItemId 0a239a5563a344a3bbf8452504ed8d68), Calls for Service Attended table (serviceItemId 46c7581a136445c78831acb657a4fb0d), and Calls for Service Experience item a22f5295933e48a5b0a4c90cd3c4cae1 require attribution to Toronto Police Service without crests, logos, flags, or official marks. No TPS endorsement. The C4S_Public_NoGO layer is the privacy-filtered public live Calls-for-Service map. MCI locations are deliberately offset; do not present them as precise addresses. Do not merge or link the data for reidentification, and do not fill privacy exclusions from GTA Update, news, radio, or another source. Evidence: https://www.tps.ca/data-maps/open-data/, https://data.tps.ca/, and the item-level ArcGIS descriptions.',
+    attribution: 'Contains information licensed under the Open Government Licence - Ontario. Toronto Police Service Open Data and Calls for Service (https://www.tps.ca/data-maps/open-data/, https://data.tps.ca/). Coordinates can be approximate or privacy-filtered. No TPS endorsement.',
     status: 'reviewed',
   },
   'gtfsrt.ttc.ca': {
@@ -815,13 +821,13 @@ const PROVIDER_OVERRIDES = {
 // a provider-bearing override a separate, explicit lifecycle event instead of
 // something `--write` can silently normalize into the manifest.
 export const PROVIDER_IDENTITY_REVIEW = Object.freeze({
-  sha256: 'db912d6302941e077a5a0df7b087de37f4adb93e42c63240b540f7f41d494aa6',
-  reason: 'Record the owner-confirmed GTA Update permission while keeping it inactive pending separate activation gates, and group TPS Open Data ArcGIS/portal/open-data hosts as one official Ontario publisher.',
+  sha256: 'ab4620a7ad3c1cf3f35f2d2aaf3f8616d67821f8cf5a424bf38a3c25b058214f',
+  reason: 'Record owner-confirmed GTA Update and Toronto Fire Services rights, keep GTA Update inactive pending separate activation gates, and group all official TPS Open Data and Calls-for-Service hosts as one Ontario publisher.',
   // A URL cited here is scanned like any other: this file sits inside
   // SOURCE_ROOTS, so citing a host that is not already a registered source
   // invents a provider row for it. The B.C. catalogue URLs above are safe
   // because that host is itself an observed source; parallel.ai is not.
-  reviewReference: 'Issue #7012 Toronto safety qualification; plus Issue #7000 publisher-centric source catalog; plus Issue #7001, Issue #6437, Issue #6622, Issue #6659, and PR #6447 identity reviews.',
+  reviewReference: 'Issues #7012 and #6682 Toronto safety sources; plus Issue #7000 publisher-centric source catalog; plus Issue #7001, Issue #6437, Issue #6622, Issue #6659, and PR #6447 identity reviews.',
 });
 
 export function providerIdentityDigest(providerOverrides = PROVIDER_OVERRIDES) {

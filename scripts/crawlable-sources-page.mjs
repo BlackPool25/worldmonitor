@@ -168,6 +168,8 @@ const SOURCE_DOMAIN_OVERRIDES = new Map([
   ['www.sequoiacap.com', 'technology'],
   ['SWF Institute', 'finance'],
   ['Toronto Transit Commission (TTC) GTFS-RT', 'infrastructure'],
+  ['Toronto Fire Services', 'environment'],
+  ['Toronto Police Service', 'environment'],
   ['United Nations Population Division', 'finance'],
   ['USGS ScienceBase (Mineral Commodity Summaries)', 'energy'],
   ['VIA Rail Tracker (unofficial)', 'infrastructure'],

@@ -85,10 +85,10 @@ describe('Toronto safety qualification wiring (#7012)', () => {
     assert.equal(TPS_CALLS_META_KEY, calls.seedMetaKey);
   });
 
-  it('does not add GTA or TPS to seed-bundle-canada', () => {
+  it('does not add GTA or the on-demand TPS datasets to seed-bundle-canada', () => {
     const bundle = read('scripts/seed-bundle-canada.mjs');
     const sections = extractBundleSections(bundle);
-    assert.equal(sections.length, 8);
+    assert.equal(sections.length, 10);
     assert.equal(sections.some((section) => SAFETY_HINT.test(section.label) || SAFETY_HINT.test(section.script)), false);
     assert.equal(SAFETY_HINT.test(bundle), false);
   });
