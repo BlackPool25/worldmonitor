@@ -31,7 +31,7 @@ export type BacktestStockQuotaReservation =
 
 export type BacktestStockQuotaPipeline = (
   commands: Array<Array<string | number>>,
-) => Promise<Array<{ result?: unknown }>>;
+) => Promise<Array<{ result?: unknown; error?: unknown }>>;
 
 export function backtestStockQuotaUserId(request: Request | undefined | null): string | null {
   if (!request) return null;
@@ -63,7 +63,7 @@ export async function reserveBacktestStockProviderQuota(opts: {
     };
   }
 
-  let pipeResult: Array<{ result?: unknown }> | null;
+  let pipeResult: Array<{ result?: unknown; error?: unknown }> | null;
   try {
     pipeResult = await opts.pipeline([
       ['INCR', key],
@@ -81,7 +81,16 @@ export async function reserveBacktestStockProviderQuota(opts: {
     };
   }
 
-  const incrRaw = pipeResult[0]?.result;
+  const incrEntry = pipeResult[0];
+  if (incrEntry?.error != null) {
+    return {
+      ok: false,
+      reason: 'redis-unavailable',
+      retryAfterSec: BACKTEST_STOCK_REDIS_UNAVAILABLE_RETRY_AFTER_SECONDS,
+    };
+  }
+
+  const incrRaw = incrEntry?.result;
   const newCount = typeof incrRaw === 'number' ? incrRaw : Number(incrRaw);
   if (!Number.isFinite(newCount) || newCount < 1) {
     return {
@@ -92,15 +101,34 @@ export async function reserveBacktestStockProviderQuota(opts: {
   }
 
   let rolledBack = false;
-  const rollback = async (): Promise<void> => {
+  const rollback = async (restoreExpiry = false): Promise<void> => {
     if (rolledBack) return;
     rolledBack = true;
     try {
-      await opts.pipeline([['DECR', key]]);
+      await opts.pipeline([
+        ['DECR', key],
+        ...(restoreExpiry ? [['EXPIRE', key, PRO_DAILY_QUOTA_TTL_SECONDS]] : []),
+      ]);
     } catch {
       // Best-effort: over-counting by one is the cost-protection-correct direction.
     }
   };
+
+  const expireEntry = pipeResult[1];
+  const expireSucceeded =
+    pipeResult.length === 2
+    && expireEntry?.error == null
+    && (expireEntry?.result === 1 || expireEntry?.result === '1');
+  if (!expireSucceeded) {
+    // If this was a newly-created key, DECR alone would leave a permanent
+    // zero-valued orphan. Retry the TTL while refunding the unproved claim.
+    await rollback(true);
+    return {
+      ok: false,
+      reason: 'redis-unavailable',
+      retryAfterSec: BACKTEST_STOCK_REDIS_UNAVAILABLE_RETRY_AFTER_SECONDS,
+    };
+  }
 
   if (newCount > BACKTEST_STOCK_DAILY_PROVIDER_QUOTA_LIMIT) {
     await rollback();
@@ -112,5 +140,5 @@ export async function reserveBacktestStockProviderQuota(opts: {
     };
   }
 
-  return { ok: true, newCount, rollback };
+  return { ok: true, newCount, rollback: () => rollback() };
 }

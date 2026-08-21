@@ -42,7 +42,7 @@ describe("backtest-stock provider-work quota", () => {
       date: new Date(Date.UTC(2026, 6, 4, 12, 0, 0)),
       pipeline: async (cmds) => {
         calls.push(cmds);
-        return [{ result: 1 }, { result: "OK" }];
+        return [{ result: 1 }, { result: "1" }];
       },
     });
 
@@ -61,7 +61,7 @@ describe("backtest-stock provider-work quota", () => {
       pipeline: async (cmds) => {
         calls.push(cmds);
         if (cmds[0]?.[0] === "DECR") return [{ result: BACKTEST_STOCK_DAILY_PROVIDER_QUOTA_LIMIT }];
-        return [{ result: BACKTEST_STOCK_DAILY_PROVIDER_QUOTA_LIMIT + 1 }, { result: "OK" }];
+        return [{ result: BACKTEST_STOCK_DAILY_PROVIDER_QUOTA_LIMIT + 1 }, { result: 1 }];
       },
     });
 
@@ -86,5 +86,84 @@ describe("backtest-stock provider-work quota", () => {
       reason: "redis-unavailable",
       retryAfterSec: BACKTEST_STOCK_REDIS_UNAVAILABLE_RETRY_AFTER_SECONDS,
     });
+  });
+
+  test("rolls back a proven INCR when the pipeline response is short", async () => {
+    const calls: Array<Array<Array<string | number>>> = [];
+    const result = await reserveBacktestStockProviderQuota({
+      userId: "user_123",
+      date: new Date(Date.UTC(2026, 6, 4, 12, 0, 0)),
+      pipeline: async (cmds) => {
+        calls.push(cmds);
+        if (cmds[0]?.[0] === "DECR") return [{ result: 0 }];
+        return [{ result: 1 }];
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: "redis-unavailable",
+      retryAfterSec: BACKTEST_STOCK_REDIS_UNAVAILABLE_RETRY_AFTER_SECONDS,
+    });
+    expect(calls).toEqual([
+      [
+        ["INCR", "provider:backtest-yahoo:user_123:2026-07-04"],
+        ["EXPIRE", "provider:backtest-yahoo:user_123:2026-07-04", 172800],
+      ],
+      [
+        ["DECR", "provider:backtest-yahoo:user_123:2026-07-04"],
+        ["EXPIRE", "provider:backtest-yahoo:user_123:2026-07-04", 172800],
+      ],
+    ]);
+  });
+
+  test.each([
+    { label: "reports a command error", expireEntry: { error: "ERR expire failed" } },
+    { label: "does not confirm expiry", expireEntry: { result: 0 } },
+  ])("rolls back when EXPIRE $label", async ({ expireEntry }) => {
+    const calls: Array<Array<Array<string | number>>> = [];
+    const result = await reserveBacktestStockProviderQuota({
+      userId: "user_123",
+      date: new Date(Date.UTC(2026, 6, 4, 12, 0, 0)),
+      pipeline: async (cmds) => {
+        calls.push(cmds);
+        if (cmds[0]?.[0] === "DECR") return [{ result: 0 }];
+        return [{ result: 1 }, expireEntry];
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: "redis-unavailable",
+      retryAfterSec: BACKTEST_STOCK_REDIS_UNAVAILABLE_RETRY_AFTER_SECONDS,
+    });
+    expect(calls.at(-1)).toEqual([
+      ["DECR", "provider:backtest-yahoo:user_123:2026-07-04"],
+      ["EXPIRE", "provider:backtest-yahoo:user_123:2026-07-04", 172800],
+    ]);
+  });
+
+  test("keeps the Redis-unavailable result when the best-effort rollback fails", async () => {
+    const calls: Array<Array<Array<string | number>>> = [];
+    const result = await reserveBacktestStockProviderQuota({
+      userId: "user_123",
+      date: new Date(Date.UTC(2026, 6, 4, 12, 0, 0)),
+      pipeline: async (cmds) => {
+        calls.push(cmds);
+        if (cmds[0]?.[0] === "DECR") throw new Error("Redis rollback unavailable");
+        return [{ result: 1 }];
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: "redis-unavailable",
+      retryAfterSec: BACKTEST_STOCK_REDIS_UNAVAILABLE_RETRY_AFTER_SECONDS,
+    });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toEqual([
+      ["DECR", "provider:backtest-yahoo:user_123:2026-07-04"],
+      ["EXPIRE", "provider:backtest-yahoo:user_123:2026-07-04", 172800],
+    ]);
   });
 });

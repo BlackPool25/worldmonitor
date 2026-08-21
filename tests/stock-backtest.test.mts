@@ -9,6 +9,7 @@ import {
   backtestStockProviderQuotaKey,
 } from '../server/_shared/backtest-stock-quota.ts';
 import { TRUSTED_USER_ID_HEADER } from '../server/_shared/mcp-internal-hmac.ts';
+import { mapErrorToResponse } from '../server/error-mapper.ts';
 import {
   backtestStock,
   stockBacktestCacheKey,
@@ -399,26 +400,45 @@ describe('backtestStock provider-work quota', () => {
       String(BACKTEST_STOCK_DAILY_PROVIDER_QUOTA_LIMIT),
     );
 
-    await assert.rejects(
-      () => backtestStock(makeBacktestCtx('user_pro'), {
-        symbol: 'AAPL',
-        name: 'Apple',
-        evalWindowDays: 10,
-      }),
-      (error: unknown) => {
-        assert.ok(error instanceof ApiError);
-        assert.equal(error.statusCode, 429);
-        assert.equal(error.message, BACKTEST_STOCK_PROVIDER_QUOTA_EXCEEDED_MESSAGE);
-        assert.equal((error as ApiError & { retryAfter: number }).retryAfter > 0, true);
-        return true;
-      },
-    );
+    let quotaError: ApiError | null = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await assert.rejects(
+        () => backtestStock(makeBacktestCtx('user_pro'), {
+          symbol: 'AAPL',
+          name: 'Apple',
+          evalWindowDays: 10,
+        }),
+        (error: unknown) => {
+          assert.ok(error instanceof ApiError);
+          assert.equal(error.statusCode, 429);
+          assert.equal(error.message, BACKTEST_STOCK_PROVIDER_QUOTA_EXCEEDED_MESSAGE);
+          assert.equal((error as ApiError & { retryAfter: number }).retryAfter > 0, true);
+          quotaError = error;
+          return true;
+        },
+      );
+    }
     assert.equal(redisFetch.yahooCallCount(), 0);
     assert.equal(
       redisFetch.redis.get(backtestStockProviderQuotaKey('user_pro')),
       String(BACKTEST_STOCK_DAILY_PROVIDER_QUOTA_LIMIT),
     );
     assert.equal(redisFetch.llmQuotaKeyCount(), 0);
+
+    assert.ok(quotaError);
+    const response = mapErrorToResponse(quotaError, makeBacktestCtx('user_pro').request);
+    assert.equal(response.status, 429);
+    assert.deepEqual(await response.json(), {
+      error: BACKTEST_STOCK_PROVIDER_QUOTA_EXCEEDED_MESSAGE,
+    });
+    assert.equal(response.headers.get('RateLimit-Policy'), '"default";q=200;w=86400');
+    assert.equal(response.headers.get('RateLimit-Limit'), '200');
+    assert.equal(response.headers.get('RateLimit-Remaining'), '0');
+    assert.equal(Number(response.headers.get('RateLimit-Reset')) > 0, true);
+    assert.equal(response.headers.get('X-RateLimit-Limit'), '200');
+    assert.equal(response.headers.get('X-RateLimit-Remaining'), '0');
+    assert.equal(Number(response.headers.get('X-RateLimit-Reset')) > Date.now(), true);
+    assert.equal(Number(response.headers.get('Retry-After')) > 0, true);
   });
 
   it('fails closed with 503 when the quota store cannot prove a reservation', async () => {
@@ -434,20 +454,169 @@ describe('backtestStock provider-work quota', () => {
       throw new Error(`Unexpected URL: ${url}`);
     }) as typeof fetch;
 
-    await assert.rejects(
-      () => backtestStock(makeBacktestCtx('user_pro'), {
-        symbol: 'IBM',
-        name: 'IBM',
-        evalWindowDays: 10,
-      }),
-      (error: unknown) => {
-        assert.ok(error instanceof ApiError);
-        assert.equal(error.statusCode, 503);
-        assert.equal(error.message, BACKTEST_STOCK_PROVIDER_QUOTA_UNAVAILABLE_MESSAGE);
-        return true;
-      },
-    );
+    let quotaError: ApiError | null = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await assert.rejects(
+        () => backtestStock(makeBacktestCtx('user_pro'), {
+          symbol: 'IBM',
+          name: 'IBM',
+          evalWindowDays: 10,
+        }),
+        (error: unknown) => {
+          assert.ok(error instanceof ApiError);
+          assert.equal(error.statusCode, 503);
+          assert.equal(error.message, BACKTEST_STOCK_PROVIDER_QUOTA_UNAVAILABLE_MESSAGE);
+          quotaError = error;
+          return true;
+        },
+      );
+    }
     assert.equal(yahooCalls, 0);
+
+    assert.ok(quotaError);
+    const response = mapErrorToResponse(quotaError, makeBacktestCtx('user_pro').request);
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), {
+      error: BACKTEST_STOCK_PROVIDER_QUOTA_UNAVAILABLE_MESSAGE,
+    });
+    assert.equal(response.headers.get('Retry-After'), '30');
+    assert.equal(response.headers.get('RateLimit-Limit'), null);
+  });
+
+  it('retries admission after each caller-local in-flight leader failure', async () => {
+    process.env.UPSTASH_REDIS_REST_URL = 'https://redis.example';
+    process.env.UPSTASH_REDIS_REST_TOKEN = 'token';
+    const redisFetch = createRedisAwareBacktestFetch(mockChartPayload());
+    const firstCappedUserId = 'user_capped_first';
+    const secondCappedUserId = 'user_capped_second';
+    const eligibleUserId = 'user_eligible';
+    const firstCappedQuotaKey = backtestStockProviderQuotaKey(firstCappedUserId);
+    const secondCappedQuotaKey = backtestStockProviderQuotaKey(secondCappedUserId);
+    const cacheKey = stockBacktestCacheKey('TSLA', 10);
+    redisFetch.redis.set(firstCappedQuotaKey, String(BACKTEST_STOCK_DAILY_PROVIDER_QUOTA_LIMIT));
+    redisFetch.redis.set(secondCappedQuotaKey, String(BACKTEST_STOCK_DAILY_PROVIDER_QUOTA_LIMIT));
+
+    let releaseCappedReservation = () => {};
+    const cappedReservationGate = new Promise<void>((resolve) => {
+      releaseCappedReservation = resolve;
+    });
+    let signalCappedReservationStarted = () => {};
+    const cappedReservationStarted = new Promise<void>((resolve) => {
+      signalCappedReservationStarted = resolve;
+    });
+    let signalSecondCappedReservationStarted = () => {};
+    const secondCappedReservationStarted = new Promise<void>((resolve) => {
+      signalSecondCappedReservationStarted = resolve;
+    });
+    let signalSecondCallerCacheRead = () => {};
+    const secondCallerCacheRead = new Promise<void>((resolve) => {
+      signalSecondCallerCacheRead = resolve;
+    });
+    let signalEligibleCacheRead = () => {};
+    const eligibleCacheRead = new Promise<void>((resolve) => {
+      signalEligibleCacheRead = resolve;
+    });
+    let cacheReads = 0;
+
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === `https://redis.example/get/${encodeURIComponent(cacheKey)}`) {
+        cacheReads += 1;
+        if (cacheReads === 2) signalSecondCallerCacheRead();
+        if (cacheReads === 3) signalEligibleCacheRead();
+      }
+      if (url === 'https://redis.example/pipeline') {
+        const commands = JSON.parse(typeof init?.body === 'string' ? init.body : '[]') as string[][];
+        if (commands.some(([verb, key]) => verb === 'INCR' && key === firstCappedQuotaKey)) {
+          signalCappedReservationStarted();
+          await cappedReservationGate;
+        }
+        if (commands.some(([verb, key]) => verb === 'INCR' && key === secondCappedQuotaKey)) {
+          signalSecondCappedReservationStarted();
+        }
+      }
+      return redisFetch.fetch(input, init);
+    }) as typeof fetch;
+
+    const firstCappedResult = backtestStock(makeBacktestCtx(firstCappedUserId), {
+      symbol: 'TSLA',
+      name: 'Tesla',
+      evalWindowDays: 10,
+    }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await cappedReservationStarted;
+
+    const secondCappedResult = backtestStock(makeBacktestCtx(secondCappedUserId), {
+      symbol: 'TSLA',
+      name: 'Tesla',
+      evalWindowDays: 10,
+    }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await secondCallerCacheRead;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const eligibleResult = backtestStock(makeBacktestCtx(eligibleUserId), {
+      symbol: 'TSLA',
+      name: 'Tesla',
+      evalWindowDays: 10,
+    });
+    await eligibleCacheRead;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    releaseCappedReservation();
+    await secondCappedReservationStarted;
+
+    const [firstCappedError, secondCappedError, eligibleResponse] = await Promise.all([
+      firstCappedResult,
+      secondCappedResult,
+      eligibleResult,
+    ]);
+    assert.ok(firstCappedError instanceof ApiError);
+    assert.equal(firstCappedError.statusCode, 429);
+    assert.ok(secondCappedError instanceof ApiError);
+    assert.equal(secondCappedError.statusCode, 429);
+    assert.equal(eligibleResponse.available, true);
+    assert.equal(redisFetch.yahooCallCount(), 1);
+    assert.equal(
+      redisFetch.redis.get(firstCappedQuotaKey),
+      String(BACKTEST_STOCK_DAILY_PROVIDER_QUOTA_LIMIT),
+    );
+    assert.equal(
+      redisFetch.redis.get(secondCappedQuotaKey),
+      String(BACKTEST_STOCK_DAILY_PROVIDER_QUOTA_LIMIT),
+    );
+    assert.equal(redisFetch.redis.get(backtestStockProviderQuotaKey(eligibleUserId)), '1');
+  });
+
+  it('refunds a definitive invalid Yahoo symbol', async () => {
+    process.env.UPSTASH_REDIS_REST_URL = 'https://redis.example';
+    process.env.UPSTASH_REDIS_REST_TOKEN = 'token';
+    const redisFetch = createRedisAwareBacktestFetch({
+      chart: {
+        result: null,
+        error: {
+          code: 'Not Found',
+          description: 'No data found, symbol may be delisted',
+        },
+      },
+    });
+    globalThis.fetch = redisFetch.fetch;
+
+    const response = await backtestStock(makeBacktestCtx('user_pro'), {
+      symbol: 'NOTREALZZZZ',
+      name: 'Invalid symbol',
+      evalWindowDays: 10,
+    });
+
+    assert.equal(response.available, false);
+    assert.equal(redisFetch.yahooCallCount(), 1);
+    assert.equal(
+      Number(redisFetch.redis.get(backtestStockProviderQuotaKey('user_pro')) || '0'),
+      0,
+    );
   });
 
   it('does not consume the provider-work budget without a trusted user id', async () => {

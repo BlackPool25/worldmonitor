@@ -6,8 +6,10 @@ import {
   type MarketServiceHandler,
   type ServerContext,
 } from '../../../../src/generated/server/worldmonitor/market/v1/service_server';
+import { attachApiErrorHttpResponseMetadata } from '../../../error-mapper';
 import { cachedFetchJsonWithMeta, runRedisPipeline } from '../../../_shared/redis';
 import {
+  BACKTEST_STOCK_DAILY_PROVIDER_QUOTA_LIMIT,
   BACKTEST_STOCK_PROVIDER_QUOTA_EXCEEDED_MESSAGE,
   BACKTEST_STOCK_PROVIDER_QUOTA_UNAVAILABLE_MESSAGE,
   backtestStockQuotaUserId,
@@ -17,7 +19,7 @@ import {
 import {
   buildAnalysisResponse,
   buildTechnicalSnapshot,
-  fetchYahooHistory,
+  fetchYahooHistoryOutcome,
   getFallbackOverlay,
   signalDirection,
   type Candle,
@@ -77,12 +79,28 @@ function throwProviderQuotaFailure(
   if (reservation.reason === 'cap-exceeded') {
     const err = new ApiError(429, BACKTEST_STOCK_PROVIDER_QUOTA_EXCEEDED_MESSAGE, '');
     (err as ApiError & { retryAfter: number }).retryAfter = reservation.retryAfterSec;
-    throw err;
+    throw attachApiErrorHttpResponseMetadata(err, {
+      envelope: 'error',
+      rateLimit: {
+        limit: BACKTEST_STOCK_DAILY_PROVIDER_QUOTA_LIMIT,
+        remaining: 0,
+        resetMs: Date.now() + (reservation.retryAfterSec * 1000),
+        windowSec: 86_400,
+      },
+    });
   }
   const err = new ApiError(503, BACKTEST_STOCK_PROVIDER_QUOTA_UNAVAILABLE_MESSAGE, '');
   (err as ApiError & { retryAfter: number; exposeMessage: boolean }).retryAfter = reservation.retryAfterSec;
   (err as ApiError & { exposeMessage: boolean }).exposeMessage = true;
-  throw err;
+  throw attachApiErrorHttpResponseMetadata(err, { envelope: 'error' });
+}
+
+function isProviderQuotaFailure(error: unknown): boolean {
+  return error instanceof ApiError
+    && (
+      error.message === BACKTEST_STOCK_PROVIDER_QUOTA_EXCEEDED_MESSAGE
+      || error.message === BACKTEST_STOCK_PROVIDER_QUOTA_UNAVAILABLE_MESSAGE
+    );
 }
 
 async function reserveProviderWork(request: Request | undefined): Promise<{ rollback: () => Promise<void> } | null> {
@@ -245,9 +263,16 @@ export const backtestStock: MarketServiceHandler['backtestStock'] = async (
   const evalWindowDays = Math.max(3, Math.min(30, req.evalWindowDays || DEFAULT_WINDOW_DAYS));
   const cacheKey = stockBacktestCacheKey(symbol, evalWindowDays);
 
+  let definitiveInvalidSymbol = false;
   const computeBacktest = async (): Promise<BacktestStockResponse | null> => {
-    const history = await fetchYahooHistory(symbol);
-    if (!history || history.candles.length < MIN_REQUIRED_BARS) return null;
+    const historyOutcome = await fetchYahooHistoryOutcome(symbol);
+    if (historyOutcome.status === 'invalid-symbol') {
+      definitiveInvalidSymbol = true;
+      return null;
+    }
+    if (historyOutcome.status !== 'success') return null;
+    const history = historyOutcome.history;
+    if (history.candles.length < MIN_REQUIRED_BARS) return null;
 
     const analyses = await ensureHistoricalAnalysisLedger(
       symbol,
@@ -327,9 +352,10 @@ export const backtestStock: MarketServiceHandler['backtestStock'] = async (
           host: 'query1.finance.yahoo.com',
         },
         cacheFetcherErrors: false,
+        isCallerLocalError: isProviderQuotaFailure,
       },
     );
-    if (quotaHold.reservation && (result.source !== 'fresh' || !result.leader)) {
+    if (quotaHold.reservation && (definitiveInvalidSymbol || result.source !== 'fresh' || !result.leader)) {
       await quotaHold.reservation.rollback();
     }
     if (result.data) return result.data;
