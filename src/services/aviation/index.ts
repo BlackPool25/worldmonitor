@@ -1,7 +1,7 @@
 import { getRpcBaseUrl } from '@/services/rpc-client';
 import type { AirportDelayAlert as ProtoAlert, AirportOpsSummary as ProtoOpsSummary, FlightInstance as ProtoFlight, CarrierOpsSummary as ProtoCarrierOps, PositionSample as ProtoPosition, PriceQuote as ProtoPriceQuote, AviationNewsItem as ProtoAviationNews, CabinClass, GoogleFlightResult as ProtoGoogleFlightResult, DatePriceEntry as ProtoDatePriceEntry } from '@/generated/client/worldmonitor/aviation/v1/service_client';
 import { createCircuitBreaker } from '@/utils/circuit-breaker';
-import { getHydratedData } from '@/services/bootstrap';
+import { ensureHydrated, getHydratedData } from '@/services/bootstrap';
 import { AviationServiceClient } from '@/services/generated-rpc-clients';
 import { premiumFetch } from '@/services/premium-fetch';
 
@@ -345,6 +345,9 @@ const breakerGoogleDates = createCircuitBreaker<GoogleDatesResult>({ name: 'Goog
 export async function fetchFlightDelays(): Promise<AirportDelayAlert[]> {
   const hydrated = getHydratedData('flightDelays') as { alerts?: ProtoAlert[] } | undefined;
   if (hydrated?.alerts?.length) return hydrated.alerts.map(toDisplayAlert);
+
+  const onDemand = await ensureHydrated('flightDelays') as { alerts?: ProtoAlert[] } | undefined;
+  if (onDemand?.alerts?.length) return onDemand.alerts.map(toDisplayAlert);
 
   return breakerDelays.execute(async () => {
     const r = await client.listAirportDelays({ region: 'AIRPORT_REGION_UNSPECIFIED', minSeverity: 'FLIGHT_DELAY_SEVERITY_UNSPECIFIED', pageSize: 0, cursor: '' });

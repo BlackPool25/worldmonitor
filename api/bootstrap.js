@@ -142,6 +142,12 @@ const ON_DEMAND_CACHE_PROFILES = {
     browser: 'max-age=60, stale-while-revalidate=120, stale-if-error=900',
     cdn: 'public, s-maxage=900, stale-while-revalidate=120, stale-if-error=900',
   },
+  // seed-aviation aggregate, 90min health budget. Default 2h on-demand
+  // shield would outlive the budget after #7046 moved this key off FAST.
+  flightDelays: {
+    browser: 'max-age=60, stale-while-revalidate=120, stale-if-error=1800',
+    cdn: 'public, s-maxage=1800, stale-while-revalidate=300, stale-if-error=1800',
+  },
 };
 
 // The URL SHAPE shared by every marked single-key public read:

@@ -141,6 +141,8 @@ import { filterFeedsByLanguage } from '@/services/feed-language';
 import { getAiFlowSettings } from '@/services/ai-flow-settings';
 import { t, getCurrentLanguage } from '@/services/i18n';
 import { getHydratedData } from '@/services/bootstrap';
+import { ensurePipelineRegistriesHydrated } from '@/shared/pipeline-registry-store';
+import { ensureStorageFacilityRegistryHydrated } from '@/shared/storage-facility-registry-store';
 import { publicRpcFetch } from '@/services/public-rpc-fetch';
 import type { ListFeedDigestResponse } from '@/generated/client/worldmonitor/news/v1/service_client';
 import type { GetSectorSummaryResponse, ListMarketQuotesResponse, ListCommodityQuotesResponse } from '@/generated/client/worldmonitor/market/v1/service_client';
@@ -1010,6 +1012,8 @@ export class DataLoaderManager implements AppModule {
     if (shouldLoad('economic')) tasks.push({ name: 'economicStress', task: () => runGuarded('economicStress', () => this.loadEconomicStress()) });
     if (SITE_VARIANT !== 'happy' && this.ctx.mapLayers.weather) tasks.push({ name: 'weather', task: () => runGuarded('weather', () => this.loadWeatherAlerts()) });
     if (SITE_VARIANT !== 'happy' && this.ctx.mapLayers.canadaRoads) tasks.push({ name: 'canadaRoads', task: () => runGuarded('canadaRoads', () => this.loadCanadaRoads()) });
+    if (SITE_VARIANT !== 'happy' && this.ctx.mapLayers.pipelines) tasks.push({ name: 'pipelineRegistries', task: () => runGuarded('pipelineRegistries', () => this.loadPipelineRegistries()) });
+    if (SITE_VARIANT !== 'happy' && this.ctx.mapLayers.storageFacilities) tasks.push({ name: 'storageFacilities', task: () => runGuarded('storageFacilities', () => this.loadStorageFacilities()) });
     if (SITE_VARIANT !== 'happy' && this.ctx.mapLayers.canadaAlerts) tasks.push({ name: 'canadaAlerts', task: () => runGuarded('canadaAlerts', () => this.loadCanadaAlerts()) });
     if (SITE_VARIANT !== 'happy' && !isDesktopRuntime() && this.ctx.mapLayers.ais) tasks.push({ name: 'ais', task: () => runGuarded('ais', () => this.loadAisSignals()) });
     if (SITE_VARIANT !== 'happy' && this.ctx.mapLayers.cables) tasks.push({ name: 'cables', task: () => runGuarded('cables', () => this.loadCableActivity()) });
@@ -1096,6 +1100,12 @@ export class DataLoaderManager implements AppModule {
           break;
         case 'canadaRoads':
           await this.loadCanadaRoads();
+          break;
+        case 'pipelines':
+          await this.loadPipelineRegistries();
+          break;
+        case 'storageFacilities':
+          await this.loadStorageFacilities();
           break;
         case 'canadaAlerts':
           await this.loadCanadaAlerts();
@@ -2867,6 +2877,28 @@ export class DataLoaderManager implements AppModule {
       this.ctx.map?.setTechEvents([]);
       this.ctx.map?.setLayerReady('techEvents', false);
       this.ctx.statusPanel?.updateFeed('Tech Events', { status: 'error', errorMessage: String(error) });
+    }
+  }
+
+  async loadPipelineRegistries(): Promise<void> {
+    try {
+      const registries = await ensurePipelineRegistriesHydrated();
+      const hasData = Boolean(registries.gas || registries.oil);
+      this.ctx.map?.setLayerReady('pipelines', hasData);
+      this.ctx.map?.render();
+    } catch {
+      this.ctx.map?.setLayerReady('pipelines', false);
+    }
+  }
+
+  async loadStorageFacilities(): Promise<void> {
+    try {
+      const { registry } = await ensureStorageFacilityRegistryHydrated();
+      const hasData = Boolean(registry?.facilities && Object.keys(registry.facilities).length > 0);
+      this.ctx.map?.setLayerReady('storageFacilities', hasData);
+      this.ctx.map?.render();
+    } catch {
+      this.ctx.map?.setLayerReady('storageFacilities', false);
     }
   }
 

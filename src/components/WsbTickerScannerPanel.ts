@@ -1,7 +1,6 @@
 import { Panel } from './Panel';
 import { t } from '@/services/i18n';
-import { getHydratedData } from '@/services/bootstrap';
-import { toApiUrl } from '@/services/runtime';
+import { ensureHydrated, getHydratedData } from '@/services/bootstrap';
 import { escapeHtml, unsafeRawHtml } from '@/utils/sanitize';
 
 export interface WsbTicker {
@@ -61,23 +60,14 @@ export class WsbTickerScannerPanel extends Panel {
   }
 
   public async fetchData(): Promise<boolean> {
-    const hydrated = getHydratedData('wsbTickers') as { tickers?: WsbTicker[] } | undefined;
+    const leftover = getHydratedData('wsbTickers') as { tickers?: WsbTicker[] } | undefined;
+    const hydrated = leftover?.tickers?.length
+      ? leftover
+      : await ensureHydrated('wsbTickers') as { tickers?: WsbTicker[] } | undefined;
     if (hydrated?.tickers?.length) {
       this.updateData(hydrated.tickers);
       return true;
     }
-    try {
-      const resp = await fetch(toApiUrl('/api/bootstrap?keys=wsbTickers'), {
-        signal: AbortSignal.timeout(5_000),
-      });
-      if (resp.ok) {
-        const { data } = (await resp.json()) as { data: { wsbTickers?: { tickers?: WsbTicker[] } } };
-        if (data.wsbTickers?.tickers?.length) {
-          this.updateData(data.wsbTickers.tickers);
-          return true;
-        }
-      }
-    } catch { /* fallback failed */ }
     this.showError('No ticker data available yet', () => { void this.fetchData(); }, 60);
     return false;
   }

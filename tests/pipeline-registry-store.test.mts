@@ -1,10 +1,12 @@
 import { strict as assert } from 'node:assert';
 import { test, describe, beforeEach } from 'node:test';
 import {
+  ensurePipelineRegistriesHydrated,
   getCachedPipelineRegistries,
   setCachedPipelineRegistries,
   __resetPipelineRegistryStoreForTests,
   __setBootstrapReaderForTests,
+  __setOnDemandLoaderForTests,
 } from '../src/shared/pipeline-registry-store';
 
 const GAS_FIXTURE = {
@@ -99,6 +101,49 @@ describe('pipeline-registry-store', () => {
     assert.equal(after.gas, GAS_FIXTURE, 'gas stays from bootstrap');
     assert.equal(after.oil, freshOil, 'oil updated from RPC');
     assert.equal(after.source, 'rpc');
+  });
+
+  test('ensureHydrated path coalesces one in-flight fetch and stores the result', async () => {
+    const { reader, calls } = countingReader({});
+    __setBootstrapReaderForTests(reader);
+    let loaderCalls = 0;
+    __setOnDemandLoaderForTests(async (key) => {
+      loaderCalls += 1;
+      await Promise.resolve();
+      return key === 'pipelinesGas' ? GAS_FIXTURE : OIL_FIXTURE;
+    });
+
+    const [first, second] = await Promise.all([
+      ensurePipelineRegistriesHydrated(),
+      ensurePipelineRegistriesHydrated(),
+    ]);
+    assert.equal(first.gas, GAS_FIXTURE);
+    assert.equal(first.oil, OIL_FIXTURE);
+    assert.equal(second.gas, GAS_FIXTURE);
+    assert.equal(loaderCalls, 2, 'one fetch per key, shared across concurrent callers');
+    assert.equal(calls.count, 2, 'rolling-deploy drain still runs once');
+
+    const third = await ensurePipelineRegistriesHydrated();
+    assert.equal(third.gas, GAS_FIXTURE);
+    assert.equal(loaderCalls, 2, 'resolved value is reused; no second fetch');
+  });
+
+  test('rolling-deploy leftover wins and skips the on-demand fetch', async () => {
+    const { reader } = countingReader({
+      pipelinesGas: GAS_FIXTURE,
+      pipelinesOil: OIL_FIXTURE,
+    });
+    __setBootstrapReaderForTests(reader);
+    let loaderCalls = 0;
+    __setOnDemandLoaderForTests(async () => {
+      loaderCalls += 1;
+      return undefined;
+    });
+
+    const result = await ensurePipelineRegistriesHydrated();
+    assert.equal(result.gas, GAS_FIXTURE);
+    assert.equal(result.source, 'bootstrap');
+    assert.equal(loaderCalls, 0);
   });
 
   test('setCachedPipelineRegistries works even if drain never ran (RPC-first path)', () => {

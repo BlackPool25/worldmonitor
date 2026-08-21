@@ -166,20 +166,25 @@ const SLOW_KEY_NAMES = new Set([
   'pizzint',
   'oilStocksAnalysis',
   'lngVulnerability',
-  'pipelinesGas',
-  'pipelinesOil',
-  'storageFacilities',
   'fuelShortages',
   'energyCrisisPolicies',
+  // Moved off FAST (#7046): consumed only after the slow-tier checkpoint in
+  // loadAllData / primeVisiblePanelData, so they are not first-paint data.
+  // Keeping them in FAST was deadline freight for the 1,200 ms web abort.
+  'marketQuotes',
+  'commodityQuotes',
+  'forecasts',
+  'correlationCards',
+  'socialVelocity',
   'aaiiSentiment',
   'breadthHistory',
 ]);
 
 const FAST_KEY_NAMES = new Set([
   'earthquakes', 'outages', 'serviceStatuses', 'ddosAttacks', 'trafficAnomalies', 'macroSignals', 'chokepoints',
-  'marketQuotes', 'commodityQuotes', 'positiveGeoEvents', 'riskScores', 'flightDelays', 'insights', 'predictions',
+  'positiveGeoEvents', 'riskScores', 'insights', 'predictions',
   'iranEvents', 'temporalAnomalies', 'weatherAlerts', 'spending', 'theaterPosture', 'gdeltIntel', 'canadaAlerts',
-  'correlationCards', 'forecasts', 'shippingRates', 'shippingStress', 'socialVelocity', 'wsbTickers',
+  'shippingRates', 'shippingStress',
 ]);
 
 const ON_DEMAND_KEY_NAMES = new Set([
@@ -196,6 +201,18 @@ const ON_DEMAND_KEY_NAMES = new Set([
   'electricityPrices', 'jodiOil', 'chokepointBaselines',
   'portwatchChokepointsRef', 'portwatchPortActivity', 'sprPolicies',
   'energyDisruptions',
+  // Oil/gas pipeline and storage registries. Previously slow-tier freight:
+  // every visitor downloaded ~528 KB decoded even when the map layers were
+  // off (full/happy defaults) and the panels were below the fold. Demand
+  // comes from an enabled layer or a near-viewport energy panel (#7046).
+  'pipelinesGas',
+  'pipelinesOil',
+  'storageFacilities',
+  // Flights layer ships disabled on every variant, so this never rendered
+  // from the fast payload for a default visitor.
+  'flightDelays',
+  // Premium WSB scanner — not a default-startup surface.
+  'wsbTickers',
   // Both back the opt-in FX panel (#6199). On-demand rather than tiered
   // because that panel ships disabled by default: neither payload should ride
   // a tier every visitor downloads to render a surface almost nobody has on.

@@ -9,15 +9,17 @@
 // the map). This module reads once and memoizes so both consumers get
 // identical data from the same source of truth.
 //
-// Update path: when the panel's background RPC fetch completes, it calls
-// setCachedPipelineRegistries() to refresh the memo from the fresh data.
-// The map picks up the new data on its next re-render cycle (triggered
-// by state change from any other source), keeping map ↔ panel aligned.
+// Ownership (#7046): the keys are on-demand. Rolling-deploy clients still
+// drain a leftover slow-tier payload via getHydratedData(); new clients
+// fetch through ensureHydrated() with one in-flight promise and one
+// bounded resolved value. Map layers and deferred panels must not depend
+// on each other to populate this store.
 //
-// This is a read-through cache specific to the pipeline registries. It
-// does NOT change bootstrap semantics for any other key.
+// Update path: when the panel's later freshness RPC fetch completes, it
+// calls setCachedPipelineRegistries() to refresh the memo from the fresh
+// data. The map picks up the new data on its next re-render cycle.
 
-import { getHydratedData } from '@/services/bootstrap';
+import { ensureHydrated, getHydratedData } from '@/services/bootstrap';
 
 export interface RawPipelineRegistry {
   pipelines?: Record<string, unknown>;
@@ -34,6 +36,7 @@ interface CachedRegistries {
 
 let cache: CachedRegistries = { gas: undefined, oil: undefined, source: 'none' };
 let drained = false;
+let inflight: Promise<CachedRegistries> | null = null;
 
 // Indirection so tests can inject a fake reader. Defaults to the real
 // bootstrap getter; overridable via __setBootstrapReaderForTests.
@@ -49,6 +52,18 @@ function defaultBootstrapReader(key: string): unknown {
   return getHydratedData(key);
 }
 let reader: BootstrapReader = defaultBootstrapReader;
+
+type OnDemandLoader = (key: string) => Promise<unknown | undefined>;
+function defaultOnDemandLoader(key: string): Promise<unknown | undefined> {
+  if (key === 'pipelinesGas') return ensureHydrated('pipelinesGas');
+  if (key === 'pipelinesOil') return ensureHydrated('pipelinesOil');
+  return ensureHydrated(key);
+}
+let onDemandLoader: OnDemandLoader = defaultOnDemandLoader;
+
+function hasRegistryData(value: CachedRegistries): boolean {
+  return Boolean(value.gas || value.oil);
+}
 
 /**
  * Returns the cached oil & gas pipeline registries. On first call, drains
@@ -70,6 +85,39 @@ export function getCachedPipelineRegistries(): CachedRegistries {
     }
   }
   return cache;
+}
+
+/**
+ * Rolling-deploy hydration first, then one coalesced on-demand fetch.
+ * Safe to call from a map layer and a deferred panel in the same tick.
+ */
+export function ensurePipelineRegistriesHydrated(): Promise<CachedRegistries> {
+  const existing = getCachedPipelineRegistries();
+  if (hasRegistryData(existing)) return Promise.resolve(existing);
+  if (inflight) return inflight;
+
+  inflight = (async () => {
+    try {
+      const [gas, oil] = await Promise.all([
+        onDemandLoader('pipelinesGas'),
+        onDemandLoader('pipelinesOil'),
+      ]);
+      const next: CachedRegistries = {
+        gas: (gas as RawPipelineRegistry | undefined) ?? cache.gas,
+        oil: (oil as RawPipelineRegistry | undefined) ?? cache.oil,
+        source: (gas || oil) ? 'bootstrap' : cache.source,
+      };
+      if (gas || oil) {
+        cache = next;
+        drained = true;
+      }
+      return cache;
+    } finally {
+      inflight = null;
+    }
+  })();
+
+  return inflight;
 }
 
 /**
@@ -96,11 +144,18 @@ export function setCachedPipelineRegistries(update: {
 export function __resetPipelineRegistryStoreForTests(): void {
   cache = { gas: undefined, oil: undefined, source: 'none' };
   drained = false;
+  inflight = null;
   reader = defaultBootstrapReader;
+  onDemandLoader = defaultOnDemandLoader;
 }
 
 /** Test-only: inject a fake bootstrap reader so suites can verify drain-once without
  *  a real bootstrap payload. */
 export function __setBootstrapReaderForTests(fn: (key: string) => unknown): void {
   reader = fn;
+}
+
+/** Test-only: inject the on-demand fetch used after a rolling-deploy miss. */
+export function __setOnDemandLoaderForTests(fn: OnDemandLoader): void {
+  onDemandLoader = fn;
 }

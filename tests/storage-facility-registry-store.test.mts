@@ -1,10 +1,12 @@
 import { strict as assert } from 'node:assert';
 import { test, describe, beforeEach } from 'node:test';
 import {
+  ensureStorageFacilityRegistryHydrated,
   getCachedStorageFacilityRegistry,
   setCachedStorageFacilityRegistry,
   __resetStorageFacilityRegistryStoreForTests,
   __setBootstrapReaderForTests,
+  __setOnDemandLoaderForTests,
 } from '../src/shared/storage-facility-registry-store';
 
 const FIXTURE = {
@@ -69,6 +71,44 @@ describe('storage-facility-registry-store', () => {
     const after = getCachedStorageFacilityRegistry();
     assert.equal(after.registry, fresh);
     assert.equal(after.source, 'rpc');
+  });
+
+  test('ensureHydrated path coalesces one in-flight fetch and stores the result', async () => {
+    const { reader, calls } = countingReader({});
+    __setBootstrapReaderForTests(reader);
+    let loaderCalls = 0;
+    __setOnDemandLoaderForTests(async () => {
+      loaderCalls += 1;
+      await Promise.resolve();
+      return FIXTURE;
+    });
+
+    const [first, second] = await Promise.all([
+      ensureStorageFacilityRegistryHydrated(),
+      ensureStorageFacilityRegistryHydrated(),
+    ]);
+    assert.equal(first.registry, FIXTURE);
+    assert.equal(second.registry, FIXTURE);
+    assert.equal(loaderCalls, 1);
+    assert.equal(calls.count, 1);
+
+    const third = await ensureStorageFacilityRegistryHydrated();
+    assert.equal(third.registry, FIXTURE);
+    assert.equal(loaderCalls, 1);
+  });
+
+  test('rolling-deploy leftover wins and skips the on-demand fetch', async () => {
+    const { reader } = countingReader({ storageFacilities: FIXTURE });
+    __setBootstrapReaderForTests(reader);
+    let loaderCalls = 0;
+    __setOnDemandLoaderForTests(async () => {
+      loaderCalls += 1;
+      return undefined;
+    });
+
+    const result = await ensureStorageFacilityRegistryHydrated();
+    assert.equal(result.registry, FIXTURE);
+    assert.equal(loaderCalls, 0);
   });
 
   test('setCachedStorageFacilityRegistry works even if drain never ran (RPC-first path)', () => {

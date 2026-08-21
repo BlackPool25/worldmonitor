@@ -13,6 +13,7 @@ import type {
 import { formatEventWindow, formatCapacityOffline } from '@/shared/disruption-timeline';
 import { deriveStoragePublicBadge } from '@/shared/storage-evidence';
 import {
+  ensureStorageFacilityRegistryHydrated,
   getCachedStorageFacilityRegistry,
   setCachedStorageFacilityRegistry,
   type RawStorageFacilityRegistry,
@@ -218,51 +219,64 @@ export class StorageFacilityMapPanel extends Panel {
 
   public async fetchData(): Promise<void> {
     try {
-      // Bootstrap lane via the shared store. Reads once across both
-      // consumers (this panel + DeckGLMap storage layer); returns the
-      // cached value on subsequent calls instead of draining bootstrap.
-      const { registry } = getCachedStorageFacilityRegistry();
+      // Shared store: rolling-deploy leftover first, then one on-demand
+      // fetch. A response that arrives before this panel is inserted still
+      // lands in the store and is replayed via runWhenConnected.
+      let { registry } = getCachedStorageFacilityRegistry();
+      if (!registry) {
+        const hydratedRegistry = await ensureStorageFacilityRegistryHydrated();
+        registry = hydratedRegistry.registry;
+      }
       const hydrated = buildBootstrapResponse(registry);
       if (hydrated) {
-        this.data = hydrated;
-        this.render();
-        // Background RPC refresh for post-deploy classifier-version bumps.
-        // When it lands, mirror the fresh shape into the store so the
-        // map's next re-render uses the newer stamps too.
-        void getSupplyChainClient().listStorageFacilities({ facilityType: '' }).then(live => {
-          if (!this.element?.isConnected || !live?.facilities?.length) return;
-          this.data = live;
+        const apply = (): void => {
+          if (this.destroyed) return;
+          this.data = hydrated;
           this.render();
-          const facilitiesRecord: Record<string, StorageFacilityEntry> =
-            Object.fromEntries(live.facilities.map(f => [f.id, f]));
-          setCachedStorageFacilityRegistry({
-            facilities: facilitiesRecord,
-            classifierVersion: live.classifierVersion,
-            updatedAt: live.fetchedAt,
-          });
-        }).catch(() => {});
+        };
+        if (!this.element?.isConnected) {
+          this.runWhenConnected(apply);
+          return;
+        }
+        apply();
         return;
       }
 
       const live = await getSupplyChainClient().listStorageFacilities({ facilityType: '' });
-      if (!this.element?.isConnected) return;
-      if (live.upstreamUnavailable || !live.facilities?.length) {
-        this.showError('Storage registry unavailable', () => void this.fetchData());
+      if (live.facilities?.length && !live.upstreamUnavailable) {
+        const facilitiesRecord: Record<string, StorageFacilityEntry> =
+          Object.fromEntries(live.facilities.map(f => [f.id, f]));
+        setCachedStorageFacilityRegistry({
+          facilities: facilitiesRecord,
+          classifierVersion: live.classifierVersion,
+          updatedAt: live.fetchedAt,
+        });
+      }
+      const applyLive = (): void => {
+        if (this.destroyed) return;
+        if (live.upstreamUnavailable || !live.facilities?.length) {
+          this.showError('Storage registry unavailable', () => void this.fetchData());
+          return;
+        }
+        this.data = live;
+        this.render();
+      };
+      if (!this.element?.isConnected) {
+        this.runWhenConnected(applyLive);
         return;
       }
-      this.data = live;
-      this.render();
-      const facilitiesRecord: Record<string, StorageFacilityEntry> =
-        Object.fromEntries(live.facilities.map(f => [f.id, f]));
-      setCachedStorageFacilityRegistry({
-        facilities: facilitiesRecord,
-        classifierVersion: live.classifierVersion,
-        updatedAt: live.fetchedAt,
-      });
+      applyLive();
     } catch (err) {
       if (this.isAbortError(err)) return;
-      if (!this.element?.isConnected) return;
-      this.showError('Storage registry error', () => void this.fetchData());
+      const applyError = (): void => {
+        if (this.destroyed) return;
+        this.showError('Storage registry error', () => void this.fetchData());
+      };
+      if (!this.element?.isConnected) {
+        this.runWhenConnected(applyError);
+        return;
+      }
+      applyError();
     }
   }
 
