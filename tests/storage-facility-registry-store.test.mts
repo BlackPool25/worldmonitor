@@ -97,6 +97,23 @@ describe('storage-facility-registry-store', () => {
     assert.equal(loaderCalls, 1);
   });
 
+  test('refresh re-fetches even when the store already has data', async () => {
+    const { reader } = countingReader({ storageFacilities: FIXTURE });
+    __setBootstrapReaderForTests(reader);
+    const refreshed = { facilities: { refreshed: { id: 'refreshed' } } };
+    let loaderCalls = 0;
+    __setOnDemandLoaderForTests(async () => {
+      loaderCalls += 1;
+      return refreshed;
+    });
+
+    await ensureStorageFacilityRegistryHydrated();
+    assert.equal(loaderCalls, 0);
+    const next = await ensureStorageFacilityRegistryHydrated({ refresh: true });
+    assert.equal(next.registry, refreshed);
+    assert.equal(loaderCalls, 1);
+  });
+
   test('rolling-deploy leftover wins and skips the on-demand fetch', async () => {
     const { reader } = countingReader({ storageFacilities: FIXTURE });
     __setBootstrapReaderForTests(reader);

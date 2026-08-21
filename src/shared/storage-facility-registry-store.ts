@@ -71,10 +71,14 @@ export function getCachedStorageFacilityRegistry(): CachedRegistry {
 
 /**
  * Rolling-deploy hydration first, then one coalesced on-demand fetch.
+ * Pass `{ refresh: true }` for later freshness ticks so the in-memory
+ * resolved value does not suppress a new CDN-shielded read.
  */
-export function ensureStorageFacilityRegistryHydrated(): Promise<CachedRegistry> {
+export function ensureStorageFacilityRegistryHydrated(
+  options: { refresh?: boolean } = {},
+): Promise<CachedRegistry> {
   const existing = getCachedStorageFacilityRegistry();
-  if (existing.registry) return Promise.resolve(existing);
+  if (!options.refresh && existing.registry) return Promise.resolve(existing);
   if (inflight) return inflight;
 
   inflight = (async () => {

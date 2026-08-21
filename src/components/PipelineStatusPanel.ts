@@ -179,6 +179,7 @@ export class PipelineStatusPanel extends Panel {
   // alongside getPipelineDetail. undefined = not yet fetched;
   // empty array = fetched and no events on file.
   private detailEvents: EnergyDisruptionEntry[] | undefined = undefined;
+  private usedHydrationPaint = false;
   private openDetailHandler = (ev: Event): void => {
     const id = (ev as CustomEvent<{ pipelineId?: string }>).detail?.pipelineId;
     if (!id || !this.element?.isConnected) return;
@@ -231,9 +232,17 @@ export class PipelineStatusPanel extends Panel {
       // Shared store: rolling-deploy leftover first, then one on-demand
       // fetch. A response that arrives before this panel is inserted still
       // lands in the store and is replayed via runWhenConnected.
+      // First paint skips RPC. Later fetchData ticks (24h scheduler) ask
+      // the store for a CDN-shielded refresh.
       let { gas, oil } = getCachedPipelineRegistries();
       if (!gas && !oil) {
-        const hydratedRegistries = await ensurePipelineRegistriesHydrated();
+        const hydratedRegistries = await ensurePipelineRegistriesHydrated({
+          refresh: this.usedHydrationPaint,
+        });
+        gas = hydratedRegistries.gas;
+        oil = hydratedRegistries.oil;
+      } else if (this.usedHydrationPaint) {
+        const hydratedRegistries = await ensurePipelineRegistriesHydrated({ refresh: true });
         gas = hydratedRegistries.gas;
         oil = hydratedRegistries.oil;
       }
@@ -245,12 +254,11 @@ export class PipelineStatusPanel extends Panel {
         };
         if (!this.element?.isConnected) {
           this.runWhenConnected(apply);
+          this.usedHydrationPaint = true;
           return;
         }
         apply();
-        // Successful on-demand / leftover hydration is complete. Do not
-        // fire an immediate duplicate RPC; the 24h refresh scheduler still
-        // refreshes freshness and classifier detail later.
+        this.usedHydrationPaint = true;
         return;
       }
 

@@ -72,8 +72,8 @@ test('data-loader only demands energy registries when the matching layer is on',
   );
   assert.match(src, /case 'pipelines':/);
   assert.match(src, /case 'storageFacilities':/);
-  assert.match(src, /ensurePipelineRegistriesHydrated\(\)/);
-  assert.match(src, /ensureStorageFacilityRegistryHydrated\(\)/);
+  assert.match(src, /ensurePipelineRegistriesHydrated\(/);
+  assert.match(src, /ensureStorageFacilityRegistryHydrated\(/);
 });
 
 test('energy panels stay lazy-mounted and hydrate leftover then ensureHydrated', () => {
@@ -83,13 +83,13 @@ test('energy panels stay lazy-mounted and hydrate leftover then ensureHydrated',
 
   const pipeline = read('src/components/PipelineStatusPanel.ts');
   assert.match(pipeline, /let \{ gas, oil \} = getCachedPipelineRegistries\(\)/);
-  assert.match(pipeline, /await ensurePipelineRegistriesHydrated\(\)/);
+  assert.match(pipeline, /await ensurePipelineRegistriesHydrated\(/);
   assert.match(pipeline, /this\.runWhenConnected\(apply\)/);
-  assert.match(pipeline, /immediate duplicate RPC/);
+  assert.match(pipeline, /First paint skips RPC/);
 
   const storage = read('src/components/StorageFacilityMapPanel.ts');
   assert.match(storage, /let \{ registry \} = getCachedStorageFacilityRegistry\(\)/);
-  assert.match(storage, /await ensureStorageFacilityRegistryHydrated\(\)/);
+  assert.match(storage, /await ensureStorageFacilityRegistryHydrated\(/);
   assert.match(storage, /this\.runWhenConnected\(apply\)/);
 });
 

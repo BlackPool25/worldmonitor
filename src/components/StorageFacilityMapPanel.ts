@@ -170,6 +170,7 @@ export class StorageFacilityMapPanel extends Panel {
   private detail: GetStorageFacilityDetailResponse | null = null;
   private detailLoading = false;
   private detailEvents: EnergyDisruptionEntry[] | undefined = undefined;
+  private usedHydrationPaint = false;
   private openDetailHandler = (ev: Event): void => {
     const id = (ev as CustomEvent<{ facilityId?: string }>).detail?.facilityId;
     if (!id || !this.element?.isConnected) return;
@@ -222,9 +223,16 @@ export class StorageFacilityMapPanel extends Panel {
       // Shared store: rolling-deploy leftover first, then one on-demand
       // fetch. A response that arrives before this panel is inserted still
       // lands in the store and is replayed via runWhenConnected.
+      // First paint skips RPC. Later fetchData ticks (24h scheduler) ask
+      // the store for a CDN-shielded refresh.
       let { registry } = getCachedStorageFacilityRegistry();
       if (!registry) {
-        const hydratedRegistry = await ensureStorageFacilityRegistryHydrated();
+        const hydratedRegistry = await ensureStorageFacilityRegistryHydrated({
+          refresh: this.usedHydrationPaint,
+        });
+        registry = hydratedRegistry.registry;
+      } else if (this.usedHydrationPaint) {
+        const hydratedRegistry = await ensureStorageFacilityRegistryHydrated({ refresh: true });
         registry = hydratedRegistry.registry;
       }
       const hydrated = buildBootstrapResponse(registry);
@@ -235,9 +243,11 @@ export class StorageFacilityMapPanel extends Panel {
         };
         if (!this.element?.isConnected) {
           this.runWhenConnected(apply);
+          this.usedHydrationPaint = true;
           return;
         }
         apply();
+        this.usedHydrationPaint = true;
         return;
       }
 

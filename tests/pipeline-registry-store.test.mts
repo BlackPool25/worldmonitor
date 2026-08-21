@@ -128,6 +128,41 @@ describe('pipeline-registry-store', () => {
     assert.equal(loaderCalls, 2, 'resolved value is reused; no second fetch');
   });
 
+  test('refresh re-fetches even when the store already has data', async () => {
+    const { reader } = countingReader({
+      pipelinesGas: GAS_FIXTURE,
+      pipelinesOil: OIL_FIXTURE,
+    });
+    __setBootstrapReaderForTests(reader);
+    const refreshedGas = { pipelines: { refreshed: { id: 'refreshed' } } };
+    let loaderCalls = 0;
+    __setOnDemandLoaderForTests(async (key) => {
+      loaderCalls += 1;
+      return key === 'pipelinesGas' ? refreshedGas : OIL_FIXTURE;
+    });
+
+    await ensurePipelineRegistriesHydrated();
+    assert.equal(loaderCalls, 0);
+    const refreshed = await ensurePipelineRegistriesHydrated({ refresh: true });
+    assert.equal(refreshed.gas, refreshedGas);
+    assert.equal(loaderCalls, 2);
+  });
+
+  test('partial leftover still fetches the missing commodity', async () => {
+    const { reader } = countingReader({ pipelinesGas: GAS_FIXTURE });
+    __setBootstrapReaderForTests(reader);
+    let loaderCalls = 0;
+    __setOnDemandLoaderForTests(async (key) => {
+      loaderCalls += 1;
+      return key === 'pipelinesOil' ? OIL_FIXTURE : undefined;
+    });
+
+    const result = await ensurePipelineRegistriesHydrated();
+    assert.equal(result.gas, GAS_FIXTURE);
+    assert.equal(result.oil, OIL_FIXTURE);
+    assert.equal(loaderCalls, 1);
+  });
+
   test('rolling-deploy leftover wins and skips the on-demand fetch', async () => {
     const { reader } = countingReader({
       pipelinesGas: GAS_FIXTURE,

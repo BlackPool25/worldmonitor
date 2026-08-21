@@ -61,8 +61,11 @@ function defaultOnDemandLoader(key: string): Promise<unknown | undefined> {
 }
 let onDemandLoader: OnDemandLoader = defaultOnDemandLoader;
 
-function hasRegistryData(value: CachedRegistries): boolean {
-  return Boolean(value.gas || value.oil);
+function missingOnDemandKeys(value: CachedRegistries): Array<'pipelinesGas' | 'pipelinesOil'> {
+  const missing: Array<'pipelinesGas' | 'pipelinesOil'> = [];
+  if (!value.gas) missing.push('pipelinesGas');
+  if (!value.oil) missing.push('pipelinesOil');
+  return missing;
 }
 
 /**
@@ -90,25 +93,31 @@ export function getCachedPipelineRegistries(): CachedRegistries {
 /**
  * Rolling-deploy hydration first, then one coalesced on-demand fetch.
  * Safe to call from a map layer and a deferred panel in the same tick.
+ * Pass `{ refresh: true }` for later freshness ticks so the in-memory
+ * resolved value does not suppress a new CDN-shielded read.
  */
-export function ensurePipelineRegistriesHydrated(): Promise<CachedRegistries> {
+export function ensurePipelineRegistriesHydrated(
+  options: { refresh?: boolean } = {},
+): Promise<CachedRegistries> {
   const existing = getCachedPipelineRegistries();
-  if (hasRegistryData(existing)) return Promise.resolve(existing);
+  const keys = options.refresh
+    ? (['pipelinesGas', 'pipelinesOil'] as const)
+    : missingOnDemandKeys(existing);
+  if (keys.length === 0) return Promise.resolve(existing);
   if (inflight) return inflight;
 
   inflight = (async () => {
     try {
-      const [gas, oil] = await Promise.all([
-        onDemandLoader('pipelinesGas'),
-        onDemandLoader('pipelinesOil'),
-      ]);
-      const next: CachedRegistries = {
-        gas: (gas as RawPipelineRegistry | undefined) ?? cache.gas,
-        oil: (oil as RawPipelineRegistry | undefined) ?? cache.oil,
-        source: (gas || oil) ? 'bootstrap' : cache.source,
-      };
+      const fetched = await Promise.all(keys.map((key) => onDemandLoader(key)));
+      const byKey = Object.fromEntries(keys.map((key, index) => [key, fetched[index]]));
+      const gas = (byKey.pipelinesGas as RawPipelineRegistry | undefined) ?? cache.gas;
+      const oil = (byKey.pipelinesOil as RawPipelineRegistry | undefined) ?? cache.oil;
       if (gas || oil) {
-        cache = next;
+        cache = {
+          gas,
+          oil,
+          source: (byKey.pipelinesGas || byKey.pipelinesOil) ? 'bootstrap' : cache.source,
+        };
         drained = true;
       }
       return cache;

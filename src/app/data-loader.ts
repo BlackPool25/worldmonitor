@@ -2880,9 +2880,9 @@ export class DataLoaderManager implements AppModule {
     }
   }
 
-  async loadPipelineRegistries(): Promise<void> {
+  async loadPipelineRegistries(options: { refresh?: boolean } = {}): Promise<void> {
     try {
-      const registries = await ensurePipelineRegistriesHydrated();
+      const registries = await ensurePipelineRegistriesHydrated(options);
       const hasData = Boolean(registries.gas || registries.oil);
       this.ctx.map?.setLayerReady('pipelines', hasData);
       this.ctx.map?.render();
@@ -2891,9 +2891,9 @@ export class DataLoaderManager implements AppModule {
     }
   }
 
-  async loadStorageFacilities(): Promise<void> {
+  async loadStorageFacilities(options: { refresh?: boolean } = {}): Promise<void> {
     try {
-      const { registry } = await ensureStorageFacilityRegistryHydrated();
+      const { registry } = await ensureStorageFacilityRegistryHydrated(options);
       const hasData = Boolean(registry?.facilities && Object.keys(registry.facilities).length > 0);
       this.ctx.map?.setLayerReady('storageFacilities', hasData);
       this.ctx.map?.render();
