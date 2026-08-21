@@ -240,7 +240,6 @@ export class PipelineStatusPanel extends Panel {
       const hydrated = buildBootstrapResponse(gas, oil);
       if (hydrated) {
         const apply = (): void => {
-          if (this.destroyed) return;
           this.data = hydrated;
           this.render();
         };
@@ -265,7 +264,6 @@ export class PipelineStatusPanel extends Panel {
         });
       }
       const applyLive = (): void => {
-        if (this.destroyed) return;
         if (live.upstreamUnavailable || !live.pipelines?.length) {
           this.showError('Pipeline registry unavailable', () => void this.fetchData());
           return;
@@ -281,7 +279,6 @@ export class PipelineStatusPanel extends Panel {
     } catch (err) {
       if (this.isAbortError(err)) return;
       const applyError = (): void => {
-        if (this.destroyed) return;
         this.showError('Pipeline registry error', () => void this.fetchData());
       };
       if (!this.element?.isConnected) {

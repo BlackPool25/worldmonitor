@@ -217,3 +217,10 @@ export const FIXTURE_MINIMUMS = Object.freeze({
   flightDelays: 40,
   wsbTickers: 25,
 });
+
+// DebugBear analysis 86158947 cited by #7046. The constructed fixtures are
+// not a full production ledger (that is U1 / #7047); these baselines keep
+// the energy 25% claim honest against the measured slow payload even when
+// the leftover slow stubs in this file are small.
+export const PRODUCTION_SLOW_DECODED_BYTES = 1_940_000;
+export const PRODUCTION_FAST_DECODED_BYTES = 766_645;

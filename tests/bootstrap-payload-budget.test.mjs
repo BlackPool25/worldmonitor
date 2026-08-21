@@ -11,11 +11,14 @@ import {
   ENERGY_ON_DEMAND_KEYS,
   FAST_FIRST_PAINT_JUSTIFICATION,
   FIXTURE_MINIMUMS,
+  PRODUCTION_SLOW_DECODED_BYTES,
   buildFastPayload,
   buildSlowPayload,
   demotedFastSelfCheck,
   energyRegistrySelfCheck,
+  loadEnergyRegistryPayloads,
   publicPayloadBytes,
+  utf8Bytes,
 } from './fixtures/bootstrap-payload-budget.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -48,6 +51,11 @@ test('slow fixture drops at least 25% after the energy registries leave', () => 
   const before = publicPayloadBytes(buildSlowPayload({ includeEnergy: true }).data);
   const after = publicPayloadBytes(buildSlowPayload({ includeEnergy: false }).data);
   assert.ok(after <= before * 0.75, `slow ${after} is not 25% below ${before}`);
+  const energyBytes = utf8Bytes(loadEnergyRegistryPayloads());
+  assert.ok(
+    energyBytes >= PRODUCTION_SLOW_DECODED_BYTES * 0.25,
+    `energy registries ${energyBytes} are not 25% of the measured slow payload ${PRODUCTION_SLOW_DECODED_BYTES}`,
+  );
 });
 
 test('fast fixture drops at least 20% after the justified demotions', () => {
