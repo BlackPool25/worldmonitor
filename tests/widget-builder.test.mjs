@@ -1356,7 +1356,7 @@ describe('PRO widget — store and sanitizer', () => {
     const script = sandbox.match(/<script>\r?\n([\s\S]*?)\r?\n<\/script>/)?.[1];
     assert.ok(script, 'sandbox inline script not found');
 
-    function runSandbox(referrer) {
+    function runSandbox(referrer, sandboxProtocol = 'https:') {
       const readyMessages = [];
       const writes = [];
       const listeners = new Map();
@@ -1372,7 +1372,7 @@ describe('PRO widget — store and sanitizer', () => {
       function FakeEvent() {}
       FakeEvent.prototype.stopImmediatePropagation = () => {};
       const sandboxWindow = new FakeEventTarget();
-      sandboxWindow.location = { hash: '#id=wm-1&token=test-token' };
+      sandboxWindow.location = { hash: '#id=wm-1&token=test-token', protocol: sandboxProtocol };
       sandboxWindow.parent = parent;
       const context = {
         URL,
@@ -1452,6 +1452,76 @@ describe('PRO widget — store and sanitizer', () => {
       source: spoofed.parent,
     });
     assert.deepEqual(spoofed.writes, []);
+  });
+
+  it('widget sandbox applies the loopback parent protocol matrix', () => {
+    const script = sandbox.match(/<script>\r?\n([\s\S]*?)\r?\n<\/script>/)?.[1];
+    assert.ok(script, 'sandbox inline script not found');
+
+    function runSandbox(referrer, sandboxProtocol) {
+      const readyMessages = [];
+      const writes = [];
+      const listeners = new Map();
+      const parent = {
+        postMessage(payload, targetOrigin) {
+          readyMessages.push({ payload, targetOrigin });
+        },
+      };
+      function FakeEventTarget() {}
+      FakeEventTarget.prototype.addEventListener = (type, listener) => {
+        listeners.set(type, listener);
+      };
+      function FakeEvent() {}
+      FakeEvent.prototype.stopImmediatePropagation = () => {};
+      const sandboxWindow = new FakeEventTarget();
+      sandboxWindow.location = {
+        hash: '#id=wm-1&token=test-token',
+        protocol: sandboxProtocol,
+      };
+      sandboxWindow.parent = parent;
+      vm.runInNewContext(script, {
+        URL,
+        URLSearchParams,
+        Event: FakeEvent,
+        EventTarget: FakeEventTarget,
+        document: {
+          referrer,
+          open() {},
+          write(html) {
+            writes.push(html);
+          },
+          close() {},
+        },
+        window: sandboxWindow,
+      });
+      const message = listeners.get('message');
+      assert.equal(typeof message, 'function', 'message listener must be registered');
+      return { parent, readyMessages, writes, message };
+    }
+
+    for (const hostname of ['localhost', '127.0.0.1']) {
+      for (const { parentProtocol, sandboxProtocol, accepted } of [
+        { parentProtocol: 'http:', sandboxProtocol: 'http:', accepted: true },
+        { parentProtocol: 'https:', sandboxProtocol: 'http:', accepted: true },
+        { parentProtocol: 'http:', sandboxProtocol: 'https:', accepted: false },
+        { parentProtocol: 'https:', sandboxProtocol: 'https:', accepted: true },
+      ]) {
+        const referrer = `${parentProtocol}//${hostname}:5173/widget-parent`;
+        const instance = runSandbox(referrer, sandboxProtocol);
+        const origin = new URL(referrer).origin;
+        const label = `${sandboxProtocol} sandbox with ${parentProtocol} ${hostname} parent`;
+
+        assert.equal(instance.readyMessages.length, accepted ? 1 : 0, `${label}: readiness`);
+        if (accepted) assert.equal(instance.readyMessages[0].targetOrigin, origin, `${label}: ready target`);
+
+        instance.message({
+          data: { type: 'wm-html', id: 'wm-1', token: 'test-token', html: `<p>${label}</p>` },
+          origin,
+          source: instance.parent,
+        });
+        assert.deepEqual(instance.writes, accepted ? [`<p>${label}</p>`] : [], `${label}: payload`);
+      }
+    }
   });
 
   it('widget sandbox blocks beforeunload without breaking normal events before widget execution', () => {
