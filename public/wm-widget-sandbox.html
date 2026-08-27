@@ -37,14 +37,10 @@
       var url = new URL(origin);
       var isLocalhost = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
       if ((url.protocol === 'http:' || url.protocol === 'https:') && isLocalhost) {
-        // This file ships byte-for-byte to production via public/ (no build
-        // step, no dev/prod flag available at request time), so a bare
-        // localhost-referrer check would let anyone running their own local
-        // HTTP server embed the production sandbox and receive widget HTML.
-        // Require the sandbox's OWN window.location to also be localhost --
-        // an attacker's page can set document.referrer freely, but cannot
-        // make worldmonitor.app's real production deployment of this exact
-        // file report its own origin as localhost.
+        // public/ ships byte-for-byte to prod (no build-time env), so a bare
+        // localhost referrer would let any local server embed the prod sandbox.
+        // Require sandbox's own hostname to be localhost too — referrer is
+        // spoofable, window.location is not.
         var selfHostname = window.location.hostname;
         return selfHostname === 'localhost' || selfHostname === '127.0.0.1';
       }

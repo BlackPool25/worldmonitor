@@ -1544,6 +1544,29 @@ describe('PRO widget — store and sanitizer', () => {
     // 127.0.0.1 sandbox self-origin (some dev setups bind there instead).
     const dev127Sandbox = runSandboxAt('127.0.0.1', 'http://127.0.0.1:5173/dashboard');
     assert.equal(dev127Sandbox.readyMessages.length, 1, '127.0.0.1 dev sandbox must trust a 127.0.0.1 parent');
+
+    // HTTPS variants — same hostname gate, protocol-agnostic for localhost.
+    const prodHttpsLocalhost = runSandboxAt('worldmonitor.app', 'https://localhost:5173/dashboard');
+    assert.deepEqual(prodHttpsLocalhost.readyMessages, [], 'prod must block https localhost too');
+    prodHttpsLocalhost.message({
+      data: { type: 'wm-html', id: 'wm-1', token: 'test-token', html: '<p>should not render</p>' },
+      origin: 'https://localhost:5173',
+      source: prodHttpsLocalhost.parent,
+    });
+    assert.deepEqual(prodHttpsLocalhost.writes, []);
+    const prodHttps127 = runSandboxAt('worldmonitor.app', 'https://127.0.0.1:5173/dashboard');
+    assert.deepEqual(prodHttps127.readyMessages, []);
+    const devHttpsLocalhost = runSandboxAt('localhost', 'https://localhost:5173/dashboard');
+    assert.equal(devHttpsLocalhost.readyMessages.length, 1, 'dev localhost must trust https localhost parent');
+    assert.equal(devHttpsLocalhost.readyMessages[0].targetOrigin, 'https://localhost:5173');
+    devHttpsLocalhost.message({
+      data: { type: 'wm-html', id: 'wm-1', token: 'test-token', html: '<p>dev https ok</p>' },
+      origin: 'https://localhost:5173',
+      source: devHttpsLocalhost.parent,
+    });
+    assert.deepEqual(devHttpsLocalhost.writes, ['<p>dev https ok</p>']);
+    const devHttps127 = runSandboxAt('127.0.0.1', 'https://127.0.0.1:5173/dashboard');
+    assert.equal(devHttps127.readyMessages.length, 1, '127.0.0.1 dev must trust https 127.0.0.1 parent');
   });
 
   it('widget sandbox blocks beforeunload without breaking normal events before widget execution', () => {
